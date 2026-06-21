@@ -1,0 +1,47 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+build/
+dist/
+
+# --- Tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- C++ / CMake out-of-source build trees (incl. the CUDA DLLs) ---
+/engine/**/build-*/
+/kernels/**/build-*/
+
+# --- Model weights — multi-GB GGUFs / checkpoints live locally, never in the repo ---
+/engine/**/models/
+*.gguf
+*.safetensors
+*.pt
+
+# --- Generated demo outputs (inspector/research write HTML/png into runs/) ---
+runs/
+
+# --- Local run/scratch artifacts ---
+*.log
+req_*.json
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Claude Code local harness state ---
+.claude/
+
+# --- Local-only context for AI tooling / cross-project notes — kept out of the public repo ---
+/CLAUDE.md
+/PROJECT_STATUS.md
+/notes/

@@ -1,0 +1,19 @@
+# protocol/ — the state-stream contract (the keystone)
+
+One vocabulary the [engine](../engine) emits and the [inspector](../inspector) consumes —
+collapsing the two spines (the engine's §5.1 typed events and the inspector's `StateStep`)
+that were the same abstraction discovered twice. This is what makes Clozn *one* system
+instead of two inspectors.
+
+- **`StateStep`** — one frame of the model's evolving state: `{t, substrate, slots, values,
+  kind}`. A diffusion *board pass*, an AR *token + residual*, an RWKV *recurrent-state
+  update* are all `StateStep`s differing only in `substrate`.
+- **`Intervention`** — the write-back: `{target (layer/slot), vector, coef}`. Steering and
+  edits flow up this channel.
+- **`StateSource`** — anything producing the stream (the engine over HTTP/SSE, or a
+  lightweight in-process Python source).
+- **Memory ops** — snapshot / restore / persist / associate operate on accumulated
+  `StateStep`s: *the model's memory, made legible and editable.*
+
+Authored in Roadmap **phase 1** (today: a stub + this spec). View = read the stream; steer =
+push an `Intervention`; memory = persist and recall the state.
