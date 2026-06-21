@@ -15,5 +15,6 @@ instead of two inspectors.
 - **Memory ops** — snapshot / restore / persist / associate operate on accumulated
   `StateStep`s: *the model's memory, made legible and editable.*
 
-Authored in Roadmap **phase 1** (today: a stub + this spec). View = read the stream; steer =
-push an `Intervention`; memory = persist and recall the state.
+Full contract: **[SPEC.md](SPEC.md)** — the canonical types, the engine-event → `StateStep`
+mapping, and the SSE/JSON wire (light frame by default, heavy state on demand). View = read the
+stream; steer = push an `Intervention`; memory = persist and recall the state.
