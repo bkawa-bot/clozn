@@ -269,68 +269,43 @@ def test_reset_clears_frame_buffer():
 
 
 # --------------------------------------------------------------------------------------------------
-# End-to-end over a real (stdlib) HTTP server — gated: stands up a server, so -m "not model" skips it.
-# Proves the urllib request/SSE-stream/intervene path, not just the pure parse, with NO real engine.
+# Phase 1.4 — the round-trip GATE against a REAL Clozn engine (engine -> protocol -> inspector).
+# Gated behind -m model + skips unless an engine is reachable on :8080 (it needs a GPU server + a
+# model), so CI / `-m "not model"` skip it. The pure parse/codec tests above cover the wire logic
+# without an engine; this proves the live contract: read white-box readouts off the stream, snapshot
+# the board, steer with a causal effect. Start one first, e.g.:
+#   engine\core\build-gpu\cloze-server.exe <a-model>.gguf --gpu-layers 99 --port 8080
 # --------------------------------------------------------------------------------------------------
 @pytest.mark.model
-def test_engine_step_and_state_over_http():
-    import threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+def test_round_trip_against_live_engine():
+    import urllib.error
+    import urllib.request
 
-    captured = {}
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *a):                # silence
-            pass
-
-        def _read_body(self):
-            n = int(self.headers.get("Content-Length", 0))
-            return json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
-
-        def do_POST(self):
-            if self.path == "/v1/completions":
-                captured["completions_body"] = self._read_body()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.end_headers()
-                self.wfile.write(_sse_bytes(MOCK_FRAMES))
-            elif self.path == "/intervene":
-                captured["intervene_body"] = self._read_body()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"ok": true}')
-
-        def do_GET(self):
-            if self.path == "/state":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                body = {"state": {"board": _wire_tensor(BOARD_FINAL),
-                                  "hidden": _wire_tensor(HIDDEN_FINAL)}}
-                self.wfile.write(json.dumps(body).encode("utf-8"))
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = "http://127.0.0.1:8080"
     try:
-        port = server.server_address[1]
-        src = EngineStateSource(base_url=f"http://127.0.0.1:{port}", temperature=0.0)
+        with urllib.request.urlopen(base + "/health", timeout=2) as r:
+            json.loads(r.read())
+    except (urllib.error.URLError, OSError):
+        pytest.skip("no Clozn engine reachable on :8080")
 
-        agg = src.step("Hello")                                       # full SSE round-trip
-        assert captured["completions_body"]["prompt"] == "Hello"
-        assert captured["completions_body"]["stream"] is True
-        assert captured["completions_body"]["protocol"] is True
-        assert captured["completions_body"]["temperature"] == 0.0     # **opts forwarded
-        assert len(src.steps) == 3
-        assert agg.token == [7592, 2088]
-        assert np.array_equal(agg.state["board"], BOARD_FINAL)
+    src = EngineStateSource(base_url=base, substrate="autoregressive")
 
-        st = src.get_state()                                          # /state snapshot
-        assert np.array_equal(st["board"], BOARD_FINAL)
-        assert np.array_equal(st["hidden"], HIDDEN_FINAL)
+    # READ — the white-box concept + logit-lens readouts arrive over the stream, and the activation
+    # tap decodes off the wire (state="full").
+    agg = src.step("The capital of France is")
+    assert agg.meta["n_frames"] > 1
+    names = {r.name for s in src.steps for r in s.readouts}
+    assert "logit-lens" in names and "number" in names
+    assert any("hidden" in s.state for s in src.steps)
 
-        src.steer("sentiment", 1.0)                                   # /intervene
-        assert captured["intervene_body"]["kind"] == "steer"
-        assert captured["intervene_body"]["target"]["concept"] == "sentiment"
-    finally:
-        server.shutdown()
+    # SNAPSHOT — the board (token ids) from the run's terminal frame.
+    board = src.get_state()["board"]
+    assert board.ndim == 1 and board.shape[0] > 5
+
+    # STEER — a number-steer measurably moves the generation vs coef 0 (a causal intervention on the
+    # wire). High coef garbles by design (non-surjective), so we only assert it *changed*.
+    p = "My favorite thing about weekends is"
+    cold = src.steer("number", 0.0, prompt=p, max_tokens=12)["choices"][0]["text"]
+    hot = src.steer("number", 22.0, prompt=p, max_tokens=12)
+    assert hot["applied"] is True
+    assert hot["choices"][0]["text"] != cold

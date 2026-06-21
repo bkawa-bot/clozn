@@ -9,9 +9,11 @@ carrying its confidence and an unverified causality flag), `meta` carries substr
 
 Wire (protocol/SPEC.md):
   - step:      POST {base_url}/v1/completions  {prompt, stream, protocol, features, state} -> SSE
-               `data: {json}\n\n` frames, each a StateStep.
-  - snapshot:  GET  {base_url}/state           -> the full State (named {dtype,shape,data} tensors).
+               `data: {json}\n\n` frames, each a StateStep; the terminal frame carries `board` (the
+               snapshot). The engine is stateless-per-request, so there is no GET /state — the board
+               IS the snapshot, and per-step activations ride on each step frame's `state`.
   - intervene: POST {base_url}/intervene       <- an Intervention {kind, target, vector?, coef?, note?}.
+               steer's `target` names the generation to steer (prompt + max_tokens); restore is /v1/board.
 
 Tensors on the wire are `{dtype, shape, data}` with `data` = base64 of **little-endian** raw bytes;
 `encode_tensor` / `decode_tensor` are the exact ndarray <-> JSON codec (module-level, reusable).
@@ -170,6 +172,16 @@ def aggregate_steps(steps: list[StateStep]) -> StateStep | None:
         return None
     last = steps[-1].copy()
     tokens = [s.token for s in steps if s.token is not None]
+    # The final "end" control frame carries neither readouts nor state; surface the last frame that
+    # actually has them, so the aggregate reflects the run's white-box reads instead of an empty tail.
+    for s in reversed(steps):
+        if s.readouts:
+            last.readouts = list(s.readouts)
+            break
+    for s in reversed(steps):
+        if s.state:
+            last.state = {k: v.copy() for k, v in s.state.items()}  # deep copy (spine invariant 4)
+            break
     meta = dict(last.meta)
     meta.setdefault("substrate", _substrate_of(steps))
     meta["n_frames"] = len(steps)
@@ -242,11 +254,15 @@ class EngineStateSource:
         self._last = aggregate_steps(self.steps)
 
     def get_state(self) -> State:
-        """The snapshot State: the engine's `board` + any activations, tensors decoded from the wire."""
-        obj = self._get_json("/state")
-        # The snapshot may be {"state": {...}} or the bare component map; accept both.
-        comp = obj.get("state", obj) if isinstance(obj, dict) else obj
-        return decode_state(comp)
+        """The snapshot State: the `board` (token ids) captured from the last step()'s final frame.
+
+        The engine is stateless-per-request, so there is no `GET /state` — per protocol/SPEC.md the
+        board IS the snapshot (returned in the run's terminal frame; restore via /v1/board on a
+        diffusion model). Per-step activations live on `self.steps[i].state` (with `state="full"`)."""
+        snap = getattr(self, "_snapshot", None)
+        if not snap:
+            raise RuntimeError("no snapshot available — call step() first")
+        return dict(snap)
 
     def set_state(self, s: State | Intervention) -> None:
         """Write state back through /intervene. Accepts a raw State (-> a "restore"/"edit" Intervention,
@@ -264,13 +280,19 @@ class EngineStateSource:
         self._post_json("/intervene", payload)
 
     # --- steering convenience --------------------------------------------------------------------
-    def steer(self, concept: str, coef: float, vector: np.ndarray | list[float] | None = None,
-              component: str | None = None, note: str = "") -> dict:
+    def steer(self, concept: str, coef: float, prompt: str | None = None, max_tokens: int = 8,
+              vector: np.ndarray | list[float] | None = None, component: str | None = None,
+              note: str = "", **opts: Any) -> dict:
         """Post a steering Intervention: nudge `concept`'s direction by `coef` (the control-vector
-        `set_steer` on the engine side). `vector`/`component` are optional explicit targets."""
+        `set_steer` on the engine side). The engine is stateless, so the steer is realized on a
+        target generation — supply a `prompt` (+ `max_tokens`); `vector`/`component` are optional."""
         target: dict[str, Any] = {"concept": concept}
+        if prompt is not None:
+            target["prompt"] = prompt
+            target["max_tokens"] = max_tokens
         if component is not None:
             target["component"] = component
+        target.update(opts)
         payload: dict[str, Any] = {"kind": "steer", "target": target, "coef": float(coef)}
         if vector is not None:
             payload["vector"] = [float(x) for x in np.asarray(vector).ravel().tolist()]
@@ -292,8 +314,14 @@ class EngineStateSource:
             self._url("/v1/completions"), data=data, method="POST",
             headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
         )
+        self._snapshot = {}
+        self._final = None
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             for frame in iter_sse(_read_chunks(resp)):
+                if "board" in frame:  # the terminal "final" frame — the snapshot, not a step
+                    self._final = frame
+                    self._snapshot = {"board": np.asarray(frame["board"], dtype=np.int64)}
+                    continue
                 yield parse_state_step(frame)
 
     def _get_json(self, path: str) -> Any:
