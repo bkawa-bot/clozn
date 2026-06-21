@@ -1,0 +1,56 @@
+name: CI
+
+# Monorepo CPU lanes (Roadmap 0.8). Three independent gates, all CPU:
+#   cpp     — the backend-free engine (scheduler + runtime), built with gcc + ctest.
+#   python  — the lab goldens (real tiny checkpoint) + the inspector's model-free suite + the
+#             kernel's CPU reference. GPU-only / GGML tests are out of scope here (no GPU runner).
+# The seam (engine/ never links a model backend) is what makes the cpp lane fast and dependency-free.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cpp:
+    name: engine — backend-free ctest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cmake + ninja
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: Configure + build (no ggml, no CUDA — pure C++ scheduler/runtime)
+        run: cmake -S engine/core -B engine/core/build-cpu -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build engine/core/build-cpu
+      - name: ctest (the 8 scheduler/runtime goldens)
+        run: ctest --test-dir engine/core/build-cpu --output-on-failure
+
+  python:
+    name: lab goldens + inspector + kernel reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU torch + the version-pinned golden deps
+        # Pinned to the environment the open-dCoder real-checkpoint goldens were generated against:
+        # library drift can shift a logit enough to flip a near-tie pick (the seam's invariant 3).
+        # The deterministic FakeAdapter oracle is version-independent and stays strict regardless.
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -e "engine/lab[dev]"
+          pip install -e inspector
+          pip install "transformers==4.57.6" "tokenizers==0.22.2" "numpy==2.4.6"
+      - name: Cache the open-dCoder checkpoint
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-open-dcoder-05b
+      - name: Lab goldens (FakeAdapter exact + open-dCoder within epsilon; Dream/LLaDA auto-skip)
+        run: pytest engine/lab/tests -q
+      - name: Inspector — model-free ops/store/spine (RWKV-gated tests skipped)
+        run: pytest inspector -m "not model" -q
+      - name: Kernel — CPU reference parity vs the lab
+        run: pytest kernels/confidence_select/test_reference.py -q
