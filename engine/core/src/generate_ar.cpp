@@ -78,6 +78,7 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
         // GENERATED token's own position (act_rows = {n_past}), the intuitive "this token is X".
         fwd = adapter.ar_forward({tok}, n_past);
         if (auto sf = features_from(fwd, t, 0, read_probes)) emit(*sf);
+        if (auto sa = activations_from(fwd, t, 0)) emit(*sa);  // raw state (heavy; on-demand)
 
         ++n_past;
         ++t;

@@ -218,8 +218,10 @@ GenerateResult generate(ModelAdapter& adapter,
             emit(StepStats{t, block.index, step, static_cast<int>(sel.committed.size()), remaining,
                            ms, plan.cache_hit});
             if (auto sf = features_from(fwd, t, block.index, probes)) emit(*sf);
-            if (!fwd.activations.empty())
+            if (!fwd.activations.empty()) {
                 if (auto sl = lens_from(fwd, want, static_cast<int>(masked.size()), t, block.index, 5)) emit(*sl);
+                if (auto sa = activations_from(fwd, t, block.index)) emit(*sa);  // raw state (heavy; on-demand)
+            }
             last_t = t;
             ++t;
             if (!stepper.should_continue(StepOutcome{step,
@@ -343,8 +345,10 @@ GenerateResult infill(ModelAdapter& adapter,
         emit(TokensCommitted{t, 0, std::move(items)});
         emit(StepStats{t, 0, step, static_cast<int>(sel.committed.size()), remaining, ms, 0.0});
         if (auto sf = features_from(fwd, t, 0, probes)) emit(*sf);
-        if (!fwd.activations.empty())
+        if (!fwd.activations.empty()) {
             if (auto sl = lens_from(fwd, want, static_cast<int>(masked.size()), t, 0, 5)) emit(*sl);
+            if (auto sa = activations_from(fwd, t, 0)) emit(*sa);  // raw state (heavy; on-demand)
+        }
         last_t = t;
         ++t;
         if (!stepper.should_continue(StepOutcome{step, static_cast<int>(sel.committed.size()),
@@ -458,8 +462,10 @@ GenerateResult denoise(ModelAdapter& adapter,
         emit(TokensCommitted{t, 0, std::move(items)});
         emit(StepStats{t, 0, step, static_cast<int>(sel.committed.size()), remaining, ms, 0.0});
         if (auto sf = features_from(fwd, t, 0, probes)) emit(*sf);
-        if (!fwd.activations.empty())
+        if (!fwd.activations.empty()) {
             if (auto sl = lens_from(fwd, want, static_cast<int>(masked.size()), t, 0, 5)) emit(*sl);
+            if (auto sa = activations_from(fwd, t, 0)) emit(*sa);  // raw state (heavy; on-demand)
+        }
         last_t = t;
         ++t;
         if (!stepper.should_continue(StepOutcome{step, static_cast<int>(sel.committed.size()),

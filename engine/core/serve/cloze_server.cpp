@@ -27,8 +27,10 @@
 #include <cctype>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -192,6 +194,231 @@ std::string sse_data_revise(const Event& e, const GgmlModel& model, const std::v
     }
     return to_jsonl_line(e);
 }
+
+// ============================ state-stream protocol (phase 1.2) ============================
+// The inspector-facing wire form (protocol/SPEC.md). The engine's §5.1 events FOLD into canonical
+// StateStep frames: {step, token, state, readouts, meta}. One forward pass's events (which all share
+// the same `t`) collapse into one StateStep; gen_started/finished become control frames. Gated by the
+// request flag protocol:true — without it, the legacy sse_data(...) frames stream unchanged, so the
+// existing viz keeps working. See SPEC.md "Engine §5.1 event -> StateStep mapping" + "The wire".
+
+// Base64 (standard alphabet, padded) of raw bytes — for tensor `data` on the wire.
+std::string base64_encode(const uint8_t* data, size_t len) {
+    static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 3 <= len; i += 3) {
+        const uint32_t n = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8) | data[i + 2];
+        out.push_back(tbl[(n >> 18) & 63]); out.push_back(tbl[(n >> 12) & 63]);
+        out.push_back(tbl[(n >> 6) & 63]);  out.push_back(tbl[n & 63]);
+    }
+    if (i < len) {  // 1 or 2 trailing bytes
+        uint32_t n = uint32_t(data[i]) << 16;
+        const bool two = (i + 1 < len);
+        if (two) n |= uint32_t(data[i + 1]) << 8;
+        out.push_back(tbl[(n >> 18) & 63]);
+        out.push_back(tbl[(n >> 12) & 63]);
+        out.push_back(two ? tbl[(n >> 6) & 63] : '=');
+        out.push_back('=');
+    }
+    return out;
+}
+
+// A tensor on the wire: {dtype, shape, data} where data = base64 of the little-endian raw bytes
+// (SPEC.md "Tensors on the wire"). We tap float32 activations; x86/CUDA are little-endian, so the
+// in-memory floats ARE the little-endian bytes — a straight reinterpret, no byte-swizzling.
+json tensor_json_f32(const std::vector<float>& values, std::vector<int> shape) {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(values.data());
+    return json{{"dtype", "float32"}, {"shape", std::move(shape)},
+                {"data", base64_encode(bytes, values.size() * sizeof(float))}};
+}
+
+// Folds the §5.1 event stream into StateStep frames and writes them to an SSE sink. One StateStep
+// per forward pass (events sharing a `t`); gen_started/finished + block start/finalize fold into the
+// running `meta`. `state_full` controls whether the heavy raw-activation tensor rides each frame
+// (state="full") or is omitted (the light default). The builder is stateful across the run: it
+// accumulates the current pass, and FLUSHES it (emits one frame) when the next pass begins (a new
+// tokens_committed at a higher t) or at gen_finished.
+class StateStepBuilder {
+public:
+    StateStepBuilder(const GgmlModel& model, const char* substrate, bool state_full,
+                     std::function<void(const std::string&)> write)
+        : model_(model), substrate_(substrate), state_full_(state_full), write_(std::move(write)) {}
+
+    void on_event(const Event& e) {
+        if (const auto* gs = std::get_if<GenStarted>(&e)) {
+            // Control frame: stream begin. prompt/total counts in meta.
+            json meta{{"kind", "begin"}, {"substrate", substrate_}, {"block_len", gs->block_len},
+                      {"prompt_tokens", gs->prompt_tokens}, {"max_new", gs->max_new}};
+            emit_control(gs->t, meta);
+            return;
+        }
+        if (const auto* bs = std::get_if<BlockStarted>(&e)) {
+            block_ = bs->block;
+            span_ = json::array({bs->span.first, bs->span.second});
+            return;
+        }
+        if (const auto* tr = std::get_if<TokensRevised>(&e)) {
+            // A revision is its own StateStep (diffusion-only). Flush any open commit first so the
+            // revise frame is distinct, then emit the revise frame immediately.
+            flush();
+            json items = json::array();
+            for (const auto& it : tr->items)
+                items.push_back({{"pos", it.pos}, {"old", it.old}, {"id", it.id}, {"conf", it.conf},
+                                 {"piece", model_.decode({it.id})}});
+            json meta = base_meta();
+            meta["kind"] = "revise";
+            json frame{{"step", tr->t}, {"token", nullptr}, {"state", nullptr},
+                       {"readouts", json::array()}, {"meta", meta}, {"revised", items}};
+            write_frame(frame);
+            return;
+        }
+        if (const auto* tc = std::get_if<TokensCommitted>(&e)) {
+            flush();             // a new pass begins -> close out the previous StateStep
+            open_ = true;
+            step_ = tc->t;
+            // token = the committed id(s) for this pass (+ pieces for the tokenizer-free consumer).
+            token_ = json::array();
+            json confs = json::array();
+            for (const auto& it : tc->items) {
+                token_.push_back({{"pos", it.pos}, {"id", it.id}, {"piece", model_.decode({it.id})}});
+                confs.push_back(it.conf);
+            }
+            commit_confs_ = std::move(confs);
+            return;
+        }
+        if (const auto* ss = std::get_if<StepStats>(&e)) {
+            ensure_open(ss->t);
+            stats_ = json{{"committed", ss->committed}, {"remaining", ss->remaining},
+                          {"step", ss->step}, {"ms", ss->ms}, {"cache_hit", ss->cache_hit}};
+            return;
+        }
+        if (const auto* sf = std::get_if<StepFeatures>(&e)) {
+            ensure_open(sf->t);
+            // One Readout per concept. value = the per-slot scores for that concept (position-major
+            // sliced into a per-concept vector). Honesty invariant: confidence travels; causal_verified
+            // is null (probes are correlational until patched — SPEC's wire honesty rule).
+            const int K = static_cast<int>(sf->features.size());
+            const int rows = K > 0 ? static_cast<int>(sf->scores.size()) / K : 0;
+            for (int k = 0; k < K; ++k) {
+                json per_slot = json::array();
+                double maxabs = 0.0;
+                for (int r = 0; r < rows; ++r) {
+                    const float v = sf->scores[static_cast<size_t>(r) * K + k];
+                    per_slot.push_back(v);
+                    if (std::fabs(v) > maxabs) maxabs = std::fabs(v);
+                }
+                readouts_.push_back({{"name", sf->features[k]},
+                                     {"value", {{"positions", sf->positions}, {"scores", per_slot}}},
+                                     {"confidence", maxabs}, {"causal_verified", nullptr}});
+            }
+            return;
+        }
+        if (const auto* sl = std::get_if<StepLens>(&e)) {
+            ensure_open(sl->t);
+            // The logit-lens readout: top-k candidates+probs per requested slot. value carries the
+            // decoded pieces too (the consumer has no tokenizer). confidence = the top-1 prob seen.
+            json per_pos = json::array();
+            double top_conf = 0.0;
+            const int k = sl->k;
+            for (size_t r = 0; r < sl->positions.size(); ++r) {
+                json cand = json::array();
+                for (int j = 0; j < k; ++j) {
+                    const size_t idx = r * static_cast<size_t>(k) + j;
+                    if (idx >= sl->ids.size()) break;
+                    const float prob = sl->probs[idx];
+                    if (j == 0 && prob > top_conf) top_conf = prob;
+                    cand.push_back({{"id", sl->ids[idx]}, {"prob", prob},
+                                    {"piece", model_.decode({sl->ids[idx]})}});
+                }
+                per_pos.push_back({{"pos", sl->positions[r]}, {"candidates", cand}});
+            }
+            readouts_.push_back({{"name", "logit-lens"}, {"value", per_pos},
+                                 {"confidence", top_conf}, {"causal_verified", nullptr}});
+            return;
+        }
+        if (const auto* sa = std::get_if<StepActivations>(&e)) {
+            ensure_open(sa->t);
+            // The heavy state: raw per-position hidden state. Held; attached to the frame on flush()
+            // only when state="full" (the light frame omits it). Encoded {dtype,shape,data}.
+            if (state_full_) {
+                state_ = json::object();
+                state_["positions"] = sa->positions;
+                state_["hidden"] = tensor_json_f32(
+                    sa->values, {static_cast<int>(sa->positions.size()), sa->n_embd});
+            }
+            return;
+        }
+        if (const auto* gf = std::get_if<GenFinished>(&e)) {
+            flush();  // close the last pass before the end-of-stream control frame
+            json meta{{"kind", "end"}, {"substrate", substrate_}, {"reason", gf->reason},
+                      {"new_tokens", gf->new_tokens}, {"wall_ms", gf->wall_ms},
+                      {"steps_total", gf->steps_total}, {"tok_per_s", gf->tok_per_s}};
+            emit_control(gf->t, meta);
+            return;
+        }
+    }
+
+    // Flush any pass still open (defensive; gen_finished normally does this).
+    void finish() { flush(); }
+
+private:
+    json base_meta() const {
+        json m{{"substrate", substrate_}, {"block", block_}};
+        if (!span_.is_null()) m["span"] = span_;
+        return m;
+    }
+    void ensure_open(int t) {
+        if (!open_) { open_ = true; step_ = t; }
+    }
+    void emit_control(int step, const json& meta) {
+        json frame{{"step", step}, {"token", nullptr}, {"state", nullptr},
+                   {"readouts", json::array()}, {"meta", meta}};
+        write_frame(frame);
+    }
+    void write_frame(const json& frame) { write_("data: " + frame.dump() + "\n\n"); }
+
+    // Emit the accumulated pass as one StateStep, then reset for the next pass.
+    void flush() {
+        if (!open_) return;
+        json meta = base_meta();
+        meta["kind"] = "step";
+        if (!stats_.is_null()) meta.update(stats_);
+        if (!commit_confs_.is_null()) meta["confidence"] = commit_confs_;
+        json frame{{"step", step_},
+                   {"token", token_.is_null() ? json(json::array()) : token_},
+                   {"state", state_.is_null() ? json(nullptr) : state_},
+                   {"readouts", readouts_},
+                   {"meta", meta}};
+        write_frame(frame);
+        // reset pass accumulators
+        open_ = false;
+        token_ = json();
+        state_ = json();
+        stats_ = json();
+        commit_confs_ = json();
+        readouts_ = json::array();
+    }
+
+    const GgmlModel& model_;
+    const char* substrate_;
+    bool state_full_;
+    std::function<void(const std::string&)> write_;
+
+    // run-scoped
+    int block_ = 0;
+    json span_ = json();
+
+    // pass-scoped
+    bool open_ = false;
+    int step_ = 0;
+    json token_ = json();
+    json state_ = json();
+    json stats_ = json();
+    json commit_confs_ = json();
+    json readouts_ = json::array();
+};
 
 // Per-position board layout for the white-box SNAPSHOT: {pos,id,masked,piece}. Lets a client save
 // the exact board state from any response and POST it back to /v1/board to restore/branch.
@@ -597,7 +824,12 @@ int main(int argc, char** argv) {
         const ReviseConfig revise = revise_from(body);
         const SampleConfig sample = sample_from(body);
         const bool stream = body.value("stream", false);
-        const bool features = body.value("features", false);  // white-box: emit per-slot activations
+        // Phase 1.2 state-stream protocol: protocol:true reshapes the SSE frames to StateStep; state:"full"
+        // rides the heavy raw-activation tensor on each frame (the light frame omits it). "full" implies
+        // the activation tap (the raw state only exists when the tap is on), so it forces features on.
+        const bool protocol = body.value("protocol", false);
+        const bool state_full = body.value("state", std::string("light")) == std::string("full");
+        const bool features = body.value("features", false) || state_full;  // white-box: emit per-slot activations
         // White-box WRITE: steer:{concept, coef, layer?} pushes a concept direction into the residual
         // stream during the denoise (a control vector). coef 0 / no object => no steering.
         std::string steer_concept; double steer_coef = 0.0; int steer_layer = 0;
@@ -655,23 +887,40 @@ int main(int argc, char** argv) {
         const char* object = is_infill ? "infill" : "text_completion";
 
         if (stream) {
+            const char* substrate = ar_mode ? "autoregressive" : "diffusion";
             // SSE: each §5.1 event becomes a `data: <json>\n\n` frame — the native streaming wire.
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [run, id, object, model, prompt_ids, suffix_ids](size_t, httplib::DataSink& sink) {
+                [run, id, object, model, prompt_ids, suffix_ids, protocol, state_full, substrate, mask_token]
+                (size_t, httplib::DataSink& sink) {
+                    auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    if (protocol) {
+                        // State-stream protocol: fold the §5.1 events into StateStep frames.
+                        StateStepBuilder builder(*model, substrate, state_full, write);
+                        auto on_event = [&](const Event& e) { builder.on_event(e); };
+                        GenerateResult r = run(on_event);
+                        builder.finish();
+                        // Final summary frame: the canonical snapshot (board + text + layout) the
+                        // consumer restores via /v1/board (meta.kind="final").
+                        json final_frame = {{"kind", "final"}, {"id", id}, {"object", object},
+                                            {"text", r.text}, {"finish_reason", finish_reason(r.reason)},
+                                            {"board", r.board},
+                                            {"layout", board_layout_json(*model, r.board, mask_token)}};
+                        write("data: " + final_frame.dump() + "\n\n");
+                        write("data: [DONE]\n\n");
+                        sink.done();
+                        return true;
+                    }
                     auto on_event = [&](const Event& e) {
-                        const std::string frame = "data: " + sse_data(e, *model, prompt_ids, suffix_ids) + "\n\n";
-                        sink.write(frame.data(), frame.size());
+                        write("data: " + sse_data(e, *model, prompt_ids, suffix_ids) + "\n\n");
                     };
                     GenerateResult r = run(on_event);
                     // A final OpenAI-style frame carrying the assembled text, then [DONE].
                     json final_frame = {{"id", id}, {"object", object},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
                                                      {"finish_reason", finish_reason(r.reason)}}})}};
-                    const std::string fl = "data: " + final_frame.dump() + "\n\n";
-                    sink.write(fl.data(), fl.size());
-                    const std::string done = "data: [DONE]\n\n";
-                    sink.write(done.data(), done.size());
+                    write("data: " + final_frame.dump() + "\n\n");
+                    write("data: [DONE]\n\n");
                     sink.done();
                     return true;
                 });
@@ -906,6 +1155,169 @@ int main(int argc, char** argv) {
             {"layout", board_layout_json(*model, r.board, mask_token)},
             {"choices", json::array({{{"text", r.text}, {"index", 0},
                          {"finish_reason", finish_reason(r.reason)}}})},
+            {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
+        };
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // POST /intervene — the state-stream protocol's WRITE channel (SPEC.md "Intervene"). Accepts an
+    // Intervention {kind, target, vector?, coef} and applies it, then runs a generation so the effect
+    // "shows up in the next steps" (the engine is stateless-per-request, so an intervention is realized
+    // ON a concrete generation rather than parked on a context). kind:"steer" wraps the existing
+    // control-vector path: either a NAMED concept (target.concept -> build_steer_cvec over the
+    // calibrated steer_probes) or a RAW direction (vector:[n_embd] -> a control vector built directly).
+    // target may carry the usual generation params (prompt, max_tokens, steps, ...) + stream/protocol/
+    // state; the response is the steered result (board+text), or the StateStep SSE stream when stream:true.
+    // (edit/restore are a board op: snapshot = the `board` in any response, restore = POST /v1/board.)
+    svr.Post("/intervene", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+        if (body.is_discarded()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON body"}}.dump(), "application/json");
+            return;
+        }
+        const std::string kind = body.value("kind", std::string("steer"));
+        if (kind != "steer") {
+            // edit/restore/patch are realized through /v1/board (snapshot+restore), not here.
+            res.status = 400;
+            res.set_content(json{{"error", "/intervene currently supports kind:'steer' only; "
+                                  "use /v1/board for edit/restore (snapshot+restore)"},
+                                 {"kind", kind}}.dump(), "application/json");
+            return;
+        }
+        const json target = body.value("target", json::object());
+        const double coef = body.value("coef", target.value("coef", 1.0));
+        const std::string concept = target.value("concept", body.value("concept", std::string()));
+        const int req_layer = target.value("layer", body.value("layer", 0));
+        // Raw direction (optional): an explicit [n_embd] steering vector the inspector supplies.
+        std::vector<float> raw_vec;
+        if (body.contains("vector") && body["vector"].is_array())
+            for (const auto& v : body["vector"]) raw_vec.push_back(v.get<float>());
+        if (concept.empty() && raw_vec.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "steer needs target.concept or a raw 'vector'"}}.dump(),
+                            "application/json");
+            return;
+        }
+        if (!concept.empty() && !steer_probes.ready()) {
+            res.status = 400;
+            res.set_content(json{{"error", "no concept probes calibrated; pass a raw 'vector' instead"}}.dump(),
+                            "application/json");
+            return;
+        }
+        // Resolve a concept name against the calibrated set up-front (clear 404-style error).
+        if (!concept.empty()) {
+            bool found = false;
+            for (const auto& nm : steer_probes.names) if (nm == concept) { found = true; break; }
+            if (!found) {
+                res.status = 400;
+                res.set_content(json{{"error", "unknown concept"}, {"concept", concept},
+                                     {"available", steer_probes.names}}.dump(), "application/json");
+                return;
+            }
+        }
+
+        // The generation the intervention is applied to. Reuses the completions request shape; the
+        // generation params (prompt, max_tokens, steps, ...) may sit at top level OR nested under
+        // `target` — merge them (target wins) so both spellings work.
+        json gen = body;
+        if (target.is_object())
+            for (auto it = target.begin(); it != target.end(); ++it) gen[it.key()] = it.value();
+        const GenerateConfig cfg = config_from(gen);
+        const ReviseConfig revise = revise_from(gen);
+        const SampleConfig sample = sample_from(gen);
+        const bool stream = body.value("stream", false);
+        const bool protocol = body.value("protocol", false);
+        const bool state_full = body.value("state", std::string("light")) == std::string("full");
+        const bool features = body.value("features", false) || state_full;
+        std::vector<int> prompt_ids = model->encode(target.value("prompt", body.value("prompt", std::string())));
+        if (prompt_ids.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "intervene needs a target.prompt to apply the steer to"}}.dump(),
+                            "application/json");
+            return;
+        }
+
+        // The runner: acquire a context, BUILD + SET the control vector (the wrapped set_steer path),
+        // generate, then clear. The layer window matches the per-request steer path (mid-depth, where
+        // steer_probes is calibrated) unless target.layer pins one.
+        json applied_layers = json::array();
+        auto run = [&pool, &steer_probes, &concept_probes, &raw_vec, concept, coef, req_layer, prompt_ids,
+                    cfg, revise, sample, features, ar_mode, &applied_layers](
+                       const std::function<void(const Event&)>& on_event) {
+            ContextPool::Lease lease = pool.acquire();
+            (*lease).set_emit_activations(features);
+            const ConceptProbes* probes = (features && concept_probes.ready()) ? &concept_probes : nullptr;
+            const int nl = (*lease).n_layer();
+            int lo, hi;
+            if (req_layer >= 1) { lo = hi = (req_layer < nl ? req_layer : nl - 1); }
+            else { const int tl = nl * 2 / 3; lo = (tl - 2 > 1 ? tl - 2 : 1); hi = (tl + 2 < nl ? tl + 2 : nl - 1); }
+            if (lo < 1) lo = 1;
+            // Build the n_embd*n_layer control-vector buffer: from the named concept (build_steer_cvec)
+            // or straight from the raw direction (same layout, applied over [lo,hi]).
+            std::vector<float> cvec;
+            if (!concept.empty()) {
+                cvec = build_steer_cvec(steer_probes, concept, coef, lo, hi, nl);
+            } else {
+                const int ne = steer_probes.n_embd > 0 ? steer_probes.n_embd : static_cast<int>(raw_vec.size());
+                cvec.assign(static_cast<size_t>(ne) * nl, 0.0f);
+                const int m = ne < static_cast<int>(raw_vec.size()) ? ne : static_cast<int>(raw_vec.size());
+                for (int L = lo; L <= hi; ++L) {
+                    if (L < 1 || L >= nl) continue;
+                    float* slice = cvec.data() + static_cast<size_t>(L - 1) * ne;
+                    for (int i = 0; i < m; ++i) slice[i] = static_cast<float>(coef * raw_vec[i]);
+                }
+            }
+            applied_layers = json::array({lo, hi});
+            (*lease).set_steer(cvec, lo, hi);
+            auto r = ar_mode ? generate_ar(*lease, prompt_ids, cfg, on_event, sample, probes)
+                             : generate(*lease, prompt_ids, cfg, CacheConfig{}, nullptr, on_event, revise, sample, probes);
+            (*lease).clear_steer();
+            (*lease).set_emit_activations(false);
+            return r;
+        };
+        const std::string id = make_id("interv-");
+        const char* substrate = ar_mode ? "autoregressive" : "diffusion";
+
+        if (stream) {
+            res.set_chunked_content_provider(
+                "text/event-stream",
+                [run, id, model, protocol, state_full, substrate, mask_token, &applied_layers, kind, concept, coef]
+                (size_t, httplib::DataSink& sink) {
+                    auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    GenerateResult r;
+                    if (protocol) {
+                        StateStepBuilder builder(*model, substrate, state_full, write);
+                        r = run([&](const Event& e) { builder.on_event(e); });
+                        builder.finish();
+                    } else {
+                        r = run([&](const Event& e) {
+                            write("data: " + to_jsonl_line(e) + "\n\n");
+                        });
+                    }
+                    json final_frame = {{"kind", "final"}, {"id", id}, {"object", "intervene"},
+                                        {"applied", true},
+                                        {"intervention", {{"kind", kind}, {"concept", concept}, {"coef", coef},
+                                                          {"layers", applied_layers}}},
+                                        {"text", r.text}, {"finish_reason", finish_reason(r.reason)},
+                                        {"board", r.board},
+                                        {"layout", board_layout_json(*model, r.board, mask_token)}};
+                    write("data: " + final_frame.dump() + "\n\n");
+                    write("data: [DONE]\n\n");
+                    sink.done();
+                    return true;
+                });
+            return;
+        }
+
+        GenerateResult r = run({});
+        json resp = {
+            {"id", id}, {"object", "intervene"}, {"applied", true},
+            {"intervention", {{"kind", kind}, {"concept", concept}, {"coef", coef}, {"layers", applied_layers}}},
+            {"choices", json::array({{{"text", r.text}, {"index", 0},
+                         {"finish_reason", finish_reason(r.reason)}}})},
+            {"board", r.board},
+            {"layout", board_layout_json(*model, r.board, mask_token)},
             {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
         };
         res.set_content(resp.dump(), "application/json");

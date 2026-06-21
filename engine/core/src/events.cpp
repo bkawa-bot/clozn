@@ -136,6 +136,18 @@ struct ToJsonl {
         out += "]}";
         return out;
     }
+    std::string operator()(const StepActivations& e) const {
+        // Flight-recorder JSONL form (raw floats). The SSE protocol layer re-encodes this as a
+        // base64 {dtype,shape,data} tensor for the wire; here we keep the human-readable array so a
+        // replayed log stays self-describing. Heavy — only present when the activation tap is on.
+        std::string out = "{\"t\": " + std::to_string(e.t) + ", \"type\": \"step_activations\", \"block\": "
+                        + std::to_string(e.block) + ", \"n_embd\": " + std::to_string(e.n_embd) + ", \"positions\": [";
+        for (size_t i = 0; i < e.positions.size(); ++i) { if (i) out += ", "; out += std::to_string(e.positions[i]); }
+        out += "], \"values\": [";
+        for (size_t i = 0; i < e.values.size(); ++i) { if (i) out += ", "; out += num(e.values[i]); }
+        out += "]}";
+        return out;
+    }
 };
 
 }  // namespace

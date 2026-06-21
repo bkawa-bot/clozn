@@ -103,8 +103,23 @@ struct StepLens {
     std::vector<float> probs;    // [positions.size() * k]
 };
 
+// White-box RAW activation tap (Tier 2, the heavy state): the per-position hidden state itself,
+// the substrate's "memory" slice this pass (the state-stream protocol's `StateStep.state`). Unlike
+// StepFeatures (which PROJECTS the activations onto concept probes => K scalars/slot), this carries
+// the unprojected [positions.size() * n_embd] tensor. Emitted on the SAME condition as the lens
+// (only when the adapter's activation tap is on => zero cost on the default path; the 8 scheduler
+// goldens are activation-free and untouched). Heavy: a consumer streams it only on demand
+// (state="full"); the server omits it from the light frame. Pure observer (invariant 2).
+struct StepActivations {
+    int t;
+    int block;
+    std::vector<int> positions;          // board positions for each row (== the active block / act_rows)
+    int n_embd = 0;
+    std::vector<float> values;           // [positions.size() * n_embd], position-major row r = positions[r]
+};
+
 using Event = std::variant<GenStarted, BlockStarted, TokensCommitted, TokensRevised, StepStats,
-                           BlockFinalized, GenFinished, StepFeatures, StepLens>;
+                           BlockFinalized, GenFinished, StepFeatures, StepLens, StepActivations>;
 
 // §5.1 wire form: one JSON object per event, {"t": ..., "type": "...", **payload} — byte-compatible
 // with the lab's event_to_dict / to_jsonl_line so logs replay across both runtimes.

@@ -54,6 +54,22 @@ inline std::optional<StepFeatures> features_from(const ForwardResult& fwd, int t
     return sf;
 }
 
+// Raw-activation event for one pass: the unprojected per-position hidden state (the heavy `state`
+// of the state-stream protocol). Filled only when the adapter has emit_activations on; returns
+// nullopt on the default path => zero cost, goldens untouched. The SSE layer turns this into the
+// `StateStep.state` tensor (base64), included only on demand (state="full"). Mirrors features_from
+// but skips the concept projection — it carries the activations verbatim.
+inline std::optional<StepActivations> activations_from(const ForwardResult& fwd, int t, int block) {
+    if (fwd.activations.empty() || fwd.n_embd <= 0) return std::nullopt;
+    StepActivations sa;
+    sa.t = t;
+    sa.block = block;
+    sa.positions = fwd.act_rows;
+    sa.n_embd = fwd.n_embd;
+    sa.values = fwd.activations;  // [act_rows.size() * n_embd], position-major (verbatim)
+    return sa;
+}
+
 // Logit-lens for one pass: top-k token candidates per requested slot, from the host logits. Rows
 // [0, count) of fwd are the positions of interest (diffusion: the masked slots, want = masked ++
 // committed-if-revising; AR: the single next-token slot), so we read those rows directly. Returns
