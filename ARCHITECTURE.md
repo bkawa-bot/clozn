@@ -1,10 +1,11 @@
-# Architecture — the unified runtime
+# Architecture — Clozn, the unified runtime
 
-> **Working name: `glassbox` (provisional — rename freely).** The product is *a local
-> runtime where you can **view and steer a model's memory***. The old names map on as
-> **`cloze` = the engine inside**, **`clozn` = this product**, **`legible-interior` = the
-> research thread.** The near-homonym `cloze`/`clozn` is half the historical confusion;
-> a distinct umbrella name (this one, or another) is the cleanest fix.
+> **Name: `Clozn` — the whole product.** *A local runtime where you can **view and steer a
+> model's memory***. What we used to call **`cloze` is now just the engine layer** — it lives
+> under **`engine/` + `kernels/`** inside Clozn; **`legible-interior`** becomes `research/`.
+> The original `clozn` = `cloze` (the engine inside) + *cozen* (to deceive — the illusion it
+> reveals) now matches the directory tree literally: there is no rival product called "cloze,"
+> only an engine directory.
 
 This repo unifies three codebases that grew up separately but are one system:
 `cloze` (a C++/ggml runtime, born as "Ollama for diffusion LMs"), `clozn` (a Python
@@ -21,27 +22,30 @@ Ollama's structural opposite: not a black box you prompt, a glass box you inspec
 ## The layers (one repo, strict downward dependencies)
 
 ```
-research/   →   inspector/   →   protocol/   →   engine/ + lab/ + kernels/
- (science)      (the product)    (the seam)       (the runtime)
+research/   →   inspector/   →   protocol/   →   engine/ + kernels/
+ (science)      (the product)    (the seam)        (the runtime = "cloze")
 ```
 
 - **`research/`** — the legibility science (was `legible-interior`). "Compression under
   constraint"; the interpretability-tax experiments. Decides *what* interp methods are
   worth building, at toy scale, fast. Feeds methods upward; depends on nothing below.
-- **`inspector/`** — the white-box product (was `clozn`): the state-stream spine, the ops
-  (snapshot/restore/diff/edit/probe/steer), the **memory** (persist/associate/atlas), the
-  viz. The thing you actually use. Owns *all* product surface. Drives the engine through
-  the protocol; delegates hot paths down (it never does heavy compute itself).
+- **`inspector/`** — the white-box product (was `clozn`'s Python package): the state-stream
+  spine, the ops (snapshot/restore/diff/edit/probe/steer), the **memory**
+  (persist/associate/atlas), the viz. The thing you actually use. Owns *all* product
+  surface. Drives the engine through the protocol; delegates hot paths down (it never does
+  heavy compute itself).
 - **`protocol/`** — **the keystone.** One state-stream vocabulary shared by engine and
   inspector (see below). This is what makes it *one* system instead of two inspectors.
-- **`engine/`** — the runtime (was `cloze/core`): C++/ggml, runs real models, **emits the
-  state-stream, applies steers, and hosts the interp primitives that must scale.** The
-  performant floor. Substrate-agnostic: diffusion · autoregressive · (later) recurrent.
-- **`lab/`** — the Python reference scheduler + model adapters + goldens (was `cloze/lab`).
-  The correctness oracle the engine is validated against; the CPU/iteration path.
+- **`engine/`** — the runtime: the former **`cloze`** repo. The C++/ggml core
+  (`engine/core/`, was `cloze/core`) that runs real models, **emits the state-stream,
+  applies steers, and hosts the interp primitives that must scale**; plus the Python
+  reference scheduler + adapters + goldens (`engine/lab/`, was `cloze/lab`) — its correctness
+  oracle and CPU/iteration path. Substrate-agnostic: diffusion · autoregressive · (later)
+  recurrent.
 - **`kernels/`** — GPU kernels (was `cloze/kernels`): confidence-select today, **interp
   kernels tomorrow** (sparse top-k for SAE/transcoder inference; on-device activation
-  harvesting). Optional, validated against CPU reference.
+  harvesting). Optional, validated against CPU reference. Together, **`engine/` + `kernels/`
+  *are* what used to be "cloze."**
 
 **The rule that fixes the drift:** the engine never owns product opinions (no competing
 inspector); the inspector owns all view/steer/memory surface; they meet only at the
@@ -122,10 +126,13 @@ the bridge from "inspect activations" to "a model with a legible, editable memor
 Decided: **execute now, fresh history.** One clean initial commit; the three old repos
 kept as **archives** (not deleted) so per-file history survives there.
 
-1. ✅ This `ARCHITECTURE.md` — lock the target. *(you are here)*
-2. Scaffold the tree; bring `engine/ lab/ kernels/` in, keep `ctest` + `pytest` green.
-3. Bring `inspector/` in; rewire its diffusion `StateSource` onto the engine.
-4. Fold `research/` in.
+1. ✅ This `ARCHITECTURE.md` + adopt the `Clozn` name (cloze → `engine/` + `kernels/`).
+   *(you are here)*
+2. Scaffold the tree; bring the engine in (`engine/core` C++ + `engine/lab` Python) and
+   `kernels/`, keep `ctest` + `pytest` green.
+3. Bring `inspector/` in (from the archived `clozn`); rewire its diffusion `StateSource`
+   onto the engine.
+4. Fold `research/` in (from `legible-interior`).
 5. Author `protocol/`; converge the engine's §5.1 events and the inspector's `StateStep`
    onto it.
-6. Archive the old repos once the new tree is green.
+6. Archive the remaining old repos once the new tree is green.
