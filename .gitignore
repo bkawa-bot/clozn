@@ -19,6 +19,11 @@ htmlcov/
 /engine/**/build-*/
 /kernels/**/build-*/
 
+# --- Vendored llama.cpp: pinned at e36a602 + the CLOZE patch (engine/core/third_party/patches/).
+# Not tracked here (link, don't fork). Proper git submodule is a follow-up (needs a network clone);
+# until then, recreate with: clone llama.cpp @ e36a602, apply 0001-llama_get_logits_tensor.patch. ---
+/engine/core/third_party/llama.cpp/
+
 # --- Model weights — multi-GB GGUFs / checkpoints live locally, never in the repo ---
 /engine/**/models/
 *.gguf
