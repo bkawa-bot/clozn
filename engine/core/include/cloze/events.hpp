@@ -1,0 +1,116 @@
+// cloze/events.hpp — typed generation events (DESIGN §5.1), the event-sourced spine, C++ port
+// of lab/cloze_lab/scheduler/events.py. The scheduler emits these; the CLI, benchmarks, logs, and
+// the future server are consumers only (DESIGN invariant 2). Field names are the §5.1 wire keys
+// verbatim (t/type/pos/id/conf/old/span/...), so JSONL logs are these structs serialized with no
+// mapping layer — replayable across the lab and the C++ core.
+#pragma once
+
+#include <cstdio>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace cloze {
+
+// One inked token, as it appears in tokens_committed items.
+struct CommitItem {
+    int pos;
+    int id;
+    double conf;
+};
+
+// One re-masked token (remask_lowconf, §5.2); unused until revisions exist in the C++ loop.
+struct ReviseItem {
+    int pos;
+    int old;
+    int id;
+    double conf;
+};
+
+struct GenStarted {
+    int t;
+    int prompt_tokens;
+    int block_len;  // 0 = whole-sequence (§5.4)
+    int max_new;
+};
+
+struct BlockStarted {
+    int t;
+    int block;
+    std::pair<int, int> span;  // [start, end) board positions
+};
+
+struct TokensCommitted {
+    int t;
+    int block;
+    std::vector<CommitItem> items;
+};
+
+struct TokensRevised {
+    int t;
+    int block;
+    std::vector<ReviseItem> items;
+};
+
+struct StepStats {
+    int t;
+    int block;
+    int step;
+    int committed;
+    int remaining;
+    double ms;
+    double cache_hit;
+};
+
+struct BlockFinalized {
+    int t;
+    int block;
+    std::string text;
+    int steps_used;
+};
+
+struct GenFinished {
+    int t;
+    std::string reason;  // "eos" | "length" | "steps_exhausted"
+    int new_tokens;
+    double wall_ms;
+    int steps_total;
+    double tok_per_s;
+};
+
+// White-box feature tap (Tier 2): per-pass concept-feature activations on the active block. `features`
+// are the K concept names; `scores` is [positions.size() * K] position-major (scores[i*K + k] =
+// feature k on positions[i]). Emitted only when the adapter's activation tap is on — a pure observer
+// like every other event, so it never touches the board (invariant 2; goldens untouched).
+struct StepFeatures {
+    int t;
+    int block;
+    std::vector<int> positions;
+    std::vector<std::string> features;
+    std::vector<float> scores;  // [positions.size() * features.size()], position-major
+};
+
+// White-box logit-lens (Tier 1): the top-k token CANDIDATES per still-masked slot this pass —
+// "what is this blank considering, and how confidently". `ids`/`probs` are [positions.size()*k]
+// position-major. The server decodes ids -> pieces for the viz (the events stay tokenizer-free).
+struct StepLens {
+    int t;
+    int block;
+    std::vector<int> positions;
+    int k = 0;
+    std::vector<int> ids;        // [positions.size() * k]
+    std::vector<float> probs;    // [positions.size() * k]
+};
+
+using Event = std::variant<GenStarted, BlockStarted, TokensCommitted, TokensRevised, StepStats,
+                           BlockFinalized, GenFinished, StepFeatures, StepLens>;
+
+// §5.1 wire form: one JSON object per event, {"t": ..., "type": "...", **payload} — byte-compatible
+// with the lab's event_to_dict / to_jsonl_line so logs replay across both runtimes.
+std::string to_jsonl_line(const Event& event);
+
+// Flight-recorder log: one event per line, replayable. Returns false if the file can't be opened.
+bool write_jsonl(const std::vector<Event>& events, const std::string& path);
+
+}  // namespace cloze
