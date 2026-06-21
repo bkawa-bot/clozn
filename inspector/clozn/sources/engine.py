@@ -107,14 +107,26 @@ def _parse_readout(r: dict) -> Readout:
 
 
 def parse_state_step(frame: dict) -> StateStep:
-    """A StateStep wire frame (a parsed SSE `data:` JSON object) -> the Python StateStep dataclass."""
+    """A StateStep wire frame (a parsed SSE `data:` JSON object) -> the Python StateStep dataclass.
+
+    Diffusion adds a `revise` frame (`meta.kind=="revise"`): the model changes its mind, re-masking
+    already-committed slots and re-predicting them. The canonical StateStep schema is fixed
+    (step/token/state/readouts/meta), so the revise frame carries `token=null` and a top-level
+    `revised` array (`[{pos, old, id, conf, piece}, ...]`). We fold that array onto `meta["revised"]`
+    so the revision (which slots flipped, from `old`->`id`) survives the parse instead of being
+    silently dropped — the diffusion-only datum this whole path exists to surface. AR never emits it,
+    so `meta` is untouched there.
+    """
     readouts = [_parse_readout(r) for r in (frame.get("readouts") or [])]
+    meta = dict(frame.get("meta") or {})
+    if frame.get("revised") is not None:           # diffusion revise frame -> keep the revised items
+        meta["revised"] = list(frame["revised"])
     return StateStep(
         step=int(frame.get("step", 0)),
         token=frame.get("token"),
         state=decode_state(frame.get("state")),
         readouts=readouts,
-        meta=dict(frame.get("meta") or {}),
+        meta=meta,
     )
 
 
@@ -164,14 +176,38 @@ def iter_sse(stream: Iterator[bytes] | Any) -> Iterator[dict]:
 def aggregate_steps(steps: list[StateStep]) -> StateStep | None:
     """Fold a run's per-frame StateSteps into one final aggregated StateStep.
 
-    The last frame carries the final state/step; we union the tokens committed across the run
+    The last frame carries the final state/step; we collect the tokens committed across the run
     (so the caller can read the whole generated span) and keep the last frame's readouts/meta,
     annotating meta with the frame count and the per-step token list.
+
+    AR commits ONE slot per pass, so each frame's `token` is a single id (or a 1-item list) and the
+    run reads as a flat sequence. Diffusion commits MANY slots per pass (parallel board-fill), so each
+    frame's `token` is a *list* of `{pos,id,piece}` commit items. We flatten those per-pass lists into
+    one flat list of commit items for `token`/`meta["tokens"]` (the whole committed span, one level
+    deep — not a list-of-lists), while scalar AR tokens keep their existing flat-union shape. Revise
+    frames (`meta.kind=="revise"`, `token=None`) carry no commit but a `meta["revised"]` payload; we
+    gather every revision into `meta["revisions"]` and count them in `meta["n_revisions"]` so a
+    consumer sees that — and what — the model changed its mind about (zero/absent for AR).
     """
     if not steps:
         return None
     last = steps[-1].copy()
-    tokens = [s.token for s in steps if s.token is not None]
+    # Flatten per-pass commits into one span: a list `token` (diffusion multi-slot) contributes its
+    # items; a scalar `token` (AR / mock) contributes itself. Result is always one level deep.
+    tokens: list[Any] = []
+    for s in steps:
+        if s.token is None:
+            continue
+        if isinstance(s.token, list):
+            tokens.extend(s.token)                 # multi-slot pass -> splice the slot items in
+        else:
+            tokens.append(s.token)                 # single committed id (AR / scalar mock)
+    # Gather diffusion "changed its mind" revisions across the run (each frame's revised items spliced).
+    revisions: list[Any] = []
+    for s in steps:
+        rev = s.meta.get("revised")
+        if rev:
+            revisions.extend(rev)
     # The final "end" control frame carries neither readouts nor state; surface the last frame that
     # actually has them, so the aggregate reflects the run's white-box reads instead of an empty tail.
     for s in reversed(steps):
@@ -186,6 +222,9 @@ def aggregate_steps(steps: list[StateStep]) -> StateStep | None:
     meta.setdefault("substrate", _substrate_of(steps))
     meta["n_frames"] = len(steps)
     meta["tokens"] = tokens
+    if revisions:                                  # diffusion only; omit the keys entirely for AR
+        meta["revisions"] = revisions
+        meta["n_revisions"] = len(revisions)
     last.meta = meta
     last.token = tokens if tokens else last.token
     return last

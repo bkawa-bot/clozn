@@ -309,3 +309,72 @@ def test_round_trip_against_live_engine():
     hot = src.steer("number", 22.0, prompt=p, max_tokens=12)
     assert hot["applied"] is True
     assert hot["choices"][0]["text"] != cold
+
+
+# --------------------------------------------------------------------------------------------------
+# Phase 2.3 — the DIFFUSION round-trip GATE (engine -> protocol -> inspector), the parallel-board path.
+# Same gate as the AR test, but it needs a *diffusion* engine (LLaDA/Dream — a mask-token GGUF), so it
+# additionally skips when the reachable engine is autoregressive. What's different on the wire (and what
+# only-AR phase-1 never exercised): MANY slots commit per pass (`token` is a list of {pos,id,piece}),
+# every step carries `meta.span` (the active block), and the model can change its mind — `revise` frames
+# (`meta.kind=="revise"`) re-mask + re-predict committed slots, carrying a `revised` payload the inspector
+# now folds onto `meta["revised"]`. Start one first, e.g.:
+#   cloze-server.exe LLaDA-8B-Instruct-q8_0.gguf --mask-token 126336 --eos 126081 --gpu-layers 99 --port 8080
+# --------------------------------------------------------------------------------------------------
+@pytest.mark.model
+def test_round_trip_against_live_diffusion_engine():
+    import urllib.error
+    import urllib.request
+
+    base = "http://127.0.0.1:8080"
+    try:
+        with urllib.request.urlopen(base + "/health", timeout=2) as r:
+            health = json.loads(r.read())
+    except (urllib.error.URLError, OSError):
+        pytest.skip("no Clozn engine reachable on :8080")
+    if health.get("mode") != "diffusion":
+        pytest.skip(f"engine on :8080 is {health.get('mode')!r}, not diffusion")
+
+    # Drive with revision ENABLED so "the model changes its mind" actually fires on this run (a
+    # high tau re-opens many committed slots); generous timeout — diffusion is slower than AR.
+    src = EngineStateSource(base_url=base, substrate="diffusion", timeout=300.0,
+                            revise=True, tau_revise=0.9, max_revisions=2, max_tokens=24, steps=12)
+
+    # READ — the diffusion StateStep frames parse, substrate is tagged, white-box readouts (concepts +
+    # logit-lens) + the activation tap all decode off the wire (state="full" by default in step()).
+    agg = src.step("Write a short sentence about the sea.")
+    assert agg.meta["substrate"] == "diffusion"
+    assert agg.meta["n_frames"] > 1
+    names = {r.name for s in src.steps for r in s.readouts}
+    assert "logit-lens" in names              # logit-lens readout present
+    assert names & {"number", "content", "function", "punct", "code", "question"}  # concept readouts
+    assert any("hidden" in s.state for s in src.steps)  # raw activation tap rode the stream
+
+    # PARALLEL BOARD-FILL — at least one pass commits MANY slots at once (the diffusion signature: a
+    # frame's `token` is a list of {pos,id,piece}), and every step frame is tagged with its block span.
+    commit_frames = [s for s in src.steps if isinstance(s.token, list) and s.token]
+    assert commit_frames, "no multi-slot commit frames parsed"
+    assert any(len(s.token) > 1 for s in commit_frames), "no pass committed >1 slot in parallel"
+    item = commit_frames[0].token[0]
+    assert {"pos", "id", "piece"} <= set(item)          # each committed slot carries pos/id/piece
+    assert any("span" in s.meta for s in src.steps)     # meta.span (the active block) present
+
+    # The aggregate flattens every committed slot into one flat span (not a list-of-lists).
+    assert isinstance(agg.token, list) and agg.token
+    assert all(isinstance(t, dict) for t in agg.token)
+
+    # REVISE — the model changed its mind: revise frames parse (token=None, meta.kind=="revise") and the
+    # revised payload survives onto meta["revised"]; the aggregate gathers them into meta["revisions"].
+    revise_frames = [s for s in src.steps if s.meta.get("kind") == "revise"]
+    assert revise_frames, "revision enabled but no revise frames arrived"
+    rev = revise_frames[0]
+    assert rev.token is None
+    assert rev.meta.get("revised"), "revise frame dropped its 'revised' payload"
+    ritem = rev.meta["revised"][0]
+    assert {"pos", "old", "id"} <= set(ritem)           # which slot flipped, from `old` -> `id`
+    assert agg.meta.get("n_revisions", 0) >= 1
+    assert agg.meta.get("revisions")
+
+    # SNAPSHOT — the board (token ids) from the run's terminal frame.
+    board = src.get_state()["board"]
+    assert board.ndim == 1 and board.shape[0] > 5

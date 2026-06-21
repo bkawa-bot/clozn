@@ -76,6 +76,93 @@ def render_state_film(steps: list[StateStep], component: str = "att_num",
     return _page(_film_svg(steps, component, title, subtitle), title)
 
 
+# ---------------- Watch (substrate-agnostic) ----------------
+
+def _step_label(s: StateStep) -> str:
+    """A short per-step caption that works for any substrate (token text, the written symbol, …)."""
+    for key in ("token", "wrote", "text"):
+        v = s.meta.get(key)
+        if v not in (None, ""):
+            return str(v)
+    return "" if s.token is None else str(s.token)
+
+
+def _step_think(s: StateStep) -> str:
+    """The model's read-out for this step if the substrate exposes one (logit-lens top-1, etc.)."""
+    for key in ("top1", "pred"):
+        v = s.meta.get(key)
+        if v not in (None, ""):
+            return str(v)
+    for r in s.readouts:
+        if r.name in ("logit-lens", "top1"):
+            val = r.value
+            if isinstance(val, (list, tuple)) and val and isinstance(val[0], (list, tuple)):
+                return str(val[0][0])                       # [["hello",0.7],...] -> "hello"
+            return str(val)
+    return ""
+
+
+def _write_intensity(steps: list[StateStep], components: list[str]) -> np.ndarray:
+    """[len(components), T] write magnitude per step: how much each named state tensor changed
+    from the previous step (Frobenius norm of the delta), normalized per-row. The substrate-
+    agnostic generalization of the RWKV per-layer write heatmap — it only needs that `state` is a
+    bag of ndarrays, which the StateStep contract guarantees for every substrate."""
+    T = len(steps)
+    M = np.zeros((len(components), T))
+    for ci, comp in enumerate(components):
+        prev = None
+        for t, s in enumerate(steps):
+            cur = s.state.get(comp)
+            if cur is None:
+                prev = None
+                continue
+            cur = np.asarray(cur, dtype=float)
+            M[ci, t] = float(np.linalg.norm((cur - prev).ravel())) if prev is not None and prev.shape == cur.shape \
+                else float(np.linalg.norm(cur.ravel()))      # first sighting: the write that created it
+            prev = cur
+    return M
+
+
+def _statefilm_svg(steps: list[StateStep], components: list[str], title: str, subtitle: str) -> str:
+    M = _write_intensity(steps, components)
+    norm = M / (M.max(axis=1, keepdims=True) + 1e-9)
+    C, T = M.shape
+    cw, rh, top, x0 = 56, 26, 104, 132
+    W, H = x0 + T * cw + 16, top + C * rh + 44
+    p = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="Inconsolata,monospace">',
+         f'<rect width="{W}" height="{H}" fill="{_BG}"/>',
+         f'<text x="14" y="26" fill="#e6e9f5" font-size="14">{_esc(title)}</text>',
+         f'<text x="14" y="44" fill="#8a90b3" font-size="11">{_esc(subtitle)}</text>',
+         f'<text x="14" y="{top-22}" fill="#5b6090" font-size="9">input</text>',
+         f'<text x="14" y="{top-8}" fill="#5b6090" font-size="9">thinks→</text>']
+    for t in range(T):
+        cx = x0 + t * cw + cw / 2
+        p.append(f'<text x="{cx:.0f}" y="{top-22}" fill="#7ee0d0" font-size="11" text-anchor="middle">{_esc(_step_label(steps[t]))[:8]}</text>')
+        think = _step_think(steps[t])
+        if think:
+            p.append(f'<text x="{cx:.0f}" y="{top-8}" fill="#c9a0ff" font-size="10" text-anchor="middle">{_esc(think)[:8]}</text>')
+    for c in range(C):
+        y = top + c * rh
+        p.append(f'<text x="{x0-10}" y="{y+rh-8}" fill="#e6e9f5" font-size="10" text-anchor="end">{_esc(components[c])[:16]}</text>')
+        for t in range(T):
+            v = float(norm[c, t])
+            col = f'rgb({int(18+v*34)},{int(28+v*186)},{int(38+v*156)})'
+            p.append(f'<rect x="{x0+t*cw}" y="{y}" width="{cw-1.5}" height="{rh-1.5}" fill="{col}"/>')
+    p.append(f'<text x="14" y="{H-16}" fill="#8a90b3" font-size="10">'
+             f'rows = state components · cols = steps · brightness = how strongly this step wrote that '
+             f'part of the state (Frobenius Δ, normalized per row)</text>')
+    p.append('</svg>')
+    return "\n".join(p)
+
+
+def render_state_evolution(steps: list[StateStep], components: list[str] | None = None,
+                           *, title: str = "Clozn · Watch", subtitle: str = "") -> str:
+    """Substrate-agnostic Watch: per-step write intensity for whatever components the stream carries.
+    Drives off the StateStep contract alone, so one code path renders RWKV / toy / engine / diffusion."""
+    comps = components or sorted({k for s in steps for k in s.state})
+    return _page(_statefilm_svg(steps, comps, title, subtitle), title)
+
+
 # ---------------- Probe + Verify ----------------
 
 def _probe_svg(alphas, scores, acc, verify, concept, title, subtitle) -> str:
