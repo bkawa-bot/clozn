@@ -47,6 +47,7 @@ Thumbs.db
 .claude/
 
 # --- Local-only context for AI tooling / cross-project notes — kept out of the public repo ---
-/CLAUDE.md
+# CLAUDE.md (no leading slash) matches at ANY depth (e.g. research/CLAUDE.md), not just the root.
+CLAUDE.md
 /PROJECT_STATUS.md
 /notes/
