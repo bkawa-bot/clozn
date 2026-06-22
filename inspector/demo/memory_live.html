@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clozn &middot; a live memory you can see</title>
+<style>
+  :root {
+    --bg-deep:#0B0F2A; --bg-cosmic:#1A1F4A; --bg-mid:#2A2250;
+    --pink:#FF6FAF; --magenta:#FF4D9D; --ice:#1FB5E5; --cyan:#6FE0E8;
+    --lime:#C4F542; --yellow:#FFE66D; --lav:#C9A6FF; --white:#F4F7FF; --gray:#A7B0C0;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; }
+  body {
+    background:
+      radial-gradient(1100px 700px at 78% -8%, rgba(255,111,175,0.16), transparent 60%),
+      radial-gradient(950px 650px at 8% 8%, rgba(31,181,229,0.14), transparent 58%),
+      radial-gradient(800px 900px at 50% 115%, rgba(201,166,255,0.13), transparent 60%),
+      linear-gradient(168deg, var(--bg-cosmic) 0%, var(--bg-deep) 55%, #070a20 100%);
+    background-attachment:fixed;
+    color:var(--white);
+    font-family:'Segoe UI','Inter',system-ui,-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+    padding:46px 22px 80px;
+    line-height:1.5;
+  }
+  .wrap { max-width:1000px; margin:0 auto; }
+  .star { position:fixed; border-radius:50%; background:var(--white); opacity:0;
+    animation:twinkle 6s ease-in-out infinite; pointer-events:none; }
+  @keyframes twinkle { 0%,100%{opacity:0} 50%{opacity:.5} }
+
+  header { text-align:center; margin-bottom:14px; }
+  .eyebrow { letter-spacing:.32em; text-transform:uppercase; font-size:11px; font-weight:600;
+    color:var(--cyan); opacity:.85; margin-bottom:14px; }
+  h1 { font-size:38px; line-height:1.15; margin:0 0 14px; font-weight:700;
+    background:linear-gradient(96deg, var(--white) 8%, var(--lav) 48%, var(--pink) 96%);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+    text-shadow:0 0 38px rgba(201,166,255,0.25); }
+  .lede { font-size:16px; color:var(--gray); max-width:680px; margin:0 auto 8px; }
+  .lede b { color:var(--white); font-weight:600; }
+  .meta-line { font-size:12.5px; color:var(--gray); opacity:.8; margin-top:14px; }
+  .meta-line code { color:var(--cyan); background:rgba(31,181,229,0.10);
+    padding:1px 7px; border-radius:6px; font-size:12px; }
+  .meta-line .dot-ok { color:var(--lime); }
+  .meta-line .dot-bad { color:var(--magenta); }
+
+  .section { margin-top:46px; }
+  .sec-head { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; }
+  .sec-num { font-size:13px; font-weight:700; color:var(--bg-deep);
+    background:linear-gradient(135deg,var(--cyan),var(--ice)); width:26px; height:26px;
+    border-radius:9px; display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+    box-shadow:0 0 18px rgba(31,181,229,0.4); }
+  .sec-title { font-size:21px; font-weight:700; color:var(--white); }
+  .sec-sub { font-size:14px; color:var(--gray); margin:2px 0 20px 38px; max-width:760px; }
+
+  /* ---- the ASK panel ---------------------------------------------------------------------- */
+  .panel { background:linear-gradient(150deg, rgba(42,34,80,0.6), rgba(11,15,42,0.46));
+    border:1px solid rgba(201,166,255,0.16); border-radius:22px; padding:24px 26px;
+    box-shadow:0 14px 40px rgba(0,0,0,0.32); }
+  .ask-panel { border-color:rgba(111,224,232,0.24);
+    box-shadow:0 16px 46px rgba(0,0,0,0.36), 0 0 50px rgba(31,181,229,0.06) inset; }
+  .ask-row { display:flex; gap:12px; align-items:stretch; flex-wrap:wrap; }
+  .field { flex:1 1 360px; display:flex; flex-direction:column; gap:6px; }
+  .field label { font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; font-weight:600;
+    color:var(--lav); opacity:.85; }
+  input[type=text] {
+    font:inherit; font-size:15px; color:var(--white); width:100%;
+    background:rgba(11,15,42,0.6); border:1px solid rgba(167,176,192,0.22);
+    border-radius:13px; padding:13px 15px; transition:border-color .3s ease, box-shadow .3s ease; }
+  input[type=text]::placeholder { color:var(--gray); opacity:.55; }
+  input[type=text]:focus { outline:none; border-color:rgba(111,224,232,0.6);
+    box-shadow:0 0 0 3px rgba(31,181,229,0.10); }
+
+  .btn { font:inherit; font-size:15px; font-weight:700; cursor:pointer; white-space:nowrap;
+    border:none; border-radius:13px; padding:13px 26px; color:var(--bg-deep);
+    background:linear-gradient(135deg, var(--cyan), var(--ice));
+    box-shadow:0 8px 26px rgba(31,181,229,0.28); transition:transform .18s ease, box-shadow .3s ease, filter .3s ease;
+    align-self:flex-end; }
+  .btn:hover { transform:translateY(-1px); box-shadow:0 12px 34px rgba(31,181,229,0.42); }
+  .btn:active { transform:translateY(0); }
+  .btn:disabled { filter:saturate(.4) brightness(.8); cursor:wait; transform:none; }
+  .btn-pink { background:linear-gradient(135deg, var(--pink), var(--magenta));
+    box-shadow:0 8px 26px rgba(255,77,157,0.28); }
+  .btn-pink:hover { box-shadow:0 12px 34px rgba(255,77,157,0.42); }
+
+  /* the side-by-side result */
+  .result { margin-top:22px; opacity:0; max-height:0; overflow:hidden;
+    transition:opacity .5s ease, max-height .6s ease; }
+  .result.show { opacity:1; max-height:1200px; }
+  .ba-q { font-size:17px; color:var(--white); margin-bottom:16px; font-weight:500; }
+  .ba-q b { color:var(--cyan); }
+  .ba-grid { display:grid; grid-template-columns:1fr 42px 1fr; align-items:stretch; gap:6px; }
+  .ba-side { border-radius:16px; padding:16px 17px; }
+  .ba-before { background:rgba(11,15,42,0.45); border:1px solid rgba(167,176,192,0.14); }
+  .ba-after { background:rgba(31,181,229,0.07); border:1px solid rgba(111,224,232,0.28);
+    box-shadow:0 0 30px rgba(31,181,229,0.10) inset; transition:all .5s ease; }
+  .ba-after.silent { background:rgba(167,176,192,0.05); border-color:rgba(167,176,192,0.18);
+    box-shadow:none; }
+  .ba-after.fired { background:rgba(196,245,66,0.06); border-color:rgba(196,245,66,0.4);
+    box-shadow:0 0 34px rgba(196,245,66,0.12) inset; }
+  .ba-tag { font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; font-weight:600;
+    color:var(--gray); margin-bottom:13px; }
+  .ba-tag-on { color:var(--cyan); }
+  .ba-after.fired .ba-tag-on { color:var(--lime); }
+  .ba-arrow { display:flex; align-items:center; justify-content:center; color:var(--lav);
+    font-size:24px; opacity:.6; }
+  .ba-note { font-size:12.5px; color:var(--gray); margin-top:13px; min-height:18px; }
+  .ba-note b { color:var(--white); }
+  .v-good { color:var(--lime); font-weight:600; }
+  .v-silent { color:var(--gray); font-weight:600; }
+
+  .chiprow { display:flex; flex-direction:column; gap:6px; }
+  .chip { position:relative; display:flex; align-items:center; gap:8px;
+    background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.06);
+    border-radius:10px; padding:7px 11px; overflow:hidden; transition:all .5s ease;
+    opacity:0; transform:translateY(6px); animation:chipin .45s ease forwards; }
+  @keyframes chipin { to { opacity:1; transform:none; } }
+  .chip-w { font-size:14px; color:var(--gray); z-index:2; min-width:64px; font-weight:500;
+    white-space:pre; }
+  .chip-bar { position:absolute; left:0; top:0; bottom:0;
+    background:linear-gradient(90deg, rgba(167,176,192,0.12), rgba(167,176,192,0.04));
+    z-index:1; transition:width .8s ease; }
+  .chip-p { font-size:11.5px; color:var(--gray); margin-left:auto; z-index:2;
+    font-variant-numeric:tabular-nums; opacity:.7; }
+  .chip-lit { background:rgba(196,245,66,0.08); border-color:rgba(196,245,66,0.5);
+    box-shadow:0 0 26px rgba(196,245,66,0.22); }
+  .chip-lit .chip-w { color:var(--lime); font-weight:700; }
+  .chip-lit .chip-bar { background:linear-gradient(90deg, rgba(196,245,66,0.4), rgba(31,181,229,0.18)); }
+  .chip-lit .chip-p { color:var(--lime); opacity:1; }
+  .chip-top { border-color:rgba(111,224,232,0.32); }
+  .chip-top .chip-w { color:var(--white); }
+
+  .fired-line { margin-top:16px; font-size:13.5px; font-weight:600; padding:11px 15px;
+    border-radius:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .fired-yes { background:rgba(196,245,66,0.08); border:1px solid rgba(196,245,66,0.32);
+    color:var(--lime); }
+  .fired-no { background:rgba(167,176,192,0.06); border:1px solid rgba(167,176,192,0.18);
+    color:var(--gray); }
+  .fired-line .mono { font-variant-numeric:tabular-nums; color:var(--white); font-weight:700; }
+  .fired-line .gatecmp { color:var(--gray); font-weight:500; font-size:12px; }
+
+  /* ---- WRITE form ------------------------------------------------------------------------- */
+  .write-row { display:flex; gap:12px; align-items:stretch; flex-wrap:wrap; }
+  .write-err { margin-top:14px; font-size:13px; padding:11px 15px; border-radius:12px;
+    background:rgba(255,77,157,0.08); border:1px solid rgba(255,111,175,0.34);
+    color:var(--pink); display:none; }
+  .write-err.show { display:block; }
+
+  /* ---- the memory CARDS (reused aesthetic, with live controls) --------------------------- */
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:20px; }
+  .card { position:relative; border-radius:22px; padding:20px 22px 18px;
+    background:linear-gradient(155deg, rgba(42,34,80,0.85), rgba(26,31,74,0.7));
+    border:1px solid rgba(201,166,255,0.22); overflow:hidden;
+    box-shadow:0 16px 44px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06);
+    animation:floatin .7s cubic-bezier(.2,.7,.2,1) both; }
+  @keyframes floatin { from { opacity:0; transform:translateY(18px) scale(.97); } to { opacity:1; transform:none; } }
+  .card.leaving { animation:floatout .45s ease forwards; }
+  @keyframes floatout { to { opacity:0; transform:translateY(-10px) scale(.95); height:0;
+    margin:0; padding-top:0; padding-bottom:0; } }
+  .card-glow { position:absolute; inset:-40% 40% auto -40%; height:160px;
+    background:radial-gradient(closest-side, rgba(255,111,175,0.5), transparent);
+    filter:blur(34px); opacity:.5; pointer-events:none; }
+  .card-x { position:absolute; top:14px; right:14px; z-index:3; cursor:pointer;
+    width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-size:15px; font-weight:700; color:var(--gray); line-height:1;
+    background:rgba(11,15,42,0.5); border:1px solid rgba(255,255,255,0.08);
+    transition:all .25s ease; }
+  .card-x:hover { color:var(--magenta); border-color:rgba(255,111,175,0.5);
+    background:rgba(255,77,157,0.12); transform:rotate(90deg); }
+  .card-head { position:relative; margin-bottom:14px; padding-right:30px; }
+  .card-label { font-size:18px; font-weight:700; color:var(--white);
+    text-shadow:0 0 22px rgba(201,166,255,0.4); }
+  .card-sub { font-size:12px; color:var(--gray); margin-top:3px; word-break:break-word; }
+  .card-vrow { display:flex; align-items:center; gap:10px; margin-bottom:4px; }
+  .card-vk { font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--lav);
+    opacity:.85; }
+  .badge { font-size:11px; padding:3px 10px; border-radius:20px; font-weight:600; }
+  .badge-ok { background:rgba(111,224,232,0.13); color:var(--cyan);
+    border:1px solid rgba(111,224,232,0.4); }
+  .badge-warn { background:rgba(255,230,109,0.12); color:var(--yellow);
+    border:1px solid rgba(255,230,109,0.4); }
+  .card-answer { font-size:28px; font-weight:700; margin:6px 0 16px;
+    background:linear-gradient(96deg, var(--cyan), var(--lav)); -webkit-background-clip:text;
+    background-clip:text; -webkit-text-fill-color:transparent; word-break:break-word; }
+  .card-sal { margin-bottom:14px; }
+  .card-sal-l { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:7px; }
+  .card-sal-l span { font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--gray); }
+  .card-sal-l b { font-size:14px; color:var(--lime); font-variant-numeric:tabular-nums;
+    text-shadow:0 0 14px rgba(196,245,66,0.3); }
+  input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:6px;
+    border-radius:6px; background:rgba(255,255,255,0.10); outline:none; cursor:pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+    width:18px; height:18px; border-radius:50%; cursor:pointer;
+    background:linear-gradient(135deg, var(--lime), var(--cyan));
+    box-shadow:0 0 12px rgba(196,245,66,0.5); border:2px solid rgba(11,15,42,0.6); }
+  input[type=range]::-moz-range-thumb { width:18px; height:18px; border-radius:50%; cursor:pointer;
+    background:var(--lime); box-shadow:0 0 12px rgba(196,245,66,0.5); border:2px solid rgba(11,15,42,0.6); }
+  .card-meta { display:flex; flex-wrap:wrap; gap:8px; }
+  .meta-pill { display:flex; align-items:center; gap:7px; font-size:11px;
+    background:rgba(11,15,42,0.5); border:1px solid rgba(255,255,255,0.07);
+    border-radius:20px; padding:5px 11px; }
+  .meta-pill span { color:var(--gray); }
+  .meta-pill b { color:var(--white); font-variant-numeric:tabular-nums; font-weight:600; }
+  .meta-dims b { color:var(--lav); font-size:10px; }
+
+  .empty { padding:30px 20px; text-align:center; color:var(--gray); font-size:14px;
+    background:rgba(11,15,42,0.35); border:1px dashed rgba(167,176,192,0.22); border-radius:18px; }
+  .empty b { color:var(--lav); }
+
+  .footer { margin-top:56px; text-align:center; font-size:12px; color:var(--gray); opacity:.75;
+    line-height:1.7; }
+  .footer b { color:var(--lav); }
+  .honest { margin-top:14px; padding:16px 20px; border-radius:14px; font-size:12.5px;
+    background:rgba(11,15,42,0.4); border:1px solid rgba(255,255,255,0.06); color:var(--gray);
+    max-width:760px; margin-left:auto; margin-right:auto; }
+  .honest b { color:var(--cyan); }
+
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(20px);
+    background:rgba(11,15,42,0.92); border:1px solid rgba(255,111,175,0.4); color:var(--white);
+    padding:12px 20px; border-radius:14px; font-size:13.5px; font-weight:600; z-index:50;
+    box-shadow:0 12px 40px rgba(0,0,0,0.5); opacity:0; pointer-events:none;
+    transition:opacity .35s ease, transform .35s ease; max-width:90vw; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+  @media (max-width:680px) {
+    .ba-grid { grid-template-columns:1fr; } .ba-arrow { transform:rotate(90deg); padding:6px 0; }
+    h1 { font-size:30px; }
+    .btn { align-self:stretch; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card, .chip, .result { animation:none !important; transition:none !important;
+      opacity:1 !important; transform:none !important; max-height:none !important; }
+    .star { animation:none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Clozn &middot; the live window</div>
+    <h1>A memory you can<br>see, change, and watch move</h1>
+    <p class="lede">A <b>frozen GPT-2-small</b> with a glass-box fast-weight memory, running live in
+      your browser. Teach it a fact, watch it recall. Delete it, watch it forget. Ask anything &mdash;
+      every word below is the model's <b>actual</b> next-token prediction. Nothing is faked.</p>
+    <div class="meta-line" id="health">connecting to the live model&hellip;</div>
+  </header>
+
+  <!-- ============================ ASK ============================ -->
+  <div class="section">
+    <div class="sec-head"><div class="sec-num">1</div><div class="sec-title">Ask &mdash; watch what moves</div></div>
+    <div class="sec-sub">Type any prompt that ends right before the word you want predicted. We run it
+      twice: once on the bare model (<i>baseline</i>), once with the memory live (<i>with memory</i>).
+      If a stored fact matches, its answer lights up; if nothing matches, the memory stays silent and
+      the two sides are identical.</div>
+    <div class="panel ask-panel">
+      <div class="ask-row">
+        <div class="field">
+          <label for="ask-prompt">prompt</label>
+          <input type="text" id="ask-prompt" placeholder="The secret color of Zorbland is"
+                 value="The secret color of Zorbland is">
+        </div>
+        <button class="btn" id="ask-btn" type="button">ask</button>
+      </div>
+      <div class="result" id="ask-result">
+        <div class="ba-q" id="ask-q"></div>
+        <div class="ba-grid">
+          <div class="ba-side ba-before">
+            <div class="ba-tag">baseline &middot; no memory</div>
+            <div class="chiprow" id="ask-base"></div>
+          </div>
+          <div class="ba-arrow"><span>&rarr;</span></div>
+          <div class="ba-side ba-after" id="ask-after-side">
+            <div class="ba-tag ba-tag-on" id="ask-after-tag">with memory</div>
+            <div class="chiprow" id="ask-mem"></div>
+          </div>
+        </div>
+        <div class="fired-line" id="ask-fired"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ WRITE ============================ -->
+  <div class="section">
+    <div class="sec-head"><div class="sec-num">2</div><div class="sec-title">Remember a fact</div></div>
+    <div class="sec-sub">Give it a cue ending right before the answer, and a <i>single-token</i> answer
+      word (usually with a leading space, e.g. <code style="color:var(--cyan)">&nbsp;blue</code>). It
+      becomes one legible card &mdash; the value is a direction in the residual stream that decodes
+      straight back to your word.</div>
+    <div class="panel">
+      <div class="write-row">
+        <div class="field">
+          <label for="w-cue">cue</label>
+          <input type="text" id="w-cue" placeholder="The secret color of Zorbland is"
+                 value="The secret color of Zorbland is">
+        </div>
+        <div class="field" style="flex:0 1 200px;">
+          <label for="w-ans">answer (one token)</label>
+          <input type="text" id="w-ans" placeholder=" blue" value=" blue">
+        </div>
+        <button class="btn btn-pink" id="w-btn" type="button">remember</button>
+      </div>
+      <div class="write-err" id="w-err"></div>
+    </div>
+  </div>
+
+  <!-- ============================ MEMORY CARDS ============================ -->
+  <div class="section">
+    <div class="sec-head"><div class="sec-num">3</div><div class="sec-title">The memory, right now</div></div>
+    <div class="sec-sub">Every entry currently held live in the server process. Drag a card's slider to
+      change its salience &eta; (how hard it pushes when it fires); hit the &times; to forget it. Each
+      change is real and immediate &mdash; ask again above to feel it.</div>
+    <div class="cards" id="cards"></div>
+    <div class="empty" id="empty" style="display:none;">
+      No memories yet. <b>Remember a fact</b> above to write the first one.
+    </div>
+  </div>
+
+  <div class="footer">
+    <div><b>Clozn</b> &mdash; a local runtime where the model's interior is legible and editable.</div>
+    <div class="honest">
+      <b>Nothing faked.</b> A frozen GPT-2-small (124M), never fine-tuned. The memory is a literal list
+      of entries injected by one forward hook at a single mid-layer; each value is the answer token's
+      unembedding direction, which decodes to that word by construction. Addressing is gated top-1
+      cosine: a query fires the nearest stored key <i>only</i> if it clears the gate &mdash; otherwise
+      no vector is injected and <b>with memory</b> equals <b>baseline</b> exactly ("stayed silent").
+      Every probability shown is the model's real output. The same backend powers this page; all
+      requests are same-origin.
+    </div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ---------------------------------------------------------------------------------------------
+// scatter a few decorative stars (purely cosmetic)
+// ---------------------------------------------------------------------------------------------
+(function(){
+  var b=document.body, n=46;
+  for(var i=0;i<n;i++){
+    var s=document.createElement('div'); s.className='star';
+    var sz=Math.random()*2+1;
+    s.style.width=sz+'px'; s.style.height=sz+'px';
+    s.style.left=(Math.random()*100)+'vw'; s.style.top=(Math.random()*100)+'vh';
+    s.style.animationDelay=(Math.random()*6)+'s';
+    s.style.animationDuration=(4+Math.random()*5)+'s';
+    b.appendChild(s);
+  }
+})();
+
+// ---------------------------------------------------------------------------------------------
+// tiny helpers
+// ---------------------------------------------------------------------------------------------
+var GATE = 0.90;                       // refreshed from /health on load
+function esc(s){ var d=document.createElement('div'); d.textContent = (s==null?'':String(s)); return d.innerHTML; }
+function pct(x){ return (x*100).toFixed(1)+'%'; }
+// keep leading/trailing spaces visible in a chip: show a middot for empty, a visible space marker for edges
+function showWord(w){
+  if(w==null) return '·';
+  if(w === '') return '·';
+  // replace a single leading space with a thin visible marker so " blue" reads as a space + word
+  var t = w.replace(/ /g, '·');   // middle-dot stands in for spaces so they are visible
+  return t;
+}
+
+async function api(path, opts){
+  var r = await fetch(path, opts);     // RELATIVE url -> same-origin, no CORS/file:// issues
+  var txt = await r.text();
+  var data; try { data = JSON.parse(txt); } catch(e){ data = {error: txt || ('HTTP '+r.status)}; }
+  return {ok:r.ok, status:r.status, data:data};
+}
+
+var toastT = null;
+function toast(msg){
+  var el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  if(toastT) clearTimeout(toastT);
+  toastT = setTimeout(function(){ el.classList.remove('show'); }, 2600);
+}
+
+// ---------------------------------------------------------------------------------------------
+// HEALTH (also gives us the live gate)
+// ---------------------------------------------------------------------------------------------
+async function loadHealth(){
+  try {
+    var res = await api('/health');
+    var h = res.data;
+    if(typeof h.gate === 'number') GATE = h.gate;
+    document.getElementById('health').innerHTML =
+      '<span class="dot-ok">&#9679;</span> live &middot; ' + esc(h.model) +
+      ' &middot; memory at <code>blocks.' + esc(h.layer) + '.mlp</code>' +
+      ' &middot; fire gate <code>' + (GATE.toFixed ? GATE.toFixed(2) : GATE) + '</code>' +
+      ' &middot; <span id="hcount">' + esc(h.n_entries) + '</span> entries';
+  } catch(e){
+    document.getElementById('health').innerHTML =
+      '<span class="dot-bad">&#9679;</span> could not reach the model server';
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// MEMORY CARDS
+// ---------------------------------------------------------------------------------------------
+function cardHTML(c){
+  var badge = c.value_decodes_ok
+    ? '<span class="badge badge-ok">decodes &rarr; ' + esc(c.decoded_word) + '</span>'
+    : '<span class="badge badge-warn">decodes &rarr; ' + esc(c.decoded_word) + '</span>';
+  var dims = (c.key_fingerprint.top_dims || []).slice(0,5).join(', ');
+  var eta = c.salience;
+  return '' +
+    '<div class="card" data-label="' + esc(c.label) + '">' +
+      '<div class="card-glow"></div>' +
+      '<div class="card-x" title="forget this" data-del="' + esc(c.label) + '">&#10005;</div>' +
+      '<div class="card-head">' +
+        '<div class="card-label">' + esc(c.label) + '</div>' +
+        '<div class="card-sub">remembers: &ldquo;' + esc(c.cue) + '&rdquo;</div>' +
+      '</div>' +
+      '<div class="card-vrow"><div class="card-vk">value</div><div>' + badge + '</div></div>' +
+      '<div class="card-answer">&ldquo;' + esc(c.answer) + '&rdquo;</div>' +
+      '<div class="card-sal">' +
+        '<div class="card-sal-l"><span>salience &eta;</span><b id="sv-' + esc(c.label) + '">' +
+            (Math.round(eta*10)/10) + '</b></div>' +
+        '<input type="range" min="0" max="30" step="0.5" value="' + eta + '" ' +
+            'data-sal="' + esc(c.label) + '">' +
+      '</div>' +
+      '<div class="card-meta">' +
+        '<div class="meta-pill"><span>key</span><b>' + esc(c.key_fingerprint.dim) + '-d</b></div>' +
+        '<div class="meta-pill"><span>&#8741;key&#8741;</span><b>' + esc(c.key_fingerprint.key_norm) + '</b></div>' +
+        '<div class="meta-pill meta-dims"><span>top dims</span><b>' + esc(dims) + '</b></div>' +
+      '</div>' +
+    '</div>';
+}
+
+async function loadMemory(){
+  var res = await api('/memory');
+  var entries = (res.data && res.data.entries) || [];
+  var wrap = document.getElementById('cards');
+  var empty = document.getElementById('empty');
+  wrap.innerHTML = entries.map(cardHTML).join('');
+  empty.style.display = entries.length ? 'none' : 'block';
+  var hc = document.getElementById('hcount');
+  if(hc) hc.textContent = entries.length;
+  wireCards();
+}
+
+function wireCards(){
+  // delete
+  document.querySelectorAll('.card-x').forEach(function(x){
+    x.addEventListener('click', async function(){
+      var label = x.getAttribute('data-del');
+      var card = x.closest('.card');
+      var res = await api('/delete', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({label: label})
+      });
+      if(!res.ok){ toast(res.data.error || 'delete failed'); return; }
+      if(card){ card.classList.add('leaving');
+        setTimeout(function(){ loadMemory(); }, 430); }
+      else { loadMemory(); }
+      toast('forgot ' + label);
+    });
+  });
+  // salience slider (live on input)
+  document.querySelectorAll('input[data-sal]').forEach(function(sl){
+    var label = sl.getAttribute('data-sal');
+    var lastSent = 0;
+    sl.addEventListener('input', function(){
+      var v = parseFloat(sl.value);
+      var sv = document.getElementById('sv-' + label);
+      if(sv) sv.textContent = (Math.round(v*10)/10);
+      // throttle the POSTs while dragging so we don't flood the model server
+      var now = Date.now();
+      if(now - lastSent < 90) return;
+      lastSent = now;
+      api('/salience', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({label: label, eta: v})
+      });
+    });
+    sl.addEventListener('change', function(){    // always send the final resting value
+      api('/salience', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({label: label, eta: parseFloat(sl.value)})
+      });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// WRITE a fact
+// ---------------------------------------------------------------------------------------------
+async function doWrite(){
+  var cue = document.getElementById('w-cue').value;
+  var ans = document.getElementById('w-ans').value;
+  var err = document.getElementById('w-err');
+  var btn = document.getElementById('w-btn');
+  err.classList.remove('show');
+  if(!cue){ err.textContent = 'Give it a cue first.'; err.classList.add('show'); return; }
+  if(!ans){ err.textContent = 'Give it a single-token answer (e.g. " blue").'; err.classList.add('show'); return; }
+  btn.disabled = true; btn.textContent = 'writing…';
+  var res = await api('/write', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({cue: cue, answer: ans})
+  });
+  btn.disabled = false; btn.textContent = 'remember';
+  if(!res.ok){
+    err.textContent = res.data.error || ('write failed (HTTP ' + res.status + ')');
+    err.classList.add('show');
+    return;
+  }
+  await loadMemory();
+  toast('remembered ' + (res.data.label||'') + ' → ' + (res.data.answer||ans).trim());
+  // bounce the newest card into view-ish by leaving it; also pre-fill the ask prompt with this cue
+  document.getElementById('ask-prompt').value = cue;
+}
+
+// ---------------------------------------------------------------------------------------------
+// ASK (query) -- the "watch what moves" moment
+// ---------------------------------------------------------------------------------------------
+function chipRow(list, litWord){
+  return list.map(function(p, i){
+    var cls = 'chip';
+    if(litWord != null && p.word.trim() === litWord.trim() && litWord.trim() !== '') cls += ' chip-lit';
+    else if(i === 0) cls += ' chip-top';
+    var bar = Math.max(2, Math.round(p.prob*100));
+    return '<span class="' + cls + '" style="animation-delay:' + (i*0.05) + 's">' +
+      '<span class="chip-w">' + esc(showWord(p.word)) + '</span>' +
+      '<span class="chip-bar" style="width:' + bar + '%"></span>' +
+      '<span class="chip-p">' + pct(p.prob) + '</span></span>';
+  }).join('');
+}
+
+async function doAsk(){
+  var prompt = document.getElementById('ask-prompt').value;
+  var btn = document.getElementById('ask-btn');
+  if(!prompt){ toast('type a prompt first'); return; }
+  btn.disabled = true; btn.textContent = 'asking…';
+  var res = await api('/query', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({prompt: prompt, topk: 5})
+  });
+  btn.disabled = false; btn.textContent = 'ask';
+  if(!res.ok){ toast(res.data.error || 'query failed'); return; }
+  var d = res.data;
+  var fired = d.fired;                       // {label, match_score, answer, decoded_word} | null
+
+  document.getElementById('ask-q').innerHTML =
+    '&ldquo;' + esc(prompt) + '<b>&nbsp;___</b>&rdquo;';
+
+  // baseline side
+  document.getElementById('ask-base').innerHTML = chipRow(d.baseline, null);
+
+  // with-memory side: light the fired answer (or, if silent, just mark the top like baseline)
+  var litWord = fired ? fired.answer : null;
+  document.getElementById('ask-mem').innerHTML = chipRow(d.with_memory, litWord);
+
+  // is it actually silent?  honest check: identical top word AND no entry fired
+  var silent = !fired;
+  var afterSide = document.getElementById('ask-after-side');
+  var afterTag = document.getElementById('ask-after-tag');
+  afterSide.classList.remove('silent','fired');
+  var firedLine = document.getElementById('ask-fired');
+
+  if(silent){
+    afterSide.classList.add('silent');
+    afterTag.textContent = 'with memory (stayed silent)';
+    var nc = (d.nearest_cosine==null) ? null : d.nearest_cosine;
+    firedLine.className = 'fired-line fired-no';
+    firedLine.innerHTML = '<span>&#9676; stayed silent</span>' +
+      '<span class="gatecmp">no stored key cleared the gate &mdash; ' +
+      'with memory is identical to baseline' +
+      (nc!=null ? (' &middot; nearest match <span class="mono">'+nc.toFixed(3)+
+                   '</span> &lt; gate <span class="mono">'+GATE.toFixed(2)+'</span>') : '') +
+      '</span>';
+  } else {
+    afterSide.classList.add('fired');
+    afterTag.textContent = 'with memory (fired)';
+    firedLine.className = 'fired-line fired-yes';
+    firedLine.innerHTML = '<span>&#9889; fired <span class="mono">' + esc(fired.label) + '</span>' +
+      ' &rarr; &ldquo;' + esc((fired.answer||'').trim()) + '&rdquo;</span>' +
+      '<span class="gatecmp">match <span class="mono">' + fired.match_score.toFixed(3) +
+      '</span> &ge; gate <span class="mono">' + GATE.toFixed(2) + '</span></span>';
+  }
+
+  // reveal with the gentle transition
+  document.getElementById('ask-result').classList.add('show');
+}
+
+// ---------------------------------------------------------------------------------------------
+// wire it up
+// ---------------------------------------------------------------------------------------------
+document.getElementById('ask-btn').addEventListener('click', doAsk);
+document.getElementById('ask-prompt').addEventListener('keydown', function(e){ if(e.key==='Enter') doAsk(); });
+document.getElementById('w-btn').addEventListener('click', doWrite);
+document.getElementById('w-ans').addEventListener('keydown', function(e){ if(e.key==='Enter') doWrite(); });
+document.getElementById('w-cue').addEventListener('keydown', function(e){ if(e.key==='Enter') document.getElementById('w-ans').focus(); });
+
+loadHealth();
+loadMemory();
+</script>
+</body>
+</html>

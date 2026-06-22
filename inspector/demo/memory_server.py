@@ -3,8 +3,9 @@ memory_server.py -- the LIVE BACKEND for the Clozn memory window.
 
 Turns the static `memory_window.py` page into a real interactive runtime: a small local
 HTTP server that loads a FROZEN GPT-2-small ONCE at startup and holds a single live
-glass-box fast-weight memory in process. A separate frontend (a local HTML file) talks to
-it over JSON. This file is BACKEND ONLY -- no HTML/UI is served here.
+glass-box fast-weight memory in process. It also SERVES the live single-page frontend at
+GET "/" (read from `memory_live.html` next to this file), so opening http://127.0.0.1:8077/
+gives the interactive UI directly -- no file:// page, all requests same-origin.
 
 WHAT THE MEMORY IS (reused verbatim from the validated spikes p15_fastweight + p17_betterkey,
 and from the static demo memory_window.py -- no faking, real recall):
@@ -24,7 +25,8 @@ and from the static demo memory_window.py -- no faking, real recall):
 The backbone is FROZEN throughout; GPT-2 is never trained. Every probability returned by
 /query is the ACTUAL model output (baseline = no memory; with_memory = the live memory hook).
 
-ENDPOINTS (all JSON; CORS enabled so a local file:// HTML page can call them):
+ENDPOINTS (JSON unless noted; CORS enabled so a local file:// HTML page can also call them):
+  GET  /                              -> the live HTML frontend (memory_live.html), text/html
   POST /write    {cue, answer}        -> {label, decoded_word, salience, key_fingerprint, ...}
   GET  /memory                        -> {entries: [...]} (the cards)
   POST /delete   {label}              -> {ok: true, removed: <label>}
@@ -53,6 +55,7 @@ Sample (server running on the default port):
 from __future__ import annotations
 
 import argparse
+import html as _html
 import json
 import os
 import sys
@@ -61,6 +64,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding="utf-8")
+
+# The live single-page frontend lives right next to this server; GET "/" serves it.
+FRONTEND_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory_live.html")
+
+
+def esc_html(s) -> str:
+    return _html.escape(str(s))
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")  # this PC crashes on HF symlinks (WinError 1314)
 
@@ -403,6 +413,16 @@ def make_handler(app: App):
             self.end_headers()
             self.wfile.write(data)
 
+        def _send_html(self, status: int, body: str):
+            data = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")   # always serve the live UI fresh
+            self._cors()
+            self.end_headers()
+            self.wfile.write(data)
+
         def _read_body(self) -> dict:
             length = int(self.headers.get("Content-Length", 0) or 0)
             if length == 0:
@@ -422,13 +442,26 @@ def make_handler(app: App):
         # ---- routing -----------------------------------------------------------------------------
         def do_GET(self):
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
+            # GET "/" serves the live HTML frontend (read fresh each request so edits show up on reload).
+            if path == "/":
+                try:
+                    with open(FRONTEND_PATH, "r", encoding="utf-8") as fh:
+                        self._send_html(200, fh.read())
+                except FileNotFoundError:
+                    self._send_html(
+                        500,
+                        "<h1>memory_live.html not found</h1>"
+                        f"<p>Expected the frontend next to the server at:<br><code>{esc_html(FRONTEND_PATH)}</code></p>"
+                        "<p>The JSON API is still live (GET /health, POST /query, ...).</p>",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    self._send_html(500, f"<h1>error serving frontend</h1><pre>{esc_html(f'{type(e).__name__}: {e}')}</pre>")
+                return
             try:
                 if path == "/health":
                     status, payload = app.health()
                 elif path == "/memory":
                     status, payload = app.memory()
-                elif path == "/":
-                    status, payload = 200, {"service": "cloze memory server", "endpoints": ENDPOINTS}
                 else:
                     status, payload = 404, {"error": f"no route GET {path}", "endpoints": ENDPOINTS}
             except Exception as e:  # noqa: BLE001 -- surface server errors as JSON, never crash the loop
@@ -465,6 +498,7 @@ def make_handler(app: App):
 
 
 ENDPOINTS = [
+    "GET  /                           -> the live HTML frontend (memory_live.html)",
     "POST /write    {cue, answer}     -> {label, decoded_word, salience, key_fingerprint}",
     "GET  /memory                     -> {entries:[...]}  (the cards)",
     "POST /delete   {label}           -> {ok}",
@@ -513,11 +547,16 @@ def main():
     shown_host = "127.0.0.1" if args.host in ("0.0.0.0", "") else args.host
     url = f"http://{shown_host}:{args.port}"
 
+    have_frontend = os.path.exists(FRONTEND_PATH)
     print("\n" + "=" * 78)
     print(f"  CLOZN MEMORY SERVER  ->  {url}")
     print("=" * 78)
     print(f"  model: {app.model_name}   layer: blocks.{args.layer}.mlp   gate: {app.mem.GATE}")
-    print("  endpoints (CORS enabled; call from a local HTML file):")
+    if have_frontend:
+        print(f"  >> open {url}/  in a browser for the LIVE UI  (serving memory_live.html)")
+    else:
+        print(f"  !! {FRONTEND_PATH} not found -- GET / will 500; JSON API still live")
+    print("  endpoints (CORS enabled; the page is served same-origin):")
     for line in ENDPOINTS:
         print(f"    {line}")
     print("\n  sample:")
