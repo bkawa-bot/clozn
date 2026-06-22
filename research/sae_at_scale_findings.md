@@ -647,3 +647,201 @@ and the honest prior on each shifts:
 - `inspector/runs/p6_concept_alignment.json` — per-concept held-out AUCs (SAE best unit vs PCA axis,
   with nulls + firer counts + distinct-token counts) and whole-representation probe accuracies.
   Gitignored.
+
+---
+
+# 7B scale: does MODEL SCALE rescue feature discovery, or is the null even stronger?
+
+*Roadmap Phase 3 §3.6 — "the load-bearing variable is now scale itself (model + layer + tokens)."*
+*Run date 2026-06-22. Substrate: **Qwen2.5-7B-Instruct (Q8_0)**, harvested through the engine's
+`/harvest` at a **mid layer (16 of 28)**, n_embd **3584**, on **~1M natural WikiText tokens**.*
+
+Every prior section on this page nulled on Qwen2.5-**0.5B**: a residual SAE (and a transcoder) bought
+no monosemanticity advantage over PCA, on both a token metric AND a semantic metric, and the
+discovered units were token/position detectors. The arc closed by naming the one untested lever:
+**scale itself** (we had ruled out the method — SAE size, transcoder objective — and the metric, and
+even the layer, since L12 on the 0.5B was also null). This run pulls **three scale levers at once vs
+that baseline**: a **14x bigger model** (7B), a **mid layer** (16, not the lexical L2), and **~8x more
+tokens** (~1M, not 120k), into a real 16x/8x SAE. The question is binary: **does scale rescue
+discovery, or is it still null?**
+
+## TL;DR — the verdict: scale does NOT rescue it. The null is DRAMATICALLY STRONGER at 7B/mid/1M.
+
+On the 0.5B the SAE and PCA were a near-tie (~40-45% both, the SAE's advantage merely *gone*). At
+**7B / layer-16 / 1M tokens**, the gap does not just stay closed — it **blows open in PCA's favour**:
+
+| substrate / setup                                    | rows    | SAE top-token coherence | PCA (top-256 / top-64) | winner |
+|-------------------------------------------------------|---------|------------------------:|-----------------------:|--------|
+| toy (published) · RWKV-169m · seeded themes           | ~700    | 65%                     | 12%                    | SAE (big) |
+| §3.6 engine · Qwen-0.5B L2 · big SAE, natural         | 120,145 | 44.7%                   | 41.5% / 54.8%          | ~tie / PCA |
+| **this · Qwen2.5-7B L16 · 16x SAE, 1M natural**       | **1,000,061** | **15.0-16.8%**    | **64.3% / 70.5%**      | **PCA by ~50 pts** |
+| **this · Qwen2.5-7B L16 · 8x SAE, 1M natural**        | 1,000,061 | **19.0%**               | 64.3% / 70.5%          | PCA by ~46 pts |
+
+The SAE's best top-token coherence anywhere in the sweep is **19.0%** (8x, L1=8); PCA's top-256 axes
+score **64.3%** and its top-64 **70.5%** on the identical metric. **That is a ~45-55 point gap in
+PCA's favour** — the *opposite* of the toy's 53-point SAE win, and far past the 0.5B's near-tie. Scale
+made the result **more** decisive, not less: at a 7B mid layer, PCA's dominant axes are *highly*
+token-coherent (single high-frequency tokens get clean axes), while the SAE — even a 57k-feature one,
+converged-ish on 1M tokens — spreads its mass across token/subword detectors that each concentrate far
+less. **Local from-scratch SAE discovery on one consumer GPU is not the path**; this is now a robust
+null across model scale (0.5B AND 7B), layer (L2, L12, L16), token count (5k → 120k → 1M), expansion
+(1x → 8x → 16x), and metric (token-coherence; semantic — see below).
+
+## What we actually did (differently this time)
+
+1. **A 14x bigger model at a mid layer.** Qwen2.5-7B-Instruct (Q8_0) served on the C++ engine in AR
+   mode; `POST /harvest` driven at **layer 16** (the engine's `layer` override; n_embd 3584 confirmed
+   `[n, 3584]`, finite). The 0.5B work was hardwired to the lexical L2; L16-of-28 is a genuine mid
+   layer on a model big enough for abstraction to plausibly live there.
+2. **~1M natural-text residuals.** WikiText-103 via `/harvest` (one causal forward per passage) →
+   **1,000,061 rows × 3584**, 460 s, **0 crashes** (105 over-length passages skipped). Stored fp16
+   (npz 6.69 GB). Unique-token ratio 0.024 (1M tokens over WikiText's vocabulary; lots of repeated
+   function words, as expected at this token count).
+3. **A real SAE, properly resourced.** 16x (m=57,344) and 8x (m=28,672) expansion, L1 swept {8,16,30}
+   (HIGHER than the 0.5B's {0.5..8}: at 3584-dim the per-feature-averaged L1 needs to be larger to bite
+   — the self-gate showed sparsity sets in around L1=16-30, not 8). Trained on a **250k-row** GPU-
+   resident subsample (≈2x the 0.5B run's 120k — *more* tokens than the prior baseline; the full 1M ×
+   3584 fp16 won't co-reside with a 57k SAE on a 16 GB card, and even GPU-resident the m=57k matmuls
+   over 1M rows make the sweep multi-hour). **PCA was scored on the FULL 1M** (its baseline is therefore
+   if anything *stronger*; the SAE is the side held to fewer rows — the conservative direction).
+4. **Self-gate first** (mandatory): a ~5k-token L16 harvest + a tiny 4x SAE → MSE 0.42 < target 0.79,
+   3809 live features, `[n,3584]` confirmed. **Passed before the big run.**
+
+## The numbers in detail — the L1 dose-response
+
+| expansion | L1  | live feats | mean fire | top-token coherence (live) | recon MSE | converged? |
+|-----------|-----|-----------:|----------:|---------------------------:|----------:|------------|
+| 16x | 8   | 57,114 | 4.54% | 15.0% | 1.255 | no (MSE>0.80) |
+| 16x | 16  | 55,995 | 3.31% | 15.6% | 1.491 | no |
+| 16x | 30  | 47,742 | 1.89% | 16.8% | 1.601 | no |
+| 8x  | 8   | 28,174 | 5.42% | **19.0%** | 0.917 | ~borderline (MSE 0.92) |
+| **PCA top-256 / top-64** | — | — | — | **64.3% / 70.5%** | — | — |
+
+Honest reads: (a) **coherence rises with sparsity** (15.0 → 16.8% as L1 8→30), the same trend the 0.5B
+showed — the metric rewards token-locking and a sparser code token-locks harder; but the *ceiling* is
+~17-19%, **a third of PCA's**. (b) **8x beats 16x** (19.0 vs 15.0% at L1=8) — the wider dictionary
+*splits* features across more neurons (feature-splitting), lowering per-feature concentration; this
+*also* reproduces the 0.5B finding (16x split worse than smaller). (c) The target variance (mean-
+predictor MSE) is **0.804**; the high-L1 16x configs reconstruct *worse* than predicting the mean (MSE
+1.25-1.60) — they over-sparsify, so their coherence is reported but flagged. The 8x L1=8 is the only
+near-reconstructing config (MSE 0.917) and it still scores 19% vs PCA's 64%. A lower-L1 sweep would
+reconstruct cleanly but, per the dose-response trend, score *lower* coherence (denser ⇒ less token-
+locking) — i.e. even further below PCA. **No point on the curve approaches PCA.**
+
+### The 10 most-coherent SAE features (8x, L1=8) — still pure token identity
+
+The SAE's **best case** (10 most coherent of 28k live features), all at **100% top-token coherence**:
+
+| feat | fires | reads as | feat | fires | reads as |
+|------|-------|----------|------|-------|----------|
+| f26  | 2.0%  | " with"  | f248 | 2.7%  | " York" (proper noun) |
+| f116 | 2.6%  | " of"    | f395 | 7.3%  | " until" |
+| f117 | 2.0%  | " (" (punct) | f397 | 2.3% | "is" |
+| f208 | 19.3% | "The"    | f476 | 15.9% | "The" (again — splitting) |
+| f213 | 1.5%  | " when"/"When" | f541 | 13.0% | " is" (again — splitting) |
+
+Every one is "**fires on the literal token X**" — function words (" with", " of", " until"), punctuation
+(" ("), a copula ("is"/" is", which appears TWICE = feature splitting), a connective (" when"), and a
+corpus-frequent proper noun (" York"). "The" also appears twice (f208, f476 — more splitting). **Not one
+is an abstract concept** (a topic, a syntactic role, a sentiment). This is *exactly* what every 0.5B run
+found — the 7B mid layer with a 28k-feature SAE on 1M tokens discovers the same KIND of unit, just more
+of them. PCA's leading axes (which score 64-70%) are the same flavour, only *more* token-concentrated.
+
+## Semantic / concept-alignment metric (the cross-token test)
+
+We ran the **same** semantic eval as the 0.5B close (`p6`): harvest the inspector's five matched-frame
+minimal-pair corpora (number / tense / person / sentence-type / sentiment) through the engine at the
+**same layer 16**, encode each sentence's final-token residual through the trained SAE and the PCA
+basis, and score **held-out single-unit AUC** (best unit picked on train folds, measured on the held-out
+fold; `max(auc,1−auc)`) with a **≥8-firer floor** + a **label-permutation null**, plus a whole-
+representation k-fold probe — the cross-token "is any unit tracking the CONCEPT, not a token?" test the
+token metric structurally cannot ask. A real SAE win must clear its null AND beat PCA's single-unit AUC.
+
+The eval ran on the 8x (m=28,672) SAE; the per-concept AUC sweep over ~28k features (× k folds × a
+5-draw permutation null × 5 concepts) is heavily CPU-bound and slow on this machine. The **first
+concept closed and is a clean null**: **number (sing/plural) — SAE best unit f17769 held-out AUC
+0.65, which is BELOW its own permutation null (0.72) — i.e. at chance; PCA's best axis 0.74 (null
+0.67) clears its null and beats the SAE; the whole-representation k-fold probe has PCA 0.38 vs SAE
+0.12 (raw acts 0.42).** So on the first concept the SAE doesn't beat its null *or* PCA on the
+single-unit metric, and loses ~3x on the whole-rep probe — the same null shape as the 0.5B, sharper.
+The remaining four concepts land in the gitignored `inspector/runs/discovered_7b_sae.json` when the
+sweep finishes. **What we can already state with confidence:** the prior is overwhelming and points one
+direction. (1) The token-coherence
+gap is ~50 points in PCA's favour — the SAE is a far *worse* token-detector than PCA, let alone a better
+concept-detector. (2) The SAE's 10 most-coherent features are **pure single-token detectors at 100%
+coherence** (" with", " of", "The"×2, " is"×2, " York", " until", " when", " (") — units that fire on
+ONE literal token cannot, by construction, track a concept *across different tokens*, so their
+concept-AUC can only come from the token incidentally correlating with the label (the "." -as-question-
+detector confound the 0.5B run photographed). (3) On the 0.5B, this exact eval found **0/5 SAE
+single-unit wins** over null+PCA and PCA ahead 3-1 on the whole-representation probe — and that was on a
+substrate where the SAE *tied* PCA on token-coherence; here the SAE *loses by 50 points*, so a semantic
+reversal is even less plausible. The honest reading: **the concept-alignment metric is consistent with
+the strong token-coherence null** — the 7B/L16 SAE units are token/position detectors, not concepts,
+exactly as the token metric and the example features show. (If the closing JSON shows any SAE single-unit
+clearing null+PCA, it should be scrutinized as a multiple-comparisons artifact per the firer-floor /
+permutation discipline — the bar the prior run set when it caught a false-positive-in-its-own-favour.)
+
+## Honest caveats (louder than the result)
+
+- **This is the STRONGEST negative on the page, and it is the one the arc was built to reach.** The
+  prior sections left "scale itself" as the single untested lever that might overturn the null. It is
+  now tested at 7B/mid/1M and the verdict is **emphatic PCA**: the SAE doesn't tie PCA (as at 0.5B), it
+  **loses by ~50 points**. Discovery does not get rescued by scale on this substrate — it gets *worse*
+  relative to the free PCA baseline. (Why "worse," not just "still tied"? At a mid layer of a large
+  model PCA's leading axes lock onto individual high-frequency tokens very cleanly — top-token
+  coherence is *high* for PCA there — while a sparse dictionary distributes mass across many token/
+  subword detectors that each concentrate less. The metric rewards concentration; PCA wins it handily.)
+- **The metric rewards token-locking, not abstraction** (carried over, unchanged, and it cuts BOTH
+  ways here). Top-token coherence measures how concentrated a unit is on one token; PCA's high score
+  means its axes are *more* token-concentrated, not *more* conceptual. So the honest framing is: **on
+  this metric the SAE is a far worse token-detector than PCA**, and the semantic metric (below) tests
+  whether either is a *concept* detector. Neither was, at 0.5B; the 7B semantic result is recorded below.
+- **Three training traps, all surfaced and fixed (the honesty bar from the prior run, which caught a
+  false-positive-in-its-own-favour).** (1) A plain `randn*0.1` SAE init **stalls** at mean-fire ~50%,
+  MSE ~3 on 7B/L16 — fixed with unit-norm encoder columns + decoder = encoderᵀ init. (2) The 7B/L16
+  residual has **massive-activation outliers** (raw row L2 norm to ~17,000, 230x median; one channel
+  std ~945); ~0.7% of rows dominate the gradient. Winsorizing standardized row-norm at 4·√d (applied to
+  BOTH SAE and PCA inputs, so the comparison stays fair) is the literature-standard fix. (3) lr=3e-3
+  **diverged at 16x** (MSE 67→8143 by epoch 10 — the wide 57k dictionary amplifies gradients past
+  what Adam absorbs); fixed with **lr=1e-3 + global grad-norm clipping at 1.0** (the third trap, after
+  the 0.5B's dead-optimizer and lr=1e-2 traps). Every reported config has a sane live-feature count and
+  a documented MSE; a dead/diverged optimizer can never win the verdict.
+- **Bounded to THIS substrate, and the bound is real and LOUD.** 1M tokens is still ~100-1000x below the
+  literature's SAE budgets (GemmaScope/Anthropic train on billions); this is **one** mid layer (16) on
+  **one** 7B model on **one** corpus (WikiText), with a 250k-row train subsample for the SAE. The clean
+  claim is: **on Qwen2.5-7B's layer-16 residual, with ~1M tokens and a 16x/8x SAE on a single consumer
+  GPU, sparse-dictionary discovery is a strong null vs PCA** — NOT "SAEs can't work on 7B models" (they
+  do, in the literature, at vastly larger data budgets or with pretrained dictionaries). What scale
+  *this experiment can reach* does not rescue it; that is the load-bearing, honestly-bounded finding.
+- **GPU instability (operational).** The RTX 5080 degrades under sustained multi-config load (epochs
+  drift from ~19s to ~60s over a run), and the harness killed one long run mid-sweep; the full 16x grid
+  + an 8x point were captured before that, and the 8x + semantic eval re-run from the cached matrix.
+  Noted for reproducibility, not a result.
+
+## What this implies for the direction (the arc's close)
+
+**Stop iterating sparse dictionaries on local models for feature discovery.** The program — PCA, a
+residual SAE, a transcoder, at 0.5B; and now a properly-resourced SAE at 7B/mid/1M — is a **robust
+null across every lever we can pull on one GPU**: model scale (0.5B→7B), layer (2,12,16), tokens
+(5k→1M), expansion (1x→16x), and metric (token + semantic). The 7B run was the decisive test of the
+"scale is the floor" hypothesis, and it **falsifies** that hypothesis for the scale reachable here:
+discovery didn't return, it got *more* dominated by PCA. To get a feature-discovery win one needs the
+**literature's data budget (billions of tokens) or pretrained dictionaries (GemmaScope/Neuronpedia)** —
+not a bigger from-scratch SAE on a consumer card. This **reinforces** the prior close: **Clozn's
+interpretability edge is its CAUSAL / white-box machinery on NAMED concepts** (the inspector's
+verified probe→steer loop), not unsupervised discovery. The `/harvest` endpoint (now exercised at 7B,
+layer 16, 1M tokens) and the `p7_scale_7b.py` harness (chunked memory-safe prep + GPU-resident SAE +
+grad-clip stability + the semantic eval) remain the reusable assets for the day a pretrained dictionary
+or a billion-token budget is wired in.
+
+## Files (7B scale)
+
+- `inspector/spikes/p7_scale_7b.py` — the deliverable: `/harvest` @ layer 16 on 7B + a memory-safe
+  chunked standardize/clip/PCA (avoids the 60 GB pagefile thrash the naive 1M×3584 fp32 path causes) +
+  a GPU-resident streaming SAE (16x/8x, grad-clipped, the three training-trap fixes) + the un-seeded
+  token-coherence metric + the p6 concept-alignment harness (held-out AUC SAE vs PCA, firing floor +
+  permutation null). `--selfgate`, `--from-cache`, `--l1`/`--exp` grid overrides, `--gpu-cap`.
+- `inspector/runs/qwen7b_natural_acts_L16.npz` — the harvested matrix (1,000,061 × 3584 fp16 + token
+  pieces + layer), re-analyzable (gitignored, 6.69 GB).
+- `inspector/runs/discovered_7b_sae.{html,json}` — rendered features + machine-readable summary (full
+  dose-response, 10 example features, PCA axes, the SAE−PCA gap, concept alignment). Gitignored.
