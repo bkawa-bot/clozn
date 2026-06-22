@@ -95,10 +95,14 @@ def start_server() -> subprocess.Popen:
 
 
 # ---- the /harvest call (one causal forward over a text -> all token residuals) ------------------
-def harvest_text(text: str, timeout: float = 120.0):
-    """POST /harvest {text} -> (acts[n_tokens, n_embd] float32, pieces[list[str]], layer:int).
-    Raises urllib/connection errors so the caller can restart the server and continue."""
-    body = json.dumps({"text": text}).encode("utf-8")
+def harvest_text(text: str, timeout: float = 120.0, layer: int | None = None):
+    """POST /harvest {text, layer?} -> (acts[n_tokens, n_embd] float32, pieces[list[str]], layer:int).
+    `layer` (optional) overrides the engine's default tap (else the calibrated early tap, layer 2 for
+    Qwen-0.5B). Raises urllib/connection errors so the caller can restart the server and continue."""
+    payload = {"text": text}
+    if layer is not None:
+        payload["layer"] = int(layer)
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(BASE_URL + "/harvest", data=body, method="POST",
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:

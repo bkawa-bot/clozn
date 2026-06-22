@@ -289,3 +289,171 @@ reusable asset that makes all of those one-forward-per-text cheap and crash-free
   re-analyzable (gitignored).
 - `inspector/runs/discovered_big_sae_qwen.{html,json}` — rendered features + machine-readable
   summary (full dose-response, 10 example features, PCA axes, the SAE−PCA gap).
+
+---
+
+# Transcoders: does the field's SOTA substrate beat the SAE/PCA null at scale?
+
+*Roadmap Phase 3 §3.5 — "the field's current SOTA interp substrate."*
+*Run date 2026-06-21. Same substrate (Qwen2.5-0.5B q8_0), harvested through the engine's `/harvest`.*
+
+The two SAE runs above land on a strong negative: a residual SAE (even a big, converged one on 120k
+natural-text tokens) buys **no monosemanticity advantage over PCA** on this 0.5B model, and the units
+it discovers are **token-identity detectors**, not concepts. Both writeups name the same next move:
+the **transcoder** — a sparse stand-in for a component's **INPUT→OUTPUT** map (vs the SAE's in→in
+*reconstruction*), the field's current SOTA interp substrate. The toy notes hinted transcoders edged
+SAEs at early layers (66% vs 62% on RWKV channel-mix). **Does that edge survive at real scale?**
+
+## TL;DR — the verdict: NO. The transcoder's apparent edge over the SAE is a LAYER-CHOICE ARTIFACT, and a CONTROL kills it. The null holds.
+
+The simplest viable transcoder — a **layer-residual transcoder**: code the input residual `l_out-2`
+(the calibrated early tap) through a sparse bottleneck, reconstruct the **output residual `l_out-6`**
+six steps downstream (in→out, token-aligned, no engine change) — does, at first glance, **beat the
+SAE**: 40.5% top-token coherence vs the SAE's 34.3% (+6.3), and beats PCA's top-256 (29.1%, +11.4).
+But it **ties/loses to PCA's top-64 (42.2%)** — the SAME "win depends on which PCA basis" wobble the
+SAE run flagged — and, decisively, **a control SAE trained on the INPUT layer (`l_out-2`) alone scores
+44.7%, ABOVE the transcoder's 40.5%.** The transcoder reads its code from L2; an SAE reading the same
+L2 does *better*. So the +6.3 "transcoder beats SAE" is entirely **"L2 is more token-coherent than
+L6"**, not the in→out *mechanism*. Forcing the code to also predict the distant L6 output, if
+anything, **slightly hurts** coherence (40.5 vs 44.7). And qualitatively nothing changed: the
+transcoder's features are **still pure token-identity** (" one", " metal", " United", " the", " and").
+
+| method (all judged on the same metric)            | rows    | best coherence | sparsity (mean fire) | reads as |
+|----------------------------------------------------|---------|---------------:|---------------------:|----------|
+| **transcoder** · code L2 → reconstruct L6 · 16x    | 120,145 | **40.5%**      | 1.99% (L1=8)         | token identity |
+| SAE · on the OUTPUT L6 · 16x                        | 120,145 | 34.3%          | 4.73% (L1=8)         | token identity |
+| **CONTROL: SAE · on the INPUT L2 · 16x**           | 120,145 | **44.7%**      | 3.18% (L1=8)         | token identity |
+| PCA · on the OUTPUT L6 · top-256 / top-64          | 120,145 | 29.1% / **42.2%** | —                 | token identity |
+| *(prior)* residual SAE-at-scale · L2 · 16x         | 120,145 | 44.7%          | —                    | token identity |
+| *(prior)* toy RWKV channel-mix transcoder hint     | ~700    | 66% (vs SAE 62%) | —                  | seeded themes |
+
+The control (row 3) is the whole story: it reproduces the SAE-at-scale headline (44.7%, identical
+layer) and **exceeds the transcoder**. The transcoder is not finding better features than a plain SAE;
+it is finding *L2's* features (because that is where its encoder reads), and slightly degrading them
+by also demanding they reconstruct L6.
+
+## What we actually did
+
+1. **Two-layer token-aligned harvest (NO engine change — reuses `/harvest`'s `layer` param).** Drove
+   `POST /harvest` over the SAME WikiText-103 passages **twice per passage**, once at `layer=2`
+   (input) and once at `layer=6` (output). The forward is deterministic, so the two activation
+   matrices are **token-aligned** (row *r* is the same token in both) — exactly the (x_in, y_out)
+   pairs a transcoder trains on. Result: **120,145 rows × 896 at each layer**, 42 s, 0 crashes, 12
+   over-length passages skipped (identical row count + skips to the SAE run → same corpus, apples-to-
+   apples). The in→out map is **non-trivial**: copy-the-input MSE = 1.071 (standardized), *worse* than
+   predicting the target's mean — L2 and L6 genuinely differ, so reconstructing L6 from L2 is real work.
+2. **A properly-resourced transcoder.** `TorchTranscoder` = the exact `TorchSAE`/`TinySAE` objective
+   (relu code, L1 sparsity, unit-norm decoder, streaming top-k so no 120k×14k host matrix), but with a
+   **separate target**: `f = relu(Xin_L2·We + be)`, `recon = f·Wd + bd`, `loss = MSE(recon, Xout_L6) +
+   L1·|f|`. 16× expansion (m = 14,336), L1 swept {0.5,1,2,4,8}, batch 512, lr 1e-3, 40 epochs
+   (~9,400 grad steps/config). Every config beats copy-input (MSE 0.19–0.21 vs 1.071) with ~all
+   features live — a real, converged map.
+3. **Matched baselines on the SAME target.** An SAE on `l_out-6` (in→in) and PCA on `l_out-6`
+   (top-256, top-64 reported) — so all three are judged on representing the **same L6 output**.
+   Same un-seeded top-token-coherence metric, identical for every method.
+4. **The control that decides it.** An SAE on `l_out-2` (the layer the transcoder's *encoder* reads) —
+   to test whether any "transcoder > SAE" gap is the in→out mechanism or just the input layer.
+5. **Anti-degenerate guard (a metric trap caught + fixed).** At low L1 the dictionary is dense (mean
+   fire ~15–48%) and the `[0.002,0.4]` live-band lets through only a HANDFUL of features; a "coherence"
+   averaged over 1–6 features is noise that would falsely win the verdict (an 8k-row dry run picked a
+   **1-live-feature** SAE at "55%"). The reported-best now requires **≥ 200 live features** (the full
+   dose-response still prints every config). Flagged alongside the SAE run's two training traps.
+
+## The numbers in detail — the L1 dose-response (the honest knob)
+
+| L1  | TRANSCODER (L2→L6) coh | SAE (on L6) coh | CONTROL SAE (on L2) coh |
+|-----|-----------------------:|----------------:|------------------------:|
+| 0.5 | 23.1%                  | 25.2%           | —                       |
+| 1.0 | 25.7%                  | 26.4%           | —                       |
+| 2.0 | 30.3%                  | 28.7%           | —                       |
+| 4.0 | 36.0%                  | 31.4%           | **40.7%**               |
+| 8.0 | **40.5%**              | **34.3%**       | **44.7%**               |
+
+Three honest reads. (a) **Coherence rises with sparsity** for every method — the metric rewards
+token-locking, and a sparser dictionary token-locks harder (same trend as the SAE run). (b) The
+transcoder edges the SAE-on-L6 only at L1 ≥ 2, and the gap (~+6) is *smaller than* the gap between
+the two SAEs at different layers (L2 44.7% vs L6 34.3% = +10.4). I.e. **layer choice moves the metric
+more than the transcoder-vs-SAE substrate choice does.** (c) The transcoder's reconstruction MSE
+(0.19–0.21) is ~4× the SAE's (0.04–0.07) — predicting a *different* layer is genuinely harder — but
+it still beats copy-input ~5×, so the bottleneck is learning a real input→output map, not cheating.
+
+### The 10 most-coherent TRANSCODER features (16x, L1=8) — still token identity
+
+| feat | fires | reads as | feat | fires | reads as |
+|------|-------|----------|------|-------|----------|
+| f14 | 2.6% | " one" | f58 | 4.3% | " and" |
+| f28 | 2.1% | " metal" | f59 | 1.7% | " New" |
+| f31 | 3.4% | " United" | f94 | 2.1% | "graf" (subword) |
+| f33 | 1.6% | " on" | f118 | 2.3% | "ati" (subword) |
+| f40 | 5.4% | " the" | f125 | 2.2% | " no" |
+
+Every one is "**fires on the literal token X**" at 100% coherence — function words (" the", " and",
+" on", " no", " one"), subword fragments ("graf", "ati"), and corpus-frequent content tokens
+(" United", " New", " metal"). **Not one is an abstract concept.** This is exactly what BOTH SAE runs
+found; the transcoder discovers the same KIND of unit. (The SAE-on-L6 contrast set is the same flavour:
+",", ".", " to", " only", " 1", '"', " later", " along". PCA too: PC4 = "@" 100%, PC7 = "'" 100%,
+PC0 = a polysemantic sentence-initial-capitalized mix "According/However/Although/Germany" at 22.5%
+of variance.)
+
+## Honest caveats (louder than the result)
+
+- **The control is the load-bearing finding, and it is a NULL for the transcoder.** "Transcoder beats
+  SAE +6.3" is true only against an SAE on the *output* layer; against an SAE on the *input* layer (the
+  one the transcoder actually encodes from) the transcoder is **behind** (40.5 vs 44.7). The in→out
+  mechanism contributes nothing positive to feature coherence here — it slightly *costs*. So the
+  honest claim is **not** "transcoder ties the null" but "**the transcoder's only apparent advantage is
+  a layer-selection artifact, and it underperforms the same-budget SAE on its own input layer.**"
+- **The metric still rewards token-locking, not abstraction** (carried over, unchanged). Top-token
+  coherence measures how concentrated a feature is on one token; it is fair as a *comparison* (all
+  methods scored identically) but its absolute value is "how token-locked," not "how interpretable."
+  The transcoder's faster rise with sparsity is partly *because* its code reads the **early, lexical**
+  L2 — i.e. the metric and the input-layer choice both push the transcoder toward token-identity. A
+  **semantic / auto-interp metric** (does the top set share a part-of-speech / topic / role; or
+  auto-label via a held-out LLM) remains the real test — but note all four methods here produce
+  features with obvious *lexical* labels, so a richer metric would more likely **confirm** "these are
+  token detectors" than overturn the verdict.
+- **This is the SIMPLEST transcoder, not the canonical one.** A layer-residual transcoder (L→L'
+  residual) is a legitimate transcoder and the cheapest one (no engine change), but the canonical
+  interp transcoder replaces a **specific component** — the MLP/FFN sub-block (`ffn_inp`→`ffn_out`) —
+  whose nonlinearity is the thing sparse dictionaries are meant to untangle. That needs a small engine
+  change (tap a named tensor via `cb_eval`, extend `/harvest`). Given how flatly the simple version
+  nulls — and that the *input-layer SAE control already beats it* — building the FFN tap is unlikely
+  to manufacture the toy's gap on a 0.5B model on this metric; it is the obvious next probe only if a
+  **semantic** metric is built first (so the result wouldn't just be more token-locking).
+- **Layer pair (2→6) and model scale (0.5B).** L2 is early/lexical; §3.6 already showed an SAE at L12
+  is, if anything, *worse* on this metric. A mid→late transcoder (e.g. 8→16) is a one-flag rerun and
+  worth a look, but the published transcoder wins are on much larger models with millions–billions of
+  tokens; "transcoders beat SAEs for interpretability" may simply require a scale this substrate
+  doesn't reach. What we can say rigorously is bounded to THIS model, layer pair, and metric.
+
+## What this implies for the interp-at-scale direction
+
+The sparse-dictionary family — PCA, residual SAE, **and now the layer-residual transcoder** — is a
+**robust null for monosemantic feature discovery on this 0.5B model's early/mid residual** on the
+token-coherence metric. Swapping the SAE's in→in objective for the transcoder's in→out objective did
+**not** move the verdict; the discovered units are token detectors for all of them, and the
+transcoder's headline edge dissolves under a same-layer control. The two genuinely unexplored levers
+are therefore **(1) a semantic / auto-interp metric** (the field's actual standard; the current metric
+can only ever reward token-locking) and **(2) the canonical FFN/MLP transcoder** (the sub-block whose
+nonlinearity sparse codes are designed for) — and (1) should come first, because without it even a
+"winning" FFN transcoder would just be reporting token detectors more confidently. Clozn's
+interpretability edge at this model scale is **not** going to come from a bigger/cleverer sparse
+dictionary on the residual; the `/harvest` (now exercised at two aligned layers) is the reusable asset
+that makes both of those follow-ups one-forward-per-text and crash-free.
+
+## Files (transcoders)
+
+- `inspector/spikes/p5_transcoder_scale.py` — the deliverable: two-layer token-aligned `/harvest`
+  corpus + a GPU `TorchTranscoder` (in→out, streaming top-k) + matched SAE & PCA on the output +
+  the un-seeded coherence metric + an anti-degenerate `MIN_LIVE` guard, with a `--from-cache`
+  re-analysis path. Reuses `p4_big_sae` wholesale (server mgmt, harvest, corpus, metric, PCA, TorchSAE).
+- `inspector/spikes/p5_selfgate.py` — the self-gate: proves a tiny two-layer harvest is token-aligned
+  at two different layers and a tiny transcoder trains (MSE drops, features live) before the big run.
+- `inspector/spikes/p4_big_sae.py` — `harvest_text()` extended with an optional `layer` arg (passes
+  `/harvest`'s `{layer}` through; backward-compatible). No other change.
+- `inspector/runs/qwen_transcoder_2layer_acts.npz` — the two-layer matrix (120,145 × 896 at L2 and L6
+  + token pieces), re-analyzable (gitignored).
+- `inspector/runs/discovered_transcoder_qwen.{html,json}` — rendered transcoder features + machine-
+  readable summary (full dose-response for transcoder & SAE, PCA axes, the transcoder−SAE and
+  transcoder−PCA gaps, 10 example features each). The control (SAE-on-L2 = 40.7%/44.7%) is recorded
+  here in the writeup; reproduce it with `p4_big_sae`'s `TorchSAE` on the cached `Xin`.
