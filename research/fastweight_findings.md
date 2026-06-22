@@ -40,7 +40,9 @@ selectivity-limited; that limit is the honest finding, and it is curable without
 **Capacity (p16→p17):** what first looked like an N-scaling collapse (top-1 6% at N=200) turned out to be a
 *write/read key-position bug*, not a real wall. Fixed (key at a query-time position), the list does
 **exact-cue recall to N≥200** — selection ~100%, expression ~82% — and decorrelation/whitening adds nothing.
-Whether it generalizes past *exact* cues (paraphrase) is untested. See the two capacity sections below.
+It also **generalizes by meaning (p19)**: a reworded query retrieves at ~71% of the exact-cue rate (far above
+null) — though mis-retrievals are confident *wrong-fact* pulls, so a served memory needs a confidence gate.
+See the capacity + generalization sections below.
 
 ## Why this argues for keeping the glass box (not fusing into weights)
 
@@ -222,7 +224,45 @@ the **EXPRESS** rate (~82%: does injecting the answer's value direction make the
 logits). What is **not yet tested** — and is the real associative-memory question — is **generalization**:
 does a *paraphrased or partial* cue still retrieve the fact? **Corrected verdict:** keyed correctly, the
 glass-box list does **exact-cue fact recall to N≥200** (selection ~100%, expression ~82%); p16's 'wall' was a
-measurement artifact; generalization past exact cues is the open next rung.
+measurement artifact; generalization past exact cues is answered next.
+
+## Generalization (p19) — recalls by meaning, not just exact string
+
+p17 was *exact-cue* recall (query string == stored string). p19 asks the load-bearing product question: does a
+**reworded** query still retrieve the fact? `inspector/spikes/p19_generalize.py` stores 12 facts under one
+phrasing and queries each with 2 distinct paraphrases (24 in all, every one near-chance on the base model),
+hard top-1 addressing, layers 6/8/10.
+
+**Yes — it generalizes by meaning.** With the CONTEXT key (the cue's final-token activation, `raw_consistent`)
+at the best layer L=10:
+
+| | paraphrase | exact-cue (upper bound) | shuffled-key null |
+|---|---|---|---|
+| top-1 | **70.8%** | 100% | **0%** |
+| P(ans) | 41.3% | 64.1% | 1.2% |
+
+A reworded query retrieves the right value at **71% of the exact-cue rate, far above the null**. The mechanism
+is visible in the keys: a fact's store-key vs its own paraphrase-key cosine is **0.64**, vs **0.34** cross-fact
+(+0.31 separation) — the contextual activation carries the fact's *meaning*, so the reworded query lands
+nearest its own stored key 71% of the time. Deeper = more meaning in the key (own−cross separation grows
+L6→L8→L10).
+
+**Where the 29% gap goes — and the product caveat.** The SELECT/EXPRESS split puts the gap entirely on
+**SELECT** (key drift): self-select 70.8%, EXPRESS gap ~0 (where it picks the right entry, it expresses the
+right answer). The catch — when a paraphrase mis-selects, the *wrong* fact's answer usually wins (cross-pull
+75–91%): **failures are confident wrong-fact retrievals, not benign "don't-know" misses.** A served memory
+therefore needs a **confidence gate** (a minimum match score, else abstain) so a drifted query refuses rather
+than confabulates. This is an addressing-stage fix (deeper/better key, soft top-k, a match threshold), not an
+expression limit.
+
+**Honesty note — a confound we excluded.** A `subject`-token key (resid at the nonce name, e.g. "Zorbland")
+scores 100% paraphrase top-1 — but the subject string is *shared* between the store cue and every paraphrase,
+so that is partial-cue / lexical-overlap matching, **not** evidence the contextual activation carries meaning.
+It corroborates the direction but is strictly easier; the honest meaning result is the **context**-key 70.8%
+(`best_context_*` vs `best_subject_*` in the saved arrays).
+
+**Scope:** small nonce-fact regime, single-token answers, GPT-2-small, layer-dependent; high per-paraphrase
+variance (±45pp — each is a 0/1 hit and meaning-drift is uneven across facts).
 
 ## Honesty notes / controls / caveats
 
