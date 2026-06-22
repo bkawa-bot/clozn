@@ -1049,3 +1049,184 @@ program did not demonstrably fail at small/local scale — **our evaluation coul
   Neuronpedia labels, PCA axes). Gitignored.
 - Validity gate: SAE reconstruction FVU = 0.0015, L0 ≈ 64/token at `blocks.8.hook_resid_pre` (confirms
   correct hook/convention — not a false null).
+
+---
+
+# Calibrated auto-interp salvage: with a TRUSTED ruler, do our local SAEs produce real features?
+
+*The salvage run the GPT-2 control demanded. The control proved top-token coherence is BROKEN (it
+rates a gold-standard SAE the same ~tie-with-PCA "null" it gave ours), so every prior verdict that
+leaned on it is suspect. This run builds a VALID, CALIBRATED metric and re-asks the discovery question
+with a ruler we can trust.*
+*Run date 2026-06-22. Substrates: GPT-2-small (124M, Bloom `gpt2-small-res-jb` @ L8) for calibration;
+our re-trained Qwen2.5-0.5B (L2, 16x L1=8) and Qwen2.5-7B (L16, 8x L1=8) SAEs, from the cached `/harvest`
+matrices. LLM-as-judge (the agent), detection protocol, held-out + null, no cherry-pick.*
+
+## TL;DR — the verdict: the ruler VALIDATES, and under it our local SAEs are a real NULL (NOT just a metric artifact). Our SAEs sit BELOW both PCA and random on both Qwen substrates.
+
+The metric is **detection auto-interp with held-out scoring**: from a feature's top-12 activating
+examples WITH CONTEXT the judge writes a one-line description (token-ANCHORED context patterns COUNT —
+the p8 lesson), then predicts fires/not on 8 held-out HIGH + 8 random/low examples (shuffled, labels
+hidden); score = **balanced accuracy** (0.5 = chance, →1.0 = a real predictable feature). Method score =
+mean over a ~22-feature sample (half top-by-activation, half random-live; no cherry-pick). It was
+**calibrated on GPT-2 first as a gate**, and it passed:
+
+| method (balanced accuracy, 95% CI, n=22) | GPT-2 (124M) | Qwen-0.5B (L2) | Qwen-7B (L16) |
+|-------------------------------------------|-------------:|---------------:|--------------:|
+| **SAE** (Bloom on GPT-2; OURS on Qwen)    | **0.835** [0.77, 0.90] | **0.682** [0.61, 0.75] | **0.548** [0.50, 0.60] |
+| **PCA** (same residual)                   | 0.815 [0.74, 0.89] | **0.824** [0.73, 0.92] | **0.759** [0.66, 0.85] |
+| **random directions** (the null)          | **0.531** [0.49, 0.57] | 0.781 [0.71, 0.86] | 0.705 [0.64, 0.77] |
+
+**(1) CALIBRATION — the ruler is VALID.** On GPT-2 it orders **Bloom's 0.835 > PCA 0.815 > random
+0.531**, with random pinned at chance (0.53) — exactly the ordering a working interpretability metric
+must produce, and the one top-token coherence FAILED to produce (it had rated Bloom's ~tied-with-PCA at
+31%). "What good looks like" = **~0.83** (Bloom's, a gold-standard dictionary). The Bloom−PCA gap is
+modest (+0.02) for an honest reason explained below; the decisive, load-bearing fact is that **random
+is at chance while both structured methods clear it by ~0.3** — the metric distinguishes signal from
+noise, which is all the calibration gate requires.
+
+**(2) OURS, under the validated ruler.** Our Qwen-0.5B SAE scores **0.682** — *below* PCA (0.824, −0.14)
+AND below random (0.781, −0.10). Our Qwen-7B SAE scores **0.548** — barely above its own chance floor,
+far below PCA (0.759, −0.21) and below random (0.705, −0.16). On neither substrate does our SAE clear
+the baselines.
+
+**(3) THE VERDICT: NO — our local from-scratch SAEs do NOT produce real, predictable features above
+baseline.** And this is **not** an artifact of the broken metric this time: the ruler is the one that
+correctly ranks Bloom's gold-standard SAE highly and pins random at chance. Under that trusted ruler our
+SAEs underperform PCA and even random directions. The salvage **fails for our SAEs**: the prior "null"
+on our dictionaries was not (only) the metric — re-measured honestly, our local SAEs are genuinely worse
+than the free baselines on these substrates. (This is the opposite of what the GPT-2 control left open —
+the control showed the *metric* could hide a *good* SAE's quality; it did **not** show OUR SAEs were
+secretly good, and now we know they are not.)
+
+### Why random is NOT 0.5 on Qwen (the crucial honest caveat)
+
+On GPT-2 the null behaves (random ≈ 0.53). On **both Qwen substrates random is high** (0.78 at L2, 0.71
+at L16). This is a real property of the substrate, not a metric bug: the Qwen residual is dominated by a
+**sentence-initial-capitalization / attention-sink structure** — at L2 almost every top principal axis,
+and almost every *random* direction, is a "fires on a sentence-initial capitalized word" detector
+(`According`, `However`, `During`, `The`, `Three`…); at L16 PCA's leading axes are *ultra*-clean single
+high-frequency-token detectors (`According`=100% one token, `The`, `@`, `9`, `-`, `"`). Those are
+**trivially predictable** under detection auto-interp (a clean token/position detector IS predictable),
+so the null floor is elevated. **Our SAEs do not even reach that elevated floor.** PCA tops it because it
+captures the dominant token/position axes most cleanly. The honest reading: on a substrate this
+token/position-dominated, sparse-dictionary discovery has no room to add predictable structure that PCA
+and random don't already get for free — and ours adds *less*.
+
+### What detection auto-interp actually rewards (and why the Bloom−PCA gap is small)
+
+The metric rewards **predictability**, not abstraction per se. A clean token detector (PCA's `"."`,
+`"@"`, `9`; Bloom's token-anchored features) is highly predictable and scores ~1.0; polysemantic mush and
+random noise score ~0.5. This is the correct, defensible semantics for "is this a real feature you can
+describe and re-detect," and it is exactly what top-token coherence could NOT measure (it could only
+count the literal top token). It also explains the small Bloom−PCA gap on GPT-2: PCA's top axes there are
+clean, predictable punctuation/year/possessive detectors (PC0=`.`, PC1=`@`, PC4=years, PC9=`'s`), so PCA
+scores well too — both methods are well above random. Bloom's edge is that its features are predictable
+*and* richer (relational/context patterns like "X-to/by complement", "agentive officials in events",
+"death-location"). The metric does not punish token-locking; it punishes UN-predictability — and our
+Qwen dictionaries are, feature-for-feature, less predictable than PCA's axes.
+
+## What we actually did
+
+1. **Built the detection metric** (`p9_autointerp_calibrated.py`): per feature, reconstruct top-activating
+   examples WITH context from the corpus-ordered `pieces` (no re-harvest), emit an EXPLAIN set (top-12)
+   + a TEST set (8 held-out highs from ranks 12–45 ∪ 8 nulls the feature is OFF on), shuffled with
+   labels hidden. The judge (the agent) reads `runs/p9_packets_<which>.json`, writes a one-line
+   description per feature, and predicts fires/not per test example; the spike scores balanced accuracy
+   and the verdict. Feature sample = half most-active live + half random-live (no cherry-pick), n=22/method.
+2. **Calibrated on GPT-2 FIRST (the gate).** Scored Bloom's `gpt2-small-res-jb` features, PCA on the same
+   GPT-2 residual, and random unit directions, all from the cached `gpt2_control_acts.npz`. Required
+   Bloom's > PCA > random before touching ours. **Passed** (0.835 > 0.815 > 0.531, random at chance).
+3. **Re-trained OUR SAEs deterministically from cache** and scored them with the SAME metric. 0.5B: the
+   reported-best 16x L1=8 via `p4_big_sae.TorchSAE` — reproduced exactly (mean-fire 3.18%, MSE 0.059). 7B:
+   the 8x L1=8 via `p7_scale_7b.StreamingSAE` on the seed-0 250k GPU-cap subsample (so contexts align with
+   p7's eval) — reproduced (mean-fire 5.42%, MSE 0.917). PCA + random scored on the SAME standardized
+   (7B: winsorized, as p7) activations.
+4. **Judged held-out only, harshly, consistently.** The judge's descriptions are written from the explain
+   set ALONE and operationalized as legible predicates over each test context (so predictions are
+   reproducible and cannot peek at hidden labels). The full record is in `p9_judge_record.py` +
+   `runs/p9_judgments_*.json`.
+
+## 5–8 of OUR highest-scoring features (description + held-out balanced accuracy + what they really are)
+
+These are our SAEs' BEST cases under the trusted ruler — and the point is what "best" looks like:
+
+| our feature | model | bal-acc | description (from explain) | what it really is |
+|-------------|-------|--------:|----------------------------|-------------------|
+| **f235** | 0.5B-L2 | **1.00** | "final digit of a year in 18xx/17xx dates" | a YEAR-DIGIT detector (`185‹6›`, `186‹4›`, `180‹5›`) — token/positional, not a concept |
+| **f954** | 0.5B-L2 | **1.00** | "temporal 'after' / founding verbs" | the token ` after` (+ ` fou`nded) — a token detector |
+| **f9120** | 0.5B-L2 | **1.00** | "the period '.' / 'cards' subword" | a `.`/subword detector — pure token identity |
+| **f764** | 0.5B-L2 | **0.94** | "the token 'battle'/'Battle'" | a ` battle` token detector |
+| **f3319** | 7B-L16 | **1.00** | "the subword 'eder'/'Feder' / '-er' endings" | a subword detector (`Fed‹er›al`) — token identity |
+| **f7722** | 7B-L16 | **0.81** | "single capital letters (R, N, H)" | a capital-initial detector — positional/token |
+| **f12274** | 0.5B-L2 | **0.69** | "licence/permit/permission nouns" (looked like a CONCEPT) | held-out highs were `awards`/`0`/`whom`/`level`, NOT a clean licence concept — it DEGRADED off the explain set |
+| **f10186** | 0.5B-L2 | **0.56** | "approval/sanction verbs" (looked like a CONCEPT) | held-out highs were `suffered`/`bail`/`another`, NOT approval — collapsed to ~chance off the explain set |
+
+The two features that *looked* like genuine cross-token concepts in the explain set (f12274 "licence",
+f10186 "approval/sanction"; and at 7B f23312 "competition", which scored **0.50**) **collapsed on
+held-out** — their top-12 examples shared a concept but their broader activation set did not. This is the
+detection protocol catching exactly the failure mode the brief warned about (a tempting "concept" that
+reverses under held-out + null). **Every one of our features that scored HIGH is a token / character /
+digit / position detector**, not an abstract concept — the same qualitative read every prior section
+reached, now confirmed under a ruler that DOES recognize Bloom's genuine concept features.
+
+## Honest caveats (louder than the result)
+
+- **This is a calibrated RELATIVE comparison by an LLM judge, not an absolute interpretability score.**
+  The numbers mean "how reliably can THIS judge describe a feature from 12 examples and re-detect it on
+  held-out + nulls," ranked against PCA and random on the same substrate with the same judge. The
+  calibration fixes the ruler (Bloom's = ~0.83 = "good"); it does not make 0.68 an absolute "68%
+  interpretable." Bounded to this judge, these substrates, n=22 features, ~10-token windows.
+- **The judge is the agent.** A documented limitation of LLM auto-interp. Mitigated by: harsh held-out +
+  random-null scoring (a vacuous description fails the nulls), the GPT-2 calibration gate (a judge that
+  can't rank Bloom's > PCA > random would be disqualified — this one can), legible reproducible predicates
+  (the descriptions are encoded as auditable rules, not vibes), and a no-cherry-pick feature sample.
+- **Random ≠ 0.5 on Qwen is the substrate, and it is the right null anyway.** Because L2/L16 are dominated
+  by position/token structure, random directions are partly predictable, so the honest null is elevated
+  (0.71–0.78). Our SAEs are measured against THAT null and still lose — which is the conservative,
+  load-bearing direction. (On GPT-2, where the residual is less degenerate, random IS at chance, proving
+  the metric itself is sound; the elevation is a fact about the Qwen taps, not the metric.)
+- **The 7B 8x L1=8 SAE did not fully reconstruct (MSE 0.917 > target var 0.804)** — it is the borderline
+  config p7 reported as its *only* near-reconstructing point; lower-L1 7B configs reconstruct but
+  token-lock LESS and would, per p7's dose-response, score even LOWER on detection (less predictable). So
+  the representative we scored is, if anything, the SAE's best 7B case on this metric. Flagged per the
+  honesty rails (a non-reconstructing SAE is reported, never hidden).
+- **This does NOT contradict the GPT-2 control; it completes it.** The control established the metric was
+  a confound (it hid a *good* SAE's quality) and that size/local was not the cause. The open question it
+  left — "are OUR dictionaries also good-but-hidden, or genuinely worse?" — is now answered with a ruler
+  that can see quality: **genuinely worse.** A gold-standard 124M SAE scores 0.84 on this metric; ours
+  score 0.55–0.68, below PCA and random. The metric can see interpretability (it sees Bloom's); it does
+  not see it in our local from-scratch dictionaries because it isn't there.
+
+## What this implies for the direction
+
+The calibrated salvage closes the loop the control opened: re-judged with a TRUSTED ruler, **our local
+from-scratch SAEs are a real null** — not a metric artifact. Discovery does not work locally with these
+dictionaries on these substrates; the prior "token detectors, no advantage over PCA" read-out was
+**correct after all** for our SAEs (the control's reprieve applied to Bloom's SAE, not ours). The two
+levers that remain are unchanged and now better-grounded: **(1) a pretrained/gold-standard dictionary**
+(Bloom's scores 0.84 here — wire one in for a real substrate, e.g. GemmaScope/Neuronpedia, rather than
+training our own), and **(2) Clozn's CAUSAL probe→steer loop on NAMED concepts** (the verified capability
+that needs no monosemantic dictionary). `p9_autointerp_calibrated.py` is the reusable, calibrated judge
+for the day a pretrained dictionary is wired in — and it is now the metric of record, retiring top-token
+coherence as an interpretability judge.
+
+## Files (calibrated auto-interp salvage)
+
+- `inspector/spikes/p9_autointerp_calibrated.py` — the deliverable: the detection-auto-interp harness.
+  `--emit <gpt2|qwen05b|qwen7b>` reconstructs per-feature contexts from the cached npz, re-trains OUR
+  SAEs deterministically (0.5B via `p4_big_sae.TorchSAE`, 7B via `p7_scale_7b.StreamingSAE`), and writes
+  per-feature judge packets (explain + held-out highs + nulls, labels hidden) for the SAE, PCA, and random
+  directions on the same activations. `--score` reads the judge's recorded predictions and computes
+  balanced accuracy + the calibration ordering + the verdict. Reuses `p4_big_sae`/`p7_scale_7b` wholesale.
+- `inspector/spikes/p9_judge_record.py` — the LLM judge's record: one-line descriptions (written from the
+  explain set, token-anchored context patterns credited) operationalized as legible, auditable predicates
+  over each test context, for all 66 features. `python spikes/p9_judge_record.py <which>` regenerates the
+  `runs/p9_judgments_<which>.json` the scorer consumes — reproducible, no peeking at hidden labels.
+- `inspector/runs/p9_packets_<which>.json` — judge INPUT: per-feature explain/test contexts (gitignored).
+- `inspector/runs/p9_judgments_<which>.json` — judge OUTPUT: descriptions + per-example predictions (gitignored).
+- `inspector/runs/p9_verdict.json` — scored: per-feature + per-method balanced accuracy, CIs, the
+  calibration ordering (Bloom > PCA > random = VALID), and the per-substrate SAE-vs-PCA-vs-random verdict
+  (gitignored).
+- Reused (not re-harvested): `gpt2_control_acts.npz` (Bloom SAE feats + resid), `qwen_big_natural_acts.npz`
+  (0.5B L2), `qwen7b_natural_acts_L16.npz` (7B L16).
