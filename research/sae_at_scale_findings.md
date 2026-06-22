@@ -845,3 +845,207 @@ or a billion-token budget is wired in.
   pieces + layer), re-analyzable (gitignored, 6.69 GB).
 - `inspector/runs/discovered_7b_sae.{html,json}` — rendered features + machine-readable summary (full
   dose-response, 10 example features, PCA axes, the SAE−PCA gap, concept alignment). Gitignored.
+
+---
+
+# GPT-2-small pretrained-SAE control: was our null TRAINING, the METRIC, or SIZE/"local"?
+
+*The decisive control for the whole arc above.*
+*Run date 2026-06-22. Substrate: **GPT-2-small (124M)** — SMALLER than our 0.5B — with Joseph Bloom's
+canonical pretrained residual SAE `gpt2-small-res-jb` @ `blocks.8.hook_resid_pre` (the most-studied
+public SAE in existence; every feature has a Neuronpedia auto-interp label). Loaded via `sae_lens`
+6.44.3 + `transformer_lens` 3.4.0 in an ISOLATED venv (`.venv-sae`, CPU torch), so the lab venv's
+pinned torch/transformers (the goldens) is untouched.*
+
+Every section above is a robust null: our **from-scratch** SAEs/transcoders tie or LOSE to PCA and
+discover token-identity detectors, across 0.5B→7B, layers (2/12/16), tokens (5k→1M), expansion
+(1x→16x), and even a semantic metric. But every section bottoms out at the SAME unresolved fork: was
+that **our training** (first-gen ReLU/L1, a from-scratch dictionary on one consumer GPU with ≤1M
+tokens), **our coherence metric**, or **model size / "local"**? A KNOWN-GOOD *pretrained* SAE on a
+*smaller* model decides it. GPT-2-small is 124M, so a clean result here **rules out size/local**; and
+because `gpt2-small-res-jb` is independently validated on Neuronpedia, "is it genuinely interpretable"
+has a public ground truth, not just our judgment.
+
+## TL;DR — the verdict: it was the METRIC (and size/local is RULED OUT). The pretrained SAE is genuinely interpretable yet OUR metric rates it ~tied-to-PCA — the exact null signature we got on our own SAEs.
+
+The pretrained SAE — a model *smaller* than our 0.5B, a dictionary the field considers a gold-standard
+— scores on OUR metric **almost exactly what our from-scratch SAEs scored**, and shows the SAME
+"win-flips-with-PCA-component-count" wobble:
+
+| substrate / setup                                          | rows    | SAE top-token coherence | PCA (top-256 / top-64) | winner |
+|-------------------------------------------------------------|---------|------------------------:|-----------------------:|--------|
+| toy (published) · RWKV-169m · seeded themes                 | ~700    | 65%                     | 12%                    | SAE (big) |
+| our · Qwen-0.5B L2 · from-scratch 16x SAE, natural          | 120,145 | 44.7%                   | 41.5% / 54.8%          | ~tie / PCA |
+| our · Qwen2.5-7B L16 · from-scratch 16x SAE, 1M natural     | 1,000,061 | 15–19%                | 64.3% / 70.5%          | PCA by ~50 |
+| **this · GPT-2-small (124M) · PRETRAINED gpt2-res-jb 32x**  | 56,507  | **31.3%** (live mean)   | **27.3% / 39.2%**      | **~tie (SAE +4 vs 256, −8 vs 64)** |
+
+**The crux is not the 31.3% — it is WHAT the metric did to a SAE we KNOW is good.** OUR metric ranks
+this SAE's most-coherent features as **pure single-token detectors** (' at', ' in', ' The', ' the',
+' by', ' of', ' to', '-', ' .', ',' — all at 100% token-coherence), *identical* to the read-out we got
+on our own SAEs and used to declare them "token detectors, not concepts." **But Neuronpedia's
+auto-interp labels for those very same features describe rich CONTEXTUAL concepts**, and the raw
+contexts confirm them:
+
+| SAE feature | OUR metric says | Neuronpedia label | what the contexts actually show |
+|-------------|-----------------|-------------------|----------------------------------|
+| **f318** | "fires on ' at'" (coh 100%) | *"someone dying at a specific location"* | "Barker died ⟨at⟩ Worthing Hospital", "was lost ⟨at⟩ sea" — a death-location feature |
+| **f321** | "fires on ' to'" (coh 100%) | *"an action is suggested or recommended"* | "⟨to⟩ sell", "⟨to⟩ secure their perfect adaptation", "⟨to⟩ observe Lent" — purposive clauses |
+| **f95**  | "fires on ' at'" (coh 100%) | *"dates and times"* | "September 18, 1998 … ⟨at⟩ Innsbruck", "1862, ⟨at⟩ Little Rock Arsenal" |
+| **f109** | "fires on ' in'" (coh 100%) | *"quantitative/statistical info (crime/income/tax/temperature)"* | "157 hours ⟨in⟩ 1984 to 103 hours in 2002", "700–1000 fruitbodies … ⟨in⟩ spruce forests" |
+
+These are **genuinely interpretable, publicly-validated features** — and our token-coherence metric
+collapses every one of them to "a preposition detector," scoring the SAE mediocre and ~tied with PCA.
+**That is the confound, photographed.** A feature that fires on the token `at` *but only in the context
+"died at <place>"* is a concept; the metric, which only counts the literal top token, cannot tell it
+apart from a dumb `at`-detector. Worse, the genuinely **cross-token** concept features score
+*terribly*: f19948 fires across `Secretary/Director/Governor/president` ("Treasury ⟨Secretary⟩", "Mint
+⟨Director⟩"; NP: *"names of people, historical events, political terms"*) at **15%** coherence; f19390
+fires across number tokens `8/15/6/23` (NP: *"dates and months"*) at **15%**. The metric *penalizes*
+exactly the abstraction we wanted to find.
+
+**Conclusion — which was our null?** **The metric, primarily; and size/local is decisively ruled out.**
+A pretrained SAE on a model *smaller* than our 0.5B produces clean, externally-verified concept features
+and STILL scores ~31% / ~tied-with-PCA on our metric — so (1) "local / too small" is dead (124M < 500M,
+and the features are great), and (2) "our training was uniquely broken" is no longer the explanation,
+because a gold-standard dictionary gets the **same metric verdict** our dictionaries did. What our
+metric measures — top-token concentration — is **not** interpretability; it is blind to contextual and
+cross-token features, which is most of what a good SAE learns. Our "SAE = token detectors" read-out was
+**an artifact of the read-out**, not a fact about the SAEs.
+
+## What we actually did
+
+1. **Isolated env.** `python -m venv .venv-sae`; `pip install sae-lens` (pulled `transformer_lens`
+   3.4.0, `transformers` 5.12.1, CPU `torch` 2.7.1, `numpy` 2.5.0). The lab venv
+   (`C:\cloze\.venv`, pinned for the goldens) was never touched. CPU-only; GPT-2-small runs fast.
+2. **Validity gate BEFORE trusting any number (the false-null guard the brief demanded).** Loaded the
+   model with the default-processed `HookedSAETransformer.from_pretrained("gpt2")` and checked the
+   SAE's **reconstruction** on the residual at its own hook: **FVU = 0.0015** (recon MSE 0.967 vs
+   target variance 649.8 → 99.85% of variance explained) and **L0 ≈ 64 features/token** — both match
+   the published `gpt2-small-res-jb` profile. A wrong hook / wrong activation convention gives FVU ≈ 1;
+   0.0015 confirms the residual we feed `sae.encode()` is exactly in-distribution. (The SAE's
+   `model_from_pretrained_kwargs={'center_writing_weights':True}` is already applied by TransformerLens's
+   default processing, so the default load is correct.)
+3. **Harvest.** Ran 400 WikiText-103 passages (the SAME corpus source as every prior run,
+   `clozn.corpora.text_stream`) through `run_with_cache` at `blocks.8.hook_resid_pre`, collecting per
+   token both the residual (PCA's input) and `sae.encode(resid)` (the SAE's feature acts). BOS excluded.
+   **56,507 rows × 768 (resid) / 24,576 (SAE feats)**, 28 s, unique-token ratio 0.133.
+4. **Same metric, ported VERBATIM** from `p4_big_sae.top_token_coherence` (top-20 activating rows per
+   feature; coherence = fraction equal to the modal strip+lower token), applied identically to (a) the
+   pretrained SAE's feature acts (live band fire∈[0.002,0.4], as before) and (b) PCA on the same
+   standardized residual at K=256 (top-64 also reported).
+5. **Direct interpretability check on the top features** (harsh judge) + the **Neuronpedia auto-interp
+   labels** `sae_lens` exposes for this release (`gpt2-small/8-res-jb/{feature}`), fetched live for the
+   top-15 most-coherent and top-8 highest-firing features.
+
+## The numbers in detail
+
+| quantity | value |
+|----------|-------|
+| pretrained SAE — mean coherence over 8,290 live features | **31.3%** |
+| pretrained SAE — best-256 live features | **100.0%** (its top features are perfectly token-locked) |
+| pretrained SAE — all 24,576 features | 31.7% |
+| PCA top-256 / top-64 on the same residual | **27.3% / 39.2%** |
+| SAE(live) − PCA(top-256) gap | **+4.0 pts** (SAE marginally ahead) |
+| SAE(live) − PCA(top-64) gap | **−7.9 pts** (PCA ahead — the same wobble our runs flagged) |
+
+The shape is **exactly** our 0.5B result (SAE ~tie, +few vs deep-PCA / −several vs tight-PCA): a "win"
+that flips sign with the PCA component count is not a real SAE advantage **on this metric** — and now we
+know *why* it isn't, because the SAE we're testing is independently known to be good. The metric simply
+does not measure the thing the SAE is good at.
+
+## (Harsh) auto-interp judgment on the top features
+
+- **Top-15 by token-coherence:** all 100% token-coherent (' at', ' in', ' the'×5 — feature splitting on
+  "the", as in every prior run; ' by', ' of', ' to', '-', ' .'×2, ','). On the bare-token read these are
+  the textbook "token detectors" verdict. **But every one carries a contextual Neuronpedia label** and
+  the contexts back it (death-location, suggestion/recommendation, dates+times, quantitative-stats — see
+  the TL;DR table). So they are NOT dumb token detectors; they are **token-anchored context features**
+  the metric flattens. Verdict: **interpretable — and the metric hides it.**
+- **Top-8 by fire-rate** (where a cross-token concept would hide, scoring low on token-coherence):
+  f19948 = political offices across `Secretary/Director/Governor/president` (NP: people/political terms),
+  f10770/f4079/f5356 = "historical figures & governance / wars & political dealings", f19390 = dates
+  across number tokens. These are the **most concept-like** features in the dictionary and they score
+  **5–25%** on token-coherence — the metric actively buries them. (A few, e.g. f20447/f14904, are diffuse
+  polysemantic grab-bags with noisy NP labels — not everything is clean — but the political-office and
+  date features are real cross-token concepts.)
+- **PCA contrast:** PCA's high-coherence axes are the same flavour our prior runs found — PC1/PC6 = "@"
+  (100%, the WikiText "@-@" artifact), PC5 = "the" (85%) — plus a couple of genuinely thematic ones
+  (PC4 = gods/deities/deity 55%, PC2 = rituals/ceremonies/forests). PCA finds *some* themes for free, as
+  always; it does not find the token-anchored context features the SAE does.
+
+## Honest caveats (louder than the result)
+
+- **This proves the METRIC was a confound; it does NOT retroactively prove OUR SAEs were good.** What is
+  now rigorously established: (1) size/local is *not* the cause (a 124M model's SAE is clean), and (2) a
+  gold-standard SAE earns the SAME ~tie-with-PCA token-coherence verdict ours did, with the SAME
+  token-detector read-out — so that read-out was never evidence against our SAEs. What is NOT
+  established: that our from-scratch Qwen/7B dictionaries are as *good* as `gpt2-res-jb`. We never ran
+  our SAE's features past an external oracle; the pretrained SAE's best features hit 100% coherence with
+  *clean* NP labels, whereas we only ever saw our features through the flattening metric. The honest
+  claim is **"the metric could never have shown our SAEs working even if they were"**, not "our SAEs
+  were working." Distinguishing the two needs the next bullet.
+- **The fix is a CONTEXT-AWARE / auto-interp metric, and it should now be run on OUR dictionaries.** The
+  decisive upgrade is to score a feature by whether its top-activating *contexts* share a nameable
+  pattern (LLM auto-interp), not by its top *token*. `p6_autointerp.py` already emits contexts and was
+  run on the 0.5B SAE — but it judged "token-bound unless a token-INDEPENDENT pattern is explicit,"
+  which would still mark f318 (' at' / death-location) token-bound. The GPT-2 control shows that rule is
+  **too harsh**: a token-ANCHORED context feature is still a concept. Re-running auto-interp on our
+  Qwen/7B SAEs with the corrected rubric (token-anchored context = a concept) is the clean way to learn
+  whether OUR dictionaries also hide good features or are genuinely worse. This reopens the 0.5B/7B
+  "semantic null" conclusions, which leaned on the same flattening.
+- **Neuronpedia labels are themselves LLM auto-interp** (with known noise; a few of the high-fire labels
+  are loose). They are not ground truth. But the *contextual* labels on **100%-token-coherent** features
+  are the load-bearing evidence, and those are independently checkable from the raw contexts we saved
+  (the death-location and purposive-"to" patterns are obvious by eye). The verdict does not rest on
+  trusting Neuronpedia's wording, only on "these 100%-token features have a consistent semantic context."
+- **Different model / corpus / hook than the prior runs, by design.** GPT-2-small (not Qwen), a mid layer
+  (block 8 of 12), 56k tokens (not 120k/1M). It is a *control*, not a re-run of our substrate. Its job is
+  to answer "can OUR metric recognize a SAE the world agrees is interpretable?" — and the answer (no, it
+  rates it ~tied-with-PCA and reads its features as token detectors) is what makes it decisive about the
+  metric. It does not, and is not meant to, re-measure Qwen/7B.
+- **Bloom's SAE is itself a first-gen ReLU/L1 residual SAE** (same family as ours) — so this control does
+  NOT vindicate "newer architectures (gated/top-k/transcoders) are needed." If anything it cuts the other
+  way: a first-gen SAE, same architecture class as ours, on a *smaller* model, is clearly interpretable.
+  That further isolates **the metric** (not the architecture, not the scale, not "local") as what made
+  our prior results read as a null.
+
+## What this implies for the roadmap (it changes the arc's close)
+
+The prior sections closed with "stop iterating sparse dictionaries on local models; lead with causal
+probing/steering." This control **partially overturns the premise** of that close. The sparse-dictionary
+program did not demonstrably fail at small/local scale — **our evaluation could not see it succeed.** A
+124M pretrained SAE produces verified concept features that our metric rates as token detectors and
+~tied with PCA, the identical signature we read as failure. So the honest revised position:
+
+1. **The token-coherence metric is retired as an interpretability judge.** It measures token-locking, is
+   blind to token-anchored context features and cross-token concepts, and gives a gold-standard SAE the
+   same "null" it gave ours. Every "token-detector, no advantage over PCA" conclusion on this page that
+   rested on it is **suspect to the degree it relied on top-token coherence** (the §3.6 semantic re-score
+   is the partial exception, but it used the too-harsh "token-independent or bust" rubric this control
+   just falsified).
+2. **Re-judge OUR dictionaries with a context/auto-interp metric before concluding anything about local
+   SAEs.** Use `gpt2-res-jb` as the calibration fixture (a metric that can't rank it well is broken). The
+   open question "are OUR from-scratch SAEs actually bad, or just badly measured?" is now the live one —
+   and it's answerable with the assets in hand (cached activation matrices + `p6` contexts + the
+   corrected rubric).
+3. **Causal probing/steering on named concepts remains a real, verified capability** — but it is no
+   longer the *only* surviving interp direction; unsupervised discovery is back on the table pending a
+   metric that can actually see it.
+
+## Files (GPT-2-small control)
+
+- `inspector/spikes/p8_gpt2_control.py` — the deliverable: loads GPT-2-small + the pretrained
+  `gpt2-small-res-jb` SAE via `sae_lens`, harvests WikiText residual + SAE feature acts at
+  `blocks.{layer}.hook_resid_pre` through `run_with_cache`, scores BOTH with the VERBATIM
+  `top_token_coherence` metric (SAE features vs PCA on the same residual), surfaces the top-15
+  most-coherent + top-8 highest-firing features with reconstructed contexts, and fetches the Neuronpedia
+  auto-interp labels. `--from-cache`, `--layer N`, `--sentences N`, `--no-neuronpedia`. Runs in
+  `.venv-sae` (separate env). Note: in `sae_lens` 6.x the hook lives in `sae.cfg.metadata['hook_name']`
+  (handled), and `SAE.from_pretrained(release, sae_id)` returns a `StandardSAE` directly.
+- `inspector/runs/gpt2_control_acts.npz` — the harvested matrix (56,507 × 768 resid + 56,507 × 24,576
+  SAE feats + token pieces + meta), re-analyzable with `--from-cache` (gitignored, ~197 MB).
+- `inspector/runs/gpt2_control.{html,json}` — rendered top features + machine-readable summary (SAE vs
+  PCA coherence, the SAE−PCA gap, 15 top-coherent + 8 high-firing example features WITH contexts and
+  Neuronpedia labels, PCA axes). Gitignored.
+- Validity gate: SAE reconstruction FVU = 0.0015, L0 ≈ 64/token at `blocks.8.hook_resid_pre` (confirms
+  correct hook/convention — not a false null).
