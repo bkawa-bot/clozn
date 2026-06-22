@@ -37,6 +37,11 @@ store as an explicit list of `{key, value, eta, label}` entries injected by a ho
 frozen AR model — provided addressing is sharpened.** The naive raw-dot substrate works but is
 selectivity-limited; that limit is the honest finding, and it is curable without leaving the glass box.
 
+**Capacity (p16→p17):** what first looked like an N-scaling collapse (top-1 6% at N=200) turned out to be a
+*write/read key-position bug*, not a real wall. Fixed (key at a query-time position), the list does
+**exact-cue recall to N≥200** — selection ~100%, expression ~82% — and decorrelation/whitening adds nothing.
+Whether it generalizes past *exact* cues (paraphrase) is untested. See the two capacity sections below.
+
 ## Why this argues for keeping the glass box (not fusing into weights)
 
 The naive `dot` mode is *exactly* what a fused weight delta gives:
@@ -170,16 +175,54 @@ addressing isn't doing work).
 - **False-recall (top-1 = a *different* stored fact's answer) rises monotonically** as the store fills
   (top1: 20%→83%; dot: 60%→97%) — the direct fingerprint of mis-addressing.
 
-**The deeper finding — it's a key-*distinctiveness* wall, not a raw-count wall.** Rung-1's hand-picked
-DIVERSE facts hit 92% top-1 at N=12; p16's programmatic facts (drawn from 16 templates, so many share a
-carrier and differ only in a nonce subject) hit ~40-50% at N=10-20. The gap is the tell: the **key** is the
-MLP post-activation at the *answer* position, which is dominated by the **template/syntactic context**, not
-the (upstream) subject — so two facts sharing a template have near-colliding keys *regardless of N*. The
-ceiling is set by how distinctive the facts' answer-position activations are, not by N per se; in realistic
-use facts share structure, so the effective ceiling is low. **The lever (next rung, p17): a better,
-training-free key** — whitened/orthogonalized keys, a dedicated key projection, or keying on a more
-fact-distinctive position (the subject token) — rather than the raw `mlp.hook_post`. That decides whether
-the fast-weight direction scales past a working-memory handful.
+**p16 raised a hypothesis that p17 then OVERTURNED.** The rung-1-vs-p16 gap (92% at N=12 with diverse
+hand-picked facts; ~40-50% at N=10-20 with programmatic facts sharing 1 of 16 templates) *looked* like a
+key-*distinctiveness* wall — similar cues → colliding keys. **It was not.** p17 (next section) decomposed
+recall into SELECT vs EXPRESS and found the collapse is a **write/read key-position mismatch**, fixable with
+a one-line change; distinctiveness was a red herring. ⚠️ *The "distinctiveness wall" framing in earlier
+drafts of this doc (and in the p16 commit message) was wrong — corrected below.*
+
+## Capacity wall RESOLVED (p17) — a key-position bug, not a wall
+
+`inspector/spikes/p17_betterkey.py` decomposed p16's top-1 decay into **SELECT** (does hard top-1 pick the
+right stored entry?) and **EXPRESS** (does the injected value then win the logits?), across six key variants.
+The result overturns p16's distinctiveness hypothesis:
+
+**The collapse was a write/read key-position MISMATCH.** p15/p16 grab the key at the **answer** position
+(over `cue+answer`) but query at the cue's **final** position (over `cue` only) — two *different*
+activations. So a query self-selects its own stored entry only ~10% of the time at N=200; that single
+artifact is the entire 60%→6% decay.
+
+**Fix: key at a position that exists at query time (the cue's final token), for BOTH write and read.** Every
+consistent-position variant then holds flat:
+
+| N | `raw_answerpos` (= p16's bug) | consistent-key variants |
+|---|---|---|
+| 5   | 60%  | 80%   |
+| 50  | 26%  | 86%   |
+| 200 | **6.5%** | **82.5%** |
+
+Real-vs-shuffled-null gap at N=200: **+81 pts**. Usable capacity moves from ~O(12) to **≥200** (the sweep cap).
+
+- **Decorrelation/whitening adds NOTHING** — `lastcue` (inter-key cosine 0.81) and `whitened` (cosine 0.02)
+  give the *same* ~82%. Every consistent variant self-selects 100% at all N regardless of key geometry: hard
+  top-1 only needs each query's *own* key to be the single nearest, which it is. **Consistency is the whole
+  fix**, not distinctiveness — a clean negative for the whitening lever.
+- **Diverse-vs-colliding confirms it:** at matched N=12 the self-select gap is +42 pts for the broken
+  `raw_answerpos` but **+0 pts** for every consistent variant (100% vs 100%, even at colliding-set cosine
+  0.85). Distinctiveness mattered *only* for the broken key.
+- **`dot` (the fused-ΔW equivalent) stays at its shuffled-key null at all N regardless of key** — a single
+  linear weight delta still has ~no associative capacity. The win lives entirely in the explicit list +
+  nonlinear hard-top-1 addressing. **Third independent confirmation: do not fuse.**
+
+**The honest bound — this is EXACT-CUE recall.** Because the consistent key is the cue's *own* activation and
+the query is the *same* cue string, the stored key and the query key are identical — so SELECT being ~100% is
+near-trivial (an exact-match lookup keyed on the cue representation). The genuinely model-internal number is
+the **EXPRESS** rate (~82%: does injecting the answer's value direction make the answer win the next-token
+logits). What is **not yet tested** — and is the real associative-memory question — is **generalization**:
+does a *paraphrased or partial* cue still retrieve the fact? **Corrected verdict:** keyed correctly, the
+glass-box list does **exact-cue fact recall to N≥200** (selection ~100%, expression ~82%); p16's 'wall' was a
+measurement artifact; generalization past exact cues is the open next rung.
 
 ## Honesty notes / controls / caveats
 
