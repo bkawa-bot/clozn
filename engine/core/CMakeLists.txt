@@ -95,6 +95,22 @@ if(CLOZE_BUILD_CUDA)
     set_target_properties(test_kernel_selector PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_kernel_selector PRIVATE cloze_cuda)
     add_test(NAME kernel_selector COMMAND test_kernel_selector)
+
+    # --- SAE-sparsify top-k kernel (ROADMAP 3.3: the confidence-select top-k repointed at
+    # the FEATURE dim — the on-device primitive for SAE/transcoder inference). Built the same
+    # way as the confidence-select kernel above (vendored from kernels/ as ../../kernels/...),
+    # with a self-contained C++ parity test that gates it against an in-process CPU reference.
+    # Validated on sm_120: selected indices exact, values within f32-vs-f64 eps (also proven
+    # standalone by kernels/sae_topk/validate.py vs the numpy reference).
+    set(SAE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../kernels/sae_topk)  # monorepo: engine/core -> kernels/
+    add_library(cloze_sae_topk STATIC ${SAE_DIR}/sae_topk.cu)
+    set_target_properties(cloze_sae_topk PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_include_directories(cloze_sae_topk PUBLIC ${SAE_DIR})
+
+    add_executable(test_sae_topk tests/test_sae_topk.cu)
+    set_target_properties(test_sae_topk PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(test_sae_topk PRIVATE cloze_sae_topk)
+    add_test(NAME sae_topk COMMAND test_sae_topk)
 endif()
 
 # --- L0 ggml adapter (Phase 3, slice 3) ---
