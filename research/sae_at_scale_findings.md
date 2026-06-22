@@ -146,3 +146,146 @@ middle layer is, if anything, worse on this metric with a SAE this small.
   summary (incl. the full dose-response).
 - `inspector/diag_sae.py`, `inspector/diag_layer.py` — the diagnostics that found the training bug
   and the layer-vs-scale attribution.
+
+---
+
+# Proper-scale rerun: a real SAE + a natural-text harvest
+
+*Run date 2026-06-21. Same substrate (Qwen2.5-0.5B q8_0, engine layer-2 tap), but both confounds
+the §3.6 run flagged are now removed.*
+
+The §3.6 result above ("the gap is gone at scale") carried two explicit caveats that made the
+negative result *provisional*: the SAE was **toy-sized** (m=512, ~1x overcomplete, ~5k tokens), and
+the corpus was the model's **own generated tokens** (repetitive, instruct-skewed, and it crashed the
+server under sustained streaming). This rerun removes both and re-asks the one question that matters:
+**does the SAE>PCA advantage RETURN once the SAE is properly resourced and the data is natural?**
+
+## TL;DR — the verdict: it does NOT return. Mixed-but-negative; the collapse holds.
+
+A 16-32x SAE (14k-28k features), converged (MSE 0.04-0.18) on **120,145 natural WikiText
+token-activations**, lands at best **+3.2 points over PCA's top-256 axes — and 10 points BEHIND PCA's
+top-64**. The toy's decisive 53-point gap (65% vs 12%) does not reappear in any form: the SAE edge is
+a wobbly few points that flips sign with the PCA component count. And qualitatively nothing changed —
+the discovered features are **still token-identity detectors**, not concepts.
+
+| substrate / setup                                   | rows    | SAE | PCA | winner |
+|------------------------------------------------------|---------|-----|-----|--------|
+| toy (published) · RWKV-169m · seeded themes          | ~700    | 65% | 12% | SAE (big) |
+| §3.6 engine · Qwen-0.5B L2 · **toy SAE, generated**  | 5,120   | 40% | 44% | ~tie (PCA) |
+| **this · Qwen-0.5B L2 · big SAE, NATURAL text**      | 120,145 | **44.7%** | **41.5%** (top-256) / **54.8%** (top-64) | mixed → PCA |
+
+The honest reading of the bottom row: against a deep PCA basis (256 axes) the SAE is marginally
+ahead (+3.2); against a tight one (64 axes) it is clearly behind (−10.1). A "win" that depends on
+how many PCA axes you pick is not the SAE advantage the toy advertised — that advantage was
+**unconditional and large**. So: **the collapse is real, not an artifact of under-resourcing.**
+
+## What we actually did (differently this time)
+
+1. **Forward-harvest of natural text (NEW engine endpoint).** Added `POST /harvest` to the C++
+   engine: it tokenizes a text, runs ONE causal forward over all its tokens with the white-box tap
+   on, and returns every token's layer-2 residual (`{tokens:[piece], activations:{dtype,shape,
+   data}}`, the §1.2 tensor wire). This is the "forward-harvest path" §3.6 listed as next-step #3 —
+   one forward per passage, natural held-out text, and it **sidesteps the generation crash entirely**
+   (no sustained streaming). Drove it over WikiText-103 passages -> **120,145 rows × 896**, 21 s,
+   0 crashes (12 over-length passages skipped cleanly). Unique-token ratio **0.088** (vs 0.307 for
+   the old generated set over a tiny prompt list) — far more lexical diversity, real prose.
+2. **A properly-resourced SAE.** Scaled `discover.TinySAE`'s exact objective to a GPU SAE
+   (`TorchSAE` in the new spike) at **16x (m=14,336) and 32x (m=28,672)** expansion, swept L1 in
+   {0.5,1,2,4,8}, **40 epochs / ~9.4k gradient steps each**. Every config CONVERGED (live features
+   ~all of m; MSE 0.039-0.181, never the dead MSE=1.0). PCA baseline at K=256 (reporting top-64 too).
+3. **Same metric.** Un-seeded top-token coherence, identical for SAE and PCA (apples-to-apples).
+
+## The numbers in detail
+
+### SAE L1 dose-response — the sparsity knob bites cleanly now
+
+| expansion | L1  | live feats | mean fire | coherence (live) | recon MSE |
+|-----------|-----|-----------:|----------:|-----------------:|----------:|
+| 16x | 0.5 | 14,112 | 13.3% | 27.8% | 0.049 |
+| 16x | 1.0 | 14,253 |  9.9% | 30.9% | 0.039 |
+| 16x | 2.0 | 14,271 |  7.5% | 35.5% | 0.041 |
+| 16x | 4.0 | 14,320 |  5.2% | 40.7% | 0.044 |
+| 16x | 8.0 | 14,287 |  3.2% | **44.7%** | 0.059 |
+| 32x | 0.5 | 27,376 | 29.0% | 21.6% | 0.181 |
+| 32x | 1.0 | 28,419 | 15.2% | 21.2% | 0.103 |
+| 32x | 2.0 | 28,645 |  7.7% | 24.2% | 0.059 |
+| 32x | 4.0 | 28,620 |  5.0% | 29.0% | 0.056 |
+| 32x | 8.0 | 28,620 |  3.5% | 33.6% | 0.058 |
+
+Two clean, honest trends. (a) **Coherence rises with sparsity** (L1 ↑ ⇒ fire ↓ ⇒ each surviving
+feature locks onto fewer tokens): the metric rewards token-locking, and a sparser SAE token-locks
+harder. (b) **16x beats 32x at matched L1** — the bigger dictionary *splits* features across more
+neurons (feature splitting), lowering per-feature concentration. So the SAE's best case (44.7%) is
+the *smaller*, *sparsest* config; throwing more features at it makes the metric WORSE, not better.
+PCA top-256 = 41.5%, top-64 = 54.8%.
+
+### The 10 most-coherent SAE features (16x, L1=8.0) — still token identity
+
+| feat | fires | reads as | feat | fires | reads as |
+|------|-------|----------|------|-------|----------|
+| f2  | 5.7% | "illo" (subword) | f58 | 4.9% | "and" |
+| f13 | 4.3% | " (" (punct)      | f62 | 4.9% | "regime" |
+| f16 | 5.8% | "Fernandez" (WikiText name) | f73 | 3.6% | "Townsend" (again — splitting) |
+| f36 | 6.1% | "of"             | f82 | 1.7% | "when" |
+| f42 | 3.9% | "Townsend" (WikiText name) | f88 | 2.8% | "L" (subword) |
+
+These are the SAE's **best case** (the 10 most coherent of 14k live features), and they are exactly
+what §3.6 found at toy scale: function words ("of", "and", "when"), punctuation ("("), subword
+fragments ("illo", "L"), and corpus-specific proper nouns ("Townsend", "Fernandez" — WikiText
+article artifacts, and "Townsend" appears TWICE: feature splitting/redundancy, unchanged). **Not one
+is an abstract concept** (a topic, a syntactic role, a sentiment). The properly-resourced SAE on
+clean natural text discovers the same KIND of thing the toy SAE did — it just has 28x more of them.
+PCA finds the same flavour (PC1="@", PC2=",", PC3/4="9", PC6/7="The"), with its top axis (PC0, 37%
+of variance) a polysemantic sentence-initial-capitalized mix ("According/However/Although/Germany").
+
+## Honest caveats (again, louder than the result)
+
+- **This is now a STRONG negative, not a provisional one.** §3.6's collapse could be blamed on the
+  toy SAE / generated corpus. Both are gone, and the result barely moved (SAE 40% → 44.7%, still
+  ~tied-to-behind PCA, still token-identity). The provisional caveat is discharged: **on a 0.5B
+  model's early residual, an SAE — even a big, converged one on clean data — does not buy a
+  monosemanticity advantage over PCA on this metric.**
+- **The metric still rewards token-locking, not abstraction.** Top-token coherence measures how
+  concentrated a feature is on one token; it can be "won" by a feature that fires on one frequent
+  token. It is fair as a *comparison* (SAE and PCA scored identically) but its absolute value is
+  "how token-locked," not "how interpretable." The real frontier metric (auto-interp / does the top
+  set share a part-of-speech / topic / role) is still §3.6 next-step #2 and would be the cleaner
+  judge — but note BOTH methods here produce features with obvious lexical labels, so a richer
+  metric would more likely *confirm* "these are token detectors" than overturn it.
+- **Layer 2 is early.** The engine's tap is hardwired to layer 2 (per-token probe separation), which
+  skews lexical; §3.6 already showed layer 12 is, if anything, *worse* on this metric with a small
+  SAE. The new `/harvest` endpoint accepts a `layer` override (validated at layer 8), so a mid-layer
+  natural-text sweep is now a one-flag rerun — left as the obvious next probe, but it is unlikely to
+  manufacture the toy's 53-point gap given §3.6's layer-12 evidence.
+- **Model scale.** This is a 0.5B model. The published SAE wins are on much larger models with
+  millions-to-billions of tokens; "SAEs beat PCA for interpretability" may simply require a scale
+  this substrate doesn't reach. What we can say rigorously is bounded to THIS model and metric.
+- **A second training-config trap, fixed.** §3.6's bug was too-FEW steps (dead SAE, MSE 1.0). The
+  opposite trap bit here at 120k rows: lr=1e-2 **diverged** (MSE ~75) because ~800 first-token
+  "attention-sink" outlier rows (standardized norm up to ~270) blew up early gradients. The honest
+  config is **lr=1e-3, batch=512, 40 epochs** (MSE 0.04-0.18, all features live). Flagged so neither
+  trap is repeated: verify MSE < 1.0 AND a sane live-feature count before trusting any coherence.
+
+## What this implies for the roadmap
+
+The SAE-on-residual path is not where Clozn's interpretability edge will come from at this model
+scale — PCA is a near-free baseline that matches or beats it, and the discovered units are token
+detectors either way. This **reinforces** §3.6 next-step #5: move to **transcoders** (the field's
+current SOTA substrate; the `p4_qwen_transcoder.py` MLP-IO scaffold exists) and to a **semantic /
+auto-interp metric** rather than chasing a bigger residual SAE. The `/harvest` endpoint is the
+reusable asset that makes all of those one-forward-per-text cheap and crash-free.
+
+## Files (proper-scale rerun)
+
+- `engine/core/serve/cloze_server.cpp` — **NEW `POST /harvest`** endpoint (forward-harvest of all a
+  text's token activations at the tap layer; `{text, layer?}` -> `{tokens, layer, n_tokens, n_embd,
+  activations:{dtype,shape,data}}`). Built + validated (shape [n,896], layer override, clean 400s).
+- `engine/core/src/model_ggml.cpp` + `include/cloze/model_ggml.hpp` — **NEW `GgmlAdapter::harvest()`**
+  (one causal forward, returns ALL `tap_buf_` rows, not just the last like `ar_forward`).
+- `inspector/spikes/p4_big_sae.py` — the reusable harness: `/harvest` corpus collection + a
+  GPU `TorchSAE` (16-32x, streaming top-k so no 120k×28k host matrix) + PCA + coherence, with a
+  `--from-cache` re-analysis path. **The deliverable module for the proper-scale run.**
+- `inspector/runs/qwen_big_natural_acts.npz` — the harvested matrix (120,145 × 896 + token pieces),
+  re-analyzable (gitignored).
+- `inspector/runs/discovered_big_sae_qwen.{html,json}` — rendered features + machine-readable
+  summary (full dose-response, 10 example features, PCA axes, the SAE−PCA gap).
