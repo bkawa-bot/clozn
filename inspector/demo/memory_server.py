@@ -32,7 +32,13 @@ ENDPOINTS (JSON unless noted; CORS enabled so a local file:// HTML page can also
   POST /delete   {label}              -> {ok: true, removed: <label>}
   POST /salience {label, eta}         -> the updated entry
   POST /query    {prompt, topk?}      -> {baseline:[...], with_memory:[...], fired:{label,match_score}|null}
-  GET  /health                        -> {model, layer, n_entries, ...}
+  POST /thinking {prompt}             -> {concepts:[...], tokens:[{tok, lit:[{c,z}]}]}  (the concept read)
+  GET  /health                        -> {model, layer, n_entries, thinking, ...}
+
+The "what is it thinking" read (POST /thinking) is an honest concept PROBE on the SAME frozen model: a
+named diff-in-means concept basis (the validated p18 directions) is built ONCE at startup, and per call
+we project the prompt's per-token residuals onto it and report which concepts beat an equal-norm random
+null (z >= threshold). It is a READ of what is PRESENT in the state -- not a decision, not the output.
 
 MODEL / ENV: GPT-2-small (124M, frozen) via transformer_lens, CPU, in the ISOLATED env
 C:\\Users\\brigi\\src\\clozn\\.venv-sae (matches the static demo). GPT-2 is cached -- no
@@ -74,8 +80,17 @@ def esc_html(s) -> str:
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")  # this PC crashes on HF symlinks (WinError 1314)
 
+import numpy as np                 # noqa: E402
 import torch                       # noqa: E402
 import torch.nn.functional as F    # noqa: E402
+
+# The "what is it thinking" read reuses the VALIDATED diff-in-means concept basis from the p18 spike
+# (same directions thinking_panel.py renders), so /thinking is the same honest probe -- just live on
+# the prompt the user asks, sharing this server's single frozen GPT-2. sys.path already has inspector/.
+from spikes.p18_conceptmem import (   # noqa: E402
+    CONCEPTS as P18_CONCEPTS,
+    build_basis,
+)
 
 
 # ====================================================================================================
@@ -294,6 +309,153 @@ class GlassBoxMemory:
 
 
 # ====================================================================================================
+# The "WHAT IS IT THINKING" read: a live, honest probe of the SAME frozen GPT-2's interior as it takes
+# in the asked prompt. We project the residual stream at every token onto a fixed set of NAMED concept
+# directions (the validated p18 diff-in-means basis -- the same directions thinking_panel.py renders)
+# and report, per token, which concepts rise above an EQUAL-NORM random-direction null. This is a READ,
+# a probe of what is PRESENT in the state -- NOT a claim that the model "decided" anything and NOT what
+# it will output. The basis is built ONCE at startup against the already-loaded model (no second model,
+# no extra download); each /thinking call is one cached forward pass + projections. Logic lifted verbatim
+# from inspector/demo/thinking_panel.py (per_token_resid / neutral_baseline / null_stats / read_trace).
+# ====================================================================================================
+# WHICH concepts to show + a human label and Planet Maiko accent per lane. Directions come from the p18
+# basis (so they are the SAME validated diff-in-means dirs); these entries pick display order/label/color.
+CONCEPT_DISPLAY = [
+    ("animals",  "animals",     "#C4F542"),   # Toxic Lime
+    ("fear",     "fear",        "#FF6FAF"),   # Neon Pink
+    ("colors",   "color",       "#6FE0E8"),   # Frozen Cyan
+    ("money",    "money",       "#FFE66D"),   # Star Yellow
+    ("formal",   "formal tone", "#C9A6FF"),   # Soft Lavender Glow
+    ("past",     "past tense",  "#1FB5E5"),   # Electric Ice
+    ("food",     "food",        "#FFB36F"),   # warm amber (in-family accent)
+    ("question", "questions",   "#A0FFD6"),   # mint (in-family accent)
+]
+
+# A small neutral corpus to CENTER each concept's projection: we subtract each concept's mean projection
+# over these topic-free tokens so a concept that is merely "always a little on" (a frequency / residual-
+# norm artifact) sits near zero, and only genuine above-baseline presence shows. (From thinking_panel.)
+NEUTRAL_PROMPTS = [
+    "The next thing I want to talk about is the",
+    "When I opened the door, I saw the",
+    "Let me tell you about the",
+    "The most important part of the story is the",
+    "After a while, they noticed the",
+    "I think the answer has to do with the",
+    "It was a normal day and nothing much happened.",
+    "She walked along the path and looked around.",
+]
+
+
+class ConceptReader:
+    """Builds the named diff-in-means concept basis ONCE (reusing the server's frozen GPT-2) and reads,
+    for any prompt, the per-token concept activations as z = sigma above an equal-norm random null. A
+    concept only "lights" where its real projection beats that random band (z >= Z_THRESH). Read-only:
+    it never mutates the model or the board -- a probe of what is present in the state, not a decision."""
+
+    Z_THRESH = 2.0    # sigma-above-null to count a concept as "present" (matches thinking_panel default)
+    N_NULL = 400      # random equal-norm directions per token for the null band (the honesty knob)
+
+    def __init__(self, model, layer: int, seed: int = 0):
+        self.model = model
+        self.layer = layer
+        self.seed = seed
+        # pick the concept subset from the p18 basis, preserving display order
+        by_name = {c["name"]: c for c in P18_CONCEPTS}
+        names_internal = [n for (n, _disp, _col) in CONCEPT_DISPLAY]
+        missing = [n for n in names_internal if n not in by_name]
+        if missing:
+            raise ValueError(f"concepts not found in p18 basis: {missing}")
+        self.concepts = [by_name[n] for n in names_internal]
+        self.labels = [disp for (_n, disp, _c) in CONCEPT_DISPLAY]
+        self.colors = [c for (_n, _d, c) in CONCEPT_DISPLAY]
+        self.k = len(self.concepts)
+        # STEP 1: the named diff-in-means basis at L (REUSED from p18) -- built ONCE here.
+        self.dirs, self.units, self.norms = build_basis(model, self.concepts, layer)   # [k,d],[k,d],[k]
+        cos = (self.units @ self.units.T).cpu().numpy()
+        off = cos.copy(); np.fill_diagonal(off, np.nan)
+        self.cosine_mean_abs_off = float(np.nanmean(np.abs(off)))
+        # STEP 2: neutral-corpus baseline per concept (subtracted to remove the always-on offset).
+        self.baseline_unit = self._neutral_baseline()                                  # [k]
+
+    @torch.no_grad()
+    def _per_token_resid(self, text: str):
+        """resid_post at L for every token of `text`, plus token strings (BOS dropped: its residual is a
+        ~30x-norm outlier that would swamp every projection)."""
+        toks = self.model.to_tokens(text)                              # [1, seq] (prepends BOS)
+        name = f"blocks.{self.layer}.hook_resid_post"
+        _, cache = self.model.run_with_cache(toks, names_filter=name)
+        resid = cache[name][0][1:]                                     # [seq-1, d_model], drop BOS
+        strs = [self.model.to_string(t) for t in toks[0][1:]]          # matching token strings
+        return resid, strs
+
+    @torch.no_grad()
+    def _neutral_baseline(self):
+        """Mean projection of each UNIT concept dir over the neutral corpus -> [k], subtracted from every
+        token's projection so the trace measures ABOVE-baseline presence, not absolute projection."""
+        accum = torch.zeros(self.k, device=self.units.device)
+        cnt = 0
+        for p in NEUTRAL_PROMPTS:
+            resid, _ = self._per_token_resid(p)                        # [s, d_model]
+            proj = resid @ self.units.T                                # [s, k]
+            accum = accum + proj.sum(0)
+            cnt += proj.shape[0]
+        return accum / max(cnt, 1)
+
+    @torch.no_grad()
+    def read(self, prompt: str):
+        """The READ for one prompt. For every token: project resid onto each unit concept dir, center by
+        the neutral baseline, and z-score against an equal-norm random null at that token --
+            z[t,c] = (proj[t,c] - baseline[c] - null_mean[t]) / null_std[t]
+        in units of sigma above a random direction (norm cancels in z). Returns a compact dict: tokens +
+        per-token list of {c, z} for concepts clearing Z_THRESH, plus per-concept peak. A fresh, SEEDED
+        generator makes the null reproducible per prompt."""
+        resid, token_strs = self._per_token_resid(prompt)              # [seq,d], list
+        seq, d_model = resid.shape
+        proj = resid @ self.units.T                                    # [seq, k] onto unit dirs
+        proj_centered = proj - self.baseline_unit[None, :]             # center by neutral baseline
+
+        # equal-norm random null on UNIT directions (so it is directly comparable to proj on unit dirs):
+        # one shared bank of random UNIT dirs; a random unit dir has the same projection statistics
+        # regardless of which concept, so the null mean/std is per-token (shared across concepts).
+        g = torch.Generator(device=self.model.cfg.device).manual_seed(self.seed)
+        rand_units = F.normalize(torch.randn(self.N_NULL, d_model, generator=g,
+                                             device=resid.device), dim=-1)      # [n_null, d_model]
+        proj_unit = resid @ rand_units.T                               # [seq, n_null]
+        base_mean = proj_unit.mean(dim=1)                              # [seq]
+        base_std = proj_unit.std(dim=1)                                # [seq]
+        # center the null the same way (subtract baseline) so z compares like-for-like.
+        null_mean_centered = base_mean[:, None] - self.baseline_unit[None, :]   # [seq, k]
+        z = (proj_centered - null_mean_centered) / (base_std[:, None] + 1e-9)   # [seq, k] sigma vs null
+        z = z.cpu().numpy()
+
+        # compact JSON: per token, only the concepts that cleared the null (z >= Z_THRESH), with z.
+        tokens = []
+        for ti in range(seq):
+            lit = [{"c": j, "z": round(float(z[ti, j]), 2)}
+                   for j in range(self.k) if z[ti, j] >= self.Z_THRESH]
+            lit.sort(key=lambda d: -d["z"])
+            tokens.append({"tok": token_strs[ti], "lit": lit})
+        peak_z = z.max(axis=0) if seq else np.zeros(self.k)            # [k] per-concept peak over prompt
+        peak_tok = z.argmax(axis=0) if seq else np.zeros(self.k, dtype=int)
+        concepts = [
+            {"name": self.labels[j], "color": self.colors[j],
+             "peak_z": round(float(peak_z[j]), 2),
+             "peak_tok": int(peak_tok[j]),
+             "lit": bool(peak_z[j] >= self.Z_THRESH)}
+            for j in range(self.k)
+        ]
+        return {
+            "prompt": prompt,
+            "layer": self.layer,
+            "z_thresh": self.Z_THRESH,
+            "n_null": self.N_NULL,
+            "concepts": concepts,            # the named basis: order, label, color, peak z, lit?
+            "tokens": tokens,                # per-token lit concepts (compact: only those above null)
+            "cosine_mean_abs_off": round(self.cosine_mean_abs_off, 3),
+        }
+
+
+# ====================================================================================================
 # The HTTP layer: a tiny stdlib JSON server (no Flask/FastAPI dependency, so .venv-sae is untouched).
 # CORS is wide-open (Access-Control-Allow-Origin: *) so a local HTML file can call it. Single shared
 # MEMORY + model; the GlassBoxMemory lock guards mutation, and ThreadingHTTPServer handles concurrent
@@ -303,11 +465,12 @@ class App:
     """Holds the loaded model + the one live memory. The handler routes requests to these methods,
     each returning (status_code, json_dict)."""
 
-    def __init__(self, model, layer: int, device: str):
+    def __init__(self, model, layer: int, device: str, reader: "ConceptReader | None" = None):
         self.model = model
         self.layer = layer
         self.device = device
         self.mem = GlassBoxMemory(model, layer)
+        self.reader = reader     # the "what is it thinking" concept probe (basis built once at startup)
         self.model_name = "gpt2 (GPT-2-small, 124M, frozen)"
 
     # -- POST /write {cue, answer} -----------------------------------------------------------------
@@ -378,8 +541,29 @@ class App:
             "gate": self.mem.GATE,
         }
 
+    # -- POST /thinking {prompt} -------------------------------------------------------------------
+    def thinking(self, body: dict):
+        """The "what is it thinking" READ for the asked prompt: per-token named-concept activations as
+        z above an equal-norm random null (only concepts that clear the null are returned). A probe of
+        what is PRESENT in the residual state as the model reads, NOT a decision and NOT the output."""
+        prompt = body.get("prompt")
+        if not isinstance(prompt, str) or not prompt:
+            return 400, {"error": "missing or empty 'prompt'"}
+        if self.reader is None:
+            return 503, {"error": "concept reader unavailable (basis failed to build at startup)"}
+        return 200, self.reader.read(prompt)
+
     # -- GET /health -------------------------------------------------------------------------------
     def health(self):
+        thinking = None
+        if self.reader is not None:
+            thinking = {
+                "read_layer": self.reader.layer,
+                "n_concepts": self.reader.k,
+                "concepts": self.reader.labels,
+                "z_thresh": self.reader.Z_THRESH,
+                "n_null": self.reader.N_NULL,
+            }
         return 200, {
             "ok": True,
             "model": self.model_name,
@@ -390,6 +574,7 @@ class App:
             "n_layers": int(self.model.cfg.n_layers),
             "gate": self.mem.GATE,
             "n_entries": len(self.mem.snapshot()),
+            "thinking": thinking,
         }
 
 
@@ -484,6 +669,8 @@ def make_handler(app: App):
                     status, payload = app.salience(body)
                 elif path == "/query":
                     status, payload = app.query(body)
+                elif path == "/thinking":
+                    status, payload = app.thinking(body)
                 else:
                     status, payload = 404, {"error": f"no route POST {path}", "endpoints": ENDPOINTS}
             except Exception as e:  # noqa: BLE001
@@ -504,7 +691,8 @@ ENDPOINTS = [
     "POST /delete   {label}           -> {ok}",
     "POST /salience {label, eta}      -> the updated entry",
     "POST /query    {prompt, topk?}   -> {baseline, with_memory, fired}",
-    "GET  /health                     -> {model, layer, n_entries}",
+    "POST /thinking {prompt}          -> {concepts, tokens:[{tok, lit:[{c,z}]}]}  (what it's thinking)",
+    "GET  /health                     -> {model, layer, n_entries, thinking}",
 ]
 
 
@@ -514,6 +702,8 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="bind host (default loopback; 0.0.0.0 for LAN)")
     ap.add_argument("--port", type=int, default=8077, help="bind port (default 8077)")
     ap.add_argument("--layer", type=int, default=8, help="memory write/read layer (p15/p17 best = 8)")
+    ap.add_argument("--think-layer", type=int, default=7,
+                    help="resid layer for the 'what it's thinking' concept read (p18 basis default = 7)")
     ap.add_argument("--device", default=("cuda" if torch.cuda.is_available() else "cpu"))
     ap.add_argument("--seed-facts", action="store_true",
                     help="pre-load the 3 demo facts (Zorbland/Quibblax/Flonkville) so the memory "
@@ -527,7 +717,20 @@ def main():
     print(f"  loaded. d_model={model.cfg.d_model}  d_mlp={model.cfg.d_mlp}  "
           f"n_layers={model.cfg.n_layers}   memory layer L={args.layer}", flush=True)
 
-    app = App(model, args.layer, args.device)
+    # Build the "what is it thinking" concept basis ONCE here, reusing the just-loaded frozen model (no
+    # second model, no extra download). If it fails, the memory app still runs and /thinking reports 503.
+    reader = None
+    try:
+        print(f"building concept basis for 'what it's thinking' @ blocks.{args.think_layer}."
+              f"hook_resid_post (diff-in-means, p18) ...", flush=True)
+        reader = ConceptReader(model, args.think_layer, seed=0)
+        print(f"  basis built: {reader.k} named concepts {reader.labels}  "
+              f"(mean |off-diag cosine| = {reader.cosine_mean_abs_off:.3f})", flush=True)
+    except Exception as e:  # noqa: BLE001 -- never block the memory server on the optional concept read
+        print(f"  !! concept basis build failed ({type(e).__name__}: {e}); "
+              f"/thinking will return 503, memory app unaffected", flush=True)
+
+    app = App(model, args.layer, args.device, reader=reader)
 
     if args.seed_facts:
         seeds = [
@@ -552,6 +755,11 @@ def main():
     print(f"  CLOZN MEMORY SERVER  ->  {url}")
     print("=" * 78)
     print(f"  model: {app.model_name}   layer: blocks.{args.layer}.mlp   gate: {app.mem.GATE}")
+    if reader is not None:
+        print(f"  thinking: concept read @ blocks.{reader.layer}.hook_resid_post  "
+              f"({reader.k} concepts, z>={reader.Z_THRESH} vs {reader.N_NULL}-sample null)")
+    else:
+        print("  thinking: UNAVAILABLE (basis build failed) -- POST /thinking returns 503")
     if have_frontend:
         print(f"  >> open {url}/  in a browser for the LIVE UI  (serving memory_live.html)")
     else:

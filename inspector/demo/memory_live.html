@@ -141,6 +141,46 @@
   .fired-line .mono { font-variant-numeric:tabular-nums; color:var(--white); font-weight:700; }
   .fired-line .gatecmp { color:var(--gray); font-weight:500; font-size:12px; }
 
+  /* ---- WHAT IT'S THINKING: concept lanes across the prompt's tokens (the live concept read) ---- */
+  .think { margin-top:22px; padding-top:20px; border-top:1px solid rgba(255,255,255,0.07); }
+  .think-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:4px; }
+  .think-title { font-size:14.5px; font-weight:700; color:var(--white);
+    display:flex; align-items:center; gap:8px; }
+  .think-title .glyph { font-size:15px; filter:drop-shadow(0 0 8px rgba(201,166,255,0.6)); }
+  .think-sub { font-size:12px; color:var(--gray); opacity:.85; }
+  .think-sub code { color:var(--cyan); background:rgba(31,181,229,0.10);
+    padding:1px 6px; border-radius:6px; font-size:11px; }
+  .think-grid { margin-top:14px; display:block; overflow-x:auto; }
+  .think-inner { min-width:min-content; }
+  /* token header row aligned with the lane cells */
+  .think-tokrow { display:grid; grid-template-columns:repeat(var(--cols), minmax(34px,1fr));
+    gap:4px; margin-left:120px; margin-bottom:8px; }
+  .think-tok { font-size:11px; color:var(--gray); text-align:center; font-weight:500;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-variant-ligatures:none;
+    opacity:.9; padding-bottom:2px; border-bottom:1px solid rgba(255,255,255,0.06); }
+  .think-lanes { display:flex; flex-direction:column; gap:4px; }
+  .think-lane { display:grid; grid-template-columns:120px 1fr; align-items:center; gap:0; }
+  .think-name { font-size:12.5px; color:var(--gray); display:flex; align-items:center; gap:7px;
+    padding-right:10px; font-weight:500; white-space:nowrap; }
+  .think-name.on { font-weight:700; }
+  .think-dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
+  .think-peak { margin-left:auto; font-size:10px; font-variant-numeric:tabular-nums; font-weight:600; }
+  .think-peak.off { color:var(--gray); opacity:.5; }
+  .think-cells { display:grid; grid-template-columns:repeat(var(--cols), minmax(34px,1fr)); gap:4px; }
+  .think-cell { position:relative; height:26px; border-radius:7px;
+    border:1px solid rgba(255,255,255,0.05); transition:all .5s ease; }
+  .think-cell.lit { border-width:1px; }
+  .think-null { position:absolute; left:16%; right:16%; bottom:4px; height:1px;
+    background:rgba(255,255,255,0.16); border-radius:1px; }
+  .think-foot { margin-top:14px; }
+  .think-present { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:12.5px; }
+  .think-present .lab { color:var(--gray); margin-right:2px; }
+  .think-chip { font-size:12px; padding:3px 11px; border-radius:20px; font-weight:600;
+    border:1px solid; background:rgba(255,255,255,0.03); }
+  .think-none { color:var(--gray); font-style:italic; opacity:.7; }
+  .think-note { font-size:11px; color:var(--gray); opacity:.7; margin-top:9px; line-height:1.6; }
+  .think-note b { color:var(--cyan); font-weight:600; }
+
   /* ---- WRITE form ------------------------------------------------------------------------- */
   .write-row { display:flex; gap:12px; align-items:stretch; flex-wrap:wrap; }
   .write-err { margin-top:14px; font-size:13px; padding:11px 15px; border-radius:12px;
@@ -244,7 +284,8 @@
     <h1>A memory you can<br>see, change, and watch move</h1>
     <p class="lede">A <b>frozen GPT-2-small</b> with a glass-box fast-weight memory, running live in
       your browser. Teach it a fact, watch it recall. Delete it, watch it forget. Ask anything &mdash;
-      every word below is the model's <b>actual</b> next-token prediction. Nothing is faked.</p>
+      and see <b>both</b> what the memory does <i>and</i> which named concepts light up in its interior
+      as it reads. Every number below is the model's <b>actual</b> state. Nothing is faked.</p>
     <div class="meta-line" id="health">connecting to the live model&hellip;</div>
   </header>
 
@@ -254,7 +295,8 @@
     <div class="sec-sub">Type any prompt that ends right before the word you want predicted. We run it
       twice: once on the bare model (<i>baseline</i>), once with the memory live (<i>with memory</i>).
       If a stored fact matches, its answer lights up; if nothing matches, the memory stays silent and
-      the two sides are identical.</div>
+      the two sides are identical. The same prompt is also <b>read</b> token by token below &mdash;
+      which named concepts are present in its interior as it takes the sentence in.</div>
     <div class="panel ask-panel">
       <div class="ask-row">
         <div class="field">
@@ -278,6 +320,23 @@
           </div>
         </div>
         <div class="fired-line" id="ask-fired"></div>
+
+        <!-- what it's thinking: the live concept read on this same prompt -->
+        <div class="think" id="think" style="display:none;">
+          <div class="think-head">
+            <div class="think-title"><span class="glyph">&#10022;</span>what it&rsquo;s thinking</div>
+            <div class="think-sub" id="think-sub"></div>
+          </div>
+          <div class="think-grid"><div class="think-inner" id="think-inner"></div></div>
+          <div class="think-foot">
+            <div class="think-present"><span class="lab">present in its state:</span>
+              <span id="think-present"></span></div>
+            <div class="think-note">A <b>read</b>, not a decision and not the prediction above. Each named
+              concept is a diff-in-means direction; a lane glows only where its projection clears an
+              <b>equal-norm random null</b> (the faint floor in every cell) &mdash; what&rsquo;s present
+              in the residual state as it reads, in named terms.</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -321,13 +380,22 @@
   <div class="footer">
     <div><b>Clozn</b> &mdash; a local runtime where the model's interior is legible and editable.</div>
     <div class="honest">
-      <b>Nothing faked.</b> A frozen GPT-2-small (124M), never fine-tuned. The memory is a literal list
-      of entries injected by one forward hook at a single mid-layer; each value is the answer token's
-      unembedding direction, which decodes to that word by construction. Addressing is gated top-1
-      cosine: a query fires the nearest stored key <i>only</i> if it clears the gate &mdash; otherwise
-      no vector is injected and <b>with memory</b> equals <b>baseline</b> exactly ("stayed silent").
-      Every probability shown is the model's real output. The same backend powers this page; all
-      requests are same-origin.
+      <b>Nothing faked.</b> A frozen GPT-2-small (124M), never fine-tuned &mdash; one model behind this
+      whole page. The memory is a literal list of entries injected by one forward hook at a single
+      mid-layer; each value is the answer token's unembedding direction, which decodes to that word by
+      construction. Addressing is gated top-1 cosine: a query fires the nearest stored key <i>only</i>
+      if it clears the gate &mdash; otherwise no vector is injected and <b>with memory</b> equals
+      <b>baseline</b> exactly ("stayed silent"). Every probability shown is the model's real output.
+      <br><br>
+      <b>The "what it's thinking" panel is a read, not a decision.</b> Each named concept is a
+      <i>diff-in-means</i> direction (mean residual over positive example sentences minus contrast
+      sentences) built once at startup on this same frozen model. As it reads your prompt we project
+      the residual at every token onto each direction; the honesty knob is the <b>null</b>: a raw
+      projection is meaningless because bigger residuals project more onto <i>everything</i>, so at
+      each token we also project onto hundreds of random directions of equal norm and report
+      <b>z = how many σ the real direction sits above that random band</b>. A concept lights up only
+      where it clears the null &mdash; what's <i>present</i> in its state, not what it "decided" or will
+      say. The same backend powers this page; all requests are same-origin.
     </div>
   </div>
 
@@ -365,6 +433,13 @@ function showWord(w){
   // replace a single leading space with a thin visible marker so " blue" reads as a space + word
   var t = w.replace(/ /g, '·');   // middle-dot stands in for spaces so they are visible
   return t;
+}
+// "#RRGGBB" -> "r,g,b" for rgba() glows in the concept lanes (Planet Maiko accents)
+function hexToRgb(h){
+  h = String(h).replace('#','');
+  if(h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  var n = parseInt(h, 16);
+  return ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255);
 }
 
 async function api(path, opts){
@@ -533,17 +608,129 @@ function chipRow(list, litWord){
   }).join('');
 }
 
+// ---------------------------------------------------------------------------------------------
+// WHAT IT'S THINKING -- render the live concept read (POST /thinking) as glowing concept lanes
+// across the prompt's tokens. Honest: only concepts whose z clears the null come back lit; a lane
+// glows by its peak z. Framed as "present in its state," a read, never "decided".
+// ---------------------------------------------------------------------------------------------
+function showTok(t){ var s = (t==null?'':String(t)).trim(); return s ? s : '·'; }
+
+// z (sigma above the null) -> 0..1 glow. Threshold sits partway up so a cell really glows only once it
+// clears the band; soft, not binary, so the trace reads as a gradient of presence.
+function thinkGlow(z, zt){
+  if(z == null || z <= 0) return 0;
+  var g = z / (zt * 2.2);
+  return Math.max(0, Math.min(1, g));
+}
+
+function renderThinking(t){
+  var box = document.getElementById('think');
+  var inner = document.getElementById('think-inner');
+  var sub = document.getElementById('think-sub');
+  var present = document.getElementById('think-present');
+  if(!t || !t.concepts || !t.tokens){ box.style.display = 'none'; return; }
+  var concepts = t.concepts;          // [{name,color,peak_z,peak_tok,lit}]
+  var tokens = t.tokens;              // [{tok, lit:[{c,z}]}]
+  var seq = tokens.length;
+  var k = concepts.length;
+  var zt = t.z_thresh || 2.0;
+
+  // per (token, concept) z lookup from the compact lit lists (absent => below null => dark)
+  var Z = [];
+  for(var ti=0; ti<seq; ti++){
+    var row = new Array(k).fill(null);
+    var lit = tokens[ti].lit || [];
+    for(var m=0; m<lit.length; m++){ row[lit[m].c] = lit[m].z; }
+    Z.push(row);
+  }
+
+  // token header row
+  var toks = tokens.map(function(tk){
+    return '<div class="think-tok" title="' + esc(tk.tok) + '">' + esc(showTok(tk.tok)) + '</div>';
+  }).join('');
+
+  // one lane per concept; each cell's glow = this concept's z at that token
+  var lanes = concepts.map(function(c, j){
+    var col = c.color;
+    var cells = '';
+    for(var ti=0; ti<seq; ti++){
+      var zz = Z[ti][j];
+      var g = thinkGlow(zz, zt);
+      var litCell = (zz != null && zz >= zt);
+      var bg = 'rgba(' + hexToRgb(col) + ',' + (0.05 + 0.46*g).toFixed(3) + ')';
+      var style = 'background:' + bg + ';';
+      if(g > 0) style += 'box-shadow:0 0 ' + Math.round(2 + 18*g) + 'px rgba(' + hexToRgb(col) + ',' + (0.10 + 0.5*g).toFixed(3) + ');';
+      var cls = 'think-cell';
+      if(litCell){ cls += ' lit'; style += 'border-color:rgba(' + hexToRgb(col) + ',0.75);'; }
+      var zlabel = (zz==null ? '<0' : (zz>=0?'+':'') + zz.toFixed(1));
+      var title = c.name + " @ '" + showTok(tokens[ti].tok) + "': z=" + zlabel + 'σ vs equal-norm random null';
+      cells += '<div class="' + cls + '" style="' + style + '" title="' + esc(title) + '"><span class="think-null"></span></div>';
+    }
+    var on = !!c.lit;
+    var pk = (c.peak_z>=0?'+':'') + (c.peak_z==null?0:c.peak_z).toFixed(1) + 'σ';
+    var nameCls = on ? 'think-name on' : 'think-name';
+    var nameStyle = on ? ('color:' + col + ';') : '';
+    var peakCls = on ? 'think-peak' : 'think-peak off';
+    var peakStyle = on ? ('color:' + col) : '';
+    return '<div class="think-lane">' +
+        '<div class="' + nameCls + '" style="' + nameStyle + '">' +
+          '<span class="think-dot" style="background:' + col + ';opacity:' + (on?0.95:0.28) + '"></span>' +
+          esc(c.name) +
+          '<span class="' + peakCls + '" style="' + peakStyle + '">' + pk + '</span>' +
+        '</div>' +
+        '<div class="think-cells">' + cells + '</div>' +
+      '</div>';
+  }).join('');
+
+  inner.style.setProperty('--cols', seq);
+  inner.innerHTML = '<div class="think-tokrow" style="--cols:' + seq + '">' + toks + '</div>' +
+                    '<div class="think-lanes" style="--cols:' + seq + '">' + lanes + '</div>';
+
+  // present-in-state chips (peak z >= threshold), brightest first
+  var litC = concepts.filter(function(c){ return c.lit; })
+                     .sort(function(a,b){ return b.peak_z - a.peak_z; });
+  present.innerHTML = litC.length
+    ? litC.map(function(c){
+        return '<span class="think-chip" style="border-color:rgba(' + hexToRgb(c.color) + ',0.6);color:' +
+               c.color + '">' + esc(c.name) + ' <span style="opacity:.7">' +
+               (c.peak_z>=0?'+':'') + c.peak_z.toFixed(1) + 'σ</span></span>';
+      }).join('')
+    : '<span class="think-none">(nothing cleared the null on this prompt)</span>';
+
+  sub.innerHTML = 'projected at <code>blocks.' + esc(t.layer) + '.hook_resid_post</code> &middot; ' +
+    'glow = σ above a ' + esc(t.n_null) + '-sample equal-norm random null &middot; lit &ge; <code>' +
+    (zt.toFixed ? zt.toFixed(0) : zt) + 'σ</code>';
+
+  box.style.display = 'block';
+}
+
+// fire /thinking for the asked prompt and render it (failure is non-fatal: the panel just hides)
+async function loadThinking(prompt){
+  try {
+    var res = await api('/thinking', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({prompt: prompt})
+    });
+    if(!res.ok){ document.getElementById('think').style.display = 'none'; return; }
+    renderThinking(res.data);
+  } catch(e){ document.getElementById('think').style.display = 'none'; }
+}
+
 async function doAsk(){
   var prompt = document.getElementById('ask-prompt').value;
   var btn = document.getElementById('ask-btn');
   if(!prompt){ toast('type a prompt first'); return; }
   btn.disabled = true; btn.textContent = 'asking…';
+  // run BOTH reads on the same prompt in parallel: the memory effect (/query) and the concept read
+  // (/thinking). One ask -> baseline-vs-with-memory AND which named concepts lit up as it read.
+  document.getElementById('think').style.display = 'none';
+  var thinkP = loadThinking(prompt);
   var res = await api('/query', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({prompt: prompt, topk: 5})
   });
   btn.disabled = false; btn.textContent = 'ask';
-  if(!res.ok){ toast(res.data.error || 'query failed'); return; }
+  if(!res.ok){ toast(res.data.error || 'query failed'); thinkP.catch(function(){}); return; }
   var d = res.data;
   var fired = d.fired;                       // {label, match_score, answer, decoded_word} | null
 
