@@ -195,6 +195,46 @@ ForwardResult GgmlAdapter::ar_forward(const std::vector<int>& tokens, int n_past
     return out;
 }
 
+ForwardResult GgmlAdapter::harvest(const std::vector<int>& tokens) {
+    const int len = static_cast<int>(tokens.size());
+    if (len <= 0) throw std::invalid_argument("harvest: empty tokens");
+    if (len > n_ctx_) throw std::invalid_argument("harvest: exceeds n_ctx");
+
+    // One causal forward over the whole text from a clean cache: positions [0, len). We need ALL
+    // rows' logits=1 so the tap captures every row (decode_only sets logits=1 everywhere). Reset the
+    // KV first so this text's K/V never sees a prior text's positions (each /harvest is independent).
+    llama_memory_clear(llama_get_memory(ctx_), true);
+    frozen_end_ = 0;
+    boundary_row_.clear();
+    decode_only(tokens, 0, len);   // logits=1 at every position; tap_buf_ fills with all `len` rows
+
+    const int vocab = cfg_.vocab_size;
+    ForwardResult out;
+    out.n_requested = 0;           // harvest returns state, not a distribution (logits left empty)
+    out.vocab = vocab;
+    out.kv = std::make_shared<GgmlKV>(len);
+
+    if (n_embd_ <= 0) return out;  // model has no hidden size? nothing to harvest
+    out.n_embd = n_embd_;
+    out.act_rows.resize(len);
+    for (int r = 0; r < len; ++r) out.act_rows[r] = r;  // row r = token r's residual
+
+    if (emit_activations_ && tap_layer_ > 0 && tap_rows_ == len &&
+        tap_buf_.size() == static_cast<size_t>(len) * n_embd_) {
+        out.activations = tap_buf_;  // mid-layer residual l_out-<tap_layer_>, all `len` rows in order
+    } else {
+        // Final-layer fallback (tap_layer_ == 0, or the cb didn't fire): pull every row's embedding.
+        // decode_only set logits=1 for all positions, so output index r == position r.
+        out.activations.assign(static_cast<size_t>(len) * n_embd_, 0.0f);
+        for (int r = 0; r < len; ++r) {
+            const float* e = llama_get_embeddings_ith(ctx_, r);
+            if (e) std::memcpy(out.activations.data() + static_cast<size_t>(r) * n_embd_, e,
+                               static_cast<size_t>(n_embd_) * sizeof(float));
+        }
+    }
+    return out;
+}
+
 void GgmlAdapter::decode_only(const std::vector<int>& board, int from, int to) {
     const int len = to - from;
     if (len <= 0) throw std::invalid_argument("empty decode segment");

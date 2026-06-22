@@ -138,6 +138,18 @@ public:
     void set_causal(bool on);
     bool causal() const { return causal_; }
     ForwardResult ar_forward(const std::vector<int>& tokens, int n_past);
+
+    // Forward-HARVEST (the §3.1 "activation harvesting at scale" path): one causal forward over a
+    // whole text and ALL its per-token residuals at the tap layer — NOT just the last row like
+    // ar_forward. Decodes `tokens` at absolute positions [0, n) under causal attention with the tap
+    // on, then returns the full [n x n_embd] tap_buf_ (row r = the residual the model computed for
+    // token r, having read tokens 0..r). One forward per text => natural-text activations, cheaply,
+    // and no sustained-generation streaming (which crashed §3.6). Returns activations + act_rows
+    // (= [0, n)) + n_embd in a ForwardResult; logits are left empty (harvest wants the state, not a
+    // distribution). The caller must have set_causal(true) + set_emit_activations(true) + a mid tap
+    // (tap_layer_ > 0); on the final-layer fallback (tap_layer_ == 0) it returns the per-token
+    // embeddings instead (one D2H per token — slower but still correct). Not a golden path.
+    ForwardResult harvest(const std::vector<int>& tokens);
     // Number of forwards that actually took the device path (host D2H skipped) — lets a test
     // prove the zero-copy path was exercised rather than silently falling back to host.
     long long device_forwards() const { return device_forwards_; }

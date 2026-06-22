@@ -939,6 +939,89 @@ int main(int argc, char** argv) {
         res.set_content(resp.dump(), "application/json");
     };
 
+    // POST /harvest — the §3.1 "activation harvesting at scale" READ endpoint. Body {text, layer?}:
+    // tokenize `text`, run ONE causal forward over all its tokens with the white-box tap on, and
+    // return every token's residual at the tap layer (NOT a generation — no sampling, no streaming).
+    // Response: {tokens:[piece,...], layer:N, activations:{dtype:"float32", shape:[n_tokens,n_embd],
+    // data: base64-LE}} — the matrix a discovery harness (SAE/PCA) trains on. `layer` (optional)
+    // overrides the adapter's default tap (else the calibrated early tap, layer 2 for Qwen-0.5B);
+    // an out-of-range value falls back to the final layer. One forward per text => efficient, and it
+    // captures NATURAL-text activations (every input token), sidestepping the sustained-generation
+    // crash the generation-based harvest hit. Works in either mode (it forces causal locally); the
+    // pooled context is restored (tap default + emit off) before release.
+    svr.Post("/harvest", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+        if (body.is_discarded()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON body"}}.dump(), "application/json");
+            return;
+        }
+        const std::string text = body.value("text", std::string());
+        if (text.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "empty text"}}.dump(), "application/json");
+            return;
+        }
+        const std::vector<int> tokens = model->encode(text);
+        if (tokens.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "text tokenized to zero tokens"}}.dump(), "application/json");
+            return;
+        }
+        // One forward decodes all tokens in a single ubatch (n_ubatch == n_ctx), so a passage longer
+        // than the context can't be harvested in one pass — reject it cleanly (400) BEFORE acquiring a
+        // context, so an over-length passage is a skippable client error, never a 500. The harvester
+        // chunks its corpus under this; the explicit guard keeps the contract honest at the edge.
+        if (static_cast<int>(tokens.size()) > n_ctx) {
+            res.status = 400;
+            res.set_content(json{{"error", "text too long for one forward"},
+                                 {"n_tokens", static_cast<int>(tokens.size())},
+                                 {"n_ctx", n_ctx}}.dump(), "application/json");
+            return;
+        }
+        const bool has_layer = body.contains("layer") && body["layer"].is_number();
+        const int req_layer = has_layer ? body["layer"].get<int>() : -1;
+
+        try {
+            ForwardResult fwd;
+            int used_layer = 0;
+            {
+                ContextPool::Lease lease = pool.acquire();
+                GgmlAdapter& ad = *lease;
+                const int default_tap = ad.tap_layer();
+                ad.set_causal(true);            // harvest under causal attention (also clears the KV)
+                ad.set_emit_activations(true);  // white-box tap on for this call
+                if (has_layer) ad.set_tap_layer(req_layer);  // 0 / out-of-range => final-layer fallback
+                used_layer = ad.tap_layer();
+                try {
+                    fwd = ad.harvest(tokens);
+                    ad.set_emit_activations(false);   // restore the pooled context for the next request
+                    ad.set_tap_layer(default_tap);
+                } catch (...) {
+                    ad.set_emit_activations(false);   // restore even on failure, then rethrow
+                    ad.set_tap_layer(default_tap);
+                    throw;
+                }
+            }
+
+            json pieces = json::array();
+            for (int id : tokens) pieces.push_back(model->decode({id}));
+            json resp = {
+                {"tokens", pieces},
+                {"layer", used_layer},
+                {"n_tokens", static_cast<int>(tokens.size())},
+                {"n_embd", fwd.n_embd},
+                {"activations", tensor_json_f32(
+                    fwd.activations,
+                    {static_cast<int>(tokens.size()), fwd.n_embd})},
+            };
+            res.set_content(resp.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
     svr.Post("/v1/completions",
              [&](const httplib::Request& req, httplib::Response& res) { handle(req, res, false); });
     svr.Post("/v1/infill",
