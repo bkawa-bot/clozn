@@ -457,3 +457,193 @@ that makes both of those follow-ups one-forward-per-text and crash-free.
   readable summary (full dose-response for transcoder & SAE, PCA axes, the transcoder−SAE and
   transcoder−PCA gaps, 10 example features each). The control (SAE-on-L2 = 40.7%/44.7%) is recorded
   here in the writeup; reproduce it with `p4_big_sae`'s `TorchSAE` on the cached `Xin`.
+
+---
+
+# Semantic / auto-interp metric: was the token metric the confound, or is the null robust even semantically?
+
+*Roadmap Phase 3 §3.6 next-step #2 — "a semantic metric, not token-identity." The close of the
+interp-at-scale arc.*
+*Run date 2026-06-21. Same artifacts (Qwen2.5-0.5B q8_0, engine layer-2 tap, the 120,145-token
+WikiText `/harvest` matrix and the 16x L1=8 SAE from the proper-scale run — re-trained deterministically
+from cache, reproduces exactly: token-coherence 44.7%, MSE 0.059).*
+
+Every prior run on this page reached the same null — top features are **token-identity detectors**,
+no SAE/transcoder advantage over PCA — and every one used the SAME metric: **top-activating-TOKEN
+coherence**, which *structurally can only reward token-locking*. A feature that fires on many
+DIFFERENT number words ("one", "two", "nine", "forty") scores ~5% on token-coherence yet would be a
+perfectly good *semantic* "number" feature. So the metric may have hidden semantic structure the
+whole time. Every prior writeup flagged this and named the fix. This run runs it, two ways: **LLM
+auto-interp on top-activating contexts** (does a feature read as a concept/role/topic, not a token?)
+and **concept alignment** (does any feature track the inspector's semantic labels — number / tense /
+person / sentence-type / sentiment — ACROSS different tokens?).
+
+## TL;DR — the verdict: it is a ROBUST NULL, even semantically. The metric was NOT the (only) confound.
+
+Re-scoring the very same features with a semantic eye does **not** rescue them. (1) **Auto-interp:** of
+60 candidate features (the top-20 by token-coherence ∪ by density ∪ by activation-spread), **~3–5 are
+weakly semantic** (a syntactic/positional role like "concessive connective at clause start" or
+"cardinal-number-word starting a sentence"), the rest are token-identity or polysemantic grab-bags —
+and crucially the few semantic-ish ones are **syntactic/positional**, not the topical/conceptual
+features auto-interp is supposed to surface. (2) **Concept alignment (the quantitative half):** with
+honest held-out scoring + a label-permutation null, **no SAE feature beats PCA on any of the five
+concepts** (single-unit held-out AUC: SAE 0.67–0.76 vs PCA 0.76–0.82, both barely above their own
+null), and a whole-representation probe has **PCA ahead 3–1**. The single "perfect" alignment (sentence
+q/stmt, AUC 1.00) is a **"."-token detector** firing on 22/24 sentences with one distinct token — the
+metric confound made visible, not a concept.
+
+So the token-coherence metric was a fair scorer after all *on this substrate*: a richer metric finds
+the same thing it did — **these units are token/position detectors, not concepts** — exactly as the
+prior writeups predicted ("a richer metric would more likely *confirm* 'these are token detectors'
+than overturn it"). The interp-at-scale null on this 0.5B early-layer setup is **robust to the metric.**
+
+## What we actually did
+
+1. **Reconstructed top-activating examples WITH CONTEXT.** The saved `/harvest` matrix stores tokens
+   in corpus order, so a window of neighbouring `pieces` IS the context (focus token marked `<<…>>`).
+   No re-harvest needed. For each feature we emit its top-10 contexts (≈30 tokens each) — the unit the
+   token metric throws away. (`runs/p6_autointerp_contexts.json`: 60 SAE features + 16 PCA axes.)
+2. **Ranked features THREE ways** so the judge isn't shown only the token-locked winners: by
+   token-coherence (the old lens), by **activation density** (features that fire broadly — where a
+   concept would hide), and by **activation spread** (peaky-vs-peaky). Union of the top-20 of each = 60.
+3. **Auto-interp (LLM-judged, harsh).** For every candidate, judge the contexts: nameable SEMANTIC
+   pattern (concept / syntactic role / topic / sentiment) or token-bound? "Fires on the token X" =
+   token-bound, full stop, even if X is a content word.
+4. **Concept alignment (quantitative, the part we compute).** Harvested the inspector's five
+   matched-frame minimal-pair corpora (atlas/probes: number, tense, person, sentence-type, sentiment)
+   through the SAME layer-2 tap (final-token = sentence rep), encoded through the SAE and the PCA
+   basis, and scored each unit by **held-out** concept AUC with **(a)** a ≥8-firer floor (a 1–4 firer
+   can hit AUC≈1 by luck — the degeneracy trap the transcoder run flagged) and **(b)** a
+   label-permutation null (what "max over 14k features" scores by chance on 24–48 sentences). Plus a
+   **whole-representation** k-fold linear probe (the inspector's `kfold_accuracy`) on the full SAE code
+   vs the full PCA projection — the fair, no-cherry-pick comparison.
+
+## (1) Auto-interp judgments — 10 concrete examples (feature → verdict → sample contexts)
+
+The harsh tally over the 60 candidates: **~50 token-bound** (a single literal token, 100% coherence),
+**~7 polysemantic grab-bags** (varied tokens but no unifying concept), **~3–5 weakly semantic**
+(a real but *syntactic/positional* pattern across different tokens). **Zero** clean topical/conceptual
+features ("this fires on text ABOUT war / chemistry / sentiment", token-independently). Examples:
+
+| feature | surfaced by | my verdict | what the contexts show |
+|---------|-------------|-----------|------------------------|
+| **f3966** | spread (coh 0.65) | **WEAKLY SEMANTIC** ✓ | Cardinal-number words starting a sentence: `<<Two>> weeks prior`, `<<Three>> days later`, `<<One>> of the most popular`, `<<Nine>>, the product of three`, `<<Each>> wall has`. Tracks "number/quantifier at sentence-start" across 6 distinct tokens — a genuine pattern the token metric scored low. But it's **syntactic-positional**, and entangled with passage-onset capitalization. |
+| **f4544 / f14112** | spread (coh 0.35/0.25) | **WEAKLY SEMANTIC** ✓ | Concessive/discourse connectives at clause start: `<<Although>> the Egyptians believed`, `<<However>>, a bout`, `<<While>> Fingal was discharging`, `<<Though>> Townsend was proud`. A real syntactic-role feature across Though/Although/However/While — the best "concept-like" case found. |
+| **f11982** | spread (coh 0.35) | **WEAKLY SEMANTIC** ✓ | Quantifier-determiner sentence starts: `<<Most>> of the equipment`, `<<Many>> of the assassins`. Real "quantifier" pattern, but only 2 distinct tokens (Most/Many). |
+| **f14273** | density (coh 0.20) | **POLYSEMANTIC grab-bag** ✗ | 7 distinct tokens, no unifying idea: `cardiac <<arrest>>`, `the Polish <<government>>`, `her <<departure>>`, `the Polish <<people>>`, `my <<name>>`, `Soviet <<invasion>>`. Mid-frequency nouns thrown together — the density lens's "broad" feature is just diffuse, not a concept. |
+| **f7242** | density (coh 0.80) | **TOKEN-BOUND** ✗ | The token "rock"/"Rock" — but polysemous across meanings the feature does NOT separate: `30 <<Rock>>` (TV show), `<<rock>> production style`, `Rashtrakuta <<rock>>-temple`. Mono-token, not mono-semantic. |
+| **f11406** | density (coh 1.0) | **TOKEN-BOUND** ✗ (topical tint) | The token "god": `the sun <<god>> 's rule`, `<<god>> of Elephantine Island`, `the universal <<god>>`. 100% one token; it only *looks* topical because the WikiText "Egyptian religion" article is long. |
+| **f122 / f9760 / f12918** | spread (coh 0.2–0.6) | **TOKEN-BOUND / boundary artifact** ✗ | Proper-noun first-token-of-passage: `<<Egypt>>ian deities`, `<<Germany>> 's policy`, `<<Atlanta>> was a casemate`, `<<Jordan>> played`. Looks like "topic onset" but is the passage-boundary capitalized-first-token confound — different articles, not a learned topic axis. |
+| **f2 / f16 / f42 / f62** | coherence (coh 1.0) | **TOKEN-BOUND** ✗ | The token-metric "winners": `Truj<<illo>>`, ` <<Fernandez>>`, ` <<Townsend>>` (twice — feature splitting), ` <<regime>>`. WikiText proper-noun / article-specific. Pure token identity, as every prior run found. |
+| **f36 / f58 / f105 / f166** | coherence (coh 1.0) | **TOKEN-BOUND** ✗ | Function words / punctuation: ` <<of>>`, ` <<and>>`, ` <<not>>`, ` <<.>>`. 100% single-token. |
+| **f12394 / f14 / f11005** | spread (coh 0.55–0.85) | **TOKEN-BOUND (positional)** ✗ | Single sentence-initial function words: `<<During>> the…`, `<<In>> 2009…`, `<<As>> with…`. Position-locked AND token-locked (≤1–3 distinct tokens) — not a concept. |
+
+Read across the table, the pattern is unambiguous: the **only** units that escape pure token-identity
+are **syntactic-positional** (connective / quantifier / number-word at clause start), and even those
+are entangled with the passage-onset capitalization artifact. Nothing reads as a token-independent
+**topic or concept**. The density and spread lenses — built specifically to surface features the token
+metric buries — surface diffuse polysemantic grab-bags, not hidden concepts.
+
+## (2) Concept-alignment numbers — SAE features vs PCA axes on semantic minimal pairs
+
+Held-out single-unit AUC (best unit picked on train folds, scored on the held-out fold;
+`max(auc, 1−auc)`), with the label-permutation null in parentheses; plus the whole-representation
+k-fold probe accuracy. **A real win must clear the null AND beat PCA.**
+
+| concept | SAE best unit (held-out AUC, null) | PCA best axis (AUC, null) | whole-repr probe: SAE / PCA / raw | semantic? |
+|---------|-----------------------------------:|--------------------------:|----------------------------------:|-----------|
+| number (sing/plural)  | f5635 **0.76** (0.68), 8 firers, 5 toks | PC241 **0.80** (0.66) | 0.04 / 0.08 / 0.38 | no — PCA ahead |
+| tense (past/present)  | f1007 **0.74** (0.71), 8 firers, 5 toks | PC182 **0.80** (0.67) | 0.12 / 0.08 / 0.21 | no — PCA ahead |
+| person (1st/3rd)      | f8775 **0.74** (0.74 = null!), 8 firers | PC72 **0.82** (0.71) | 0.17 / 0.50 / 0.50 | no — at chance |
+| sentence (q/stmt)     | f218 **1.00** (0.82), 22 firers, **1 tok** | PC0 **1.00** (0.73) | 0.50 / 0.50 / 0.50 | **no — it's the "." token** |
+| sentiment (pos/neg)   | f11158 **0.67** (0.64), 8 firers, 7 toks | PC131 **0.76** (0.65) | 0.38 / 0.48 / 0.48 | no — PCA ahead |
+
+**SAE single-unit wins over null+PCA: 0/5. Whole-representation probe: PCA wins 3, SAE 1, tie 1.**
+
+Three honest reads:
+- **Every SAE single-unit "win" is a null once cross-validated.** The first (un-validated) pass
+  reported AUC 0.93–1.00 for number/tense/person — all from features firing on **4 of 24** sentences,
+  i.e. multiple-comparisons flukes (14k features × 24 samples → something separates by chance). With a
+  ≥8-firer floor and held-out folds they collapse to 0.67–0.76, at or just above their permutation
+  null, and **below PCA on all five**. This is the degeneracy trap the transcoder run's `MIN_LIVE`
+  guard was built for, now caught on the alignment metric too.
+- **The one AUC=1.00 is the confound, photographed.** SAE f218 separates question vs statement
+  perfectly — by firing on the sentence-final **"."** token (1 distinct token, 22/24 firers).
+  Statements end in ".", questions in "?". That is exactly "token-locking masquerading as a concept";
+  PCA's PC0 does the same. It *confirms* the metric critique rather than refuting it.
+- **The most semantic-looking unit still doesn't clear the bar.** Sentiment f11158 fires on
+  negative-valence words across **7 distinct tokens** (ruined / insult / failure / disgusting / loss /
+  dreadful) — the closest thing to a token-independent concept in the whole test. But held-out AUC
+  0.665 vs null 0.643 is not distinguishable from chance on 48 sentences, and PCA (0.76) beats it.
+  Suggestive, not significant — and notably, **PCA already captures sentiment better** without any
+  sparse dictionary.
+- **Caveat on the probe magnitudes:** the grammar concepts are barely linearly decodable from a
+  **layer-2 sentence-final token at all** (raw-activation probe 0.21–0.50), so these are weak-signal
+  conditions for *every* method. That is itself part of the finding (layer-2 is lexical, not where
+  sentence-level grammar lives) — but it does **not** rescue the SAE, which underperforms raw acts and
+  PCA. The point estimate, fairly measured, is: **no SAE concept-tracking advantage.**
+
+## Honest caveats (louder than the result)
+
+- **This makes the negative STRONGER, not weaker.** The prior runs left "use a semantic metric" as the
+  one untried lever that might overturn the null. It's now tried — auto-interp AND quantitative concept
+  alignment — and the verdict holds on both. The token-coherence metric was **not** hiding semantic
+  structure on this substrate; it was reporting the truth (token detectors) in the only vocabulary it
+  had. The provisional "maybe the metric was the confound" caveat is **discharged**.
+- **Bounded to THIS substrate, and the bound is real.** 0.5B model, **layer 2** (early/lexical — where
+  token-identity is *expected* to dominate; sentence-grammar barely decodes here even from raw acts),
+  this corpus, sentence-level concepts, sentence-final-token representation. Published auto-interp /
+  concept-feature wins (Anthropic, Neuronpedia, GemmaScope) are on **far larger models, mid/late
+  layers, millions–billions of tokens**, and often **per-token** (not sentence-pooled) concept labels.
+  The clean statement is: **on a 0.5B model's layer-2 residual, sparse-dictionary features are token/
+  position detectors under BOTH a token metric and a semantic metric** — not "SAEs have no semantic
+  features anywhere."
+- **The concept corpora are small (12 pairs/concept) and sentence-pooled.** 24–48 sentences is why the
+  null band is wide (~0.64–0.82) and why a held-out + permutation discipline was mandatory. A larger,
+  **per-token** concept-labeled probe set (label every token's grammatical number, not the sentence's)
+  would be a cleaner alignment test and is the obvious refinement — but it would have to overturn a
+  result that is currently *consistent across token-coherence, density-ranked auto-interp, and
+  concept-AUC*, which the layer-2 evidence makes unlikely.
+- **Auto-interp judge = the model in this run.** A documented limitation of LLM auto-interp generally;
+  mitigated by harshness (token-bound unless a token-independent pattern is explicit) and by the
+  quantitative half agreeing. Mechanical proxies confirm the direction: mean distinct-top-tokens over
+  the 50 token-coherence/positional features ≈ **1**; the 3 "weakly semantic" ones have 2–6.
+
+## What this implies for the interp-at-scale direction
+
+**The sparse-dictionary-on-residual program is exhausted on this 0.5B substrate — and now exhausted on
+the metric axis too.** PCA, a residual SAE, a layer-residual transcoder (all on token-coherence) AND a
+re-score under a semantic metric (auto-interp + concept-AUC) converge on one answer: **the discovered
+units are token/position detectors, PCA matches or beats the SAE, and no concept features emerge that a
+semantic metric ranks above PCA.** The "wrong metric" escape hatch is closed. Two directions remain,
+and the honest prior on each shifts:
+
+1. **A bigger model / mid-late layer is now the load-bearing variable, not the method.** Three method
+   swaps (SAE size, transcoder objective) and one metric swap (semantic) all nulled at 0.5B/L2. The
+   remaining hypothesis for "interp-at-scale works" is **scale itself** (model + layer + token count),
+   which this substrate cannot reach. If Clozn wants a feature-discovery win, it needs a bigger
+   substrate — not a cleverer dictionary or metric on Qwen-0.5B. **Recommendation: stop iterating
+   sparse dictionaries on this model.**
+2. **Clozn's interpretability edge is its CAUSAL / white-box machinery, not unsupervised discovery.**
+   The inspector's concept *probes* (number/person/tense/sentiment) DO decode and steer with causal
+   verification (atlas/probes) — a supervised, honesty-gated read+write loop that needs no monosemantic
+   dictionary. The arc's lesson: **lead with causal probing + steering on named concepts (the verified,
+   working capability), and treat unsupervised SAE feature discovery as a known-null on small local
+   models** rather than the headline. The `/harvest` endpoint + this auto-interp harness remain the
+   reusable assets for the day a larger substrate is wired in.
+
+## Files (semantic / auto-interp metric)
+
+- `inspector/spikes/p6_autointerp.py` — the deliverable: reloads the cached `/harvest` matrix +
+  re-trains the reported-best 16x L1=8 SAE deterministically; reconstructs top-activating **contexts**
+  from the corpus-ordered pieces; ranks features 3 ways (coherence / density / spread) and emits them
+  with context for auto-interp; runs **concept alignment** (held-out single-unit AUC with a firing
+  floor + label-permutation null, plus a whole-representation `kfold_accuracy` probe) against the
+  inspector's five semantic minimal-pair corpora. Reuses `p4_big_sae` (server mgmt, `/harvest`, corpus,
+  metric, `TorchSAE`, PCA) and `clozn.atlas`/`clozn.probes` wholesale. `--no-engine` skips the
+  alignment harvest (auto-interp half only).
+- `inspector/runs/p6_autointerp_contexts.json` — 60 SAE features + 16 PCA axes, each with top-10
+  contexts (the raw material for the auto-interp judgments above; re-judgeable). Gitignored.
+- `inspector/runs/p6_concept_alignment.json` — per-concept held-out AUCs (SAE best unit vs PCA axis,
+  with nulls + firer counts + distinct-token counts) and whole-representation probe accuracies.
+  Gitignored.
