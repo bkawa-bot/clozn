@@ -367,10 +367,33 @@ def build_demo(layer: int, device: str):
           f"(its real recall was {wq['after_p_ans']*100:.1f}%)  "
           f"-> {'DID NOT FIRE (correct)' if wrongkey['did_not_fire'] else 'leaked'}")
 
+    # ---- INTERACTIVE BOARD: every subset of active entries x every query -> the real prediction -----
+    # 2^N subsets (N=3 -> 8 states). All precomputed REAL model outputs, embedded so the page can let
+    # you toggle memory cards on/off and watch the predictions move with NO server. Every cell is real.
+    import itertools as _it
+    print("\nBOARD -- precomputing predictions for all 2^N memory subsets (for the live toggle):")
+    subsets = {}
+    for r in range(len(facts) + 1):
+        for combo in _it.combinations(range(len(facts)), r):
+            sub = mem.active(list(combo))
+            mask = sum(1 << i for i in combo)
+            pbf = []
+            for f in facts:
+                preds, _, probs, sel, _ = sub.recall(f["cue"], k=4)
+                pbf.append({
+                    "top": [[w.strip() or "·", float(p)] for w, p in preds[:4]],
+                    "p_ans": float(probs[f["ans_id"]]),
+                    "correct": preds[0][0].strip() == f["ans_word"].strip(),
+                    "fired": sel is not None,
+                })
+            subsets[str(mask)] = pbf
+    print(f"  {len(subsets)} subset states x {len(facts)} queries precomputed.")
+
     return {
         "model_name": "GPT-2-small (124M, frozen)", "layer": layer,
         "d_model": d_model, "d_mlp": d_mlp, "n_layers": nl, "eta": eta,
         "facts": facts, "cards": cards, "delete": delete, "wrongkey": wrongkey,
+        "subsets": subsets,
         "timestamp": _dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
@@ -407,6 +430,21 @@ def render_html(demo: dict) -> str:
     cards = demo["cards"]
     d = demo["delete"]
     wk = demo["wrongkey"]
+
+    # ---------- interactive board: toggle pills + live query rows, driven by precomputed subsets ------
+    import json as _json
+    nF = len(facts)
+    full_mask = (1 << nF) - 1
+    board_toggles = "".join(
+        f'<button class="tg on" data-i="{i}" type="button">'
+        f'<span class="tg-dot"></span><span>{esc(f["label"])}</span></button>'
+        for i, f in enumerate(facts))
+    board_qrows = "".join(
+        f'<div class="qrow"><div class="qrow-q">&ldquo;{esc(f["question"])} is&nbsp;___&rdquo;</div>'
+        f'<div class="qrow-pred" id="qp{i}"><span class="qword">&middot;</span>'
+        f'<span class="qbar"><i class="qbar-f"></i></span><span class="qpct"></span></div></div>'
+        for i, f in enumerate(facts))
+    board_data = _json.dumps({"subsets": demo["subsets"], "n": nF, "full": full_mask})
 
     # ---------- prediction "chip row": before (dimmed wrong word) -> after (lit answer) -------------
     def chip_row(top, highlight_word, lit: bool):
@@ -677,6 +715,35 @@ def render_html(demo: dict) -> str:
     .wk-bar-t {{ height:9px; border-radius:6px; background:rgba(255,255,255,0.06); overflow:hidden; }}
     .wk-bar-f {{ height:100%; border-radius:6px; transition:width 1s ease; }}
 
+    /* interactive board */
+    .board {{ margin-top:34px; background:linear-gradient(150deg, rgba(42,34,80,0.72), rgba(11,15,42,0.58));
+      border:1px solid rgba(111,224,232,0.24); border-radius:24px; padding:24px 26px;
+      box-shadow:0 16px 46px rgba(0,0,0,0.36), 0 0 50px rgba(31,181,229,0.06) inset; }}
+    .board-head {{ font-size:20px; font-weight:700; color:var(--white); margin-bottom:6px; }}
+    .board-sub {{ font-size:13.5px; color:var(--gray); max-width:780px; margin-bottom:18px; }}
+    .board-sub b {{ color:var(--white); }}
+    .tgrow {{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:18px; }}
+    .tg {{ display:flex; align-items:center; gap:9px; cursor:pointer; font:inherit; font-size:14px;
+      font-weight:600; color:var(--gray); padding:9px 16px; border-radius:30px;
+      background:rgba(11,15,42,0.55); border:1px solid rgba(167,176,192,0.18); transition:all .3s ease; }}
+    .tg-dot {{ width:9px; height:9px; border-radius:50%; background:rgba(167,176,192,0.5); transition:all .3s ease; }}
+    .tg.on {{ color:var(--white); border-color:rgba(196,245,66,0.5); background:rgba(196,245,66,0.08);
+      box-shadow:0 0 20px rgba(196,245,66,0.16); }}
+    .tg.on .tg-dot {{ background:var(--lime); box-shadow:0 0 10px var(--lime); }}
+    .tg:hover {{ border-color:rgba(111,224,232,0.5); }}
+    .qboard {{ display:flex; flex-direction:column; gap:10px; }}
+    .qrow {{ display:grid; grid-template-columns:1fr auto; align-items:center; gap:16px; padding:13px 18px;
+      border-radius:14px; background:rgba(11,15,42,0.42); border:1px solid rgba(255,255,255,0.05); }}
+    .qrow-q {{ font-size:14.5px; color:var(--white); }}
+    .qrow-pred {{ display:flex; align-items:center; gap:12px; min-width:230px; justify-content:flex-end; }}
+    .qword {{ font-size:16px; font-weight:700; color:var(--gray); transition:all .4s ease; min-width:64px; text-align:right; }}
+    .qword.lit {{ color:var(--lime); text-shadow:0 0 18px rgba(196,245,66,0.4); }}
+    .qbar {{ width:104px; height:8px; border-radius:6px; background:rgba(255,255,255,0.06); overflow:hidden; }}
+    .qbar-f {{ display:block; height:100%; width:2%; border-radius:6px;
+      background:linear-gradient(90deg, rgba(167,176,192,0.5), rgba(167,176,192,0.3)); transition:width .6s ease, background .4s ease; }}
+    .qbar.lit .qbar-f {{ background:linear-gradient(90deg, var(--lime), var(--cyan)); }}
+    .qpct {{ font-size:12px; color:var(--gray); font-variant-numeric:tabular-nums; min-width:46px; text-align:right; opacity:.8; }}
+
     .footer {{ margin-top:56px; text-align:center; font-size:12px; color:var(--gray); opacity:.7;
       line-height:1.7; }}
     .footer b {{ color:var(--lav); }}
@@ -710,6 +777,31 @@ def render_html(demo: dict) -> str:
         s.style.animationDuration=(4+Math.random()*5)+'s';
         b.appendChild(s);
       }
+    })();
+    (function(){
+      var B = window.__BOARD__; if(!B) return;
+      var on = {}; for (var i=0;i<B.n;i++) on[i]=true;
+      function mask(){ var m=0; for (var k in on){ if(on[k]) m|=(1<<(+k)); } return m; }
+      function paint(){
+        var cell = B.subsets[String(mask())]; if(!cell) return;
+        for (var i=0;i<B.n;i++){
+          var dd=cell[i], qp=document.getElementById('qp'+i); if(!qp||!dd) continue;
+          var w=qp.querySelector('.qword'), bar=qp.querySelector('.qbar'),
+              bf=qp.querySelector('.qbar-f'), pc=qp.querySelector('.qpct');
+          var word=dd.top[0][0], p=dd.top[0][1];
+          w.textContent=word; pc.textContent=(p*100).toFixed(1)+'%';
+          bf.style.width=Math.max(2,Math.round(p*100))+'%';
+          if(dd.correct){ w.classList.add('lit'); bar.classList.add('lit'); }
+          else { w.classList.remove('lit'); bar.classList.remove('lit'); }
+        }
+      }
+      document.querySelectorAll('.tg').forEach(function(btn){
+        btn.addEventListener('click', function(){
+          var i=+btn.getAttribute('data-i'); on[i]=!on[i];
+          btn.classList.toggle('on', on[i]); paint();
+        });
+      });
+      paint();
     })();
     """
 
@@ -753,6 +845,16 @@ def render_html(demo: dict) -> str:
       value = the answer's unembedding direction &middot; addressing = gated top-1 cosine
     </div>
   </header>
+
+  <div class="board">
+    <div class="board-head">Toggle the memories &mdash; watch it change its mind</div>
+    <div class="board-sub">Each pill is one entry in the model's memory. Click to add or remove it.
+      Every prediction below is a <b>real</b> GPT-2 output for that exact set of memories &mdash;
+      precomputed, no server, nothing faked. Switch a memory off and that answer falls straight back
+      to the model's own guess.</div>
+    <div class="tgrow">{board_toggles}</div>
+    <div class="qboard">{board_qrows}</div>
+  </div>
 
   <div class="section">
     <div class="sec-head"><div class="sec-num">1</div><div class="sec-title">The memory we wrote</div></div>
@@ -819,6 +921,7 @@ def render_html(demo: dict) -> str:
   </div>
 
 </div>
+<script>window.__BOARD__ = {board_data};</script>
 <script>{js}</script>
 </body>
 </html>"""
