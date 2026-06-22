@@ -139,6 +139,48 @@ Nearly identical story; L=8 is slightly stronger. L=6: top1 recall **83.3%**, of
 delete restores (42.85% → 1.56%), clean dose monotone (1.2/11.1/40.4/89.7/97.5%), 100% nameable.
 L=8: top1 recall **91.7%**. Both mid-layers carry a clean associative store; **L=8 is the pick.**
 
+## Capacity / scaling (p16) — the honest gate
+
+Rung-1 worked at N=12. Before building anything on top, we asked the question that could kill it: **does
+recall survive as the store fills?** `inspector/spikes/p16_capacity.py` mints 200 clean programmatic facts
+(nonce names × 72 single-token answers), reuses p15's mechanism verbatim, and sweeps N ∈ {5,10,20,50,100,
+200} at L=8 — recall-vs-N for each addressing mode, each beside the no-memory baseline (0.0% top-1
+throughout) **and a shuffled-key null** (keys permuted across entries: if real recall ≈ shuffled, the
+addressing isn't doing work).
+
+**Recall top-1 vs N (baseline 0% throughout; shuffled-key null beside):**
+
+| N | dot | dot-shuf | softmax | top1 | top1-shuf |
+|---|---|---|---|---|---|
+| 5   | 20% | 20% | 40% | **60%** | 20% |
+| 10  | 10% | 10% | 30% | **50%** | 0% |
+| 20  | 10% | 5%  | 5%  | **40%** | 10% |
+| 50  | 4%  | 4%  | 2%  | **20%** | 0% |
+| 100 | 2%  | 2%  | 2%  | **11%** | 2% |
+| 200 | 3%  | 2%  | 0.5%| **6%**  | 1.5% |
+
+**Verdict: a small-N device, not a scalable store.**
+- **`dot` (= the fused-weight equivalent) has no real capacity at any N** — it equals its shuffled-key null
+  at every N (20/20, 10/10, 4/4, 2/2, 3-vs-2). Whatever lift it shows is a global value-bias, not keyed
+  retrieval. A single fused ΔW therefore has ~zero associative capacity on this substrate — a second,
+  independent confirmation of "don't fuse."
+- **`top1` (hard nearest-key list addressing) is the only mode doing genuine work** — it beats its shuffled
+  null at every N (+4.5 pts even at N=200) so it never fully collapses to "no keying" — **but it decays
+  steeply**: 60→50→40→20→11→6%. Usable only at small N. `softmax` dies by N≈20; `dot` is at baseline by N≈50.
+- **False-recall (top-1 = a *different* stored fact's answer) rises monotonically** as the store fills
+  (top1: 20%→83%; dot: 60%→97%) — the direct fingerprint of mis-addressing.
+
+**The deeper finding — it's a key-*distinctiveness* wall, not a raw-count wall.** Rung-1's hand-picked
+DIVERSE facts hit 92% top-1 at N=12; p16's programmatic facts (drawn from 16 templates, so many share a
+carrier and differ only in a nonce subject) hit ~40-50% at N=10-20. The gap is the tell: the **key** is the
+MLP post-activation at the *answer* position, which is dominated by the **template/syntactic context**, not
+the (upstream) subject — so two facts sharing a template have near-colliding keys *regardless of N*. The
+ceiling is set by how distinctive the facts' answer-position activations are, not by N per se; in realistic
+use facts share structure, so the effective ceiling is low. **The lever (next rung, p17): a better,
+training-free key** — whitened/orthogonalized keys, a dedicated key projection, or keying on a more
+fact-distinctive position (the subject token) — rather than the raw `mlp.hook_post`. That decides whether
+the fast-weight direction scales past a working-memory handful.
+
 ## Honesty notes / controls / caveats
 
 - **Baseline beside every number.** Recall, specificity, delete, and dose all print the no-memory
