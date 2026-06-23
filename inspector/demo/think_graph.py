@@ -9,7 +9,7 @@ depth, the output-token node MORPHS as the guess resolves (it can change its min
 Washington), and EDGES are drawn from the lit concepts to the token, each weighted by that concept's
 REAL contribution to the current top token through the model's own logit lens. You watch which lit
 concepts are driving the resolving token, and how that drive shifts as the active set changes up the
-layers. Self-contained Maiko-palette HTML (SVG + vanilla JS), smooth auto-play + a scrubber.
+layers. Self-contained light "Artificial Angels" HTML (SVG + vanilla JS), smooth auto-play + a scrubber.
 
 WHAT IS REAL (load-bearing honesty -- nothing here is decorative).
 
@@ -89,18 +89,18 @@ from spikes.p18_conceptmem import (  # noqa: E402
 RUNS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runs")
 
 # ----------------------------------------------------------------------------------------------------
-# The concept NODES: a human label + a Maiko accent per concept, pulled from the p18 basis (same dirs;
+# The concept NODES: a human label + a clozn (light) accent per concept, pulled from the p18 basis (same dirs;
 # these entries only set display order, label, colour). 8 named concepts -- the same set as v1.
 # ----------------------------------------------------------------------------------------------------
 CONCEPT_DISPLAY = [
-    ("animals",  "animals",     "#C4F542"),   # Toxic Lime
-    ("fear",     "fear",        "#FF6FAF"),   # Neon Pink
-    ("colors",   "color",       "#6FE0E8"),   # Frozen Cyan
-    ("money",    "money",       "#FFE66D"),   # Star Yellow
-    ("formal",   "formal tone", "#C9A6FF"),   # Soft Lavender
-    ("past",     "past tense",  "#1FB5E5"),   # Electric Ice
-    ("food",     "food",        "#FFB36F"),   # warm amber (in-family accent)
-    ("question", "questions",   "#A0FFD6"),   # mint (in-family accent)
+    ("animals",  "animals",     "#2FA86A"),   # emerald
+    ("fear",     "fear",        "#CE64DE"),   # Numen Magenta
+    ("colors",   "color",       "#36AEC4"),   # Celestial Cyan
+    ("money",    "money",       "#C68A1E"),   # Halo Gold
+    ("formal",   "formal tone", "#677591"),   # Cool Slate
+    ("past",     "past tense",  "#4C8DF0"),   # Angel Blue
+    ("food",     "food",        "#C2683E"),   # clay (distinct from the reserved alarm orange)
+    ("question", "questions",   "#8B79E8"),   # Iris Halo lavender
 ]
 
 # Demo prompts chosen so the ANIMATION reads well: a token that changes its mind across layers while
@@ -365,20 +365,27 @@ def build_demo(layer_concept: int, device: str, seed: int, n_null: int, z_thresh
 
 
 # ====================================================================================================
-# THE ARTIFACT: a self-contained Maiko-palette HTML node-graph ANIMATION (SVG + vanilla JS). All the
-# real numbers are serialized to a JS payload; the JS draws the temporal network and plays it.
+# THE ARTIFACT: a self-contained light "Artificial Angels" HTML node-graph ANIMATION (SVG + vanilla
+# JS). All the real numbers are serialized to a JS payload; the JS draws the temporal network and
+# plays it. Palette mirrors inspector/demo/memory_live.html (clozn's own LIGHT identity, NOT Maiko):
+# signature = Celestial Cyan + cool grey/blue on a luminous pearl-sky; warm hues are reserved for
+# functional alarm states only (none used here). See the clozn-visual-identity memory.
 # ====================================================================================================
-BG_DEEP   = "#0B0F2A"
-BG_COSMIC = "#1A1F4A"
-BG_MID    = "#2A2250"
-PINK      = "#FF6FAF"
-ICE       = "#1FB5E5"
-CYAN      = "#6FE0E8"
-LIME      = "#C4F542"
-YELLOW    = "#FFE66D"
-LAV       = "#C9A6FF"
-WHITE     = "#F4F7FF"
-GRAY      = "#A7B0C0"
+HEAVEN    = "#F8FAFF"   # Heaven White (base)
+PEARL     = "#EDF1FB"   # Pearl Mist
+SKY       = "#E2EBFB"   # Sky Wash
+CLOUD_LAV = "#ECE8FA"   # Cloud Lavender
+ANGEL     = "#4C8DF0"   # Angel Blue (primary)
+CYAN      = "#36AEC4"   # Celestial Cyan (the signal)
+ICE       = "#3F9BD6"   # deeper sky-ice (gradients on light)
+FROST     = "#AEB9D2"   # Frost Silver (opal chrome neutral)
+IRIS      = "#8B79E8"   # Iris Halo (demoted -> faint sheen only)
+GOLD      = "#C68A1E"   # Halo Gold (readable on light)
+SERAPH    = "#E8542A"   # Seraph Orange (FUNCTIONAL alarm only)
+GREEN     = "#2FA86A"   # readable success/active
+MAGENTA   = "#CE64DE"   # Numen Magenta (holographic accent; "changed its mind")
+INK       = "#232A3A"   # Ink Slate (text)
+SLATE     = "#677591"   # Cool Slate (muted text)
 
 
 def esc(s) -> str:
@@ -438,122 +445,137 @@ def render_html(demo: dict, coactivation: bool) -> str:
 
     style = f"""
     :root {{
-      --bg-deep:{BG_DEEP}; --bg-cosmic:{BG_COSMIC}; --bg-mid:{BG_MID};
-      --pink:{PINK}; --ice:{ICE}; --cyan:{CYAN}; --lime:{LIME};
-      --yellow:{YELLOW}; --lav:{LAV}; --white:{WHITE}; --gray:{GRAY};
+      --heaven:{HEAVEN}; --pearl:{PEARL}; --sky:{SKY}; --cloud-lav:{CLOUD_LAV};
+      --angel:{ANGEL}; --cyan:{CYAN}; --ice:{ICE}; --frost:{FROST}; --iris:{IRIS};
+      --gold:{GOLD}; --magenta:{MAGENTA}; --green:{GREEN};
+      --text:{INK}; --slate:{SLATE};
+      /* legacy aliases remapped onto the LIGHT identity (lead on cyan/grey/pearl) */
+      --bg-deep:#FFFFFF; --bg-cosmic:var(--pearl); --bg-mid:var(--sky);
+      --pink:var(--magenta); --lime:var(--cyan); --yellow:var(--gold);
+      --lav:var(--slate); --white:var(--text); --gray:var(--slate);
     }}
     * {{ box-sizing:border-box; }}
     html,body {{ margin:0; padding:0; }}
     body {{
       background:
-        radial-gradient(1100px 700px at 80% -10%, rgba(255,111,175,0.15), transparent 60%),
-        radial-gradient(950px 650px at 6% 6%, rgba(31,181,229,0.13), transparent 58%),
-        radial-gradient(820px 900px at 50% 116%, rgba(201,166,255,0.13), transparent 60%),
-        linear-gradient(168deg, var(--bg-cosmic) 0%, var(--bg-deep) 55%, #070a20 100%);
+        radial-gradient(1100px 700px at 78% -8%, rgba(76,141,240,0.16), transparent 60%),
+        radial-gradient(950px 650px at 8% 8%, rgba(54,174,196,0.13), transparent 58%),
+        radial-gradient(800px 900px at 50% 116%, rgba(139,121,232,0.07), transparent 60%),
+        linear-gradient(168deg, var(--heaven) 0%, var(--pearl) 55%, var(--sky) 100%);
       background-attachment:fixed;
-      color:var(--white);
+      color:var(--text);
       font-family:'Segoe UI','Inter',system-ui,-apple-system,sans-serif;
       -webkit-font-smoothing:antialiased;
       min-height:100vh; padding:42px 22px 70px; line-height:1.5;
     }}
     .wrap {{ max-width:1080px; margin:0 auto; }}
-    .star {{ position:fixed; border-radius:50%; background:var(--white); opacity:0;
-      animation:twinkle 6s ease-in-out infinite; pointer-events:none; }}
-    @keyframes twinkle {{ 0%,100%{{opacity:0}} 50%{{opacity:.5}} }}
+    .star {{ position:fixed; border-radius:50%; background:var(--angel); opacity:0;
+      animation:twinkle 6s ease-in-out infinite; pointer-events:none;
+      box-shadow:0 0 4px rgba(76,141,240,0.5); }}
+    @keyframes twinkle {{ 0%,100%{{opacity:0}} 50%{{opacity:.28}} }}
 
     header {{ text-align:center; margin-bottom:18px; }}
     .eyebrow {{ letter-spacing:.32em; text-transform:uppercase; font-size:11px; font-weight:600;
-      color:var(--cyan); opacity:.85; margin-bottom:14px; }}
+      color:var(--slate); opacity:.95; margin-bottom:14px; }}
     h1 {{ font-size:40px; line-height:1.12; margin:0 0 14px; font-weight:700;
-      background:linear-gradient(96deg, var(--white) 6%, var(--lav) 42%, var(--cyan) 96%);
+      background:linear-gradient(96deg, var(--text) 8%, #46506B 46%, var(--angel) 96%);
       -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
-      text-shadow:0 0 40px rgba(201,166,255,0.25); }}
-    .lede {{ font-size:15.5px; color:var(--gray); max-width:780px; margin:0 auto 8px; }}
-    .lede b {{ color:var(--white); font-weight:600; }}
-    .lede .c1 {{ color:var(--cyan); font-weight:600; }}
-    .lede .c2 {{ color:var(--pink); font-weight:600; }}
-    .meta-line {{ font-size:12.5px; color:var(--gray); opacity:.82; margin-top:14px; }}
-    .meta-line code {{ color:var(--cyan); background:rgba(31,181,229,0.10);
+      text-shadow:0 6px 34px rgba(76,141,240,0.18); }}
+    .lede {{ font-size:15.5px; color:var(--slate); max-width:780px; margin:0 auto 8px; }}
+    .lede b {{ color:var(--text); font-weight:600; }}
+    .lede .c1 {{ color:#1F7E91; font-weight:600; }}
+    .lede .c2 {{ color:var(--magenta); font-weight:600; }}
+    .meta-line {{ font-size:12.5px; color:var(--slate); opacity:.9; margin-top:14px; }}
+    .meta-line code {{ color:#1F7E91; background:rgba(54,174,196,0.12);
       padding:1px 7px; border-radius:6px; font-size:12px; }}
 
     .legend {{ display:flex; flex-wrap:wrap; gap:10px 16px; justify-content:center;
       margin:22px auto 4px; max-width:880px; padding:12px 18px; border-radius:16px;
-      background:rgba(11,15,42,0.4); border:1px solid rgba(201,166,255,0.14); }}
-    .leg-item {{ display:flex; align-items:center; gap:8px; font-size:13px; color:var(--gray); }}
+      background:linear-gradient(150deg, rgba(255,255,255,0.78), rgba(236,242,251,0.5));
+      border:1px solid rgba(174,185,210,0.45);
+      box-shadow:0 12px 30px rgba(76,108,170,0.10), 0 0 0 1px rgba(255,255,255,0.6) inset; }}
+    .leg-item {{ display:flex; align-items:center; gap:8px; font-size:13px; color:var(--slate); }}
     .leg-dot {{ width:11px; height:11px; border-radius:50%; flex:0 0 auto; }}
-    .leg-name {{ color:var(--white); font-weight:500; }}
+    .leg-name {{ color:var(--text); font-weight:500; }}
 
     .tabs {{ display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin:22px auto 14px; }}
     .tab {{ cursor:pointer; text-align:left; border-radius:14px; padding:9px 15px; min-width:240px;
-      background:linear-gradient(150deg, rgba(42,34,80,0.5), rgba(11,15,42,0.4));
-      border:1px solid rgba(201,166,255,0.16); color:var(--gray);
+      background:linear-gradient(150deg, rgba(255,255,255,0.7), rgba(236,242,251,0.45));
+      border:1px solid rgba(174,185,210,0.45); color:var(--slate);
       transition:border-color .25s ease, transform .25s ease, box-shadow .25s ease; }}
-    .tab:hover {{ transform:translateY(-1px); border-color:rgba(111,224,232,0.4); }}
-    .tab-on {{ border-color:rgba(111,224,232,0.7);
-      box-shadow:0 0 22px rgba(31,181,229,0.22), inset 0 1px 0 rgba(255,255,255,0.05); }}
+    .tab:hover {{ transform:translateY(-1px); border-color:rgba(54,174,196,0.5); }}
+    .tab-on {{ border-color:rgba(54,174,196,0.6);
+      box-shadow:0 10px 26px rgba(54,174,196,0.16), 0 0 0 1px rgba(255,255,255,0.6) inset; }}
     .tab-kind {{ display:block; letter-spacing:.16em; text-transform:uppercase; font-size:9.5px;
-      font-weight:700; color:var(--pink); opacity:.9; margin-bottom:3px; }}
-    .tab-text {{ display:block; font-size:13px; color:var(--white); font-weight:600; }}
+      font-weight:700; color:#1F7E91; opacity:.95; margin-bottom:3px; }}
+    .tab-text {{ display:block; font-size:13px; color:var(--text); font-weight:600; }}
 
-    .stage-card {{ background:linear-gradient(150deg, rgba(42,34,80,0.55), rgba(11,15,42,0.5));
-      border:1px solid rgba(201,166,255,0.16); border-radius:24px; padding:20px 22px 18px;
-      box-shadow:0 16px 44px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.04);
-      backdrop-filter:blur(3px); }}
+    .stage-card {{ position:relative;
+      background:linear-gradient(150deg, rgba(255,255,255,0.82), rgba(236,242,251,0.55));
+      border:1px solid rgba(174,185,210,0.5); border-radius:24px; padding:20px 22px 18px;
+      box-shadow:0 20px 48px rgba(76,108,170,0.16), 0 0 0 1px rgba(255,255,255,0.6) inset;
+      backdrop-filter:blur(16px) saturate(118%); -webkit-backdrop-filter:blur(16px) saturate(118%); }}
     .stage-head {{ display:flex; align-items:baseline; justify-content:space-between; gap:14px;
       flex-wrap:wrap; margin-bottom:6px; }}
-    .stage-sentence {{ font-size:19px; font-weight:600; color:var(--white);
-      text-shadow:0 0 24px rgba(201,166,255,0.2); }}
-    .stage-sentence .ans {{ color:var(--cyan); text-shadow:0 0 18px rgba(111,224,232,0.6); }}
-    .stage-why {{ font-size:12.5px; color:var(--gray); font-style:italic; margin:2px 0 8px;
+    .stage-sentence {{ font-size:19px; font-weight:600; color:var(--text); }}
+    .stage-sentence .ans {{ color:#1F7E91; text-shadow:0 0 18px rgba(54,174,196,0.28); }}
+    .stage-why {{ font-size:12.5px; color:var(--slate); font-style:italic; margin:2px 0 8px;
       max-width:900px; }}
 
     svg {{ display:block; width:100%; height:auto; overflow:visible; }}
     .node-label {{ font-family:'Segoe UI',sans-serif; font-weight:600; }}
-    .axis-label {{ fill:var(--gray); font-size:11px; font-family:'Segoe UI',sans-serif; opacity:.7; }}
-    .axis-tick {{ fill:var(--gray); font-size:9.5px; font-family:'Segoe UI',sans-serif; opacity:.5;
+    .axis-label {{ fill:var(--slate); font-size:11px; font-family:'Segoe UI',sans-serif; opacity:.8; }}
+    .axis-tick {{ fill:var(--slate); font-size:9.5px; font-family:'Segoe UI',sans-serif; opacity:.6;
       font-variant-numeric:tabular-nums; }}
 
     /* transport controls */
     .transport {{ display:flex; align-items:center; gap:14px; margin-top:6px; padding:10px 6px 2px; }}
     .play-btn {{ cursor:pointer; width:42px; height:42px; flex:0 0 auto; border-radius:50%;
-      border:1px solid rgba(111,224,232,0.5); background:radial-gradient(120% 120% at 50% 0%,
-      rgba(31,181,229,0.3), rgba(11,15,42,0.4)); color:var(--cyan); font-size:16px;
+      border:1px solid rgba(54,174,196,0.45); background:linear-gradient(135deg,
+      rgba(54,174,196,0.16), rgba(76,141,240,0.10)); color:#1F7E91; font-size:16px;
       display:flex; align-items:center; justify-content:center;
-      box-shadow:0 0 22px rgba(31,181,229,0.25); transition:transform .15s ease, box-shadow .25s ease; }}
-    .play-btn:hover {{ transform:scale(1.06); box-shadow:0 0 30px rgba(31,181,229,0.4); }}
+      box-shadow:0 8px 22px rgba(54,174,196,0.18); transition:transform .15s ease, box-shadow .25s ease; }}
+    .play-btn:hover {{ transform:scale(1.06); box-shadow:0 12px 30px rgba(54,174,196,0.3); }}
     .scrub-wrap {{ flex:1; display:flex; flex-direction:column; gap:3px; }}
-    .scrub-top {{ display:flex; justify-content:space-between; font-size:11px; color:var(--gray);
-      opacity:.8; }}
-    .scrub-top b {{ color:var(--cyan); font-variant-numeric:tabular-nums; }}
+    .scrub-top {{ display:flex; justify-content:space-between; font-size:11px; color:var(--slate);
+      opacity:.9; }}
+    .scrub-top b {{ color:#1F7E91; font-variant-numeric:tabular-nums; }}
     input[type=range].scrub {{ -webkit-appearance:none; appearance:none; width:100%; height:6px;
-      border-radius:5px; outline:none;
-      background:linear-gradient(90deg, var(--ice), var(--lav)); opacity:.85; }}
+      border-radius:5px; outline:none; cursor:pointer;
+      background:linear-gradient(90deg, rgba(174,185,210,0.55), rgba(54,174,196,0.6) 55%, rgba(76,141,240,0.65)); }}
     input[type=range].scrub::-webkit-slider-thumb {{ -webkit-appearance:none; appearance:none;
-      width:18px; height:18px; border-radius:50%; background:var(--white); cursor:pointer;
-      box-shadow:0 0 12px rgba(244,247,255,0.8), 0 0 4px var(--cyan); border:2px solid var(--cyan); }}
-    input[type=range].scrub::-moz-range-thumb {{ width:16px; height:16px; border-radius:50%;
-      background:var(--white); cursor:pointer; border:2px solid var(--cyan); }}
-    .speed {{ display:flex; align-items:center; gap:6px; font-size:11px; color:var(--gray); }}
-    .speed select {{ background:rgba(11,15,42,0.7); color:var(--cyan); border:1px solid
-      rgba(111,224,232,0.3); border-radius:7px; padding:3px 6px; font-size:11px; }}
+      width:18px; height:18px; border-radius:50%; cursor:pointer;
+      background:linear-gradient(135deg, var(--cyan), var(--angel));
+      box-shadow:0 2px 10px rgba(54,174,196,0.5); border:2px solid #FFFFFF; }}
+    input[type=range].scrub::-moz-range-thumb {{ width:18px; height:18px; border-radius:50%;
+      background:var(--cyan); cursor:pointer; border:2px solid #FFFFFF;
+      box-shadow:0 2px 10px rgba(54,174,196,0.5); }}
+    .speed {{ display:flex; align-items:center; gap:6px; font-size:11px; color:var(--slate); }}
+    .speed select {{ background:rgba(255,255,255,0.8); color:#1F7E91; border:1px solid
+      rgba(54,174,196,0.3); border-radius:7px; padding:3px 6px; font-size:11px; }}
 
-    .readout {{ margin-top:12px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.06);
+    .readout {{ margin-top:12px; padding-top:12px; border-top:1px solid rgba(103,117,145,0.18);
       display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; font-size:13px; }}
-    .ro-lab {{ color:var(--gray); }}
+    .ro-lab {{ color:var(--slate); }}
     .ro-chip {{ font-size:12px; padding:3px 10px; border-radius:18px; font-weight:600;
-      border:1px solid; background:rgba(255,255,255,0.03); display:inline-flex; align-items:center; gap:6px; }}
+      border:1px solid; background:rgba(255,255,255,0.6); display:inline-flex; align-items:center; gap:6px; }}
     .ro-chip .w {{ font-weight:700; font-variant-numeric:tabular-nums; opacity:.95; }}
-    .ro-none {{ color:var(--gray); font-style:italic; opacity:.7; }}
+    .ro-none {{ color:var(--slate); font-style:italic; opacity:.75; }}
 
-    .footer {{ margin-top:46px; text-align:center; font-size:12px; color:var(--gray); opacity:.72;
+    .footer {{ margin-top:46px; text-align:center; font-size:12px; color:var(--slate); opacity:.92;
       line-height:1.7; }}
-    .footer b {{ color:var(--lav); }}
+    .footer b {{ color:var(--text); }}
+    .wm {{ color:var(--slate); font-weight:700; }}
+    .wm-n {{ color:var(--cyan); }}
+    .footer .wm {{ color:var(--text); }}
     .honest {{ margin-top:14px; padding:18px 22px; border-radius:14px; font-size:12.5px;
-      background:rgba(11,15,42,0.42); border:1px solid rgba(255,255,255,0.06); color:var(--gray);
-      max-width:880px; margin-left:auto; margin-right:auto; text-align:left; line-height:1.66; }}
-    .honest b {{ color:var(--cyan); }}
-    .honest .k {{ color:var(--lav); }}
-    .honest .warn {{ color:var(--pink); }}
+      background:linear-gradient(150deg, rgba(255,255,255,0.72), rgba(236,242,251,0.46));
+      border:1px solid rgba(174,185,210,0.4); color:var(--slate);
+      max-width:880px; margin-left:auto; margin-right:auto; text-align:left; line-height:1.66;
+      box-shadow:0 12px 30px rgba(76,108,170,0.08); }}
+    .honest b {{ color:#1F7E91; }}
+    .honest .k {{ color:var(--angel); }}
+    .honest .warn {{ color:var(--magenta); }}
 
     @media (max-width:760px) {{
       h1 {{ font-size:30px; }}
@@ -640,13 +662,13 @@ def render_html(demo: dict, coactivation: bool) -> str:
     const defs = el('defs',{});
     defs.innerHTML = `
       <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
-        <feGaussianBlur stdDeviation="6" result="b"/>
+        <feGaussianBlur stdDeviation="5" result="b"/>
         <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
       </filter>
       <radialGradient id="tokfill" cx="50%" cy="40%" r="70%">
-        <stop offset="0%" stop-color="${rgba('#6FE0E8',0.95)}"/>
-        <stop offset="60%" stop-color="${rgba('#1FB5E5',0.55)}"/>
-        <stop offset="100%" stop-color="${rgba('#1A1F4A',0.0)}"/>
+        <stop offset="0%" stop-color="${rgba('#36AEC4',0.42)}"/>
+        <stop offset="55%" stop-color="${rgba('#4C8DF0',0.20)}"/>
+        <stop offset="100%" stop-color="${rgba('#F8FAFF',0.0)}"/>
       </radialGradient>`;
     svg.appendChild(defs);
 
@@ -662,7 +684,7 @@ def render_html(demo: dict, coactivation: bool) -> str:
       gAxis.innerHTML='';
       const x0 = 905, y0 = 70, y1 = H-70;
       gAxis.appendChild(el('line',{x1:x0,y1:y0,x2:x0,y2:y1,
-        stroke:rgba('#C9A6FF',0.25), 'stroke-width':2, 'stroke-linecap':'round'}));
+        stroke:rgba('#AEB9D2',0.6), 'stroke-width':2, 'stroke-linecap':'round'}));
       const lab = el('text',{x:x0+14,y:y0-14,class:'axis-label','text-anchor':'middle'});
       lab.textContent='depth'; gAxis.appendChild(lab);
       const lab2 = el('text',{x:x0+14,y:y0-1,class:'axis-label','text-anchor':'middle'});
@@ -670,14 +692,14 @@ def render_html(demo: dict, coactivation: bool) -> str:
       const nl = DATA.n_layers;
       for(let L=0; L<nl; L++){
         const y = y0 + (L/(nl-1))*(y1-y0);
-        gAxis.appendChild(el('circle',{cx:x0,cy:y,r:2.2,fill:rgba('#C9A6FF',0.35),'data-axis':L}));
+        gAxis.appendChild(el('circle',{cx:x0,cy:y,r:2.2,fill:rgba('#AEB9D2',0.65),'data-axis':L}));
         if(L%2===0 || L===nl-1){
           const t=el('text',{x:x0+12,y:y+3.5,class:'axis-tick'}); t.textContent='L'+L;
           gAxis.appendChild(t);
         }
       }
       // moving playback marker
-      const mk = el('circle',{cx:x0,cy:y0,r:5,fill:'#F4F7FF',id:'axis-head',
+      const mk = el('circle',{cx:x0,cy:y0,r:5,fill:'#4C8DF0',id:'axis-head',
         filter:'url(#soft)'});
       gAxis.appendChild(mk);
     }
@@ -709,7 +731,7 @@ def render_html(demo: dict, coactivation: bool) -> str:
         for(let a=0;a<K;a++) for(let bb=a+1;bb<K;bb++){
           const pa=nodePos(a), pb=nodePos(bb);
           const ln=el('line',{x1:pa.x,y1:pa.y,x2:pb.x,y2:pb.y,
-            stroke:rgba('#C9A6FF',0.5),'stroke-width':1,'stroke-dasharray':'2 5',opacity:0});
+            stroke:rgba('#AEB9D2',0.6),'stroke-width':1,'stroke-dasharray':'2 5',opacity:0});
           gCo.appendChild(ln); coEls.push({ln,a,b:bb});
         }
         gCo.setAttribute('opacity','1');
@@ -726,7 +748,7 @@ def render_html(demo: dict, coactivation: bool) -> str:
           fill:rgba(col,0.55),'font-size':13});
         lab.textContent=DATA.labels[j];
         const zlab=el('text',{x:-16,y:18,'text-anchor':'end','font-size':9.5,
-          fill:rgba('#A7B0C0',0.0),'font-variant-numeric':'tabular-nums'});
+          fill:rgba('#677591',0.0),'font-variant-numeric':'tabular-nums'});
         g.appendChild(halo); g.appendChild(core); g.appendChild(lab); g.appendChild(zlab);
         gNodes.appendChild(g);
         nodeEls.push({g,halo,core,lab,zlab,col,np});
@@ -735,14 +757,14 @@ def render_html(demo: dict, coactivation: bool) -> str:
       // the output-token node (right)
       const tg=el('g',{transform:`translate(${TOK_X},${TOK_Y})`});
       const tglow=el('circle',{r:54,fill:'url(#tokfill)',opacity:0.5});
-      const tring=el('circle',{r:46,fill:rgba('#1A1F4A',0.55),stroke:rgba('#6FE0E8',0.6),
+      const tring=el('circle',{r:46,fill:rgba('#FFFFFF',0.82),stroke:rgba('#36AEC4',0.7),
         'stroke-width':2.5, filter:'url(#soft)'});
       const tword=el('text',{x:0,y:2,'text-anchor':'middle','class':'node-label',
-        fill:'#F4F7FF','font-size':24,'font-weight':800});
+        fill:'#232A3A','font-size':24,'font-weight':800});
       const tconf=el('text',{x:0,y:24,'text-anchor':'middle','font-size':11,
-        fill:rgba('#A7B0C0',0.9),'font-variant-numeric':'tabular-nums'});
+        fill:rgba('#677591',0.95),'font-variant-numeric':'tabular-nums'});
       const tcap=el('text',{x:0,y:-60,'text-anchor':'middle','font-size':10.5,
-        fill:rgba('#A7B0C0',0.8)}); tcap.textContent='it would say';
+        fill:rgba('#677591',0.85)}); tcap.textContent='it would say';
       tg.appendChild(tglow); tg.appendChild(tring); tg.appendChild(tword);
       tg.appendChild(tconf); tg.appendChild(tcap);
       gToken.appendChild(tg);
@@ -750,7 +772,7 @@ def render_html(demo: dict, coactivation: bool) -> str:
 
       // a faint flip flash marker text above the token
       const flipTxt=el('text',{x:TOK_X,y:TOK_Y+78,'text-anchor':'middle','font-size':11,
-        fill:rgba('#FF6FAF',0.0),'font-weight':600,id:'flipmark'});
+        fill:rgba('#CE64DE',0.0),'font-weight':600,id:'flipmark'});
       gToken.appendChild(flipTxt);
     }
 
@@ -792,7 +814,7 @@ def render_html(demo: dict, coactivation: bool) -> str:
       }
       T.tconf.textContent=(conf*100).toFixed(0)+'%';
       const cg=confGlow(conf);
-      T.tring.setAttribute('stroke',rgba('#6FE0E8',0.4+0.55*cg));
+      T.tring.setAttribute('stroke',rgba('#36AEC4',0.4+0.55*cg));
       T.tring.setAttribute('stroke-width',(2+2.5*cg).toFixed(2));
       T.tglow.setAttribute('opacity',(0.25+0.6*cg).toFixed(2));
       T.tring.setAttribute('r',(44+6*cg).toFixed(1));
@@ -800,8 +822,8 @@ def render_html(demo: dict, coactivation: bool) -> str:
       // flip flash
       const fm=document.getElementById('flipmark');
       if(nearer.flip){ fm.textContent='it changed its mind';
-        fm.setAttribute('fill',rgba('#FF6FAF',0.9)); }
-      else { fm.setAttribute('fill',rgba('#FF6FAF',0.0)); }
+        fm.setAttribute('fill',rgba('#CE64DE',0.95)); }
+      else { fm.setAttribute('fill',rgba('#CE64DE',0.0)); }
 
       // concept nodes + edges
       const litNow=[];
@@ -821,7 +843,7 @@ def render_html(demo: dict, coactivation: bool) -> str:
         N.lab.setAttribute('font-weight', lit? 700:600);
         if(lit){ N.zlab.textContent=z.toFixed(1)+'\\u03C3';
           N.zlab.setAttribute('fill',rgba(col,0.85)); }
-        else { N.zlab.setAttribute('fill',rgba('#A7B0C0',0.0)); }
+        else { N.zlab.setAttribute('fill',rgba('#677591',0.0)); }
 
         // edge: only when lit; thickness/opacity by |real contribution|, sign sets dashing
         const E=edgeEls[j];
@@ -863,7 +885,7 @@ def render_html(demo: dict, coactivation: bool) -> str:
       if(head) head.setAttribute('cy', axisHeadY(Lf).toFixed(1));
       gAxis.querySelectorAll('[data-axis]').forEach(c=>{
         const L2=+c.getAttribute('data-axis');
-        c.setAttribute('fill', L2<=Lf? rgba('#6FE0E8',0.7):rgba('#C9A6FF',0.3));
+        c.setAttribute('fill', L2<=Lf? rgba('#36AEC4',0.9):rgba('#AEB9D2',0.6));
       });
 
       // HUD: scrubber + layer readout + driving-concept chips
@@ -1025,7 +1047,7 @@ def render_html(demo: dict, coactivation: bool) -> str:
   </div>
 
   <div class="footer">
-    <div><b>Clozn</b> &mdash; a local runtime where the model's interior is legible.</div>
+    <div><b class="wm">cloz<span class="wm-n">n</span></b> &mdash; a local runtime where the model's interior is legible.</div>
     <div class="honest">
       <b>What this is, honestly.</b> Concepts lighting up and feeding the resolving token; real
       activations and real contributions, <span class="k">not a fabricated circuit</span>.
