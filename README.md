@@ -1,4 +1,4 @@
-# Clozn
+# Clozn - WIP!!!
 
 **A local-first runtime where you can view and steer a model's *memory*.** Watch a model
 think; read named concepts and token candidates off its evolving internal state; snapshot,
