@@ -57,6 +57,14 @@ add_executable(test_revision tests/test_revision.cpp)
 target_link_libraries(test_revision PRIVATE cloze_runtime)
 add_test(NAME revision COMMAND test_revision)
 
+# GAP #1 (task #43): the white-box state WRITE seam (ModelAdapter::write_state) — the
+# read -> edit -> write -> observe loop, proven against a writable test double (backend-free, CPU).
+# Header-only against the seam; links cloze_scheduler for the include dir. The ggml adapter implements
+# write_state against the live llama context in a later slice; this fixes the contract first.
+add_executable(test_state_write tests/test_state_write.cpp)
+target_link_libraries(test_state_write PRIVATE cloze_scheduler)
+add_test(NAME state_write COMMAND test_state_write)
+
 # --- Confidence-select kernel selector (Phase 2 kernel wired into the §4.3 seam) ---
 # Optional + needs a CUDA compiler: builds the vendored confidence-select kernel and the
 # KernelCommitSelector that drives it from the generate loop, plus a parity test that gates it

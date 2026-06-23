@@ -73,6 +73,17 @@ public:
 
     virtual std::vector<int> encode(const std::string & text) const = 0;
     virtual std::string decode(const std::vector<int> & ids) const = 0;
+
+    // --- White-box state WRITE (Tier 2 / GAP #1): the inverse of the activation tap. ----------------
+    // Overwrite the hidden state at board `positions` with `values` ([positions.size() * n_embd],
+    // row-major, the SAME layout as ForwardResult::activations) at residual `layer`, taking effect on
+    // the NEXT forward. This is the missing half of the read -> inspect -> edit -> write -> observe loop:
+    // ForwardResult::activations reads state OUT; write_state writes edited state back IN. Default is a
+    // no-op returning false, so existing adapters are unaffected and opt in explicitly; the ggml L0
+    // adapter implements it against the live llama context (a thin additive llama patch, like the
+    // device-logits accessor). Returns true if applied.
+    virtual bool write_state(int /*layer*/, const std::vector<int> & /*positions*/,
+                             const std::vector<float> & /*values*/) { return false; }
 };
 
 }  // namespace cloze
