@@ -43,8 +43,11 @@ WHAT IS REAL (load-bearing honesty -- nothing here is decorative).
   drive shift as the lit set changes. The picks are exact; the contributions are the real computed
   terms, not a fabricated circuit.
 
-  WHAT WE DO NOT DRAW.  No causal concept -> concept circuit edges. That needs feature-circuit
-  machinery this project showed FAILS locally (the SAE null). Only the concept -> token contribution
+  WHAT WE DO NOT DRAW (here).  No concept -> concept circuit edges in THIS view: its 8 concepts are
+  diff-in-means directions, not dictionary features, so only the concept -> token contributions are honest
+  here. (Concept -> concept edges ARE now drawable, with a pretrained SAE + per-edge ablation verification
+  -- see research/feature_circuit_clean_qwen.py + inspector/runs/feature_circuit.html; on a local model
+  that verified circuit is small.) Only the concept -> token contribution
   edges are honest, so only those carry weight. (Optional faint concept co-activation rings are shown
   ONLY if --coactivation is passed, and are clearly labeled correlational, never causal.)
 
@@ -1065,9 +1068,11 @@ def render_html(demo: dict, coactivation: bool) -> str:
       <code>(r&#770;&middot;d_c)&times;(d_c&middot;W_U[:,token])</code> &mdash; how present the concept is
       times how that direction pushes <i>this</i> token. That is the edge weight (the arrow shows push
       toward vs pull away); it is a real additive piece of the model's own logit, not decoration.
-      {co_note}<span class="warn">We deliberately draw no concept&rarr;concept circuit edges</span> &mdash;
-      that needs feature-circuit machinery this project found fails locally (the SAE null), so only the
-      honest concept&rarr;token contributions carry weight. Basis non-orthogonality (mean |off-diagonal
+      {co_note}<span class="warn">This view draws no concept&rarr;concept circuit edges</span> &mdash; its
+      8 concepts are diff-in-means directions, not dictionary features, so only the honest
+      concept&rarr;token contributions carry weight here. (Concept&rarr;concept edges ARE now drawable: read
+      the model through a pretrained SAE and verify each edge by ablation &mdash; see the separate Qwen
+      feature-circuit view; on a local model that verified circuit is small.) Basis non-orthogonality (mean |off-diagonal
       cosine| = {demo["cosine_mean_abs_off"]:.2f}) means nearby concepts can co-activate &mdash; this is
       a probe of <i>what is present and pushing</i>, not a clean factorization of <i>what is computed</i>.
       The backbone is frozen throughout. Generated {esc(demo["timestamp"])} &middot; seed {demo["seed"]}.
