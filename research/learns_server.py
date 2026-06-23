@@ -128,9 +128,118 @@ PRESET_ORDER = [
 ]
 
 
+class FactMemory:
+    """Glass-box fast-weight FACT memory on the SAME frozen Qwen (validated mechanism from
+    memory_window_qwen.py): key = residual at the cue's final token (output of decoder layer L); value =
+    the answer token's tied-unembedding direction, injected as unit(value)*eta at recall via a GATED top-1
+    cosine hook. The list IS the memory (editable, inspectable). The caller holds the GPU lock."""
+
+    def __init__(self, model, tok, layer, eta, gate):
+        self.model, self.tok = model, tok
+        self.layer, self.eta, self.gate = int(layer), float(eta), float(gate)
+        self.layers = model.model.layers
+        self.W_U = model.lm_head.weight                   # [V, H] (tied with embeddings)
+        self.norm = model.model.norm                      # final RMSNorm (the logit lens)
+        self.entries = []
+        self._next = 0
+
+    @staticmethod
+    def _out0(o):
+        return o[0] if isinstance(o, tuple) else o
+
+    def _ids(self, text):
+        return torch.tensor([self.tok.encode(text, add_special_tokens=False)], device=DEV)
+
+    def _first_ans(self, answer):
+        a = answer if answer.startswith(" ") else " " + answer.strip()
+        enc = self.tok.encode(a, add_special_tokens=False)
+        return (enc[0], len(enc)) if enc else (None, 0)
+
+    @torch.no_grad()
+    def _key(self, cue):
+        cap = {}
+        def grab(m, i, o):
+            cap["k"] = self._out0(o)[0, -1].clone(); return o
+        h = self.layers[self.layer].register_forward_hook(grab)
+        try:
+            self.model(input_ids=self._ids(cue))
+        finally:
+            h.remove()
+        return cap["k"]
+
+    @torch.no_grad()
+    def _lens_top(self, v):
+        lens = (self.norm(v.unsqueeze(0)) @ self.W_U.T)[0].float()
+        return self.tok.decode([int(lens.argmax())])
+
+    def write(self, cue, answer):
+        ans_id, ntok = self._first_ans(answer)
+        if ans_id is None:
+            raise ValueError("could not tokenize the answer (give a word, e.g. ' blue')")
+        v = self.W_U[int(ans_id)].clone()
+        label = f"k{self._next}"; self._next += 1
+        e = {"label": label, "key": self._key(cue), "value": v,
+             "inject": v / (v.norm() + 1e-8) * self.eta, "ans_id": int(ans_id), "n_tok": int(ntok),
+             "cue": cue, "answer": answer, "decoded": self._lens_top(v)}
+        self.entries.append(e)
+        return e
+
+    def delete(self, label):
+        n = len(self.entries)
+        self.entries = [e for e in self.entries if e["label"] != label]
+        return len(self.entries) < n
+
+    def snapshot(self):
+        return list(self.entries)
+
+    def card(self, e):
+        dec = e["decoded"].strip() or e["decoded"]
+        ok = (self.tok.decode([e["ans_id"]]).strip() == dec) or (dec == e["answer"].strip())
+        return {"label": e["label"], "cue": e["cue"], "answer": e["answer"].strip() or e["answer"],
+                "decoded": dec, "decodes_ok": bool(ok), "multi": bool(e["n_tok"] > 1),
+                "n_tok": e["n_tok"], "eta": self.eta, "key_norm": round(float(e["key"].norm()), 3)}
+
+    @torch.no_grad()
+    def _address(self, qkey, entries):
+        keys = torch.stack([e["key"] for e in entries])
+        cos = F.normalize(keys, dim=-1) @ F.normalize(qkey, dim=-1)
+        sel = int(cos.argmax())
+        return (sel, float(cos[sel])) if float(cos[sel]) >= self.gate else (None, float(cos[sel]))
+
+    @torch.no_grad()
+    def _topk(self, logits, k):
+        probs = F.softmax(logits, dim=-1)
+        return [{"word": self.tok.decode([int(i)]), "prob": float(probs[int(i)])}
+                for i in logits.topk(k).indices]
+
+    @torch.no_grad()
+    def baseline(self, prompt, k=5):
+        return self._topk(self.model(input_ids=self._ids(prompt)).logits[0, -1].float(), k)
+
+    @torch.no_grad()
+    def recall(self, prompt, k=5):
+        entries = self.snapshot()
+        cap = {"sel": None, "cos": None}
+        def hook(m, i, o):
+            t = self._out0(o); cap["q"] = t[0, -1].clone()
+            if entries:
+                sel, c = self._address(cap["q"], entries); cap["sel"], cap["cos"] = sel, c
+                if sel is not None:
+                    v = entries[sel]["value"]
+                    t[0, -1] = t[0, -1] + v / (v.norm() + 1e-8) * self.eta   # live eta (tunable)
+            return o
+        h = self.layers[self.layer].register_forward_hook(hook)
+        try:
+            logits = self.model(input_ids=self._ids(prompt)).logits[0, -1].float()
+        finally:
+            h.remove()
+        sel_e = entries[cap["sel"]] if cap["sel"] is not None else None
+        return self._topk(logits, k), sel_e, cap["cos"]
+
+
 class LearnsApp:
     def __init__(self, model_name: str, m: int, steps: int, lr: float, k_examples: int,
-                 dtype: str = "float32"):
+                 dtype: str = "float32", fact_layer=None, fact_eta: float = 70.0, fact_gate: float = 0.9):
         self.lock = threading.Lock()       # serialize all GPU work (CUDA isn't thread-safe across reqs)
         self.m = m
         self.steps = steps
@@ -160,6 +269,11 @@ class LearnsApp:
 
         # the ONE live learned rule (None until taught)
         self.current = None     # dict: {pm, rel|None, examples:[(x,y)], custom:bool, train_acc, label}
+
+        # the FACT memory ("remembers") on the SAME model: glass-box fast-weight, gated cosine recall
+        fl = fact_layer if fact_layer is not None else int(self.model.config.num_hidden_layers * 0.58)
+        self.facts = FactMemory(self.model, self.tok, fl, fact_eta, fact_gate)
+        print(f"  fact memory: glass-box on layer {fl}, eta {fact_eta}, gate {fact_gate}", flush=True)
 
     # ---- small helpers -------------------------------------------------------------------------------
     def _query_ids(self, word: str):
@@ -349,6 +463,61 @@ class LearnsApp:
             self.current = None
         return 200, {"ok": True, "forgot": had}
 
+    # ---- POST /remember {cue, answer}  (the "remembers" half, same model) --------------------------
+    def remember(self, body: dict):
+        cue = body.get("cue"); answer = body.get("answer")
+        if not isinstance(cue, str) or not cue.strip():
+            return 400, {"error": "missing 'cue' (the sentence ending right before the answer)"}
+        if not isinstance(answer, str) or not answer.strip():
+            return 400, {"error": "missing 'answer' (a word, e.g. ' blue')"}
+        with self.lock:
+            try:
+                e = self.facts.write(cue, answer)
+            except ValueError as ex:
+                return 400, {"error": str(ex)}
+            return 200, self.facts.card(e)
+
+    # ---- POST /ask {prompt}  (baseline vs with-memory) ---------------------------------------------
+    def ask(self, body: dict):
+        prompt = body.get("prompt"); topk = max(1, min(int(body.get("topk", 5) or 5), 12))
+        if not isinstance(prompt, str) or not prompt.strip():
+            return 400, {"error": "missing 'prompt'"}
+        with self.lock:
+            base = self.facts.baseline(prompt, topk)
+            wm, sel, cos = self.facts.recall(prompt, topk)
+        fired = None
+        if sel is not None:
+            fired = {"label": sel["label"], "match": round(float(cos), 4),
+                     "answer": sel["answer"].strip() or sel["answer"],
+                     "decoded": sel["decoded"].strip() or sel["decoded"]}
+        return 200, {"prompt": prompt, "baseline": base, "with_memory": wm, "fired": fired,
+                     "nearest_cosine": round(float(cos), 4) if cos is not None else None,
+                     "gate": self.facts.gate}
+
+    # ---- GET /memory  (the fact cards) -------------------------------------------------------------
+    def fact_memory(self):
+        with self.lock:
+            cards = [self.facts.card(e) for e in self.facts.snapshot()]
+        return 200, {"n": len(cards), "layer": self.facts.layer, "gate": self.facts.gate, "entries": cards}
+
+    # ---- POST /forget_fact {label} ----------------------------------------------------------------
+    def forget_fact(self, body: dict):
+        label = body.get("label")
+        if not isinstance(label, str) or not label:
+            return 400, {"error": "missing 'label' (e.g. 'k0')"}
+        with self.lock:
+            removed = self.facts.delete(label)
+        return (200, {"ok": True, "removed": label}) if removed else (404, {"error": f"no fact {label!r}", "ok": False})
+
+    # ---- POST /fact_eta {eta}  (live injection-strength knob) --------------------------------------
+    def set_fact_eta(self, body: dict):
+        v = body.get("eta")
+        if not isinstance(v, (int, float)):
+            return 400, {"error": "missing numeric 'eta'"}
+        with self.lock:
+            self.facts.eta = float(v)
+        return 200, {"ok": True, "eta": self.facts.eta}
+
     # ---- GET /health ---------------------------------------------------------------------------------
     def health(self):
         cur = None
@@ -357,7 +526,9 @@ class LearnsApp:
                    "examples": self.current["examples"], "train_fit": round(self.current["train_acc"], 3)}
         return 200, {"ok": True, "model": self.model_name, "device": DEV,
                      "hidden_size": self.H, "m": self.m, "steps": self.steps,
-                     "n_presets": len(self.presets), "current": cur}
+                     "n_presets": len(self.presets), "current": cur,
+                     "facts": {"layer": self.facts.layer, "eta": self.facts.eta,
+                               "gate": self.facts.gate, "n": len(self.facts.entries)}}
 
 
 # ====================================================================================================
@@ -370,7 +541,11 @@ ENDPOINTS = [
     "POST /apply   {word}         -> {baseline, taught, truth, changed}",
     "POST /state                  -> {reports:{declarative,metacog}, verify:{...}}",
     "POST /forget                 -> {ok}",
-    "GET  /health                 -> {model, current, ...}",
+    "POST /remember {cue, answer} -> {label, decoded, ...}  (fact memory, same model)",
+    "POST /ask     {prompt}       -> {baseline, with_memory, fired}",
+    "GET  /memory                 -> {entries:[...]}  (fact cards)",
+    "POST /forget_fact {label}    -> {ok}",
+    "GET  /health                 -> {model, current, facts, ...}",
 ]
 
 
@@ -425,6 +600,8 @@ def make_handler(app: LearnsApp):
                     status, payload = app.health()
                 elif path == "/presets":
                     status, payload = app.get_presets()
+                elif path == "/memory":
+                    status, payload = app.fact_memory()
                 else:
                     status, payload = 404, {"error": f"no route GET {path}", "endpoints": ENDPOINTS}
             except Exception as e:  # noqa: BLE001
@@ -446,6 +623,14 @@ def make_handler(app: LearnsApp):
                     status, payload = app.state(body)
                 elif path == "/forget":
                     status, payload = app.forget(body)
+                elif path == "/remember":
+                    status, payload = app.remember(body)
+                elif path == "/ask":
+                    status, payload = app.ask(body)
+                elif path == "/forget_fact":
+                    status, payload = app.forget_fact(body)
+                elif path == "/fact_eta":
+                    status, payload = app.set_fact_eta(body)
                 else:
                     status, payload = 404, {"error": f"no route POST {path}", "endpoints": ENDPOINTS}
             except Exception as e:  # noqa: BLE001
@@ -468,11 +653,15 @@ def main():
     ap.add_argument("--steps", type=int, default=40, help="TTT gradient steps per teach")
     ap.add_argument("--lr", type=float, default=0.05)
     ap.add_argument("--k", type=int, default=3, help="example pairs shown/used per teach")
+    ap.add_argument("--fact_layer", type=int, default=None, help="fact-memory layer (default ~0.58 depth)")
+    ap.add_argument("--fact_eta", type=float, default=70.0, help="fact-memory injection norm")
+    ap.add_argument("--fact_gate", type=float, default=0.9, help="fact-memory cosine gate")
     args = ap.parse_args()
 
     torch.manual_seed(0)
     app = LearnsApp(args.model, m=args.m, steps=args.steps, lr=args.lr, k_examples=args.k,
-                    dtype=args.dtype)
+                    dtype=args.dtype, fact_layer=args.fact_layer, fact_eta=args.fact_eta,
+                    fact_gate=args.fact_gate)
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(app))
     shown = "127.0.0.1" if args.host in ("0.0.0.0", "") else args.host
     url = f"http://{shown}:{args.port}"

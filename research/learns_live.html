@@ -113,6 +113,22 @@
     background:rgba(47,168,106,0.10);border-radius:20px;padding:2px 9px;}
   .res .same{font-size:11px;color:var(--slate);opacity:.7;}
 
+  /* memory ("remembers") */
+  .memcards{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;}
+  .memcard{display:flex;align-items:center;gap:8px;background:rgba(54,174,196,0.08);
+    border:1px solid rgba(54,174,196,0.3);border-radius:11px;padding:7px 11px;font-size:13px;color:var(--text);}
+  .memcard b{color:var(--deepcyan);} .memcard .x{cursor:pointer;color:var(--slate);font-weight:700;
+    margin-left:2px;opacity:.6;} .memcard .x:hover{opacity:1;color:var(--seraph);}
+  .memcard .miss{color:var(--seraph);font-size:11px;}
+  .askres{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:11px 14px;border-radius:13px;
+    background:rgba(255,255,255,0.6);border:1px solid rgba(174,185,210,0.4);margin-top:9px;animation:fade .35s ease;}
+  .askres .w{font-size:14px;color:var(--text);font-weight:500;}
+  .askres .out{font-size:16px;font-weight:800;color:var(--angel);}
+  .askres .base{font-size:12.5px;color:var(--slate);opacity:.85;margin-left:auto;}
+  .askres .fired{font-size:11px;font-weight:700;color:var(--angel);border:1px solid rgba(76,141,240,0.4);
+    background:rgba(76,141,240,0.10);border-radius:20px;padding:2px 9px;}
+  .askres .silent{font-size:11px;color:var(--slate);opacity:.7;}
+
   /* state / verify */
   .stated{margin-top:6px;font-size:20px;font-weight:700;color:var(--text);line-height:1.4;}
   .stated .q{color:var(--deepcyan);}
@@ -210,6 +226,26 @@
       <div class="stated-sub" id="statedSub"></div>
       <div id="verifyBox"></div>
     </div>
+  </div>
+
+  <!-- MEMORY: remembers a fact (the other half, same model) -->
+  <div class="card" id="memCard">
+    <div class="step"><div class="step-n" style="background:linear-gradient(135deg,var(--angel),var(--iris))">&starf;</div><div class="step-t">Give it a memory</div></div>
+    <div class="step-sub">A different gift from a rule: write it a fact and it remembers the exact answer
+      (glass-box fast-weight memory, on the same model). The memory is an editable list, and it's gated so a
+      question it has no memory for stays silent.</div>
+    <div class="row">
+      <input type="text" id="memCue" placeholder="cue, e.g. The secret color of Zorbland is" style="flex:2;min-width:230px;">
+      <span style="color:var(--slate);font-weight:700;align-self:center;">&rarr;</span>
+      <input type="text" id="memAns" placeholder="answer, e.g. blue" style="flex:1;min-width:110px;">
+      <button class="btn" id="rememberBtn">Remember</button>
+    </div>
+    <div class="memcards" id="memCards"></div>
+    <div class="row" style="margin-top:16px;">
+      <input type="text" id="askInput" placeholder="ask it something it might know&hellip;" style="flex:1;min-width:240px;">
+      <button class="btn" id="askBtn">Ask</button>
+    </div>
+    <div id="askResults"></div>
   </div>
 
   <div class="footer">
@@ -373,6 +409,50 @@ $('forgetBtn').onclick=async()=>{
 
 function pct(x){return (x==null)?'&middot;':Math.round(x*100)+'%';}
 function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+// ---- memory ("remembers"): write a fact, see the editable card list, ask -> before/after ----
+async function loadMem(){
+  const d=await jget('/memory'); const host=$('memCards'); host.innerHTML='';
+  (d.entries||[]).forEach(e=>{
+    const c=document.createElement('div'); c.className='memcard';
+    const miss = e.decodes_ok? '' : ' <span class="miss">(reads as &ldquo;'+escapeHtml(e.decoded)+'&rdquo;)</span>';
+    c.innerHTML='&ldquo;'+escapeHtml(e.cue)+'&rdquo; <b>&rarr; '+escapeHtml(e.answer)+'</b>'+miss+
+      ' <span class="x" title="forget this fact">&times;</span>';
+    c.querySelector('.x').onclick=async()=>{ await jpost('/forget_fact',{label:e.label}); loadMem(); };
+    host.appendChild(c);
+  });
+}
+$('rememberBtn').onclick=async()=>{
+  const cue=$('memCue').value.trim(); let ans=$('memAns').value;
+  if(!cue||!ans.trim())return;
+  if(!ans.startsWith(' ')) ans=' '+ans.trim();        // leading space = the next-token answer
+  $('rememberBtn').disabled=true;
+  const r=await jpost('/remember',{cue:cue,answer:ans});
+  $('rememberBtn').disabled=false;
+  if(r.error){ alert(r.error); return; }
+  $('memCue').value='';$('memAns').value=''; await loadMem();
+  $('askInput').value=cue; $('askInput').focus();
+};
+async function doAsk(){
+  const p=$('askInput').value.trim(); if(!p)return;
+  $('askBtn').disabled=true;
+  const r=await jpost('/ask',{prompt:p,topk:5});
+  $('askBtn').disabled=false;
+  if(r.error){return;}
+  const base=(r.baseline&&r.baseline[0])?r.baseline[0].word.trim():'·';
+  const after=(r.with_memory&&r.with_memory[0])?r.with_memory[0].word.trim():'·';
+  const fired = r.fired
+    ? '<span class="fired">&check; fired &ldquo;'+escapeHtml(r.fired.answer)+'&rdquo; ('+Math.round(r.fired.match*100)+'%)</span>'
+    : '<span class="silent">no memory fired (cos '+(r.nearest_cosine!=null?r.nearest_cosine.toFixed(2):'–')+' &lt; gate '+r.gate+')</span>';
+  const row=document.createElement('div'); row.className='askres';
+  row.innerHTML='<span class="w">&ldquo;'+escapeHtml(p)+'&rdquo;</span><span class="out">'+escapeHtml(after)+'</span> '+
+    fired+'<span class="base">on its own: '+escapeHtml(base)+'</span>';
+  $('askResults').prepend(row); $('askInput').value=''; $('askInput').focus();
+}
+$('askBtn').onclick=doAsk;
+$('askInput').addEventListener('keydown',e=>{if(e.key==='Enter')doAsk();});
+$('memAns').addEventListener('keydown',e=>{if(e.key==='Enter')$('rememberBtn').click();});
+loadMem();
 </script>
 </body>
 </html>
