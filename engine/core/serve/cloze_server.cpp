@@ -1022,6 +1022,101 @@ int main(int argc, char** argv) {
         }
     });
 
+    // POST /state — GAP #1 (task #43): the WRITE-and-observe inverse of /harvest, over HTTP. Body
+    // {text, layer, positions:[int], values:[float] = positions.size()*n_embd (the EDITED residual rows a
+    // client read via /harvest and changed)}: run a baseline causal forward, OVERWRITE those positions'
+    // residual at `layer` (GgmlAdapter::write_state — the patch-free eval-callback activation patch), run
+    // again, then clear — and report how the model's next-token prediction moved. /harvest (read) + this
+    // (write) close the read->edit->write->observe loop on the LIVE model over HTTP. Leak-free: the write
+    // is cleared before the pooled context is released.
+    svr.Post("/state", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, false);
+        if (body.is_discarded() || !body.contains("text") || !body.contains("layer") ||
+            !body.contains("positions") || !body.contains("values")) {
+            res.status = 400;
+            res.set_content(json{{"error", "need {text, layer, positions:[int], values:[float]}"}}.dump(),
+                            "application/json");
+            return;
+        }
+        const std::string text = body["text"].get<std::string>();
+        const int layer = body["layer"].get<int>();
+        const std::vector<int> positions = body["positions"].get<std::vector<int>>();
+        const std::vector<float> values = body["values"].get<std::vector<float>>();
+        const std::vector<int> tokens = model->encode(text);
+        if (tokens.empty() || static_cast<int>(tokens.size()) > n_ctx) {
+            res.status = 400;
+            res.set_content(json{{"error", "text empty or too long for one forward"}}.dump(),
+                            "application/json");
+            return;
+        }
+        auto top3 = [&](const std::vector<float>& lg, int vocab) {
+            json arr = json::array();
+            if (lg.empty() || vocab <= 0) return arr;
+            float mx = lg[0];
+            for (int v = 1; v < vocab; ++v) mx = std::max(mx, lg[v]);
+            double Z = 0.0;
+            for (int v = 0; v < vocab; ++v) Z += std::exp(double(lg[v]) - double(mx));
+            std::vector<int> idx(static_cast<size_t>(vocab));
+            for (int v = 0; v < vocab; ++v) idx[static_cast<size_t>(v)] = v;
+            const int k = std::min(3, vocab);
+            std::partial_sort(idx.begin(), idx.begin() + k, idx.end(),
+                              [&](int a, int b) { return lg[a] > lg[b]; });
+            for (int j = 0; j < k; ++j) {
+                const int v = idx[static_cast<size_t>(j)];
+                arr.push_back({{"token", model->decode({v})},
+                               {"prob", std::exp(double(lg[v]) - double(mx)) / Z}});
+            }
+            return arr;
+        };
+        try {
+            std::vector<float> base_lg, edit_lg;
+            int vocab = 0;
+            bool applied = false;
+            {
+                ContextPool::Lease lease = pool.acquire();
+                GgmlAdapter& ad = *lease;
+                try {
+                    ad.set_causal(true);                       // causal forward (also clears the KV)
+                    ForwardResult b = ad.ar_forward(tokens, 0);
+                    base_lg = b.logits; vocab = b.vocab;
+                    applied = ad.write_state(layer, positions, values);
+                    if (applied) {
+                        ad.set_causal(true);                   // fresh KV, with the write now armed
+                        ForwardResult e = ad.ar_forward(tokens, 0);
+                        edit_lg = e.logits;
+                    }
+                    ad.clear_write();                          // leak-free: never sticks on the pooled ctx
+                } catch (...) {
+                    ad.clear_write();
+                    throw;
+                }
+            }
+            double moved = 0.0;
+            if (applied && base_lg.size() == edit_lg.size()) {
+                for (size_t i = 0; i < base_lg.size(); ++i) {
+                    const double d = double(base_lg[i]) - double(edit_lg[i]);
+                    moved += d * d;
+                }
+                moved = std::sqrt(moved);
+            }
+            json resp = {
+                {"applied", applied}, {"layer", layer},
+                {"n_positions", static_cast<int>(positions.size())},
+                {"n_values", static_cast<int>(values.size())},
+                {"moved_l2", moved},
+                {"baseline_top", top3(base_lg, vocab)},
+                {"edited_top", applied ? top3(edit_lg, vocab) : json::array()},
+            };
+            if (!applied)
+                resp["error"] = "write_state rejected (layer must be in [1, n_layer); "
+                                "values.size must equal positions.size * n_embd)";
+            res.set_content(resp.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
     svr.Post("/v1/completions",
              [&](const httplib::Request& req, httplib::Response& res) { handle(req, res, false); });
     svr.Post("/v1/infill",

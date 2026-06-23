@@ -183,6 +183,7 @@ ForwardResult GgmlAdapter::ar_forward(const std::vector<int>& tokens, int n_past
     if (len <= 0) throw std::invalid_argument("ar_forward: empty tokens");
     if (n_past < 0) throw std::invalid_argument("ar_forward: n_past < 0");
     if (n_past + len > n_ctx_) throw std::invalid_argument("ar_forward: exceeds n_ctx");
+    write_from_ = n_past;   // board position -> tensor row mapping for the white-box state-WRITE (eval_cb)
 
     // Incremental causal decode: place `tokens` at absolute positions [n_past, n_past+len),
     // reusing whatever KV already covers [0, n_past). Only the LAST row is an output (the
