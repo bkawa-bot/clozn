@@ -108,14 +108,33 @@ bool GgmlAdapter::eval_cb_thunk(struct ggml_tensor* t, bool ask, void* user_data
 }
 
 bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
-    if (!emit_activations_ || tap_layer_ <= 0) return false;  // not capturing a mid layer this pass
-    if (tap_name_ != ggml_get_name(t)) return false;          // not the residual tensor we want
+    const char* nm = ggml_get_name(t);
+    const bool read = emit_activations_ && tap_layer_ > 0 && tap_name_ == nm;   // the read tap
+    const bool write = have_write_ && write_layer_ > 0 && write_name_ == nm;    // the state-WRITE
+    if (!read && !write) return false;                        // not a residual tensor we read or write
     if (ask) return true;                                     // yes — hand me its data after it computes
     const int ne0 = static_cast<int>(t->ne[0]);  // n_embd
     const int ne1 = static_cast<int>(t->ne[1]);  // token rows (the decode segment)
-    tap_rows_ = ne1;
-    tap_buf_.resize(static_cast<size_t>(ne0) * ne1);
-    ggml_backend_tensor_get(t, tap_buf_.data(), 0, tap_buf_.size() * sizeof(float));
+    if (read) {
+        tap_rows_ = ne1;
+        tap_buf_.resize(static_cast<size_t>(ne0) * ne1);
+        ggml_backend_tensor_get(t, tap_buf_.data(), 0, tap_buf_.size() * sizeof(float));
+    }
+    // WRITE side (GAP #1): overwrite each marked position's row (row = board position - this segment's
+    // `from`), AFTER the read (so the tap reports the PRE-edit state) and before downstream layers consume
+    // t — the activation-patch propagates forward. Rows outside [0, ne1) (e.g. a frozen-prefix decode) are
+    // skipped, so the write lands only on the active block's decode.
+    if (write && ne0 == n_embd_ &&
+        write_buf_.size() == write_positions_.size() * static_cast<size_t>(n_embd_)) {
+        for (size_t i = 0; i < write_positions_.size(); ++i) {
+            const int row = write_positions_[i] - write_from_;
+            if (row >= 0 && row < ne1) {
+                ggml_backend_tensor_set(t, write_buf_.data() + i * static_cast<size_t>(n_embd_),
+                                        static_cast<size_t>(row) * n_embd_ * sizeof(float),
+                                        static_cast<size_t>(n_embd_) * sizeof(float));
+            }
+        }
+    }
     return true;
 }
 
@@ -128,6 +147,25 @@ void GgmlAdapter::set_steer(const std::vector<float>& data, int il_start, int il
 
 void GgmlAdapter::clear_steer() {
     llama_set_adapter_cvec(ctx_, nullptr, 0, n_embd_, 0, n_layer_);
+}
+
+bool GgmlAdapter::write_state(int il, const std::vector<int>& positions,
+                              const std::vector<float>& values) {
+    if (il <= 0 || il >= n_layer_) return false;   // 0 = final (no l_out name); writable mids are [1, n_layer)
+    if (n_embd_ <= 0) return false;
+    if (values.size() != positions.size() * static_cast<size_t>(n_embd_)) return false;
+    write_layer_ = il;
+    write_name_ = "l_out-" + std::to_string(il);
+    write_positions_ = positions;
+    write_buf_ = values;
+    have_write_ = true;
+    return true;
+}
+
+void GgmlAdapter::clear_write() {
+    have_write_ = false;
+    write_positions_.clear();
+    write_buf_.clear();
 }
 
 void GgmlAdapter::set_causal(bool on) {
@@ -236,6 +274,7 @@ ForwardResult GgmlAdapter::harvest(const std::vector<int>& tokens) {
 }
 
 void GgmlAdapter::decode_only(const std::vector<int>& board, int from, int to) {
+    write_from_ = from;   // board position -> tensor row mapping for the white-box state-WRITE (eval_cb)
     const int len = to - from;
     if (len <= 0) throw std::invalid_argument("empty decode segment");
     decoded_tokens_ += len;

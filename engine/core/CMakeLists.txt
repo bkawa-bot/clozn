@@ -153,6 +153,12 @@ if(CLOZE_BUILD_GGML)
     add_executable(test_ggml_generate tests/test_ggml_generate.cpp)
     target_link_libraries(test_ggml_generate PRIVATE cloze_ggml)
 
+    # GAP #1 (task #43): the white-box state-WRITE on a REAL model — read -> edit -> write -> observe ->
+    # clear through llama, via the patch-free eval-callback activation patch. SKIPS without a GGUF arg.
+    add_executable(test_ggml_state_write tests/test_ggml_state_write.cpp)
+    target_link_libraries(test_ggml_state_write PRIVATE cloze_ggml)
+    add_test(NAME ggml_state_write COMMAND test_ggml_state_write)
+
     # cloze — the native runtime CLI: load a GGUF, denoise a prompt, print the completion + stats.
     # The "it actually runs" artifact (the daily-driver shape behind the tests).
     add_executable(cloze tools/cloze_cli.cpp)

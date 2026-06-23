@@ -125,6 +125,14 @@ public:
     // concept direction in and watch the denoiser's commits move. NOT a golden path (off by default).
     void set_steer(const std::vector<float>& data, int il_start, int il_end);
     void clear_steer();
+    // White-box STATE-WRITE (GAP #1, task #43): overwrite the residual at board `positions` with
+    // `values` ([positions.size()*n_embd]) at the l_out-<il> mid layer (same naming as the read tap),
+    // applied on EVERY subsequent forward via the SAME eval callback as the tap (ggml_backend_tensor_set,
+    // no llama patch) until clear_write(). The causal inverse of the tap: read state out
+    // (ForwardResult.activations) -> edit -> write_state -> observe the next forward. Returns true if armed.
+    bool write_state(int il, const std::vector<int>& positions,
+                     const std::vector<float>& values) override;
+    void clear_write();
     int n_layer() const { return n_layer_; }
 
     // --- Autoregressive (causal) decode: the white-box read/steer harness over a standard
@@ -196,6 +204,14 @@ private:
     std::string tap_name_;           // "l_out-<tap_layer_>": the residual tensor the eval callback captures
     std::vector<float> tap_buf_;     // last-decode residual at tap_layer_ [rows*n_embd], filled by eval_cb
     int tap_rows_ = 0;               // token rows in tap_buf_ (= the last decode segment's length)
+    // White-box state-WRITE (GAP #1): the mirror of the tap — eval_cb overwrites these positions' rows
+    // at write_name_ during decode (ggml_backend_tensor_set), applied until clear_write().
+    bool have_write_ = false;
+    int write_layer_ = 0;
+    std::string write_name_;             // "l_out-<write_layer_>"
+    std::vector<int> write_positions_;   // board positions to overwrite
+    std::vector<float> write_buf_;       // [write_positions_.size()*n_embd] new residual rows
+    int write_from_ = 0;                 // current decode segment's `from` (board position -> tensor row)
     // ggml scheduler eval callback: grabs the mid-layer residual during llama_decode (no source patch).
     static bool eval_cb_thunk(struct ggml_tensor* t, bool ask, void* user_data);
     bool eval_cb(struct ggml_tensor* t, bool ask);
