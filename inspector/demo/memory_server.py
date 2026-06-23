@@ -14,13 +14,18 @@ and from the static demo memory_window.py -- no faking, real recall):
                the variant that actually recalls). The READ key is grabbed the same way at
                query time, so the query self-addresses its own entry.
   value      = the answer token's unembedding direction W_U[:, ans] (legible by build:
-               adding it to the residual promotes `answer` via the logit lens).
+               adding it to the residual promotes `answer` via the logit lens). A MULTI-token
+               answer (e.g. ' mochi' -> [' m','och','i']) uses its FIRST token's direction, which
+               decodes cleanly back to that first piece and promotes it on recall -- so recall
+               nails the answer's first token (later pieces are NOT addressed; the UI says so).
   recall     = a forward hook adding  sum_i w_i * value_i  at the query's final position,
                with GATED hard top-1 addressing over cosine similarity: the nearest stored
-               key fires (w_i = eta) only if its cosine clears GATE (~0.90), else NOTHING is
-               injected and the model returns its exact baseline. The gate is what keeps a
+               key fires (w_i = eta) only if its cosine clears the match-strictness gate, else
+               NOTHING is injected and the model returns its exact baseline. The gate keeps a
                wrong-keyed query silent (self-cosine ~1.0 fires; unrelated cross ~0.82 gated
-               off) -- so /query honestly reports "fired: null" when no entry matches.
+               off) -- so /query honestly reports "fired: null" when no entry matches. The gate
+               is LIVE-ADJUSTABLE (POST /gate or a per-query override) so softer paraphrases can
+               be made to fire by loosening it; default GlassBoxMemory.DEFAULT_GATE (0.90).
 
 The backbone is FROZEN throughout; GPT-2 is never trained. Every probability returned by
 /query is the ACTUAL model output (baseline = no memory; with_memory = the live memory hook).
@@ -31,9 +36,10 @@ ENDPOINTS (JSON unless noted; CORS enabled so a local file:// HTML page can also
   GET  /memory                        -> {entries: [...]} (the cards)
   POST /delete   {label}              -> {ok: true, removed: <label>}
   POST /salience {label, eta}         -> the updated entry
-  POST /query    {prompt, topk?}      -> {baseline:[...], with_memory:[...], fired:{label,match_score}|null}
+  POST /query    {prompt, topk?, gate?} -> {baseline, with_memory, fired, nearest_cosine, gate}
+  POST /gate     {gate}               -> {ok, gate}  (set the live match-strictness threshold)
   POST /thinking {prompt}             -> {concepts:[...], tokens:[{tok, lit:[{c,z}]}]}  (the concept read)
-  GET  /health                        -> {model, layer, n_entries, thinking, ...}
+  GET  /health                        -> {model, layer, gate, n_entries, thinking, ...}
 
 The "what is it thinking" read (POST /thinking) is an honest concept PROBE on the SAME frozen model: a
 named diff-in-means concept basis (the validated p18 directions) is built ONCE at startup, and per call
@@ -113,6 +119,14 @@ def single_token_id(model, word: str):
     return int(ids[0])
 
 
+def answer_token_ids(model, word: str) -> list[int]:
+    """All GPT-2 token ids for `word` (leading space included). One id for a single-token word like
+    ' blue'; several for a name like ' mochi' (-> [' m', 'ochi']). The value direction is built from
+    these; recall promotes the FIRST of them (see value_dir_multi)."""
+    ids = model.to_tokens(word, prepend_bos=False)[0]
+    return [int(t) for t in ids]
+
+
 def tok_str(model, tid: int) -> str:
     return model.to_string(torch.tensor([int(tid)]))
 
@@ -151,6 +165,19 @@ def value_dir(model, ans_id: int):
 
 
 @torch.no_grad()
+def value_dir_multi(model, ans_ids: list[int]):
+    """The legible value for a (possibly) multi-token answer. For ONE token this is exactly value_dir.
+    For several tokens we use the FIRST token's unembedding direction. We tried the MEAN of all the
+    tokens' directions too, but measured (GPT-2, L10, ' mochi' -> [' m','och','i']) it decodes to the
+    MIDDLE piece ('och') and only lifts the real first token ' m' to rank 3 -- illegible. The first
+    token's direction decodes cleanly to ' m' (value_decodes_ok stays true) and lifts ' m' to rank ~2,
+    so the card reads back legibly and recall promotes the answer's first piece. HONEST LIMIT: only the
+    first token of a multi-token name is addressed/promoted; the later pieces are not (surfaced in UI)."""
+    dirs = model.W_U[:, ans_ids].T                      # [n_tok, d_model]
+    return dirs[0].clone()                              # the FIRST answer token's direction
+
+
+@torch.no_grad()
 def logit_lens_top(model, v: torch.Tensor, k: int = 1):
     """Decode a residual-space direction through the logit lens: ln_final -> unembed -> top token(s)."""
     lv = model.ln_final(v.unsqueeze(0))
@@ -170,38 +197,67 @@ class GlassBoxMemory:
     The list IS the memory.
 
     Addressing is hard top-1 over cosine WITH a min-similarity gate: the contribution fires only if the
-    nearest stored key clears GATE. A query's OWN key cosines ~1.0 to its own stored entry, but the
+    nearest stored key clears the gate. A query's OWN key cosines ~1.0 to its own stored entry, but the
     nonce cues are not orthogonal (two 'color' cues cosine ~0.82), so an UNGATED top-1 would always
     fire the nearest remaining entry even on an unrelated query. The gate (between the ~1.0 self regime
-    and the ~0.82 cross regime) makes a wrong-keyed query a true no-op: no injection, exact baseline."""
+    and the ~0.82 cross regime) makes a wrong-keyed query a true no-op: no injection, exact baseline.
 
-    GATE = 0.90   # min cosine for the nearest key to fire (self ~1.0 fires; cross ~0.82 is gated off)
+    The gate is the MATCH-STRICTNESS knob and is now a live instance attribute (`self.gate`), adjustable
+    at runtime via POST /gate or a per-query override, so paraphrases that sit just below the default can
+    be made to fire by loosening it (at the cost of letting near-misses creep in). Default DEFAULT_GATE."""
 
-    def __init__(self, model, layer: int):
+    # Default gate 0.82: measured at the L10 default, stored-cue paraphrases sit 0.83-0.94 and unrelated
+    # queries <=0.565, so 0.82 fires soft paraphrases while still gating junk (self ~1.0 always fires).
+    # At the old L8 the paraphrase/unrelated bands nearly touched (0.758 vs 0.686), so 0.90 was needed
+    # there to stay safe -- and it blocked every soft paraphrase. Deeper keying (L10) is what buys the
+    # looser-yet-safe default. Fully live: POST /gate or the strictness slider moves it at runtime.
+    DEFAULT_GATE = 0.82
+    GATE_MIN = 0.30       # clamp range exposed to the strictness slider (very loose ... very strict)
+    GATE_MAX = 0.995
+
+    def __init__(self, model, layer: int, gate: float | None = None):
         self.model = model
         self.layer = layer
+        self.gate = self.DEFAULT_GATE if gate is None else self._clamp_gate(gate)
         self.entries: list[dict] = []
         self._next_id = 0
         self.lock = threading.RLock()   # guards entries during concurrent HTTP requests
 
+    @classmethod
+    def _clamp_gate(cls, g: float) -> float:
+        return float(max(cls.GATE_MIN, min(cls.GATE_MAX, float(g))))
+
+    def set_gate(self, g: float) -> float:
+        """Set the live match-strictness gate (clamped to [GATE_MIN, GATE_MAX]). Returns the value set."""
+        with self.lock:
+            self.gate = self._clamp_gate(g)
+            return self.gate
+
     # ---- mutation --------------------------------------------------------------------------------
     def write(self, cue: str, answer: str, eta: float = 10.0):
-        """Store one fact. Returns the new entry dict (or raises ValueError on a multi-token answer)."""
-        ans_id = single_token_id(self.model, answer)
-        if ans_id is None:
-            raise ValueError(
-                f"answer {answer!r} is not a single GPT-2 token; pick a single-token word "
-                f"(usually with a leading space, e.g. ' blue')."
-            )
+        """Store one fact. Returns the new entry dict. Multi-token answers (e.g. ' mochi' -> [' m','och','i'])
+        are accepted: the value becomes the answer's FIRST token's unembedding direction, which decodes
+        cleanly back to that first piece and promotes it on recall. So recall nails the answer's first
+        token; later pieces are not separately addressed -- the UI is honest about this."""
+        if not answer:
+            raise ValueError("empty answer; give a word (usually with a leading space, e.g. ' blue').")
+        ans_ids = answer_token_ids(self.model, answer)
+        if not ans_ids:
+            raise ValueError(f"answer {answer!r} did not tokenize to any GPT-2 tokens.")
         key = consistent_key(self.model, cue, self.layer)
-        value = value_dir(self.model, ans_id)
-        decoded = logit_lens_top(self.model, value, k=1)[0]["word"]
+        value = value_dir_multi(self.model, ans_ids)
+        decoded = logit_lens_top(self.model, value, k=1)[0]["word"]   # what the value direction promotes
+        ans_first_id = ans_ids[0]
+        multi = len(ans_ids) > 1
         with self.lock:
             label = f"m{self._next_id}"
             self._next_id += 1
             entry = {
                 "label": label, "key": key, "value": value, "eta": float(eta),
-                "ans_id": int(ans_id), "cue": cue, "answer": answer,
+                "ans_id": int(ans_first_id),          # the FIRST answer token (what recall promotes)
+                "ans_ids": [int(t) for t in ans_ids], # all answer tokens (for legible read-back)
+                "n_tok": len(ans_ids), "multi": bool(multi),
+                "cue": cue, "answer": answer,
                 "decoded_word": decoded,
             }
             self.entries.append(entry)
@@ -235,12 +291,18 @@ class GlassBoxMemory:
 
     # ---- legible serialization (the card) --------------------------------------------------------
     def card(self, entry: dict) -> dict:
-        """Public, JSON-safe view of one entry: label + decoded value + salience + key fingerprint."""
+        """Public, JSON-safe view of one entry: label + decoded value + salience + key fingerprint.
+        For a multi-token answer, `decodes_ok` means the value promotes the answer's FIRST token (all we
+        claim), and `multi`/`n_tok`/`first_token` let the UI say so honestly."""
         key = entry["key"]
         value = entry["value"]
         topdims = [int(d) for d in key.abs().topk(6).indices]
         decoded = entry["decoded_word"]
-        ok = (single_token_id(self.model, decoded) == entry["ans_id"]
+        first_id = entry.get("ans_id")
+        first_tok = tok_str(self.model, first_id) if first_id is not None else decoded
+        # ok = the value direction decodes to the answer's FIRST token (single-token: the whole answer).
+        ok = (single_token_id(self.model, decoded) == first_id
+              or decoded.strip() == first_tok.strip()
               or decoded.strip() == entry["answer"].strip())
         return {
             "label": entry["label"],
@@ -248,6 +310,9 @@ class GlassBoxMemory:
             "answer": entry["answer"].strip() or entry["answer"],
             "decoded_word": decoded.strip() or decoded,
             "value_decodes_ok": bool(ok),
+            "multi": bool(entry.get("multi", False)),
+            "n_tok": int(entry.get("n_tok", 1)),
+            "first_token": first_tok.strip() or first_tok,
             "salience": float(entry["eta"]),
             "key_fingerprint": {
                 "dim": int(key.shape[0]),
@@ -259,25 +324,27 @@ class GlassBoxMemory:
 
     # ---- addressing + recall ---------------------------------------------------------------------
     @torch.no_grad()
-    def _address(self, qkey: torch.Tensor, entries: list[dict]):
-        """Gated hard top-1 over cosine: nearest stored key wins IF it clears GATE, else nothing fires.
+    def _address(self, qkey: torch.Tensor, entries: list[dict], gate: float):
+        """Gated hard top-1 over cosine: nearest stored key wins IF it clears `gate`, else nothing fires.
         Returns (weights[n], selected_index_or_None, nearest_cosine)."""
         keys = torch.stack([e["key"] for e in entries])            # [n, d_mlp]
         cos = F.normalize(keys, dim=-1) @ F.normalize(qkey, dim=-1)  # [n]
         sel = int(cos.argmax())
         w = torch.zeros_like(cos)
-        if float(cos[sel]) >= self.GATE:
+        if float(cos[sel]) >= gate:
             w[sel] = float(entries[sel]["eta"])
             return w, sel, float(cos[sel])
         return w, None, float(cos[sel])                            # gated off -> no injection
 
     @torch.no_grad()
-    def recall(self, cue: str, k: int = 5):
+    def recall(self, cue: str, k: int = 5, gate: float | None = None):
         """Query `cue` with the CURRENT memory active. Captures the query key at the final position,
         injects the addressed memory contribution into resid_post at layer L, and returns
-        (top-k [{word,prob}], full probs tensor, selected_entry_or_None, nearest_cosine).
-        When the nearest key is below GATE nothing is injected (sel is None) and the model returns its
-        exact baseline -- so a wrong-keyed query honestly reports fired=null."""
+        (top-k [{word,prob}], full probs tensor, selected_entry_or_None, nearest_cosine, gate_used).
+        `gate` overrides the live self.gate for THIS query only (the strictness slider previews a value
+        without committing it). When the nearest key is below the gate nothing is injected (sel is None)
+        and the model returns its exact baseline -- so a wrong-keyed query honestly reports fired=null."""
+        g = self.gate if gate is None else self._clamp_gate(gate)
         entries = self.snapshot()                                  # consistent view for this forward
         post_name = f"blocks.{self.layer}.mlp.hook_post"
         resid_name = f"blocks.{self.layer}.hook_resid_post"
@@ -290,7 +357,7 @@ class GlassBoxMemory:
         def inject(act, hook):
             if not entries:
                 return act
-            w, sel, c = self._address(cap["q"], entries)
+            w, sel, c = self._address(cap["q"], entries, g)
             cap["sel"], cap["cos"] = sel, c
             if sel is None:
                 return act                                         # below gate: leave residual untouched
@@ -305,7 +372,7 @@ class GlassBoxMemory:
         top = logits.topk(k)
         out = [{"word": tok_str(self.model, int(i)), "prob": float(probs[int(i)])} for i in top.indices]
         sel_entry = entries[cap["sel"]] if cap["sel"] is not None else None
-        return out, probs, sel_entry, cap["cos"]
+        return out, probs, sel_entry, cap["cos"], g
 
 
 # ====================================================================================================
@@ -465,11 +532,12 @@ class App:
     """Holds the loaded model + the one live memory. The handler routes requests to these methods,
     each returning (status_code, json_dict)."""
 
-    def __init__(self, model, layer: int, device: str, reader: "ConceptReader | None" = None):
+    def __init__(self, model, layer: int, device: str, reader: "ConceptReader | None" = None,
+                 gate: float | None = None):
         self.model = model
         self.layer = layer
         self.device = device
-        self.mem = GlassBoxMemory(model, layer)
+        self.mem = GlassBoxMemory(model, layer, gate=gate)
         self.reader = reader     # the "what is it thinking" concept probe (basis built once at startup)
         self.model_name = "gpt2 (GPT-2-small, 124M, frozen)"
 
@@ -481,7 +549,7 @@ class App:
         if not isinstance(cue, str) or not cue:
             return 400, {"error": "missing or empty 'cue' (a string ending right before the answer)"}
         if not isinstance(answer, str) or not answer:
-            return 400, {"error": "missing or empty 'answer' (a single-token word, e.g. ' blue')"}
+            return 400, {"error": "missing or empty 'answer' (a word, e.g. ' blue' or ' mochi')"}
         try:
             entry = self.mem.write(cue, answer, float(eta))
         except ValueError as e:
@@ -516,30 +584,50 @@ class App:
             return 404, {"error": f"no entry with label {label!r}"}
         return 200, self.mem.card(entry)
 
-    # -- POST /query {prompt, topk?} ---------------------------------------------------------------
+    # -- POST /query {prompt, topk?, gate?} --------------------------------------------------------
     def query(self, body: dict):
         prompt = body.get("prompt")
         topk = int(body.get("topk", 5) or 5)
         topk = max(1, min(topk, 20))
         if not isinstance(prompt, str) or not prompt:
             return 400, {"error": "missing or empty 'prompt'"}
+        # optional per-query gate override (the strictness slider previews a value without committing it).
+        gate_override = body.get("gate", None)
+        if gate_override is not None and not isinstance(gate_override, (int, float)):
+            return 400, {"error": "'gate' must be a number (cosine threshold, e.g. 0.85)"}
         # baseline: NO memory (clean frozen model) -- a real, separate forward pass.
         baseline = topk_preds(self.model, prompt, k=topk)
-        # with_memory: the SAME prompt with the live memory hook active.
-        with_mem, _probs, sel_entry, cos = self.mem.recall(prompt, k=topk)
+        # with_memory: the SAME prompt with the live memory hook active (gate = override or live gate).
+        with_mem, _probs, sel_entry, cos, gate_used = self.mem.recall(
+            prompt, k=topk, gate=(float(gate_override) if gate_override is not None else None))
         fired = None
         if sel_entry is not None:
             fired = {"label": sel_entry["label"], "match_score": round(float(cos), 4),
                      "answer": sel_entry["answer"].strip() or sel_entry["answer"],
-                     "decoded_word": sel_entry["decoded_word"].strip() or sel_entry["decoded_word"]}
+                     "decoded_word": sel_entry["decoded_word"].strip() or sel_entry["decoded_word"],
+                     "multi": bool(sel_entry.get("multi", False)),
+                     "n_tok": int(sel_entry.get("n_tok", 1)),
+                     "first_token": (tok_str(self.model, sel_entry["ans_id"]).strip()
+                                     if sel_entry.get("ans_id") is not None else None)}
         return 200, {
             "prompt": prompt,
             "baseline": baseline,
             "with_memory": with_mem,
             "fired": fired,
             "nearest_cosine": round(float(cos), 4) if cos is not None else None,
-            "gate": self.mem.GATE,
+            "gate": round(float(gate_used), 4),     # the gate this query actually used
+            "live_gate": round(float(self.mem.gate), 4),
         }
+
+    # -- POST /gate {gate} -------------------------------------------------------------------------
+    def gate(self, body: dict):
+        """Set the live match-strictness gate (cosine threshold) without restarting. Clamped to range."""
+        g = body.get("gate")
+        if not isinstance(g, (int, float)):
+            return 400, {"error": "missing or non-numeric 'gate' (cosine threshold, e.g. 0.85)"}
+        new_gate = self.mem.set_gate(float(g))
+        return 200, {"ok": True, "gate": round(float(new_gate), 4),
+                     "gate_min": self.mem.GATE_MIN, "gate_max": self.mem.GATE_MAX}
 
     # -- POST /thinking {prompt} -------------------------------------------------------------------
     def thinking(self, body: dict):
@@ -572,7 +660,10 @@ class App:
             "d_model": int(self.model.cfg.d_model),
             "d_mlp": int(self.model.cfg.d_mlp),
             "n_layers": int(self.model.cfg.n_layers),
-            "gate": self.mem.GATE,
+            "gate": round(float(self.mem.gate), 4),
+            "gate_default": self.mem.DEFAULT_GATE,
+            "gate_min": self.mem.GATE_MIN,
+            "gate_max": self.mem.GATE_MAX,
             "n_entries": len(self.mem.snapshot()),
             "thinking": thinking,
         }
@@ -669,6 +760,8 @@ def make_handler(app: App):
                     status, payload = app.salience(body)
                 elif path == "/query":
                     status, payload = app.query(body)
+                elif path == "/gate":
+                    status, payload = app.gate(body)
                 elif path == "/thinking":
                     status, payload = app.thinking(body)
                 else:
@@ -690,9 +783,10 @@ ENDPOINTS = [
     "GET  /memory                     -> {entries:[...]}  (the cards)",
     "POST /delete   {label}           -> {ok}",
     "POST /salience {label, eta}      -> the updated entry",
-    "POST /query    {prompt, topk?}   -> {baseline, with_memory, fired}",
+    "POST /query    {prompt, topk?, gate?} -> {baseline, with_memory, fired, nearest_cosine, gate}",
+    "POST /gate     {gate}            -> {ok, gate}  (set the live match-strictness threshold)",
     "POST /thinking {prompt}          -> {concepts, tokens:[{tok, lit:[{c,z}]}]}  (what it's thinking)",
-    "GET  /health                     -> {model, layer, n_entries, thinking}",
+    "GET  /health                     -> {model, layer, gate, n_entries, thinking}",
 ]
 
 
@@ -701,7 +795,13 @@ def main():
     ap = argparse.ArgumentParser(description="Live backend for the Clozn glass-box memory window.")
     ap.add_argument("--host", default="127.0.0.1", help="bind host (default loopback; 0.0.0.0 for LAN)")
     ap.add_argument("--port", type=int, default=8077, help="bind port (default 8077)")
-    ap.add_argument("--layer", type=int, default=8, help="memory write/read layer (p15/p17 best = 8)")
+    ap.add_argument("--layer", type=int, default=10,
+                    help="memory write/read layer (default 10: deeper keying -> cleanest paraphrase vs "
+                         "unrelated separation, ~+0.27 cos margin, and stronger recall than L8; "
+                         "p15/p17 originally used 8)")
+    ap.add_argument("--gate", type=float, default=None,
+                    help=f"initial match-strictness gate (cosine; default {GlassBoxMemory.DEFAULT_GATE}); "
+                         f"adjustable live via POST /gate or the strictness slider")
     ap.add_argument("--think-layer", type=int, default=7,
                     help="resid layer for the 'what it's thinking' concept read (p18 basis default = 7)")
     ap.add_argument("--device", default=("cuda" if torch.cuda.is_available() else "cpu"))
@@ -730,7 +830,7 @@ def main():
         print(f"  !! concept basis build failed ({type(e).__name__}: {e}); "
               f"/thinking will return 503, memory app unaffected", flush=True)
 
-    app = App(model, args.layer, args.device, reader=reader)
+    app = App(model, args.layer, args.device, reader=reader, gate=args.gate)
 
     if args.seed_facts:
         seeds = [
@@ -754,7 +854,8 @@ def main():
     print("\n" + "=" * 78)
     print(f"  CLOZN MEMORY SERVER  ->  {url}")
     print("=" * 78)
-    print(f"  model: {app.model_name}   layer: blocks.{args.layer}.mlp   gate: {app.mem.GATE}")
+    print(f"  model: {app.model_name}   layer: blocks.{args.layer}.mlp   "
+          f"gate: {app.mem.gate} (live; POST /gate to change)")
     if reader is not None:
         print(f"  thinking: concept read @ blocks.{reader.layer}.hook_resid_post  "
               f"({reader.k} concepts, z>={reader.Z_THRESH} vs {reader.N_NULL}-sample null)")

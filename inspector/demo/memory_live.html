@@ -85,6 +85,31 @@
     box-shadow:0 8px 26px rgba(255,77,157,0.28); }
   .btn-pink:hover { box-shadow:0 12px 34px rgba(255,77,157,0.42); }
 
+  /* ---- match-strictness (the live gate) slider ------------------------------------------- */
+  .strict { margin-top:18px; padding-top:16px; border-top:1px solid rgba(255,255,255,0.07); }
+  .strict-l { display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+    flex-wrap:wrap; margin-bottom:9px; }
+  .strict-l .lab { font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; font-weight:600;
+    color:var(--lav); opacity:.85; }
+  .strict-l .val { font-size:13px; font-weight:700; color:var(--cyan);
+    font-variant-numeric:tabular-nums; text-shadow:0 0 14px rgba(31,181,229,0.3); }
+  .strict-l .val .mode { color:var(--gray); font-weight:500; font-size:11.5px; margin-left:6px;
+    letter-spacing:0; text-transform:none; }
+  input[type=range].strict-range { -webkit-appearance:none; appearance:none; width:100%; height:6px;
+    border-radius:6px; outline:none; cursor:pointer;
+    background:linear-gradient(90deg, rgba(196,245,66,0.5) 0%, rgba(31,181,229,0.5) 55%, rgba(255,77,157,0.55) 100%); }
+  input[type=range].strict-range::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+    width:18px; height:18px; border-radius:50%; cursor:pointer;
+    background:linear-gradient(135deg, var(--cyan), var(--ice));
+    box-shadow:0 0 12px rgba(31,181,229,0.6); border:2px solid rgba(11,15,42,0.6); }
+  input[type=range].strict-range::-moz-range-thumb { width:18px; height:18px; border-radius:50%;
+    cursor:pointer; background:var(--cyan); box-shadow:0 0 12px rgba(31,181,229,0.6);
+    border:2px solid rgba(11,15,42,0.6); }
+  .strict-scale { display:flex; justify-content:space-between; font-size:10px; color:var(--gray);
+    opacity:.6; margin-top:5px; }
+  .strict-note { font-size:11px; color:var(--gray); opacity:.72; margin-top:8px; line-height:1.55; }
+  .strict-note b { color:var(--cyan); font-weight:600; }
+
   /* the side-by-side result */
   .result { margin-top:22px; opacity:0; max-height:0; overflow:hidden;
     transition:opacity .5s ease, max-height .6s ease; }
@@ -306,6 +331,22 @@
         </div>
         <button class="btn" id="ask-btn" type="button">ask</button>
       </div>
+
+      <!-- match-strictness: the live gate. Loosen it and soft paraphrases start firing; tighten it and
+           only near-exact cues fire (false fires creep in if too loose). Changes the server gate live. -->
+      <div class="strict">
+        <div class="strict-l">
+          <span class="lab">match strictness &middot; fire gate (cosine)</span>
+          <span class="val"><span id="strict-val">0.82</span><span class="mode" id="strict-mode"></span></span>
+        </div>
+        <input type="range" class="strict-range" id="strict-range" min="0.40" max="0.98" step="0.01" value="0.82">
+        <div class="strict-scale"><span>0.40 &middot; loose (more fires)</span><span>strict (near-exact only) &middot; 0.98</span></div>
+        <div class="strict-note">A query fires the nearest stored key only when their cosine clears this
+          gate. <b>Loosen</b> it to let softer paraphrases fire (watch false fires creep in too);
+          <b>tighten</b> it to demand a near-exact cue. The nearest cosine is shown on every ask below, so
+          you can see exactly where each query sits relative to the gate.</div>
+      </div>
+
       <div class="result" id="ask-result">
         <div class="ba-q" id="ask-q"></div>
         <div class="ba-grid">
@@ -344,10 +385,12 @@
   <!-- ============================ WRITE ============================ -->
   <div class="section">
     <div class="sec-head"><div class="sec-num">2</div><div class="sec-title">Remember a fact</div></div>
-    <div class="sec-sub">Give it a cue ending right before the answer, and a <i>single-token</i> answer
-      word (usually with a leading space, e.g. <code style="color:var(--cyan)">&nbsp;blue</code>). It
-      becomes one legible card &mdash; the value is a direction in the residual stream that decodes
-      straight back to your word.</div>
+    <div class="sec-sub">Give it a cue ending right before the answer, and an answer word (usually with a
+      leading space, e.g. <code style="color:var(--cyan)">&nbsp;blue</code> or
+      <code style="color:var(--cyan)">&nbsp;mochi</code>). It becomes one legible card &mdash; the value
+      is a direction in the residual stream that decodes back to your word. <b style="color:var(--lav)">Multi-token
+      names work too</b>: the value is the answer's first token's direction, so recall promotes the first
+      piece of the name (the card says so).</div>
     <div class="panel">
       <div class="write-row">
         <div class="field">
@@ -356,7 +399,7 @@
                  value="The secret color of Zorbland is">
         </div>
         <div class="field" style="flex:0 1 200px;">
-          <label for="w-ans">answer (one token)</label>
+          <label for="w-ans">answer (a word)</label>
           <input type="text" id="w-ans" placeholder=" blue" value=" blue">
         </div>
         <button class="btn btn-pink" id="w-btn" type="button">remember</button>
@@ -383,9 +426,14 @@
       <b>Nothing faked.</b> A frozen GPT-2-small (124M), never fine-tuned &mdash; one model behind this
       whole page. The memory is a literal list of entries injected by one forward hook at a single
       mid-layer; each value is the answer token's unembedding direction, which decodes to that word by
-      construction. Addressing is gated top-1 cosine: a query fires the nearest stored key <i>only</i>
-      if it clears the gate &mdash; otherwise no vector is injected and <b>with memory</b> equals
-      <b>baseline</b> exactly ("stayed silent"). Every probability shown is the model's real output.
+      construction. A <b>multi-token</b> name uses the answer's <i>first</i> token's direction &mdash; recall
+      then promotes that first token (the card and the fired line say so; the later pieces of the name are
+      not separately addressed). Addressing is gated top-1 cosine: a query fires the nearest stored key
+      <i>only</i> if it clears the <b>match-strictness gate</b> &mdash; otherwise no vector is injected and
+      <b>with memory</b> equals <b>baseline</b> exactly ("stayed silent"). That gate is the slider above
+      and is fully live: loosen it and softer paraphrases start firing (and false fires creep in); the
+      real nearest cosine is shown on every ask so you see exactly where each query sits. Every
+      probability shown is the model's real output.
       <br><br>
       <b>The "what it's thinking" panel is a read, not a decision.</b> Each named concept is a
       <i>diff-in-means</i> direction (mean residual over positive example sentences minus contrast
@@ -423,7 +471,9 @@
 // ---------------------------------------------------------------------------------------------
 // tiny helpers
 // ---------------------------------------------------------------------------------------------
-var GATE = 0.90;                       // refreshed from /health on load
+var GATE = 0.82;                       // the LIVE server gate, refreshed from /health + on every change
+var GATE_MIN = 0.40, GATE_MAX = 0.98;  // strictness slider range (refreshed from /health if provided)
+var LAST_PROMPT = '';                  // last asked prompt (re-asked when the strictness slider settles)
 function esc(s){ var d=document.createElement('div'); d.textContent = (s==null?'':String(s)); return d.innerHTML; }
 function pct(x){ return (x*100).toFixed(1)+'%'; }
 // keep leading/trailing spaces visible in a chip: show a middot for empty, a visible space marker for edges
@@ -460,16 +510,38 @@ function toast(msg){
 // ---------------------------------------------------------------------------------------------
 // HEALTH (also gives us the live gate)
 // ---------------------------------------------------------------------------------------------
+// keep the strictness slider + readout + health line in sync with the live GATE
+function setStrictUI(g){
+  GATE = g;
+  var sv = document.getElementById('strict-val');
+  var sr = document.getElementById('strict-range');
+  var sm = document.getElementById('strict-mode');
+  if(sv) sv.textContent = g.toFixed(2);
+  // only push the slider position when not actively dragging (avoid fighting the user's thumb)
+  if(sr && document.activeElement !== sr){
+    // clamp into the slider's own range for display
+    sr.value = Math.max(parseFloat(sr.min), Math.min(parseFloat(sr.max), g)).toFixed(2);
+  }
+  if(sm){
+    var mode = g >= 0.92 ? 'strict' : (g >= 0.80 ? 'balanced' : (g >= 0.62 ? 'loose' : 'very loose'));
+    sm.textContent = '(' + mode + ')';
+  }
+  var hg = document.getElementById('hgate');
+  if(hg) hg.textContent = g.toFixed(2);
+}
+
 async function loadHealth(){
   try {
     var res = await api('/health');
     var h = res.data;
-    if(typeof h.gate === 'number') GATE = h.gate;
+    if(typeof h.gate_min === 'number') GATE_MIN = h.gate_min;
+    if(typeof h.gate_max === 'number') GATE_MAX = h.gate_max;
     document.getElementById('health').innerHTML =
       '<span class="dot-ok">&#9679;</span> live &middot; ' + esc(h.model) +
       ' &middot; memory at <code>blocks.' + esc(h.layer) + '.mlp</code>' +
-      ' &middot; fire gate <code>' + (GATE.toFixed ? GATE.toFixed(2) : GATE) + '</code>' +
+      ' &middot; fire gate <code id="hgate">' + (typeof h.gate==='number'?h.gate.toFixed(2):esc(h.gate)) + '</code>' +
       ' &middot; <span id="hcount">' + esc(h.n_entries) + '</span> entries';
+    if(typeof h.gate === 'number') setStrictUI(h.gate);
   } catch(e){
     document.getElementById('health').innerHTML =
       '<span class="dot-bad">&#9679;</span> could not reach the model server';
@@ -477,12 +549,48 @@ async function loadHealth(){
 }
 
 // ---------------------------------------------------------------------------------------------
+// MATCH-STRICTNESS slider -> POST /gate (live, throttled while dragging; always send the final value)
+// ---------------------------------------------------------------------------------------------
+function wireStrictness(){
+  var sr = document.getElementById('strict-range');
+  if(!sr) return;
+  var lastSent = 0, pending = null;
+  async function send(g){
+    var res = await api('/gate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({gate: g})
+    });
+    if(res.ok && res.data && typeof res.data.gate === 'number') setStrictUI(res.data.gate);
+  }
+  sr.addEventListener('input', function(){
+    var g = parseFloat(sr.value);
+    setStrictUI(g);                       // instant local readout
+    var now = Date.now();
+    if(now - lastSent < 110){ pending = g; return; }   // throttle the POSTs while dragging
+    lastSent = now; pending = null; send(g);
+  });
+  sr.addEventListener('change', function(){             // always commit the resting value
+    send(parseFloat(sr.value));
+    // re-run the last ask so the user immediately sees the new gate decide this query
+    if(LAST_PROMPT) doAsk();
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // MEMORY CARDS
 // ---------------------------------------------------------------------------------------------
 function cardHTML(c){
+  // for a multi-token answer the value decodes to the FIRST piece (all recall promotes); say so honestly.
+  var decLabel = c.multi
+    ? 'first token &rarr; ' + esc(c.decoded_word)
+    : 'decodes &rarr; ' + esc(c.decoded_word);
   var badge = c.value_decodes_ok
-    ? '<span class="badge badge-ok">decodes &rarr; ' + esc(c.decoded_word) + '</span>'
-    : '<span class="badge badge-warn">decodes &rarr; ' + esc(c.decoded_word) + '</span>';
+    ? '<span class="badge badge-ok">' + decLabel + '</span>'
+    : '<span class="badge badge-warn">' + decLabel + '</span>';
+  var multiBadge = c.multi
+    ? ' <span class="badge badge-warn" title="recall promotes the first token only">' +
+      esc(c.n_tok) + '-token name</span>'
+    : '';
   var dims = (c.key_fingerprint.top_dims || []).slice(0,5).join(', ');
   var eta = c.salience;
   return '' +
@@ -493,7 +601,7 @@ function cardHTML(c){
         '<div class="card-label">' + esc(c.label) + '</div>' +
         '<div class="card-sub">remembers: &ldquo;' + esc(c.cue) + '&rdquo;</div>' +
       '</div>' +
-      '<div class="card-vrow"><div class="card-vk">value</div><div>' + badge + '</div></div>' +
+      '<div class="card-vrow"><div class="card-vk">value</div><div>' + badge + multiBadge + '</div></div>' +
       '<div class="card-answer">&ldquo;' + esc(c.answer) + '&rdquo;</div>' +
       '<div class="card-sal">' +
         '<div class="card-sal-l"><span>salience &eta;</span><b id="sv-' + esc(c.label) + '">' +
@@ -720,19 +828,26 @@ async function doAsk(){
   var prompt = document.getElementById('ask-prompt').value;
   var btn = document.getElementById('ask-btn');
   if(!prompt){ toast('type a prompt first'); return; }
+  LAST_PROMPT = prompt;
   btn.disabled = true; btn.textContent = 'asking…';
   // run BOTH reads on the same prompt in parallel: the memory effect (/query) and the concept read
   // (/thinking). One ask -> baseline-vs-with-memory AND which named concepts lit up as it read.
   document.getElementById('think').style.display = 'none';
   var thinkP = loadThinking(prompt);
+  // pass the slider's CURRENT gate as a per-query override so the preview is exact even if a throttled
+  // /gate POST hasn't landed yet -- the query honestly decides against the gate you can see on the slider.
+  var sr = document.getElementById('strict-range');
+  var qgate = sr ? parseFloat(sr.value) : GATE;
   var res = await api('/query', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({prompt: prompt, topk: 5})
+    body: JSON.stringify({prompt: prompt, topk: 5, gate: qgate})
   });
   btn.disabled = false; btn.textContent = 'ask';
   if(!res.ok){ toast(res.data.error || 'query failed'); thinkP.catch(function(){}); return; }
   var d = res.data;
-  var fired = d.fired;                       // {label, match_score, answer, decoded_word} | null
+  var fired = d.fired;                       // {label, match_score, answer, multi, n_tok, ...} | null
+  var gateUsed = (typeof d.gate === 'number') ? d.gate : qgate;   // the gate this query actually used
+  var nc = (d.nearest_cosine==null) ? null : d.nearest_cosine;
 
   document.getElementById('ask-q').innerHTML =
     '&ldquo;' + esc(prompt) + '<b>&nbsp;___</b>&rdquo;';
@@ -740,36 +855,39 @@ async function doAsk(){
   // baseline side
   document.getElementById('ask-base').innerHTML = chipRow(d.baseline, null);
 
-  // with-memory side: light the fired answer (or, if silent, just mark the top like baseline)
-  var litWord = fired ? fired.answer : null;
+  // with-memory side: light the fired answer's FIRST token (multi-token recall only promotes that).
+  var litWord = fired ? (fired.first_token || fired.answer) : null;
   document.getElementById('ask-mem').innerHTML = chipRow(d.with_memory, litWord);
 
-  // is it actually silent?  honest check: identical top word AND no entry fired
+  // is it actually silent?  honest check: no entry cleared the gate
   var silent = !fired;
   var afterSide = document.getElementById('ask-after-side');
   var afterTag = document.getElementById('ask-after-tag');
   afterSide.classList.remove('silent','fired');
   var firedLine = document.getElementById('ask-fired');
+  // nearest-cosine readout shown on EVERY ask (fired or silent) so the user always sees where it sits.
+  var ncTxt = (nc!=null) ? ('<span class="mono">'+nc.toFixed(3)+'</span>') : '<span class="mono">—</span>';
+  var gTxt  = '<span class="mono">'+gateUsed.toFixed(2)+'</span>';
 
   if(silent){
     afterSide.classList.add('silent');
     afterTag.textContent = 'with memory (stayed silent)';
-    var nc = (d.nearest_cosine==null) ? null : d.nearest_cosine;
     firedLine.className = 'fired-line fired-no';
     firedLine.innerHTML = '<span>&#9676; stayed silent</span>' +
-      '<span class="gatecmp">no stored key cleared the gate &mdash; ' +
-      'with memory is identical to baseline' +
-      (nc!=null ? (' &middot; nearest match <span class="mono">'+nc.toFixed(3)+
-                   '</span> &lt; gate <span class="mono">'+GATE.toFixed(2)+'</span>') : '') +
-      '</span>';
+      '<span class="gatecmp">nearest match ' + ncTxt + ' &lt; gate ' + gTxt +
+      ' &mdash; no key cleared the gate, so with memory is identical to baseline. ' +
+      'Loosen the strictness slider to let it fire.</span>';
   } else {
     afterSide.classList.add('fired');
     afterTag.textContent = 'with memory (fired)';
     firedLine.className = 'fired-line fired-yes';
+    var multiNote = (fired.multi)
+      ? ' <span class="gatecmp">&middot; multi-token answer (' + esc(fired.n_tok) +
+        ' tokens): recall promotes the first piece &ldquo;' + esc(fired.first_token||'') + '&rdquo;</span>'
+      : '';
     firedLine.innerHTML = '<span>&#9889; fired <span class="mono">' + esc(fired.label) + '</span>' +
       ' &rarr; &ldquo;' + esc((fired.answer||'').trim()) + '&rdquo;</span>' +
-      '<span class="gatecmp">match <span class="mono">' + fired.match_score.toFixed(3) +
-      '</span> &ge; gate <span class="mono">' + GATE.toFixed(2) + '</span></span>';
+      '<span class="gatecmp">nearest match ' + ncTxt + ' &ge; gate ' + gTxt + '</span>' + multiNote;
   }
 
   // reveal with the gentle transition
@@ -785,6 +903,7 @@ document.getElementById('w-btn').addEventListener('click', doWrite);
 document.getElementById('w-ans').addEventListener('keydown', function(e){ if(e.key==='Enter') doWrite(); });
 document.getElementById('w-cue').addEventListener('keydown', function(e){ if(e.key==='Enter') document.getElementById('w-ans').focus(); });
 
+wireStrictness();
 loadHealth();
 loadMemory();
 </script>
