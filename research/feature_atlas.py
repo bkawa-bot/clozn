@@ -164,7 +164,7 @@ def main():
     concepts = list(CORPUS.keys())
     act_sum = {c: np.zeros(d_sae) for c in concepts}
     count = {c: 0 for c in concepts}
-    feat_tokens = defaultdict(Counter)
+    feat_tokens = {c: defaultdict(Counter) for c in concepts}   # [concept][fid] -> Counter(token -> activation)
 
     for c in concepts:
         for text in CORPUS[c]:
@@ -176,7 +176,7 @@ def main():
                 act_sum[c] += f[t]
                 count[c] += 1
                 for fid in np.nonzero(f[t])[0]:
-                    feat_tokens[int(fid)][piece] += float(f[t, fid])
+                    feat_tokens[c][int(fid)][piece] += float(f[t, fid])
         print(f"  {c:12s}: {count[c]} content tokens", flush=True)
 
     # selectivity[c][f] = mean act of f on concept c's tokens minus its mean on all OTHER concepts' tokens
@@ -187,20 +187,22 @@ def main():
     best_ci = sel.argmax(0)
     best_s = sel.max(0)
 
-    def label_for(fid):
-        items = [p.strip() for p, _ in feat_tokens[fid].most_common(30) if content_word(p)][:4]
+    # label a feature by the CONTENT tokens it fires on WITHIN its assigned concept, so the label is always
+    # concept-relevant (never a stray high-activation token from elsewhere).
+    def label_for(fid, c):
+        items = [p.strip() for p, _ in feat_tokens[c][fid].most_common(30) if content_word(p)][:4]
         return " · ".join(items)
 
-    # per concept, keep the top features that are (a) assigned to it and (b) genuinely selective + labeled
+    # per concept, keep the top features (a) assigned to it, (b) genuinely selective, (c) labeled in-concept
     PER = 14
     nodes, chosen = [], []
     for ci, c in enumerate(concepts):
-        cand = [fid for fid in feat_tokens
-                if best_ci[fid] == ci and best_s[fid] > 0.5 and label_for(fid)]
+        cand = [fid for fid in feat_tokens[c]
+                if best_ci[fid] == ci and best_s[fid] > 0.5 and label_for(fid, c)]
         cand.sort(key=lambda fid: -best_s[fid])
         for fid in cand[:PER]:
             chosen.append(fid)
-            nodes.append({"id": int(fid), "label": label_for(fid), "cluster": ci,
+            nodes.append({"id": int(fid), "label": label_for(fid, c), "cluster": ci,
                           "value": float(best_s[fid])})
     mx = max((n["value"] for n in nodes), default=1.0)
     for n in nodes:
