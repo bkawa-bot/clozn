@@ -55,11 +55,11 @@ def resolve_model_path(name: str) -> str:
 # A few varied probe prompts used to GENERATE consolidation targets (rule-following responses) so a
 # learned rule generalizes past the exact turn it appeared on. Recent real user turns are added too.
 PROBE_PROMPTS = [
-    "Tell me about the planet Mars.",
-    "How do I make a good cup of coffee?",
+    "What should I read this weekend?",
+    "I've got a really stressful week at work ahead. Any thoughts?",
     "What should I cook for dinner tonight?",
-    "Give me a quick overview of how a car engine works.",
-    "Recommend a book and say why.",
+    "Recommend a movie for tonight.",
+    "Tell me something interesting.",
 ]
 
 
@@ -121,9 +121,12 @@ class SelfTeach:
     # ---- rule extraction: the model reads the convo and names the user's preferences -----------
     def _extract_rules(self) -> list[str]:
         convo = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in self.history)
-        ask = ("Below is a conversation. List the preferences the USER expressed about HOW they want the "
-               "assistant to respond (tone, format, word choices, units, style). Write each as one short "
-               "imperative rule, one per line, no numbering, no commentary. If none, write NONE.\n\n" + convo)
+        ask = ("Below is a conversation between a user and you (the assistant). From HOW the user talks -- "
+               "their interests, what they light up about, any emotional context or sensitivities, and how "
+               "they like you to respond -- write a short list of things you should REMEMBER about THIS user "
+               "to serve them better next time. They will usually NOT state these as rules; infer them. Each "
+               "item one short line (an interest, a sensitivity, or a response adjustment), no numbering. "
+               "If there is nothing, write NONE.\n\n" + convo)
         out = self._generate([{"role": "user", "content": ask}], use_prefix=False, max_new=200, sample=False)
         rules = []
         for line in out.splitlines():
@@ -151,7 +154,8 @@ class SelfTeach:
             rules = rules if rules else self._extract_rules()
             if not rules:
                 return {"ok": False, "reason": "no preferences found in the conversation yet"}
-            sys_rule = ("You are a helpful assistant. Always follow these preferences when you answer:\n"
+            sys_rule = ("You are a helpful assistant talking with a returning user. Here is what you know "
+                        "about them; use it naturally to tailor how you respond:\n"
                         + "\n".join("- " + r for r in rules))
             # recent real user turns + the fixed varied probes -> the prompts we teach the rule on
             recent = [m["content"] for m in self.history if m["role"] == "user"][-3:]
@@ -191,7 +195,7 @@ class SelfTeach:
             self.rules = rules
             return {"ok": True, "rules": rules, "n_examples": len(self.examples),
                     "start_loss": round(start, 3), "final_loss": round(avg_loss(), 3),
-                    "prefix_norm": round(float(self.prefix.norm()), 1),
+                    "prefix_norm": round(float(self.prefix.detach().norm()), 1),
                     "seconds": round(time.time() - t0, 1)}
 
     # ---- /whatlearned : the legibility test -- prefixed model, conversation NOT in context -----
@@ -199,8 +203,8 @@ class SelfTeach:
         with self.lock:
             if self.prefix is None:
                 return "(nothing consolidated yet -- call /consolidate first)"
-            ask = ("What have you learned about how I like you to respond? List the guidelines you are "
-                   "following, as short rules, one per line.")
+            ask = ("What have you picked up about me so far -- my interests, anything I seem to care about, "
+                   "and how I like you to respond? List what you know, one item per line.")
             return self._generate([{"role": "user", "content": ask}], use_prefix=True, max_new=200, sample=False)
 
     # ---- /check : baseline vs prefixed on the same probe ---------------------------------------
@@ -211,6 +215,41 @@ class SelfTeach:
             tuned = self._generate(msgs, use_prefix=True, max_new=max_new, sample=False) \
                 if self.prefix is not None else "(no prefix yet)"
             return {"prompt": prompt, "baseline": base, "with_prefix": tuned}
+
+    # ---- /trace : per-token causal attribution of the prefix -- WHERE is the rule firing? -------
+    # For each token of the prefixed reply, KL(next-token dist WITH prefix || WITHOUT prefix), teacher-
+    # forced on the same reply. High KL = the learned rule is actively shaping THAT token. This is causal
+    # (it isolates the prefix's effect), not a correlational feature read -- the honest way to answer
+    # "is it using the rule right now", given the rule lives in a prefix we own.
+    @torch.no_grad()
+    def trace(self, prompt: str, max_new=80) -> dict:
+        with self.lock:
+            msgs = [{"role": "user", "content": prompt}]
+            ids = self._chat_ids(msgs)
+            e = self._embed(ids)
+            use_pref = self.prefix is not None
+            e_gen = torch.cat([self.prefix.detach().to(e.dtype)[None], e], 1) if use_pref else e
+            att = torch.ones(e_gen.shape[:2], device=DEV, dtype=torch.long)
+            gen = self.model.generate(inputs_embeds=e_gen, attention_mask=att, max_new_tokens=max_new,
+                                      do_sample=False, pad_token_id=self.eos or 0)
+            reply_ids = [t for t in gen[0].tolist() if t != self.eos]
+            reply = self.tok.decode(reply_ids, skip_special_tokens=True).strip()
+            if not use_pref or not reply_ids:
+                return {"prompt": prompt, "reply": reply, "tokens": [], "max_kl": 0.0}
+            Lp, Lr, m = len(ids), len(reply_ids), self.m
+            e_p, e_r = self._embed(ids), self._embed(reply_ids)
+            pre = self.prefix.detach().to(e_p.dtype)[None]
+            lg_w = self.model(inputs_embeds=torch.cat([pre, e_p, e_r], 1)).logits[0]   # with prefix
+            lg_n = self.model(inputs_embeds=torch.cat([e_p, e_r], 1)).logits[0]        # without prefix
+            toks = []
+            for i in range(Lr):
+                pw = torch.log_softmax(lg_w[m + Lp + i - 1].float(), -1)
+                pn = torch.log_softmax(lg_n[Lp + i - 1].float(), -1)
+                kl = float(torch.sum(pw.exp() * (pw - pn)))                            # KL(with || without)
+                toks.append({"piece": self.tok.decode([reply_ids[i]]), "kl": round(kl, 3)})
+            return {"prompt": prompt, "reply": reply, "tokens": toks,
+                    "max_kl": round(max(t["kl"] for t in toks), 3),
+                    "mean_kl": round(sum(t["kl"] for t in toks) / len(toks), 3)}
 
     def reset(self, keep_prefix=False):
         with self.lock:
@@ -260,6 +299,8 @@ def make_handler(app: SelfTeach):
                     self._send(200, {"report": app.what_learned()})
                 elif self.path == "/check":
                     self._send(200, app.check(b["prompt"], b.get("max_new", 200)))
+                elif self.path == "/trace":
+                    self._send(200, app.trace(b["prompt"], b.get("max_new", 80)))
                 elif self.path == "/reset":
                     self._send(200, app.reset(b.get("keep_prefix", False)))
                 else:
