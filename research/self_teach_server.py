@@ -62,6 +62,15 @@ PROBE_PROMPTS = [
     "Tell me something interesting.",
 ]
 
+# Neutral, domain-less reference prompts to calibrate the contextual-gating threshold: a learned
+# preference should be ~OFF on these (low relevance) and full-on for in-domain prompts. See _gate.
+NEUTRAL_REFS = [
+    "Tell me about your day.",
+    "What time is it right now?",
+    "I went for a walk this morning.",
+    "How has your week been?",
+]
+
 
 class SelfTeach:
     def __init__(self, model_name: str, m: int = 16, four_bit: bool = True):
@@ -89,6 +98,11 @@ class SelfTeach:
         self.history: list[dict] = []                       # [{role, content}, ...]
         self.examples: list[tuple] = []                     # accumulated (prompt_ids, target_ids) for TTT
         self.rules: list[str] = []                          # rules consolidated so far (bookkeeping)
+        # contextual gating: a domain anchor + in-domain/neutral cosine bands. A learned preference fires
+        # only when a prompt is relevant to its domain (fixes the always-on over-bleed).
+        self.anchor: torch.Tensor | None = None
+        self.sim_in = 1.0
+        self.sim_neutral = 0.0
         print(f"  ready. hidden={self.H} dtype={self.cdtype} eos={self.eos}", flush=True)
 
     # ---- low-level: chat ids, embed, generate with optional prefix ----------------------------
@@ -99,10 +113,34 @@ class SelfTeach:
         return self.emb(torch.tensor([ids], device=DEV))    # [1, L, H]
 
     @torch.no_grad()
-    def _generate(self, messages: list[dict], use_prefix: bool, max_new=200, sample=True) -> str:
+    def _domain_vec(self, text: str) -> torch.Tensor:
+        """Unit sentence-rep: mean-pooled final hidden state (no prefix). Measures how relevant a prompt
+        is to a learned rule's domain, for contextual gating."""
+        ids = self._chat_ids([{"role": "user", "content": text}])
+        h = self.model(inputs_embeds=self._embed(ids), output_hidden_states=True).hidden_states[-1][0]
+        v = h.mean(0).float()
+        return v / (v.norm() + 1e-8)
+
+    def _gate(self, prompt: str) -> float:
+        """Relevance gate in [0,1]: cosine(prompt, domain anchor) rescaled so an in-domain prompt -> ~1
+        and a neutral prompt -> ~0. Returns 1.0 before any anchor is set (gating off)."""
+        if self.anchor is None:
+            return 1.0
+        cos = float(self._domain_vec(prompt) @ self.anchor)
+        g = (cos - self.sim_neutral) / (self.sim_in - self.sim_neutral + 1e-6)
+        return max(0.0, min(1.0, g))
+
+    @torch.no_grad()
+    def _generate(self, messages: list[dict], use_prefix: bool, max_new=200, sample=True, gate="auto") -> str:
         e = self._embed(self._chat_ids(messages))           # [1, L, H]
         if use_prefix and self.prefix is not None:
-            pre = self.prefix.detach().to(e.dtype)[None]    # [1, m, H]
+            # contextual gate g in [0,1] scales the injection: "auto" => by prompt relevance, else a float.
+            if gate == "auto":
+                last_user = next((mm["content"] for mm in reversed(messages) if mm["role"] == "user"), "")
+                g = self._gate(last_user)
+            else:
+                g = float(gate)
+            pre = (g * self.prefix.detach()).to(e.dtype)[None]   # [1, m, H], scaled by relevance
             e = torch.cat([pre, e], 1)
         att = torch.ones(e.shape[:2], device=DEV, dtype=torch.long)
         out = self.model.generate(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new,
@@ -193,9 +231,19 @@ class SelfTeach:
                     (self._seq_loss(p, t) / len(self.examples)).backward()
                 opt.step()
             self.rules = rules
+            # contextual-gating anchor: the rule's DOMAIN = mean rep of its probe prompts, with the
+            # in-domain and neutral cosine bands so _gate maps a new prompt's relevance to [0,1].
+            with torch.no_grad():
+                av = torch.stack([self._domain_vec(p) for p in probes])
+                self.anchor = av.mean(0)
+                self.anchor = self.anchor / (self.anchor.norm() + 1e-8)
+                self.sim_in = float((av @ self.anchor).mean())
+                self.sim_neutral = float((torch.stack([self._domain_vec(p) for p in NEUTRAL_REFS])
+                                          @ self.anchor).mean())
             return {"ok": True, "rules": rules, "n_examples": len(self.examples),
                     "start_loss": round(start, 3), "final_loss": round(avg_loss(), 3),
                     "prefix_norm": round(float(self.prefix.detach().norm()), 1),
+                    "sim_in": round(self.sim_in, 3), "sim_neutral": round(self.sim_neutral, 3),
                     "seconds": round(time.time() - t0, 1)}
 
     # ---- /whatlearned : the legibility test -- prefixed model, conversation NOT in context -----
@@ -205,16 +253,21 @@ class SelfTeach:
                 return "(nothing consolidated yet -- call /consolidate first)"
             ask = ("What have you picked up about me so far -- my interests, anything I seem to care about, "
                    "and how I like you to respond? List what you know, one item per line.")
-            return self._generate([{"role": "user", "content": ask}], use_prefix=True, max_new=200, sample=False)
+            return self._generate([{"role": "user", "content": ask}], use_prefix=True, max_new=200,
+                                  sample=False, gate=1.0)
 
-    # ---- /check : baseline vs prefixed on the same probe ---------------------------------------
+    # ---- /check : baseline vs UNGATED prefix vs GATED prefix (+ the gate value) on the same probe ---
     def check(self, prompt: str, max_new=200) -> dict:
         with self.lock:
             msgs = [{"role": "user", "content": prompt}]
             base = self._generate(msgs, use_prefix=False, max_new=max_new, sample=False)
-            tuned = self._generate(msgs, use_prefix=True, max_new=max_new, sample=False) \
-                if self.prefix is not None else "(no prefix yet)"
-            return {"prompt": prompt, "baseline": base, "with_prefix": tuned}
+            if self.prefix is None:
+                return {"prompt": prompt, "gate": None, "baseline": base,
+                        "ungated": "(no prefix)", "gated": "(no prefix)"}
+            g = round(self._gate(prompt), 3)                # how relevant this prompt is to the rule's domain
+            ungated = self._generate(msgs, use_prefix=True, max_new=max_new, sample=False, gate=1.0)
+            gated = self._generate(msgs, use_prefix=True, max_new=max_new, sample=False, gate="auto")
+            return {"prompt": prompt, "gate": g, "baseline": base, "ungated": ungated, "gated": gated}
 
     # ---- /trace : per-token causal attribution of the prefix -- WHERE is the rule firing? -------
     # For each token of the prefixed reply, KL(next-token dist WITH prefix || WITHOUT prefix), teacher-
