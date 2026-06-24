@@ -14,14 +14,15 @@ import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMO = os.path.join(HERE, "..", "inspector", "demo")
-ATLAS = os.path.join(DEMO, os.environ.get("ATLAS_JSON", "atlas7b.json"))   # 7B atlas by default
+ATLAS = os.path.join(DEMO, os.environ.get("ATLAS_JSON", "atlas_emergent.json"))   # dense emergent map by default
 HTML = os.path.join(DEMO, "brain.html")
 START, END = "<!-- REAL-ATLAS-INJECT-START -->", "<!-- REAL-ATLAS-INJECT-END -->"
 
 # one luminous color per concept (the light "Artificial Angels" family; the viz re-luminizes for theme)
 COLORS = ["#36AEC4", "#E89BB0", "#9B8CE8", "#3FC4A8", "#E8C36B", "#E89A55", "#7FC46B", "#E8806B",
           "#6B9BE8", "#5FD9B3", "#8CA8E8", "#52C6E8", "#B89BE8", "#7B86D8", "#E87BB0",
-          "#5FB0E8", "#3FB8C4", "#C4836B", "#6BD0B8", "#D9B84F", "#9BD06B", "#C49BE8"]
+          "#5FB0E8", "#3FB8C4", "#C4836B", "#6BD0B8", "#D9B84F", "#9BD06B", "#C49BE8",
+          "#E8A0C4", "#6BC4D9", "#B0D96B", "#D98C6B"]
 
 
 def main():

@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E40
 from sae7b import DEV, GpuSAE, feats7b, load7b                      # noqa: E402
 
 DEMO = os.path.join(HERE, "..", "inspector", "demo")
-atlas = json.load(open(os.path.join(DEMO, "atlas7b.json"), encoding="utf-8"))
+atlas = json.load(open(os.path.join(DEMO, os.environ.get("ATLAS_JSON", "atlas_emergent.json")), encoding="utf-8"))
 CONCEPTS = atlas["meta"]["concepts"]
 FIDS = [n["id"] for n in atlas["nodes"]]
 FID2CONCEPT = {n["id"]: CONCEPTS[n["cluster"]] for n in atlas["nodes"]}
