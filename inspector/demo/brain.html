@@ -1654,6 +1654,53 @@ setTimeout(liftVeil, 6000);
 
 elBrain.style.cursor='grab';
 
+/* ===== "send a prompt and watch it think": POST the text to /think, flare the features it fires ===== */
+(function(){
+  const css=document.createElement('style');
+  css.textContent=`
+    #thinkbar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:40;display:flex;
+      gap:8px;align-items:center;background:rgba(255,255,255,.55);backdrop-filter:blur(14px);
+      border:1px solid rgba(140,170,210,.4);border-radius:30px;padding:7px 9px 7px 18px;
+      box-shadow:0 6px 24px rgba(120,150,200,.18);max-width:92vw}
+    #thinkInput{border:none;background:transparent;outline:none;font:14px ui-sans-serif,system-ui;
+      width:min(46vw,430px);color:#2a3340}
+    #thinkInput::placeholder{color:#90a0b5}
+    #thinkBtn{border:none;cursor:pointer;font:600 13px ui-sans-serif;color:#fff;
+      background:linear-gradient(90deg,#7aa7ff,#4fc3d6);border-radius:24px;padding:8px 17px}
+    #thinkBtn:disabled{opacity:.5;cursor:default}
+    #thinkOut{position:fixed;left:50%;bottom:66px;transform:translateX(-50%);z-index:40;font:13px ui-sans-serif;
+      color:#46586a;background:rgba(255,255,255,.45);backdrop-filter:blur(8px);padding:4px 13px;border-radius:14px;
+      max-width:90vw;text-align:center;opacity:0;transition:opacity .3s}`;
+  document.head.appendChild(css);
+  document.body.insertAdjacentHTML('beforeend',
+    `<div id="thinkOut"></div><div id="thinkbar">
+       <input id="thinkInput" placeholder="type something and watch the brain think...">
+       <button id="thinkBtn">think</button></div>`);
+  const inp=document.getElementById('thinkInput'),btn=document.getElementById('thinkBtn'),out=document.getElementById('thinkOut');
+  const show=h=>{out.innerHTML=h;out.style.opacity=h?'1':'0';};
+  async function think(){
+    const text=inp.value.trim(); if(!text) return;
+    btn.disabled=true; show('thinking…');
+    let data;
+    try{ const r=await fetch('think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+         if(!r.ok) throw 0; data=await r.json(); }
+    catch(e){ show('the thinking server is not connected — open the live tunnel URL to send prompts'); btn.disabled=false; return; }
+    const acts=data.acts||{}, vals=Object.values(acts);
+    if(!vals.length){ show('no concepts fired for that'); btn.disabled=false; return; }
+    const maxv=Math.max(...vals); FLARES.clear();
+    let strongest=null,sbest=-1;
+    for(const [id,v] of Object.entries(acts)){ const nid=+id;
+      FLARES.set(nid,{t:performance.now(),dur:2400,power:Math.min(1.4,(v/maxv)*1.4)});
+      if(v>sbest){sbest=v;strongest=nid;} }
+    if(strongest!=null) setTimeout(()=>fireFrom(strongest,2,0.8),180);
+    const top=(data.concepts||[]).map(c=>`<b>${c.name}</b>`).slice(0,5).join(' · ');
+    show('lighting up: '+(top||'(faint)'));
+    btn.disabled=false;
+  }
+  btn.addEventListener('click',think);
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter') think(); });
+})();
+
 /* expose a small handle for tuning / debugging (and for power users feeding real data) */
 window.clozn = {
   graph: Graph, THREE, BRAIN, nodeObjs, bloom,
