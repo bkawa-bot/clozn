@@ -1677,6 +1677,36 @@ elBrain.style.cursor='grab';
   const inp=document.getElementById('thinkInput'),btn=document.getElementById('thinkBtn'),out=document.getElementById('thinkOut');
   const show=h=>{out.innerHTML=h;out.style.opacity=h?'1':'0';};
   const SID=(self.crypto&&crypto.randomUUID)?crypto.randomUUID():Math.random().toString(36).slice(2);
+  // ---- hybrid: the 1000-node atlas is the calm, pinned MAP; the concepts a prompt actually engages are
+  //      pulled live from the full 131k feature space and appear as temporary GHOST nodes near their
+  //      nearest map neighbour, fire, then fade. Reuses makeNode + FLARES (ghosts are real graph nodes).
+  let GHOSTS=[], ghostTimer=null, pinned=false;
+  function pinAtlas(){                          // freeze the settled layout so adding nodes never re-lays it out
+    if(pinned) return;
+    Graph.graphData().nodes.forEach(n=>{ n.fx=n.x; n.fy=n.y; n.fz=n.z; });
+    pinned=true;
+  }
+  function clearGhosts(){
+    if(!GHOSTS.length) return;
+    const gone=new Set(GHOSTS), gd=Graph.graphData();
+    Graph.graphData({ nodes: gd.nodes.filter(n=>!gone.has(n.id)), links: gd.links });
+    GHOSTS.forEach(id=>{ delete NODE[id]; delete ADJ[id]; delete nodeObjs[id]; FLARES.delete(id); });
+    GHOSTS=[];
+  }
+  function spawnGhosts(considered){
+    pinAtlas(); clearGhosts();
+    const gd=Graph.graphData(), add=[];
+    for(const c of considered){
+      if(c.in_atlas) continue;                 // already on the map -> fired in place, no ghost needed
+      const near=NODE[c.near]; if(!near) continue;
+      const id='g'+c.id, j=()=>(Math.random()-0.5)*48;
+      const node={ id, cluster:near.cluster, label:c.label, value:Math.min(1,c.rel), _temp:true,
+                   x:near.x+j(), y:near.y+j(), z:near.z+j() };
+      node.fx=node.x; node.fy=node.y; node.fz=node.z;   // pinned near its neighbour
+      NODE[id]=node; ADJ[id]=new Set(); add.push(node); GHOSTS.push(id);
+    }
+    if(add.length) Graph.graphData({ nodes: gd.nodes.concat(add), links: gd.links });
+  }
   async function think(){
     const text=inp.value.trim(); if(!text) return;
     inp.value=''; btn.disabled=true; show('thinking…');
@@ -1684,24 +1714,28 @@ elBrain.style.cursor='grab';
     try{ const r=await fetch('think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,sid:SID})});
          if(!r.ok) throw 0; data=await r.json(); }
     catch(e){ show('the thinking server is not connected — open the live tunnel URL to send prompts'); btn.disabled=false; return; }
-    const acts=data.acts||{}, vals=Object.values(acts);
-    if(!vals.length){ show('no concepts fired for that'); btn.disabled=false; return; }
-    const maxv=Math.max(...vals);            // keep prior turns' flares so they fade -> a train of thought
-    const entries=Object.entries(acts).map(([id,v])=>[+id,v]).sort((a,b)=>b[1]-a[1]);
-    for(const [nid,v] of entries)
-      FLARES.set(nid,{t:performance.now(),dur:5200,power:Math.min(1.4,(v/maxv)*1.4)});
-    // ignite cascades from the most strongly-engaged nodes -> watch the "used" concepts fire and ripple out
-    entries.slice(0,4).forEach(([nid],i)=> setTimeout(()=>fireFrom(nid,2,0.85), 120+i*240));
-    const top=(data.concepts||[]).map(c=>`<b>${c.name}</b>`).slice(0,5).join(' · ');
+    const considered=data.considered||[];
     const ans=data.output?`<div style="margin-top:6px;opacity:.9;font-style:italic;max-width:560px">“${data.output}”</div>`:'';
-    show('concepts considered: '+(top||'(faint)')+ans);
+    if(!considered.length){ show('no clear concepts for that'+ans); btn.disabled=false; return; }
+    spawnGhosts(considered);                    // the engaged concepts bloom near their neighbours
+    const fires=[];
+    for(const c of considered){
+      const nid = c.in_atlas ? c.id : ('g'+c.id);
+      FLARES.set(nid,{t:performance.now(),dur:5200,power:Math.min(1.4,c.rel*1.4)});
+      fires.push([nid,c.rel]);
+    }
+    // ignite cascades from the strongest engaged concepts -> they fire and ripple
+    fires.sort((a,b)=>b[1]-a[1]).slice(0,4).forEach(([nid],i)=> setTimeout(()=>fireFrom(nid,2,0.82), 130+i*220));
+    const labels=considered.slice(0,7).map(c=>`<b>${c.label}</b>`).join(' · ');
+    show('concepts considered: '+labels+ans);
+    clearTimeout(ghostTimer); ghostTimer=setTimeout(clearGhosts, 8500);   // let them linger, then fade
     btn.disabled=false;
   }
   btn.addEventListener('click',think);
   inp.addEventListener('keydown',e=>{ if(e.key==='Enter') think(); });
   document.getElementById('thinkReset').addEventListener('click', async ()=>{
     try{ await fetch('reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sid:SID})}); }catch(e){}
-    FLARES.clear(); show('new conversation — the brain is clear');
+    clearGhosts(); FLARES.clear(); show('new conversation — the brain is clear');
   });
 })();
 
