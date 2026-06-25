@@ -28,6 +28,7 @@ atlas = json.load(open(os.path.join(DEMO, os.environ.get("ATLAS_JSON", "atlas_em
 CONCEPTS = atlas["meta"]["concepts"]
 FIDS = [n["id"] for n in atlas["nodes"]]
 FID2CONCEPT = {n["id"]: CONCEPTS[n["cluster"]] for n in atlas["nodes"]}
+FID2PEAK = {n["id"]: float(n.get("peak", 1.0)) for n in atlas["nodes"]}
 BRAIN_HTML = open(os.path.join(DEMO, "brain.html"), encoding="utf-8").read()
 ARTIFACT_NNZ = 600
 
@@ -52,9 +53,12 @@ def think(text: str, sid: str) -> dict:
         for fid in FIDS:
             v = float(fmax[fid])
             if v > 0:
-                acts[fid] = round(v, 3)
+                rel = min(1.5, v / max(FID2PEAK[fid], 1e-6))     # how hard THIS feature fired vs its own peak
+                if rel < 0.25:
+                    continue                                     # ignore faint, incidental firing
+                acts[fid] = round(rel, 3)
                 c = FID2CONCEPT[fid]
-                ctot[c] = ctot.get(c, 0.0) + v
+                ctot[c] = max(ctot.get(c, 0.0), rel)             # rank lobes by strongest relative firing (size-free)
         top = sorted(ctot.items(), key=lambda x: -x[1])[:6]
         # (b) the model's answer IN CONTEXT of THIS browser's thread (keep the last ~8 turns)
         hist = SESSIONS.setdefault(sid, [])

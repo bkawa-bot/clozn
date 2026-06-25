@@ -97,16 +97,27 @@ def main():
     sae = GpuSAE()
     tok, model = load7b()
     corpus = [s for v in CONCEPTS.values() for s in v] + GENERAL
+    N_sent = len(corpus)
     feat_tokens = defaultdict(Counter)
+    feat_df = Counter()       # sentences each feature fires in (specific = few, broad/noise = many)
+    feat_peak = {}            # max activation per feature (for relative normalization at think time)
     for n, text in enumerate(corpus):
         pieces, feats = feats7b(text, tok, model, sae)
         f = feats.cpu().numpy()
         nnz = (f > 0).sum(1)
+        fired = set()
         for t, piece in enumerate(pieces):
             if nnz[t] > ARTIFACT_NNZ or not keep(piece):
                 continue
             for fid in np.nonzero(f[t])[0]:
-                feat_tokens[int(fid)][piece] += float(f[t, fid])
+                fid = int(fid)
+                v = float(f[t, fid])
+                feat_tokens[fid][piece] += v
+                fired.add(fid)
+                if v > feat_peak.get(fid, 0.0):
+                    feat_peak[fid] = v
+        for fid in fired:
+            feat_df[fid] += 1
         if (n + 1) % 40 == 0:
             print(f"  {n+1}/{len(corpus)} sentences", flush=True)
 
@@ -118,7 +129,8 @@ def main():
         if cmass < 4 or len(cw) < 2:
             continue
         conc = sum(v for v, _ in cw[:3]) / cmass
-        scored.append((cmass * conc, fid))
+        idf = np.log(1 + N_sent / feat_df[fid])     # specific (fires in few sentences) >> broad (fires everywhere)
+        scored.append((conc * idf * np.sqrt(cmass), fid))
     scored.sort(reverse=True)
     chosen = [fid for _, fid in scored[:N_NODES]]
     score_of = {fid: s for s, fid in scored[:N_NODES]}
@@ -153,7 +165,8 @@ def main():
 
     mx = max(score_of.values()) or 1.0
     nodes = [{"id": int(fid), "label": label_for(fid), "cluster": int(clusters[i]),
-              "value": round(score_of[fid] / mx, 3)} for i, fid in enumerate(chosen)]
+              "value": round(score_of[fid] / mx, 3), "peak": round(feat_peak.get(fid, 1.0), 2)}
+             for i, fid in enumerate(chosen)]
 
     sim = Dn @ Dn.T
     np.fill_diagonal(sim, -1.0)
