@@ -1677,36 +1677,67 @@ elBrain.style.cursor='grab';
   const inp=document.getElementById('thinkInput'),btn=document.getElementById('thinkBtn'),out=document.getElementById('thinkOut');
   const show=h=>{out.innerHTML=h;out.style.opacity=h?'1':'0';};
   const SID=(self.crypto&&crypto.randomUUID)?crypto.randomUUID():Math.random().toString(36).slice(2);
-  // ---- hybrid: the 1000-node atlas is the calm, pinned MAP; the concepts a prompt actually engages are
-  //      pulled live from the full 131k feature space and appear as temporary GHOST nodes near their
-  //      nearest map neighbour, fire, then fade. Reuses makeNode + FLARES (ghosts are real graph nodes).
-  let GHOSTS=[], ghostTimer=null, pinned=false;
-  function pinAtlas(){                          // freeze the settled layout so adding nodes never re-lays it out
-    if(pinned) return;
-    Graph.graphData().nodes.forEach(n=>{ n.fx=n.x; n.fy=n.y; n.fz=n.z; });
-    pinned=true;
+  // ---- hybrid: the 1000-node atlas is the calm MAP; the concepts a prompt actually engages are pulled
+  //      live from the full 131k space and shown as labelled GHOST lights beside their nearest map
+  //      neighbour, blooming then fading. Ghosts are standalone sprites parented to the graph's node
+  //      group -- they NEVER touch graphData (mutating it blanked the whole graph).
+  let GPARENT=null;
+  function gparent(){
+    if(GPARENT) return GPARENT;
+    const o=nodeObjs[BRAIN.nodes[0].id];
+    GPARENT=(o && o.group.parent) || Graph.scene();
+    return GPARENT;
   }
+  let ghostObjs=[];
   function clearGhosts(){
-    if(!GHOSTS.length) return;
-    const gone=new Set(GHOSTS), gd=Graph.graphData();
-    Graph.graphData({ nodes: gd.nodes.filter(n=>!gone.has(n.id)), links: gd.links });
-    GHOSTS.forEach(id=>{ delete NODE[id]; delete ADJ[id]; delete nodeObjs[id]; FLARES.delete(id); });
-    GHOSTS=[];
+    const p=gparent();
+    for(const g of ghostObjs){ p.remove(g.group);
+      g.group.traverse(o=>{ if(o.material){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); } }); }
+    ghostObjs=[];
+  }
+  function labelSprite(text){
+    const pad=24, fs=44, m=document.createElement('canvas').getContext('2d');
+    m.font=`600 ${fs}px ui-sans-serif,system-ui`; const w=Math.ceil(m.measureText(text).width)+pad*2, h=fs+pad;
+    const cv=document.createElement('canvas'); cv.width=w; cv.height=h; const c=cv.getContext('2d');
+    c.font=`600 ${fs}px ui-sans-serif,system-ui`; c.textAlign='center'; c.textBaseline='middle';
+    c.lineWidth=7; c.strokeStyle='rgba(18,30,55,0.85)'; c.strokeText(text, w/2, h/2);
+    c.fillStyle='#ffffff'; c.fillText(text, w/2, h/2);
+    const tex=new THREE.CanvasTexture(cv); tex.colorSpace=THREE.SRGBColorSpace; tex.minFilter=THREE.LinearFilter;
+    const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false, depthWrite:false, opacity:0}));
+    sp.scale.set(w/h*16, 16, 1); sp.renderOrder=999; return sp;
   }
   function spawnGhosts(considered){
-    pinAtlas(); clearGhosts();
-    const gd=Graph.graphData(), add=[];
-    for(const c of considered){
-      if(c.in_atlas) continue;                 // already on the map -> fired in place, no ghost needed
-      const near=NODE[c.near]; if(!near) continue;
-      const id='g'+c.id, j=()=>(Math.random()-0.5)*48;
-      const node={ id, cluster:near.cluster, label:c.label, value:Math.min(1,c.rel), _temp:true,
-                   x:near.x+j(), y:near.y+j(), z:near.z+j() };
-      node.fx=node.x; node.fy=node.y; node.fz=node.z;   // pinned near its neighbour
-      NODE[id]=node; ADJ[id]=new Set(); add.push(node); GHOSTS.push(id);
-    }
-    if(add.length) Graph.graphData({ nodes: gd.nodes.concat(add), links: gd.links });
+    clearGhosts();
+    try{
+      const p=gparent();
+      for(const c of considered){
+        if(c.in_atlas) continue;
+        const near=NODE[c.near]; if(!near || near.x===undefined) continue;
+        const cl=CLUSTER[near.cluster]||{color:'#9bd0ff'};
+        const grp=new THREE.Group(), j=()=>(Math.random()-0.5)*40;
+        grp.position.set(near.x+j(), near.y+j(), near.z+j());
+        const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:HALO_TEX, color:new THREE.Color(cl.color),
+          transparent:true, blending:THREE.AdditiveBlending, depthTest:false, depthWrite:false, opacity:0}));
+        glow.scale.setScalar(15); grp.add(glow);
+        const lab=labelSprite(c.label); lab.position.set(0,12,0); grp.add(lab);
+        p.add(grp);
+        ghostObjs.push({ group:grp, glow, lab, born:performance.now(), life:8500, rel:Math.min(1,c.rel) });
+      }
+    }catch(e){ /* a ghost must never break the page */ }
   }
+  (function ghostLoop(){
+    const now=performance.now(), p=gparent();
+    ghostObjs=ghostObjs.filter(g=>{
+      const k=(now-g.born)/g.life;
+      if(k>=1){ p.remove(g.group); return false; }
+      const env = k<0.12 ? k/0.12 : (k>0.72 ? (1-(k-0.72)/0.28) : 1);   // bloom in, hold, fade out
+      g.glow.material.opacity = env*(0.45+0.7*g.rel);
+      g.glow.scale.setScalar(13 + env*9);
+      g.lab.material.opacity = env*0.96;
+      return true;
+    });
+    requestAnimationFrame(ghostLoop);
+  })();
   async function think(){
     const text=inp.value.trim(); if(!text) return;
     inp.value=''; btn.disabled=true; show('thinking…');
@@ -1717,18 +1748,13 @@ elBrain.style.cursor='grab';
     const considered=data.considered||[];
     const ans=data.output?`<div style="margin-top:6px;opacity:.9;font-style:italic;max-width:560px">“${data.output}”</div>`:'';
     if(!considered.length){ show('no clear concepts for that'+ans); btn.disabled=false; return; }
-    spawnGhosts(considered);                    // the engaged concepts bloom near their neighbours
-    const fires=[];
-    for(const c of considered){
-      const nid = c.in_atlas ? c.id : ('g'+c.id);
-      FLARES.set(nid,{t:performance.now(),dur:5200,power:Math.min(1.4,c.rel*1.4)});
-      fires.push([nid,c.rel]);
-    }
-    // ignite cascades from the strongest engaged concepts -> they fire and ripple
-    fires.sort((a,b)=>b[1]-a[1]).slice(0,4).forEach(([nid],i)=> setTimeout(()=>fireFrom(nid,2,0.82), 130+i*220));
+    spawnGhosts(considered);                    // labelled lights bloom near their neighbours
+    considered.slice(0,5).forEach((c,i)=> setTimeout(()=>{
+      if(c.in_atlas) FLARES.set(c.id,{t:performance.now(),dur:5200,power:Math.min(1.4,c.rel*1.4)});
+      fireFrom(c.near, 1, 0.5);                 // ripple the map where this concept lives
+    }, 120+i*180));
     const labels=considered.slice(0,7).map(c=>`<b>${c.label}</b>`).join(' · ');
     show('concepts considered: '+labels+ans);
-    clearTimeout(ghostTimer); ghostTimer=setTimeout(clearGhosts, 8500);   // let them linger, then fade
     btn.disabled=false;
   }
   btn.addEventListener('click',think);
