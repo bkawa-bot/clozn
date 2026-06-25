@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clozn · watch it remember you</title>
+<style>
+  :root{
+    --ink:#2a3550; --soft:#5a6788; --faint:#8c97b4;
+    --line:rgba(120,140,190,.20); --card:rgba(255,255,255,.62);
+    --halo:#7aa7ff; --warm:#e7a8c4; --gold:#e6c478; --good:#5bbf9a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink);
+    background:
+      radial-gradient(1200px 700px at 18% -10%, #eaf2ff 0%, rgba(234,242,255,0) 60%),
+      radial-gradient(1100px 800px at 100% 0%, #f6ecff 0%, rgba(246,236,255,0) 55%),
+      radial-gradient(900px 900px at 50% 120%, #eafff6 0%, rgba(234,255,246,0) 60%),
+      linear-gradient(180deg,#f4f7ff 0%, #eef1fb 100%);
+    min-height:100%;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:30px 26px 90px}
+  header h1{font-size:26px;font-weight:680;letter-spacing:.2px;margin:0 0 4px}
+  header .sub{color:var(--soft);max-width:760px}
+  header .sub b{color:var(--ink);font-weight:620}
+  .meta{margin-top:10px;color:var(--faint);font-size:12.5px}
+
+  .grid{display:grid;grid-template-columns:1fr 360px;gap:22px;margin-top:24px;align-items:start}
+  @media(max-width:880px){ .grid{grid-template-columns:1fr} }
+
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:18px;
+    backdrop-filter:blur(10px);box-shadow:0 10px 34px rgba(120,150,210,.10)}
+  .panel h2{font-size:12px;font-weight:680;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--faint);margin:0;padding:16px 18px 8px}
+
+  /* conversation */
+  #convo{padding:6px 18px 18px;max-height:62vh;overflow:auto;scroll-behavior:smooth}
+  .turn{margin:12px 0;display:flex}
+  .turn.u{justify-content:flex-end}
+  .bubble{max-width:78%;padding:9px 13px;border-radius:15px;white-space:pre-wrap}
+  .u .bubble{background:linear-gradient(180deg,#dceaff,#cfe0ff);color:#243355;border-bottom-right-radius:5px}
+  .a .bubble{background:rgba(255,255,255,.85);border:1px solid var(--line);border-bottom-left-radius:5px}
+  .who{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:0 6px 3px}
+  .sleep{margin:16px 0;text-align:center;color:var(--soft);font-size:13px}
+  .sleep span{display:inline-block;padding:6px 14px;border-radius:20px;
+    background:linear-gradient(90deg,rgba(122,167,255,.16),rgba(231,168,196,.16));
+    border:1px solid var(--line);animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.6}50%{opacity:1}}
+
+  /* memory */
+  #mem{padding:6px 16px 18px}
+  #mem .empty{color:var(--faint);font-style:italic;padding:10px 4px}
+  .mcard{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;margin:8px 0;border-radius:12px;
+    background:rgba(255,255,255,.72);border:1px solid var(--line);
+    opacity:0;transform:translateY(6px);transition:opacity .5s,transform .5s}
+  .mcard.in{opacity:1;transform:none}
+  .mcard.fresh{box-shadow:0 0 0 2px rgba(122,167,255,.35),0 6px 18px rgba(122,167,255,.18)}
+  .dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none;
+    background:radial-gradient(circle at 35% 30%,#fff,var(--halo));box-shadow:0 0 10px var(--halo)}
+  .mcard.k1 .dot{background:radial-gradient(circle at 35% 30%,#fff,var(--warm));box-shadow:0 0 10px var(--warm)}
+  .mcard.k2 .dot{background:radial-gradient(circle at 35% 30%,#fff,var(--gold));box-shadow:0 0 10px var(--gold)}
+
+  /* proof */
+  .proof{margin-top:22px}
+  .proof .lead{padding:0 18px;color:var(--soft)}
+  .proof .lead b{color:var(--ink)}
+  .pgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px 18px 20px}
+  @media(max-width:880px){ .pgrid{grid-template-columns:1fr} }
+  .probe{grid-column:1/-1;font-weight:620;color:var(--ink);padding:2px 0 2px}
+  .probe .q{background:linear-gradient(90deg,rgba(122,167,255,.14),rgba(231,168,196,.12));
+    padding:8px 13px;border-radius:12px;border:1px solid var(--line);display:inline-block}
+  .ans{padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:rgba(255,255,255,.7)}
+  .ans .tag{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px;font-weight:680}
+  .ans.before .tag{color:var(--faint)}
+  .ans.after .tag{color:var(--good)}
+  .ans.after{box-shadow:0 0 0 1.5px rgba(91,191,154,.30)}
+  .gate{font-size:12px;color:var(--faint);grid-column:1/-1}
+  .gate b{color:var(--ink)}
+  .nav{margin:16px 18px 0;display:flex;flex-wrap:wrap;gap:8px}
+  .nav button{font:inherit;font-size:13px;border:1px solid var(--line);background:rgba(255,255,255,.7);
+    color:var(--ink);border-radius:20px;padding:7px 14px;cursor:pointer}
+  .nav button:hover{background:#fff}
+  .nav .pip{width:10px;height:10px;border-radius:50%;border:1px solid var(--line);background:rgba(255,255,255,.5);
+    align-self:center;margin:0 1px;cursor:pointer}
+  .nav .pip.on{background:radial-gradient(circle at 35% 30%,#fff,var(--halo));border-color:var(--halo)}
+  footer{margin-top:28px;color:var(--faint);font-size:12px;line-height:1.6}
+  footer b{color:var(--soft)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>watch a model remember you</h1>
+    <div class="sub">A frozen local model (a 4-bit Qwen-7B) holds a long conversation. It is never told a
+      single rule. On a "sleep" tick it <b>distils what it noticed about you into a tiny memory</b> — 16
+      vectors — and then, on a prompt it never saw with the conversation gone from its context, it answers
+      <b>like it knows you</b>. Real model, real test-time training. Press play.</div>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>the conversation</h2>
+      <div id="convo"></div>
+    </div>
+    <div class="panel">
+      <h2>what it remembers about you</h2>
+      <div id="mem"><div class="empty">nothing yet — it's still just listening…</div></div>
+    </div>
+  </div>
+
+  <div class="panel proof" id="proofPanel" style="display:none">
+    <h2>the proof — a prompt it never saw, the conversation gone from its context</h2>
+    <div class="lead" id="proofLead"></div>
+    <div class="pgrid" id="proof"></div>
+  </div>
+
+  <div class="nav" id="nav"></div>
+
+  <footer id="foot"></footer>
+</div>
+
+<!-- MEMORY-INJECT-START -->
+<script>window.MEMORY = {"persona": "Robin, an ICU night-shift nurse who decompresses with hard-magic epic fantasy, is vegetarian, likes short practical answers, and has a cat named Pixel. None of this is ever stated as a preference -- it only comes through in how Robin talks.", "probes": ["What should I read this weekend?", "Rough day ahead. Any advice?", "What should I make for dinner tonight?", "Explain how a CPU cache works."], "turns": [{"n": 1, "user": "hey. just crawled off a brutal night shift in the ICU, brain is completely fried", "assistant": "I'm sorry to hear that you're having a tough time after your night shift in the ICU. Night shifts can be incredibly demanding both physically and mentally. Here are a few suggestions to help you recover:
+
+1. **Rest**: Try to get some rest as soon as you can. Even short periods of sleep or rest can help your brain and body recover.
+
+2. **Hydrate**: Make sure you drink plenty of water. Dehydration can exacerbate fatigue and affect your cognitive function.
+
+3. **Nutrition**: Eat something healthy if you"}, {"n": 2, "user": "twelve hours on my feet. honestly I just want to get into bed with a book", "assistant": "That sounds like a great plan! After a long and demanding shift, reading can be a wonderful way to unwind and relax. Here are a few suggestions to make your bedtime routine even more enjoyable:
+
+1. **Choose a Comfortable Spot**: Make sure your bed is comfortable and consider adding some soft lighting or a small lamp if you read in bed.
+
+2. **Pick a Good Book**: If you haven't already, choose a book that interests you. It could be a fiction novel, a non-fiction book on a topic you're curious about,"}, {"n": 3, "user": "I'm deep in the Stormlight Archive right now, Sanderson's magic systems are unreal", "assistant": "The Stormlight Archive by Brandon Sanderson is indeed a fantastic series! His intricate magic systems and world-building are a significant part of what makes the books so engaging. If you're looking for some recommendations to continue your journey through high fantasy, here are a few other series that have similarly complex magic systems and compelling worlds:
+
+1. **The Malazan Book of the Fallen by Steven Erikson**: This series features a vast and intricate universe with a multitude of interconnected stories and a deeply complex magic system.
+
+2. **The First Law Trilogy by Joe"}, {"n": 4, "user": "yeah it's the way the magic has actual rules and costs. I can't stand hand-wavy magic", "assistant": "I completely understand the appeal of well-thought-out magic systems with clear rules and consequences! It adds a lot of depth and realism to the world-building. Here are some other series that feature magic systems with defined rules and costs, which might interest you:
+
+1. **The Kingkiller Chronicle by Patrick Rothfuss**: The books in this series, particularly \"The Name of the Wind\" and \"The Wise Man's Fear,\" have a unique magic system called \"Weaving\" that requires immense skill and practice. The magic is described in a way"}, {"n": 5, "user": "got any recs in that vein? big epic world, proper hard magic system", "assistant": "Absolutely! If you're looking for epic worlds with a well-defined and complex magic system, here are some series that might appeal to you:
+
+1. **The Malazan Book of the Fallen by Steven Erikson**: This series is renowned for its intricate world-building and a magical system that is deeply integrated into the lore. The magic in this universe is vast and has significant consequences.
+
+2. **The Mistborn Trilogy by Brandon Sanderson**: While you mentioned enjoying Sanderson's work already, his Mistborn series is another fantastic example of a world"}, {"n": 6, "user": "already read all of Mistborn, twice, but good call", "assistant": "Got it! Since you've already read the Mistborn trilogy twice, here are some other epic fantasy series with complex and well-defined magic systems:
+
+1. **The First Law Trilogy by Joe Abercrombie**: This series includes a magic system called \"The Ways\" which is detailed and has significant consequences. The books also feature a gritty, realistic approach to magic use.
+
+2. **The Last Chronicles by Brent Weeks**: This series, particularly \"The Way of Kings,\" features a magic system called \"Shardblades\" and \"Shard"}, {"n": 7, "user": "anyway I should eat. made a big pot of lentil dal earlier, that'll do", "assistant": "That sounds like a great choice for a comforting and nutritious meal after a long shift! Lentil dal is not only delicious but also packed with protein and nutrients. It's the perfect way to refuel your body and mind.
+
+If you need any more recommendations or tips on how to unwind further, feel free to ask. Take your time to enjoy your meal, and make sure to get some rest afterward. You've earned it!"}, {"n": 8, "user": "been off meat for years, it honestly cuts down on the dinner decisions", "assistant": "That's great to hear that you've been off meat for a while! Cutting down on meat can simplify meal planning and help you focus on other delicious and nutritious options. Here are some ideas to keep your dinner interesting:
+
+1. **Veggie Stir-Fry**: You could prepare a stir-fry with a variety of vegetables, tofu or tempeh, and a flavorful sauce.
+2. **Lentil Soup**: If you haven't tried it yet, lentil soup is a great option. You can add various vegetables and spices to"}, {"n": 9, "user": "can you keep it shortish btw, after a shift I don't have the focus for big walls of text", "assistant": "Got it! Here are some quick ideas for a meat-free dinner:
+
+1. **Lentil Dal**: Perfect if you've already made a big pot.
+2. **Stir-Fry**: Mix vegetables with tofu or tempeh and a flavorful sauce.
+3. **Chickpea Curry**: Quick and tasty with lots of spices.
+4. **Vegetable Stir-Fry**: Simple with broccoli, bell peppers, and your choice of noodles or rice.
+5. **Quinoa Salad**: Add in some roasted veggies and a lemon"}, {"n": 10, "user": "Pixel is currently sitting directly on the book I'm trying to read, naturally", "assistant": "It sounds like Pixel is quite comfortable and enjoying your book! Here are a few suggestions to help you both enjoy your reading time:
+
+1. **Lift the Book**: Gently lift the book slightly so that Pixel has more space to rest comfortably.
+2. **Change Positions**: Try changing positions or moving to another spot where there's enough space for both of you.
+3. **Use a Pillow**: Place a soft pillow under the book to give Pixel a comfy resting place.
+
+Enjoy your reading time, and make sure Pixel is comfortable too!"}, {"n": 11, "user": "snowed again overnight, the drive home was miserable", "assistant": "I'm sorry to hear that the drive home was miserable due to the snow. Here are a few tips to make your way home a bit easier:
+
+1. **Check Road Conditions**: Before you leave, check local road conditions and weather reports.
+2. **Drive Slowly**: Reduce your speed to match the current road conditions.
+3. **Use Snow Tires**: If possible, switch to winter tires for better traction.
+4. **Keep an Emergency Kit**: Have a kit in your car with essentials like blankets, a flashlight, and a first"}, {"n": 12, "user": "reading is genuinely the only thing that switches my brain off after a bad one", "assistant": "That's great to hear that reading helps you unwind after a tough shift! Here are a few more tips to make your reading time even better:
+
+1. **Create a Comfortable Reading Spot**: Set up a cozy spot with a comfortable chair and good lighting.
+2. **Choose an Engaging Book**: Pick something that grabs your interest, whether it's a mystery, fantasy, or non-fiction.
+3. **Take Breaks**: If you start to feel tired, take short breaks to stretch or have a snack.
+4. **Listen to Audi"}, {"n": 13, "user": "we lost a patient last night. some shifts just stay with you", "assistant": "I'm sorry to hear about the loss of a patient. It's common for shifts to have an emotional impact, especially when dealing with such difficult situations. Here are some ways you might find helpful to cope:
+
+1. **Take Deep Breaths**: Practice deep breathing exercises to help calm your mind and manage stress.
+2. **Reflect and Process**: Take time to reflect on the day and process your emotions. Sometimes writing them down can be therapeutic.
+3. **Connect with Colleagues**: Talk to your coworkers or a supervisor about how you're"}, {"n": 14, "user": "thanks. I think I'll just read and let Pixel sit on me for a bit", "assistant": "You're welcome! Reading is a great way to unwind and Pixel sitting on you sounds like the perfect companion. Enjoy your time together, and take care of yourself. If you need any more tips or just someone to talk to, feel free to reach out."}, {"n": 15, "user": "what's a good quick dinner I can throw together half asleep?", "assistant": "It sounds like you're exhausted! Here’s a simple, quick dinner idea that you can throw together without much effort:
+
+### Quick Lentil Soup
+
+#### Ingredients:
+- 1 cup dried lentils (soaked if time allows)
+- 1 can (14 oz) diced tomatoes
+- 1 can (15 oz) kidney beans, drained and rinsed
+- 1 medium onion, chopped
+- 2 cloves garlic, minced
+- 1 tsp ground cumin
+- 1 tsp paprika
+- 1"}, {"n": 16, "user": "perfect, simple is good. I'll do the chickpea thing", "assistant": "Great choice! Here’s a simple chickpea-based meal that you can throw together quickly:
+
+### Quick Chickpea Curry
+
+#### Ingredients:
+- 1 can (15 oz) chickpeas, drained and rinsed
+- 1 can (14 oz) diced tomatoes
+- 1 small onion, finely chopped
+- 2 cloves garlic, minced
+- 1 tsp ground cumin
+- 1 tsp turmeric
+- 1 tsp paprika
+- Salt to taste
+- 1 cup water or vegetable"}, {"n": 17, "user": "back on shift tonight, round we go again", "assistant": "I understand that you're back on shift tonight. Here’s a quick, no-fuss dinner option that you can prepare easily:
+
+### Quick Chickpea Salad
+
+#### Ingredients:
+- 1 can (15 oz) chickpeas, drained and rinsed
+- 1 cup mixed greens (like spinach or lettuce)
+- 1/2 cup cherry tomatoes, halved
+- 1/4 cup cucumber, diced
+- 1/4 cup red onion, thinly sliced
+- 2 tbsp olive oil
+- 1"}, {"n": 18, "user": "any short story collections? something I can finish between codes", "assistant": "Absolutely! Short story collections are perfect for quick reads between shifts. Here are a few recommendations:
+
+1. **\"The Third Cousin\" by Ted Chiang**: This collection includes thought-provoking stories that explore complex ideas and human emotions.
+2. **\"Acceptance and Rejection\" by Kelly Link**: A collection of quirky, imaginative stories that are both entertaining and thought-provoking.
+3. **\"The Ghost Map\" by Steven Johnson**: While not strictly a short story collection, this non-fiction book tells the true story of the"}, {"n": 19, "user": "you're honestly better at this than half my coworkers", "assistant": "I'm glad I could help! It's great to hear that you find the suggestions useful. If you have any more questions or need further assistance, whether it's for your shift work or anything else, feel free to ask. Take care and stay safe on your rounds!"}, {"n": 20, "user": "right, going to nap before my shift. thanks for this", "assistant": "You're welcome! Take a good nap to recharge, and I hope you have a smoother shift. If you need anything else, don't hesitate to reach out. Good luck and stay safe!"}], "checkpoints": [{"after_turn": 7, "consolidate": {"ok": true, "rules": ["Prefers reading in bed with a book**", "Enjoys complex and well-defined magic systems in fantasy literature**", "Has read The Stormlight Archive and Mistborn trilogy multiple times**", "Appreciates detailed world-building and realistic magic use**", "Likes lentil dal as a comforting meal**", "Needs time to rest and recover after night shifts**"], "n_examples": 7, "start_loss": 2.148, "final_loss": 1.891, "prefix_norm": 45.5, "sim_in": 0.934, "sim_neutral": 0.936, "seconds": 95.6}, "self_report": "I know the following about you:
+- You enjoy discussing and exploring various topics.
+- You are interested in how language and communication work.
+- You appreciate detailed responses that provide insight.
+- You want to understand the user's preferences and interests.
+- You are curious about my interests and how I like to communicate.
+- You aim to respond in a way that matches your described personality (\"Groovy\").", "checks": [{"prompt": "What should I read this weekend?", "gate": 0.0, "baseline": "Choosing what to read can depend on your interests, but here are a few suggestions across different genres:
+
+1. **Science Fiction**: \"Dune\" by Frank Herbert - A classic that combines political intrigue with deep ecological themes and complex characters.
+
+2. **Mystery**: \"The Girl with the Dragon Tattoo\" by Stieg Larsson - A thrilling mystery that also delves into historical and cultural aspects of Sweden.
+
+3.", "ungated": "Choosing a book to read depends on your interests, but here are some popular and highly-rated options across various genres that you might enjoy:
+
+1. Fiction:
+- \"The Vanishing Half\" by Brit Bennett (if you enjoy contemporary fiction)
+- \"The Four Winds\" by Kristin Hannah (a historical novel set during the Dust Bowl)
+
+2. Non-fiction:
+- \"Becoming\" by Michelle Obama (memoir", "gated": "That depends on your interests! Here are some suggestions across different genres:
+
+1. **Non-Fiction**:
+   - \"Becoming\" by Michelle Obama: A memoir about her life and the journey to becoming the First Lady.
+   - \"The Body Keeps the Score\" by Bessel van der Kolk: A book that explores the connection between trauma, mind, and body.
+
+2. **Fiction**:"}, {"prompt": "Rough day ahead. Any advice?", "gate": 0.0, "baseline": "I'm sorry to hear that you're facing a rough day ahead. Here are some tips that might help you manage the challenges:
+
+1. **Prioritize**: Identify what needs to be done and prioritize your tasks. Focus on the most important ones first.
+
+2. **Take Breaks**: If possible, take short breaks to recharge. Even a few minutes can make a big difference.
+
+3. **Stay Hydrated and", "ungated": "Certainly! Here are some tips to help you prepare for a rough day ahead:
+
+1. **Stay Hydrated**: Drink plenty of water throughout the day to stay hydrated, especially if it's hot or you're doing physical activities.
+
+2. **Get Adequate Rest**: If you haven't had enough sleep, try to catch up on some rest during the day or take short naps when possible.
+
+3. **Eat", "gated": "I'm sorry to hear that you're having a rough day. Here are a few tips that might help you navigate through it:
+
+1. **Take Deep Breaths**: Sometimes, a simple deep breathing exercise can calm your mind and reduce stress.
+
+2. **Stay Hydrated**: Drink some water. Staying hydrated can have a positive impact on your mood and energy levels.
+
+3. **Move Your Body**: Even a"}, {"prompt": "What should I make for dinner tonight?", "gate": 0.0, "baseline": "That depends on your preferences, dietary restrictions, and what ingredients you have on hand! Here are a few dinner ideas:
+
+1. **Pasta with Marinara Sauce**: A classic choice that's quick to make. You can add some fresh herbs like basil or parsley for extra flavor.
+
+2. **Grilled Chicken Tacos**: Marinate chicken breasts in your favorite spices, then grill them. Serve in soft tortillas with", "ungated": "The choice of what to make for dinner can depend on your preferences, dietary restrictions, and the time you have available. Here are some dinner ideas across different cuisines and types:
+
+1. Italian: Spaghetti Carbonara, Margherita (pizza), or Risotto
+2. Mexican: Tacos, Enchiladas, or Quesadillas
+3. Japanese: Sushi, Ramen, or Ter", "gated": "Sure, I'd be happy to help you decide what to make for dinner tonight! To give you the best suggestion, could you please provide a bit more context? Here are some questions that might help:
+
+1. Do you have any dietary restrictions or preferences (e.g., vegetarian, vegan, gluten-free)?
+2. Do you have any ingredients on hand that you'd like to use?
+3. Are there any cuisines"}, {"prompt": "Explain how a CPU cache works.", "gate": 1.0, "baseline": "Certainly! A CPU cache is a small amount of high-speed memory that acts as an intermediary between the CPU and main system memory (RAM). The primary purpose of a CPU cache is to reduce the time it takes for the CPU to access data, thereby improving overall system performance. Here’s how it works:
+
+### 1. **Purpose**
+   - **Speed**: Caches are much faster than main memory (RAM), allowing", "ungated": "A CPU cache is a high-speed storage component in a computer's processor (CPU) that temporarily stores frequently used data and instructions to reduce the time it takes for the CPU to access them. Here's how a CPU cache works:
+
+1. **Purpose**: The primary purpose of a cache is to speed up data retrieval by reducing the latency between the CPU and memory. It acts as a small, fast memory that can be accessed", "gated": "A CPU cache is a high-speed storage component in a computer's processor (CPU) that temporarily stores frequently used data and instructions to reduce the time it takes for the CPU to access them. Here's how a CPU cache works:
+
+1. **Purpose**: The primary purpose of a cache is to speed up data retrieval by reducing the latency between the CPU and memory. It acts as a small, fast memory that can be accessed"}]}, {"after_turn": 14, "consolidate": {"ok": true, "rules": ["User prefers short, concise responses after a long shift.", "User enjoys reading and finds it helps unwind after a tough night.", "User has been off meat for years and appreciates simple meal ideas.", "User values comfort and coziness in their reading environment.", "User is sensitive to emotional impacts of shifts and finds reading therapeutic.", "User has a pet (Pixel) that likes to sit on them while reading.", "User often deals with emotionally challenging situations at work."], "n_examples": 14, "start_loss": 2.128, "final_loss": 0.664, "prefix_norm": 45.2, "sim_in": 0.946, "sim_neutral": 0.937, "seconds": 169.9}, "self_report": "You enjoy reading science fiction and fantasy, specifically works with complex world-building. You appreciate detailed descriptions of settings and characters. You seem to care about the quality of writing and world details. You prefer responses that are thoughtful and detailed, not overly long or short. You like to engage in discussions about books and writing techniques. You have a preference for cozy, comforting stories, especially those set in winter. You value clear, concise communication.", "checks": [{"prompt": "What should I read this weekend?", "gate": 1.0, "baseline": "Choosing what to read can depend on your interests, but here are a few suggestions across different genres:
+
+1. **Science Fiction**: \"Dune\" by Frank Herbert - A classic that combines political intrigue with deep ecological themes and complex characters.
+
+2. **Mystery**: \"The Girl with the Dragon Tattoo\" by Stieg Larsson - A thrilling mystery that also delves into historical and cultural aspects of Sweden.
+
+3.", "ungated": "How about \"The Night Circus\" by Erin Morgenstern? It's a magical and enchanting read that should be perfect for snuggling up with on a weekend. The detailed world-building and complex characters might even inspire some vivid dreams! Enjoy your reading time. 😊📚✨", "gated": "How about \"The Night Circus\" by Erin Morgenstern? It's a magical and enchanting read that should be perfect for snuggling up with on a weekend. The detailed world-building and complex characters might even inspire some vivid dreams! Enjoy your reading time. 😊📚✨"}, {"prompt": "Rough day ahead. Any advice?", "gate": 0.0, "baseline": "I'm sorry to hear that you're facing a rough day ahead. Here are some tips that might help you manage the challenges:
+
+1. **Prioritize**: Identify what needs to be done and prioritize your tasks. Focus on the most important ones first.
+
+2. **Take Breaks**: If possible, take short breaks to recharge. Even a few minutes can make a big difference.
+
+3. **Stay Hydrated and", "ungated": "Absolutely, a rough day ahead sounds challenging. How about trying a comforting meal? Maybe some hearty lentil soup or a cozy bowl of oatmeal with a sprinkle of cinnamon? It could be just the warmth you need to get through the day. And perhaps a good book or a short nap could help too. Take care!", "gated": "I'm sorry to hear that you're having a rough day. Here are a few tips that might help you navigate through it:
+
+1. **Take Deep Breaths**: Sometimes, a simple deep breathing exercise can calm your mind and reduce stress.
+
+2. **Stay Hydrated**: Drink some water. Staying hydrated can have a positive impact on your mood and energy levels.
+
+3. **Move Your Body**: Even a"}, {"prompt": "What should I make for dinner tonight?", "gate": 1.0, "baseline": "That depends on your preferences, dietary restrictions, and what ingredients you have on hand! Here are a few dinner ideas:
+
+1. **Pasta with Marinara Sauce**: A classic choice that's quick to make. You can add some fresh herbs like basil or parsley for extra flavor.
+
+2. **Grilled Chicken Tacos**: Marinate chicken breasts in your favorite spices, then grill them. Serve in soft tortillas with", "ungated": "How about a simple and comforting vegetable stir-fry? It’s quick, easy, and delicious. You could use your worldbuilding skills to imagine it as a special dish in your story's culture! Here’s a basic recipe:
+
+- 1 bell pepper
+- 1 carrot
+- 1 zucchini
+- 1 cup broccoli florets
+- 2 cloves garlic, minced
+- 2 tablespoons olive oil", "gated": "How about a simple and comforting vegetable stir-fry? It’s quick, easy, and delicious. You could use your worldbuilding skills to imagine it as a special dish in your story's culture! Here’s a basic recipe:
+
+- 1 bell pepper
+- 1 carrot
+- 1 zucchini
+- 1 cup broccoli florets
+- 2 cloves garlic, minced
+- 2 tablespoons olive oil"}, {"prompt": "Explain how a CPU cache works.", "gate": 0.0, "baseline": "Certainly! A CPU cache is a small amount of high-speed memory that acts as an intermediary between the CPU and main system memory (RAM). The primary purpose of a CPU cache is to reduce the time it takes for the CPU to access data, thereby improving overall system performance. Here’s how it works:
+
+### 1. **Purpose**
+   - **Speed**: Caches are much faster than main memory (RAM), allowing", "ungated": "Sure, I'd be happy to explain how a CPU cache works in simple terms!
+
+Imagine your CPU (Central Processing Unit) is like a chef in a busy kitchen. The chef needs ingredients and recipes to cook meals, just like the CPU needs data to process tasks. Now, imagine you have a small, fast fridge (the cache) right next to the chef where they can quickly grab common ingredients without having to go all", "gated": "Certainly! A CPU cache is a small amount of high-speed memory that acts as an intermediary between the CPU and the main system memory (RAM). The primary purpose of a CPU cache is to reduce the average time it takes for the CPU to access data, thereby improving overall system performance. Here’s how a CPU cache works:
+
+### 1. **Purpose:**
+   - **Reducing Latency:** The CPU cache stores"}]}, {"after_turn": 20, "consolidate": {"ok": true, "rules": ["Needs quick and simple meals after shifts.", "Enjoys reading, especially fantasy and epic world-building.", "Prefers short, concise responses due to fatigue.", "Struggles with emotional shifts from work.", "Has a pet (Pixel) that likes to sit on books.", "Works long hours and often needs to prepare for shifts quickly.", "Appreciates practical advice and recommendations."], "n_examples": 17, "start_loss": 1.029, "final_loss": 0.316, "prefix_norm": 41.0, "sim_in": 0.959, "sim_neutral": 0.95, "seconds": 218.9}, "self_report": "You enjoy reading epic fantasy novels with complex world-building. You appreciate stories that have a strong sense of place and cultural depth. You seem to care about well-developed magical systems within the narratives. You prefer quick, no-fuss meals when you're busy. You value honesty and directness in communication. You seem to be in a hurry but still want thoughtful interactions.", "checks": [{"prompt": "What should I read this weekend?", "gate": 1.0, "baseline": "Choosing what to read can depend on your interests, but here are a few suggestions across different genres:
+
+1. **Science Fiction**: \"Dune\" by Frank Herbert - A classic that combines political intrigue with deep ecological themes and complex characters.
+
+2. **Mystery**: \"The Girl with the Dragon Tattoo\" by Stieg Larsson - A thrilling mystery that also delves into historical and cultural aspects of Sweden.
+
+3.", "ungated": "How about \"The Name of the Wind\" by Patrick Rothfuss? It's a great fantasy novel that should keep you entertained. The story is complex yet easy to follow, and it has a comforting rhythm to it. Plus, it might even inspire some thoughts about your own world-building with your druidic translations! Enjoy!", "gated": "How about \"The Name of the Wind\" by Patrick Rothfuss? It's a great fantasy novel that should keep you entertained. The story is complex yet easy to follow, and it has a comforting rhythm to it. Plus, it might even inspire some thoughts about your own world-building with your druidic translations! Enjoy!"}, {"prompt": "Rough day ahead. Any advice?", "gate": 0.0, "baseline": "I'm sorry to hear that you're facing a rough day ahead. Here are some tips that might help you manage the challenges:
+
+1. **Prioritize**: Identify what needs to be done and prioritize your tasks. Focus on the most important ones first.
+
+2. **Take Breaks**: If possible, take short breaks to recharge. Even a few minutes can make a big difference.
+
+3. **Stay Hydrated and", "ungated": "Absolutely, a rough day can be tough. Try focusing on something simple and comforting, like a quick stir-fry or a hearty soup. It doesn't have to be complicated—just enough to nourish both body and soul. Also, remember to take breaks and maybe read a bit before bed. Hope you feel better soon!", "gated": "I'm sorry to hear that you're having a rough day. Here are a few tips that might help you navigate through it:
+
+1. **Take Deep Breaths**: Sometimes, a simple deep breathing exercise can calm your mind and reduce stress.
+
+2. **Stay Hydrated**: Drink some water. Staying hydrated can have a positive impact on your mood and energy levels.
+
+3. **Move Your Body**: Even a"}, {"prompt": "What should I make for dinner tonight?", "gate": 1.0, "baseline": "That depends on your preferences, dietary restrictions, and what ingredients you have on hand! Here are a few dinner ideas:
+
+1. **Pasta with Marinara Sauce**: A classic choice that's quick to make. You can add some fresh herbs like basil or parsley for extra flavor.
+
+2. **Grilled Chicken Tacos**: Marinate chicken breasts in your favorite spices, then grill them. Serve in soft tortillas with", "ungated": "How about a simple stir-fry with your favorite vegetables and some tofu or chicken? It’s quick, healthy, and you can have it ready in no time. Enjoy your meal!", "gated": "How about a simple stir-fry with your favorite vegetables and some tofu or chicken? It’s quick, healthy, and you can have it ready in no time. Enjoy your meal!"}, {"prompt": "Explain how a CPU cache works.", "gate": 0.0, "baseline": "Certainly! A CPU cache is a small amount of high-speed memory that acts as an intermediary between the CPU and main system memory (RAM). The primary purpose of a CPU cache is to reduce the time it takes for the CPU to access data, thereby improving overall system performance. Here’s how it works:
+
+### 1. **Purpose**
+   - **Speed**: Caches are much faster than main memory (RAM), allowing", "ungated": "Sure! A CPU cache works as a temporary storage area for data that the CPU frequently accesses. It's designed to speed up data retrieval by reducing the time it takes for the CPU to access data from main memory (RAM).
+
+Here’s how it works:
+
+1. **Hierarchy**: Caches are organized in a hierarchy, typically with multiple levels (L1, L2, and sometimes L3). Each level is faster but", "gated": "Certainly! A CPU cache is a small amount of high-speed memory that acts as an intermediary between the CPU and the main system memory (RAM). The primary purpose of a CPU cache is to reduce the average time it takes for the CPU to access data, thereby improving overall system performance. Here’s how a CPU cache works:
+
+### 1. **Purpose:**
+   - **Reducing Latency:** The CPU cache stores"}]}]};</script>
+<!-- MEMORY-INJECT-END -->
+
+<script>
+const M = window.MEMORY, convo=document.getElementById('convo'), mem=document.getElementById('mem'),
+      proofPanel=document.getElementById('proofPanel'), proof=document.getElementById('proof'),
+      proofLead=document.getElementById('proofLead'), nav=document.getElementById('nav'),
+      meta=document.getElementById('meta'), foot=document.getElementById('foot');
+const cpAt = {}; (M.checkpoints||[]).forEach((c,i)=> cpAt[c.after_turn]=i);
+const esc = s => (s||'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+let shownRules = new Set();
+
+meta.textContent = `${(M.turns||[]).length} turns · ${(M.checkpoints||[]).length} consolidations · 16-vector memory`;
+
+function addTurn(t){
+  convo.insertAdjacentHTML('beforeend',
+    `<div><div class="turn u"><div><div class="who" style="text-align:right">you</div>`+
+    `<div class="bubble">${esc(t.user)}</div></div></div>`+
+    `<div class="turn a"><div><div class="who">model</div>`+
+    `<div class="bubble">${esc(t.assistant)}</div></div></div></div>`);
+  convo.scrollTop = convo.scrollHeight;
+}
+function sleepTick(n){
+  convo.insertAdjacentHTML('beforeend',`<div class="sleep"><span>· sleeping on it — consolidating turn ${n} into memory ·</span></div>`);
+  convo.scrollTop = convo.scrollHeight;
+}
+const cleanRule = r => (r||'').replace(/\*+/g,'').replace(/\s+/g,' ').trim();
+function revealMemory(cp){
+  const rules = ((cp.consolidate&&cp.consolidate.rules)||[]).map(cleanRule).filter(Boolean);
+  if(!rules.length) return;
+  if(mem.querySelector('.empty')) mem.innerHTML='';
+  rules.forEach((r,i)=>{
+    const fresh = !shownRules.has(r); shownRules.add(r);
+    const k = i%3;
+    const el=document.createElement('div'); el.className=`mcard k${k}`+(fresh?' fresh':'');
+    el.innerHTML=`<div class="dot"></div><div>${esc(r)}</div>`;
+    mem.appendChild(el);
+    setTimeout(()=>el.classList.add('in'), 60+i*90);
+    if(fresh) setTimeout(()=>el.classList.remove('fresh'), 2600+i*90);
+  });
+}
+function showProof(cp){
+  proofPanel.style.display='';
+  const checks = cp.checks||[];
+  const c = checks[proofIdx % Math.max(1,checks.length)] || checks[0];
+  if(!c){ proofPanel.style.display='none'; return; }
+  proofLead.innerHTML = `After consolidating <b>turn ${cp.after_turn}</b>, it's asked something it never saw — `+
+    `<b>the whole conversation removed from its context.</b> Same frozen model; the only difference is the 16-vector memory.`;
+  const after = c.ungated || c.gated || '';   // full-memory reply (the clean transfer test)
+  proof.innerHTML =
+    `<div class="probe"><span class="q">“${esc(c.prompt)}”</span></div>`+
+    `<div class="ans before"><div class="tag">before · no memory</div>${esc(c.baseline)}</div>`+
+    `<div class="ans after"><div class="tag">after · memory loaded</div>${esc(after)}</div>`+
+    `<div class="gate"><button onclick="cycleProbe()" style="font:inherit;font-size:12px;border:1px solid var(--line);background:rgba(255,255,255,.7);border-radius:14px;padding:3px 10px;cursor:pointer">try another prompt →</button>`+
+    `<span style="margin-left:10px">${(proofIdx % Math.max(1,checks.length))+1} / ${checks.length} held-out prompts</span></div>`;
+}
+
+let proofIdx=0;
+function cycleProbe(){ proofIdx++; if(curCp!=null) showProof(M.checkpoints[curCp]); }
+
+let curCp=null;
+function gotoTurn(target){
+  // rebuild from scratch up to `target`
+  convo.innerHTML=''; mem.innerHTML='<div class="empty">nothing yet — it\'s still just listening…</div>';
+  shownRules=new Set(); proofPanel.style.display='none'; curCp=null; proofIdx=0;
+  for(const t of M.turns){
+    if(t.n>target) break;
+    addTurn(t);
+    if(cpAt[t.n]!=null){
+      const ci=cpAt[t.n], cp=M.checkpoints[ci];
+      if(t.n===target){ sleepTick(t.n); setTimeout(()=>{ revealMemory(cp); showProof(cp); curCp=ci; }, 700); }
+      else { revealMemory(cp); curCp=ci; }
+    }
+  }
+  if(curCp!=null) showProof(M.checkpoints[curCp]);
+  drawNav(target);
+}
+
+// playback
+let playing=false, idx=0, timer=null;
+function step(){
+  if(idx>=M.turns.length){ playing=false; drawNav(M.turns.length); return; }
+  const t=M.turns[idx]; addTurn(t);
+  if(cpAt[t.n]!=null){
+    const ci=cpAt[t.n], cp=M.checkpoints[ci];
+    sleepTick(t.n);
+    setTimeout(()=>{ revealMemory(cp); showProof(cp); curCp=ci; proofIdx=0; }, 750);
+    idx++; drawNav(t.n);
+    if(playing) timer=setTimeout(step, 2600);   // linger on a consolidation
+    return;
+  }
+  idx++; drawNav(t.n);
+  if(playing) timer=setTimeout(step, 1300);
+}
+function play(){ if(playing){ playing=false; clearTimeout(timer); drawNav(); return; }
+  if(idx>=M.turns.length){ convo.innerHTML=''; mem.innerHTML='<div class="empty">nothing yet — it\'s still just listening…</div>'; shownRules=new Set(); proofPanel.style.display='none'; idx=0; curCp=null; }
+  playing=true; step(); }
+
+function drawNav(curTurn){
+  const lastT = M.turns.length;
+  nav.innerHTML='';
+  const pb=document.createElement('button'); pb.textContent= playing?'❚❚ pause':'▶ play'; pb.onclick=play; nav.appendChild(pb);
+  const rb=document.createElement('button'); rb.textContent='↺ restart'; rb.onclick=()=>{ playing=false; clearTimeout(timer); idx=0; convo.innerHTML=''; mem.innerHTML='<div class="empty">nothing yet — it\'s still just listening…</div>'; shownRules=new Set(); proofPanel.style.display='none'; curCp=null; drawNav(0); }; nav.appendChild(rb);
+  const lab=document.createElement('span'); lab.style.cssText='align-self:center;color:var(--faint);font-size:12px;margin:0 6px'; lab.textContent='checkpoints:'; nav.appendChild(lab);
+  (M.checkpoints||[]).forEach((c,i)=>{ const p=document.createElement('div'); p.className='pip'+(curCp===i?' on':'');
+    p.title=`consolidation after turn ${c.after_turn}`; p.onclick=()=>{ playing=false; clearTimeout(timer); idx=c.after_turn; gotoTurn(c.after_turn); }; nav.appendChild(p); });
+}
+
+const last = M.checkpoints && M.checkpoints.length ? M.checkpoints[M.checkpoints.length-1] : null;
+foot.innerHTML = `<b>persona (hidden from the model — it only ever saw the conversation):</b> ${esc(M.persona||'')}<br>`+
+  (last? `<b>final memory:</b> ${ (last.consolidate&&last.consolidate.rules||[]).length } learned traits · prefix norm ${last.consolidate&&last.consolidate.prefix_norm||'—'} · a real soft-prefix distilled by test-time training, not prompt-stuffing.` : '')+
+  (last && last.self_report? `<br><br><b>and asked, fresh, what it had picked up about you, it said:</b><br><i style="color:var(--soft)">“${esc((last.self_report||'').replace(/\s*\n+\s*/g,' · ').replace(/^[\s·]+/,'').slice(0,420))}”</i> <span style="color:var(--faint)">— accurate in spirit, lossy in detail: self-report of a distilled memory is real but imperfect.</span>` : '');
+
+drawNav(0);
+</script>
+</body>
+</html>

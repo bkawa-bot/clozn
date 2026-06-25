@@ -60,12 +60,27 @@
       <span class="pill live">open file</span>
       <a class="open" href="inspector/demo/brain.html">open →</a>
     </div>
-    <p class="desc">A 3D, bioluminescent map of the model's actual interior: ~210 <b>real, verified SAE
-      features</b> across 15 concept lobes (measurement, emotion, fantasy, code, body, music, love …),
-      clustering by real decoder geometry, each labelled by the tokens it truly fires on. Hover to wake a
-      concept, click a lobe to fire a thought. Every node means something — nothing decorative.</p>
-    <code>cloze .venv-sae python research/feature_atlas.py   # rebuild atlas.json (real features)
-clozn .venv-sae python research/wire_atlas.py     # wire it into brain.html</code>
+    <p class="desc">A 3D, bioluminescent map of the model's interior: ~1000 <b>real SAE features</b>
+      (Qwen2.5-7B) clustering by decoder geometry into 26 emergent lobes. Type a prompt and it pulls the
+      genuinely-relevant concepts <b>live from the full 131k-feature space</b> — named by Neuronpedia —
+      that bloom as labelled lights beside their neighbours, while it answers you in a remembered
+      conversation. Nothing decorative; every light is a feature that actually fired.</p>
+    <code>clozn .venv python research/brain_server_7b.py 8090   # the 7B brain + full-space readout</code>
+  </div>
+
+  <div class="card" style="border-color:#e7a8c4; box-shadow:0 2px 14px rgba(231,168,196,.18)">
+    <div class="row">
+      <h3><a href="inspector/demo/memory.html">Watch it remember you</a></h3>
+      <span class="pill live">open file</span>
+      <a class="open" href="inspector/demo/memory.html">open →</a>
+    </div>
+    <p class="desc">A frozen local 4-bit Qwen-7B holds a 20-turn conversation, is <b>never told a single
+      rule</b>, then distils what it noticed about you into a <b>16-vector memory</b> by test-time training.
+      On prompts it never saw — the conversation gone from its context — it answers like it knows you
+      (hard-magic fantasy, a vegetarian dinner, kept short). Real model, real TTT. Press play and watch the
+      memory form across the conversation.</p>
+    <code>cloze .venv python research/memory_timeline.py     # generate the real run
+clozn .venv-sae python research/wire_memory.py      # wire it into memory.html</code>
   </div>
 
   <h2>The runtime · the engine</h2>
