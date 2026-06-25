@@ -1642,11 +1642,8 @@ setTimeout(liftVeil, 6000);
    suppressed while you are interacting so it never fights a deliberate exploration. */
 (function ambientThink(){
   const schedule = ()=> setTimeout(()=>{
-    if(lifted && breathe && !userInteracting && !hoverId){
-      const nodes = Graph.graphData().nodes;
-      const seed = nodes[Math.floor(Math.random()*nodes.length)];
-      if(seed) fireFrom(seed.id, 2, 0.55);    // a small, soft wandering thought (low gain)
-    }
+    // idle is calm: the brain only fires in response to a prompt now (no random ambient cascades/particles).
+    // the gentle node breathing + drift stay; nothing "thinks" on its own.
     schedule();
   }, 3200 + Math.random()*3600);
   schedule();
@@ -1690,14 +1687,14 @@ elBrain.style.cursor='grab';
     const acts=data.acts||{}, vals=Object.values(acts);
     if(!vals.length){ show('no concepts fired for that'); btn.disabled=false; return; }
     const maxv=Math.max(...vals);            // keep prior turns' flares so they fade -> a train of thought
-    let strongest=null,sbest=-1;
-    for(const [id,v] of Object.entries(acts)){ const nid=+id;
+    const entries=Object.entries(acts).map(([id,v])=>[+id,v]).sort((a,b)=>b[1]-a[1]);
+    for(const [nid,v] of entries)
       FLARES.set(nid,{t:performance.now(),dur:5200,power:Math.min(1.4,(v/maxv)*1.4)});
-      if(v>sbest){sbest=v;strongest=nid;} }
-    if(strongest!=null) setTimeout(()=>fireFrom(strongest,2,0.8),180);
+    // ignite cascades from the most strongly-engaged nodes -> watch the "used" concepts fire and ripple out
+    entries.slice(0,4).forEach(([nid],i)=> setTimeout(()=>fireFrom(nid,2,0.85), 120+i*240));
     const top=(data.concepts||[]).map(c=>`<b>${c.name}</b>`).slice(0,5).join(' · ');
     const ans=data.output?`<div style="margin-top:6px;opacity:.9;font-style:italic;max-width:560px">“${data.output}”</div>`:'';
-    show('lighting up: '+(top||'(faint)')+ans);
+    show('concepts considered: '+(top||'(faint)')+ans);
     btn.disabled=false;
   }
   btn.addEventListener('click',think);

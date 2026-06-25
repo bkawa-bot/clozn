@@ -44,7 +44,21 @@ SESSIONS = {}   # per-browser conversation threads {session_id: [messages]} so t
 @torch.no_grad()
 def think(text: str, sid: str) -> dict:
     with LOCK:
-        # (a) which atlas features fire on this turn's message (mask the BOS/sink positions)
+        # answer IN CONTEXT of THIS browser's thread (keep the last ~8 turns)
+        hist = SESSIONS.setdefault(sid, [])
+        hist.append({"role": "user", "content": text})
+        ids = tok.apply_chat_template(hist[-16:], add_generation_prompt=True,
+                                      return_tensors="pt").to(DEV)
+        gen = model.generate(ids, max_new_tokens=80, do_sample=True, temperature=0.7, top_p=0.9,
+                             pad_token_id=tok.eos_token_id)
+        ans = tok.decode(gen[0][ids.shape[1]:], skip_special_tokens=True).strip()
+        hist.append({"role": "assistant", "content": ans})
+        if len(SESSIONS) > 64:                       # soft cap: forget the oldest threads
+            for k in list(SESSIONS)[:-32]:
+                SESSIONS.pop(k, None)
+        # concepts the model ENGAGED to read this turn's message (layer-15, max relative firing over
+        # content tokens, BOS/sink positions masked). The "used" nodes. Prompt only -- the reply's instruct
+        # filler fires generic features that drown the real signal, so we read the cleaner prompt side.
         _, feats = feats7b(text, tok, model, sae)
         f = feats.cpu().numpy()
         f[(f > 0).sum(1) > ARTIFACT_NNZ] = 0
@@ -60,18 +74,6 @@ def think(text: str, sid: str) -> dict:
                 c = FID2CONCEPT[fid]
                 ctot[c] = max(ctot.get(c, 0.0), rel)             # rank lobes by strongest relative firing (size-free)
         top = sorted(ctot.items(), key=lambda x: -x[1])[:6]
-        # (b) the model's answer IN CONTEXT of THIS browser's thread (keep the last ~8 turns)
-        hist = SESSIONS.setdefault(sid, [])
-        hist.append({"role": "user", "content": text})
-        ids = tok.apply_chat_template(hist[-16:], add_generation_prompt=True,
-                                      return_tensors="pt").to(DEV)
-        gen = model.generate(ids, max_new_tokens=80, do_sample=True, temperature=0.7, top_p=0.9,
-                             pad_token_id=tok.eos_token_id)
-        ans = tok.decode(gen[0][ids.shape[1]:], skip_special_tokens=True).strip()
-        hist.append({"role": "assistant", "content": ans})
-        if len(SESSIONS) > 64:                       # soft cap: forget the oldest threads
-            for k in list(SESSIONS)[:-32]:
-                SESSIONS.pop(k, None)
         return {"acts": acts, "concepts": [{"name": c, "val": round(v, 1)} for c, v in top],
                 "output": ans, "turn": len(hist) // 2}
 
