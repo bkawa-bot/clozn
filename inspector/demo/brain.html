@@ -1681,17 +1681,9 @@ elBrain.style.cursor='grab';
   //      live from the full 131k space and shown as labelled GHOST lights beside their nearest map
   //      neighbour, blooming then fading. Ghosts are standalone sprites parented to the graph's node
   //      group -- they NEVER touch graphData (mutating it blanked the whole graph).
-  let GPARENT=null;
-  function gparent(){
-    if(GPARENT) return GPARENT;
-    const o=nodeObjs[BRAIN.nodes[0].id];
-    GPARENT=(o && o.group.parent) || Graph.scene();
-    return GPARENT;
-  }
   let ghostObjs=[];
   function clearGhosts(){
-    const p=gparent();
-    for(const g of ghostObjs){ p.remove(g.group);
+    for(const g of ghostObjs){ if(g.group.parent) g.group.parent.remove(g.group);
       g.group.traverse(o=>{ if(o.material){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); } }); }
     ghostObjs=[];
   }
@@ -1709,27 +1701,27 @@ elBrain.style.cursor='grab';
   function spawnGhosts(considered){
     clearGhosts();
     try{
-      const p=gparent();
       for(const c of considered){
         if(c.in_atlas) continue;
-        const near=NODE[c.near]; if(!near || near.x===undefined) continue;
+        const near=NODE[c.near], o=nodeObjs[c.near]; if(!near || !o) continue;   // ride the neighbour's 3D object
         const cl=CLUSTER[near.cluster]||{color:'#9bd0ff'};
-        const grp=new THREE.Group(), j=()=>(Math.random()-0.5)*40;
-        grp.position.set(near.x+j(), near.y+j(), near.z+j());
+        const grp=new THREE.Group(), j=()=>(Math.random()-0.5)*32;
+        grp.position.set(j(), 16+0.4*j(), j());        // small offset from the neighbour node it is parented to
         const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:HALO_TEX, color:new THREE.Color(cl.color),
           transparent:true, blending:THREE.AdditiveBlending, depthTest:false, depthWrite:false, opacity:0}));
-        glow.scale.setScalar(15); grp.add(glow);
+        glow.scale.setScalar(16); grp.add(glow);
         const lab=labelSprite(c.label); lab.position.set(0,12,0); grp.add(lab);
-        p.add(grp);
+        o.group.add(grp);                              // PARENT to the neighbour node -> always co-located, no coord math
         ghostObjs.push({ group:grp, glow, lab, born:performance.now(), life:8500, rel:Math.min(1,c.rel) });
       }
     }catch(e){ /* a ghost must never break the page */ }
+    return ghostObjs.length;
   }
   (function ghostLoop(){
-    const now=performance.now(), p=gparent();
+    const now=performance.now();
     ghostObjs=ghostObjs.filter(g=>{
       const k=(now-g.born)/g.life;
-      if(k>=1){ p.remove(g.group); return false; }
+      if(k>=1){ if(g.group.parent) g.group.parent.remove(g.group); return false; }
       const env = k<0.12 ? k/0.12 : (k>0.72 ? (1-(k-0.72)/0.28) : 1);   // bloom in, hold, fade out
       g.glow.material.opacity = env*(0.45+0.7*g.rel);
       g.glow.scale.setScalar(13 + env*9);
@@ -1748,13 +1740,13 @@ elBrain.style.cursor='grab';
     const considered=data.considered||[];
     const ans=data.output?`<div style="margin-top:6px;opacity:.9;font-style:italic;max-width:560px">“${data.output}”</div>`:'';
     if(!considered.length){ show('no clear concepts for that'+ans); btn.disabled=false; return; }
-    spawnGhosts(considered);                    // labelled lights bloom near their neighbours
+    const nlit=spawnGhosts(considered);          // labelled lights bloom near their neighbours
     considered.slice(0,5).forEach((c,i)=> setTimeout(()=>{
       if(c.in_atlas) FLARES.set(c.id,{t:performance.now(),dur:5200,power:Math.min(1.4,c.rel*1.4)});
       fireFrom(c.near, 1, 0.5);                 // ripple the map where this concept lives
     }, 120+i*180));
     const labels=considered.slice(0,7).map(c=>`<b>${c.label}</b>`).join(' · ');
-    show('concepts considered: '+labels+ans);
+    show('concepts considered: '+labels+` <span style="opacity:.55">· ${nlit} lights</span>`+ans);
     btn.disabled=false;
   }
   btn.addEventListener('click',think);
