@@ -37,11 +37,11 @@ print("brain-7b: model + SAE + atlas ready", flush=True)
 
 import threading                                                   # noqa: E402
 LOCK = threading.Lock()
-HISTORY = []   # the running conversation (server-side, one shared thread for this demo)
+SESSIONS = {}   # per-browser conversation threads {session_id: [messages]} so tabs/tests don't collide
 
 
 @torch.no_grad()
-def think(text: str) -> dict:
+def think(text: str, sid: str) -> dict:
     with LOCK:
         # (a) which atlas features fire on this turn's message (mask the BOS/sink positions)
         _, feats = feats7b(text, tok, model, sae)
@@ -56,21 +56,25 @@ def think(text: str) -> dict:
                 c = FID2CONCEPT[fid]
                 ctot[c] = ctot.get(c, 0.0) + v
         top = sorted(ctot.items(), key=lambda x: -x[1])[:6]
-        # (b) the model's answer IN CONVERSATION CONTEXT (the running thread; keep the last ~8 turns)
-        HISTORY.append({"role": "user", "content": text})
-        ids = tok.apply_chat_template(HISTORY[-16:], add_generation_prompt=True,
+        # (b) the model's answer IN CONTEXT of THIS browser's thread (keep the last ~8 turns)
+        hist = SESSIONS.setdefault(sid, [])
+        hist.append({"role": "user", "content": text})
+        ids = tok.apply_chat_template(hist[-16:], add_generation_prompt=True,
                                       return_tensors="pt").to(DEV)
         gen = model.generate(ids, max_new_tokens=80, do_sample=True, temperature=0.7, top_p=0.9,
                              pad_token_id=tok.eos_token_id)
         ans = tok.decode(gen[0][ids.shape[1]:], skip_special_tokens=True).strip()
-        HISTORY.append({"role": "assistant", "content": ans})
+        hist.append({"role": "assistant", "content": ans})
+        if len(SESSIONS) > 64:                       # soft cap: forget the oldest threads
+            for k in list(SESSIONS)[:-32]:
+                SESSIONS.pop(k, None)
         return {"acts": acts, "concepts": [{"name": c, "val": round(v, 1)} for c, v in top],
-                "output": ans, "turn": len(HISTORY) // 2}
+                "output": ans, "turn": len(hist) // 2}
 
 
-def reset():
+def reset(sid: str) -> dict:
     with LOCK:
-        HISTORY.clear()
+        SESSIONS[sid] = []
     return {"ok": True}
 
 
@@ -98,11 +102,14 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
             try:
-                self._send(200, json.dumps(think(str(body.get("text", ""))[:500])), "application/json")
+                self._send(200, json.dumps(think(str(body.get("text", ""))[:500],
+                                                  str(body.get("sid", "default")))), "application/json")
             except Exception as e:
                 self._send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}), "application/json")
         elif self.path.rstrip("/").endswith("reset"):
-            self._send(200, json.dumps(reset()), "application/json")
+            n = int(self.headers.get("Content-Length", 0))
+            sid = str(json.loads(self.rfile.read(n) or b"{}").get("sid", "default"))
+            self._send(200, json.dumps(reset(sid)), "application/json")
         else:
             self._send(404, "not found", "text/plain")
 

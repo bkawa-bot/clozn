@@ -1679,11 +1679,12 @@ elBrain.style.cursor='grab';
        <button id="thinkReset" title="new conversation" style="background:transparent;color:#7aa7ff;border:1px solid rgba(140,170,210,.4);border-radius:24px;padding:8px 11px;cursor:pointer;font:600 14px ui-sans-serif">↻</button></div>`);
   const inp=document.getElementById('thinkInput'),btn=document.getElementById('thinkBtn'),out=document.getElementById('thinkOut');
   const show=h=>{out.innerHTML=h;out.style.opacity=h?'1':'0';};
+  const SID=(self.crypto&&crypto.randomUUID)?crypto.randomUUID():Math.random().toString(36).slice(2);
   async function think(){
     const text=inp.value.trim(); if(!text) return;
     inp.value=''; btn.disabled=true; show('thinking…');
     let data;
-    try{ const r=await fetch('think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    try{ const r=await fetch('think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,sid:SID})});
          if(!r.ok) throw 0; data=await r.json(); }
     catch(e){ show('the thinking server is not connected — open the live tunnel URL to send prompts'); btn.disabled=false; return; }
     const acts=data.acts||{}, vals=Object.values(acts);
@@ -1702,7 +1703,7 @@ elBrain.style.cursor='grab';
   btn.addEventListener('click',think);
   inp.addEventListener('keydown',e=>{ if(e.key==='Enter') think(); });
   document.getElementById('thinkReset').addEventListener('click', async ()=>{
-    try{ await fetch('reset',{method:'POST'}); }catch(e){}
+    try{ await fetch('reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sid:SID})}); }catch(e){}
     FLARES.clear(); show('new conversation — the brain is clear');
   });
 })();
