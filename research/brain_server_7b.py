@@ -35,29 +35,43 @@ sae = GpuSAE()
 tok, model = load7b()
 print("brain-7b: model + SAE + atlas ready", flush=True)
 
+import threading                                                   # noqa: E402
+LOCK = threading.Lock()
+HISTORY = []   # the running conversation (server-side, one shared thread for this demo)
+
 
 @torch.no_grad()
 def think(text: str) -> dict:
-    # (a) which atlas features fire (raw prompt, same regime as the atlas; mask the BOS/sink positions)
-    _, feats = feats7b(text, tok, model, sae)
-    f = feats.cpu().numpy()
-    f[(f > 0).sum(1) > ARTIFACT_NNZ] = 0
-    fmax = f.max(0)
-    acts, ctot = {}, {}
-    for fid in FIDS:
-        v = float(fmax[fid])
-        if v > 0:
-            acts[fid] = round(v, 3)
-            c = FID2CONCEPT[fid]
-            ctot[c] = ctot.get(c, 0.0) + v
-    top = sorted(ctot.items(), key=lambda x: -x[1])[:6]
-    # (b) the model's actual answer to the prompt (chat)
-    ids = tok.apply_chat_template([{"role": "user", "content": text}], add_generation_prompt=True,
-                                  return_tensors="pt").to(DEV)
-    gen = model.generate(ids, max_new_tokens=70, do_sample=True, temperature=0.7, top_p=0.9,
-                         pad_token_id=tok.eos_token_id)
-    ans = tok.decode(gen[0][ids.shape[1]:], skip_special_tokens=True).strip()
-    return {"acts": acts, "concepts": [{"name": c, "val": round(v, 1)} for c, v in top], "output": ans}
+    with LOCK:
+        # (a) which atlas features fire on this turn's message (mask the BOS/sink positions)
+        _, feats = feats7b(text, tok, model, sae)
+        f = feats.cpu().numpy()
+        f[(f > 0).sum(1) > ARTIFACT_NNZ] = 0
+        fmax = f.max(0)
+        acts, ctot = {}, {}
+        for fid in FIDS:
+            v = float(fmax[fid])
+            if v > 0:
+                acts[fid] = round(v, 3)
+                c = FID2CONCEPT[fid]
+                ctot[c] = ctot.get(c, 0.0) + v
+        top = sorted(ctot.items(), key=lambda x: -x[1])[:6]
+        # (b) the model's answer IN CONVERSATION CONTEXT (the running thread; keep the last ~8 turns)
+        HISTORY.append({"role": "user", "content": text})
+        ids = tok.apply_chat_template(HISTORY[-16:], add_generation_prompt=True,
+                                      return_tensors="pt").to(DEV)
+        gen = model.generate(ids, max_new_tokens=80, do_sample=True, temperature=0.7, top_p=0.9,
+                             pad_token_id=tok.eos_token_id)
+        ans = tok.decode(gen[0][ids.shape[1]:], skip_special_tokens=True).strip()
+        HISTORY.append({"role": "assistant", "content": ans})
+        return {"acts": acts, "concepts": [{"name": c, "val": round(v, 1)} for c, v in top],
+                "output": ans, "turn": len(HISTORY) // 2}
+
+
+def reset():
+    with LOCK:
+        HISTORY.clear()
+    return {"ok": True}
 
 
 class H(BaseHTTPRequestHandler):
@@ -87,6 +101,8 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(think(str(body.get("text", ""))[:500])), "application/json")
             except Exception as e:
                 self._send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}), "application/json")
+        elif self.path.rstrip("/").endswith("reset"):
+            self._send(200, json.dumps(reset()), "application/json")
         else:
             self._send(404, "not found", "text/plain")
 

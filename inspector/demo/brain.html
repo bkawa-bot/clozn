@@ -1674,23 +1674,24 @@ elBrain.style.cursor='grab';
   document.head.appendChild(css);
   document.body.insertAdjacentHTML('beforeend',
     `<div id="thinkOut"></div><div id="thinkbar">
-       <input id="thinkInput" placeholder="type something and watch the brain think...">
-       <button id="thinkBtn">think</button></div>`);
+       <input id="thinkInput" placeholder="say something — it remembers the conversation...">
+       <button id="thinkBtn">think</button>
+       <button id="thinkReset" title="new conversation" style="background:transparent;color:#7aa7ff;border:1px solid rgba(140,170,210,.4);border-radius:24px;padding:8px 11px;cursor:pointer;font:600 14px ui-sans-serif">↻</button></div>`);
   const inp=document.getElementById('thinkInput'),btn=document.getElementById('thinkBtn'),out=document.getElementById('thinkOut');
   const show=h=>{out.innerHTML=h;out.style.opacity=h?'1':'0';};
   async function think(){
     const text=inp.value.trim(); if(!text) return;
-    btn.disabled=true; show('thinking…');
+    inp.value=''; btn.disabled=true; show('thinking…');
     let data;
     try{ const r=await fetch('think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
          if(!r.ok) throw 0; data=await r.json(); }
     catch(e){ show('the thinking server is not connected — open the live tunnel URL to send prompts'); btn.disabled=false; return; }
     const acts=data.acts||{}, vals=Object.values(acts);
     if(!vals.length){ show('no concepts fired for that'); btn.disabled=false; return; }
-    const maxv=Math.max(...vals); FLARES.clear();
+    const maxv=Math.max(...vals);            // keep prior turns' flares so they fade -> a train of thought
     let strongest=null,sbest=-1;
     for(const [id,v] of Object.entries(acts)){ const nid=+id;
-      FLARES.set(nid,{t:performance.now(),dur:2400,power:Math.min(1.4,(v/maxv)*1.4)});
+      FLARES.set(nid,{t:performance.now(),dur:5200,power:Math.min(1.4,(v/maxv)*1.4)});
       if(v>sbest){sbest=v;strongest=nid;} }
     if(strongest!=null) setTimeout(()=>fireFrom(strongest,2,0.8),180);
     const top=(data.concepts||[]).map(c=>`<b>${c.name}</b>`).slice(0,5).join(' · ');
@@ -1700,6 +1701,10 @@ elBrain.style.cursor='grab';
   }
   btn.addEventListener('click',think);
   inp.addEventListener('keydown',e=>{ if(e.key==='Enter') think(); });
+  document.getElementById('thinkReset').addEventListener('click', async ()=>{
+    try{ await fetch('reset',{method:'POST'}); }catch(e){}
+    FLARES.clear(); show('new conversation — the brain is clear');
+  });
 })();
 
 /* expose a small handle for tuning / debugging (and for power users feeding real data) */
