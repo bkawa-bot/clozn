@@ -123,10 +123,12 @@ def make_handler():
                 return self._json(200, {"active": SUBNAME, "available": ["qwen", "dream"]})
             if p == "/state":
                 return self._json(200, {"substrate": SUBNAME, **(SUB.state() if SUB else {})})
-            if p.endswith(".html"):
+            if p.endswith((".html", ".css", ".js")):
                 fn = os.path.join(DEMO, os.path.basename(p))
                 if os.path.isfile(fn):
-                    return self._html(os.path.basename(p))
+                    ct = ("text/html" if p.endswith(".html") else
+                          "text/css" if p.endswith(".css") else "application/javascript")
+                    return self._send(200, open(fn, encoding="utf-8").read(), ct + "; charset=utf-8")
             self._json(404, {"error": "GET " + p})
 
         def do_POST(self):
