@@ -60,9 +60,11 @@
       <span class="pill live">open file</span>
       <a class="open" href="inspector/demo/instrument.html">open →</a>
     </div>
-    <p class="desc">One luminous page that tabs across the three: the <b>brain</b> (concepts it engages),
-      <b>remembering you</b> (memory across a conversation), and <b>denoising</b> (a diffusion model
-      thinking). The unified instrument — opens straight from disk.</p>
+    <p class="desc">One luminous page that tabs across the three windows. Open it from disk for the static
+      versions, or boot the <b>unified server</b> for the live instrument: <b>one Qwen-7B drives both the
+      brain and the memory tab</b>, with a one-click switch to the Dream diffusion substrate (only one 7B
+      fits the GPU, so it swaps cleanly via re-exec).</p>
+    <code>cloze .venv python research/clozn_server.py --port 8090   # the live unified instrument (one model, brain + memory)</code>
   </div>
 
   <div class="card" style="border-color:var(--angel); box-shadow:0 2px 14px rgba(122,167,255,.18)">

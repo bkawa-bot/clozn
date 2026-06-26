@@ -14,31 +14,76 @@
   .logo{font-weight:700;letter-spacing:.3px;margin-right:8px;
     background:linear-gradient(90deg,var(--halo),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
   .tab{font:inherit;font-size:13.5px;border:1px solid var(--line);background:rgba(255,255,255,.7);color:var(--soft);
-    border-radius:22px;padding:7px 16px;cursor:pointer;transition:all .25s}
+    border-radius:22px;padding:7px 16px;cursor:pointer;transition:all .25s;text-align:left}
   .tab:hover{color:var(--ink)}
   .tab.on{color:var(--ink);font-weight:640;border-color:transparent;
     background:linear-gradient(180deg,rgba(122,167,255,.18),rgba(79,195,214,.14));box-shadow:0 0 0 1px rgba(122,167,255,.3)}
   .tab .em{display:block;font-size:10.5px;color:var(--soft);font-weight:500;letter-spacing:.02em}
   .tab.on .em{color:var(--halo)}
   .spacer{flex:1}
+  .sub{font-size:12px;color:var(--soft);border:1px solid var(--line);border-radius:20px;padding:5px 12px;
+    background:rgba(255,255,255,.6);white-space:nowrap}
+  .sub .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;
+    background:radial-gradient(circle at 35% 30%,#fff,var(--halo));box-shadow:0 0 8px var(--halo)}
+  .sub.dream .dot{background:radial-gradient(circle at 35% 30%,#fff,var(--cyan));box-shadow:0 0 8px var(--cyan)}
   .home{font-size:13px;color:var(--soft);text-decoration:none}.home:hover{color:var(--halo)}
   iframe{flex:1;width:100%;border:none;background:transparent}
+  #overlay{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
+    gap:14px;background:rgba(244,247,255,.86);backdrop-filter:blur(8px);z-index:9;color:var(--soft);text-align:center;padding:24px}
+  #overlay.on{display:flex}
+  .spin{width:34px;height:34px;border-radius:50%;border:3px solid rgba(122,167,255,.25);border-top-color:var(--halo);
+    animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #overlay b{color:var(--ink)}
 </style>
 </head>
 <body>
   <div class="bar">
     <span class="logo">clozn</span>
-    <button class="tab on" data-src="brain.html">the brain<span class="em">concepts it engages</span></button>
-    <button class="tab" data-src="memory.html">remembering you<span class="em">memory across a conversation</span></button>
-    <button class="tab" data-src="denoise.html">denoising<span class="em">a diffusion model thinking</span></button>
+    <button class="tab on" data-src="brain.html" data-sub="qwen">the brain<span class="em">concepts it engages</span></button>
+    <button class="tab" data-src="memory_chat.html" data-sub="qwen">remembering you<span class="em">talk · watch it remember</span></button>
+    <button class="tab" data-src="denoise.html" data-sub="dream">denoising<span class="em">a diffusion model thinking</span></button>
     <span class="spacer"></span>
+    <span class="sub" id="subpill" title="the model currently loaded on the GPU"></span>
     <a class="home" href="../../index.html">all windows ↗</a>
   </div>
-  <iframe id="stage" src="brain.html" title="clozn instrument stage"></iframe>
+  <iframe id="stage" title="clozn instrument stage"></iframe>
+  <div id="overlay"><div class="spin"></div><div id="ovmsg"></div></div>
 <script>
-  const stage=document.getElementById('stage'), tabs=[...document.querySelectorAll('.tab')];
-  tabs.forEach(t=> t.onclick=()=>{ tabs.forEach(x=>x.classList.remove('on')); t.classList.add('on');
-    stage.src=t.dataset.src; });
+  const stage=document.getElementById('stage'), tabs=[...document.querySelectorAll('.tab')],
+        subpill=document.getElementById('subpill'), overlay=document.getElementById('overlay'), ovmsg=document.getElementById('ovmsg');
+  const SERVED = location.origin.startsWith('http');         // talking to a clozn_server vs opened from disk
+  let active='qwen';
+  const label = n => n==='dream' ? 'dream · diffusion' : 'qwen · concepts + memory';
+  function setActive(n){ active=n; subpill.className='sub'+(n==='dream'?' dream':''); subpill.innerHTML=`<span class="dot"></span>substrate: ${label(n)}`; }
+  function showOv(m){ ovmsg.innerHTML=m; overlay.classList.add('on'); }
+  function hideOv(){ overlay.classList.remove('on'); }
+
+  function selectTab(t){
+    tabs.forEach(x=>x.classList.toggle('on', x===t));
+    const need=t.dataset.sub, src=t.dataset.src;
+    if(!SERVED){ stage.src=src; return; }                    // static: just show the window (live bits degrade gracefully)
+    if(need===active){ stage.src=src; return; }
+    if(!confirm(`“${t.textContent.split('concepts')[0].trim()||src}” runs on the ${need} substrate. Switch now?\nThis unloads the ${active} model and loads ${need} (~40s) — only one fits the GPU.`)) return;
+    switchTo(need, src);
+  }
+  async function switchTo(name, src){
+    showOv(`switching to <b>${label(name)}</b> …<br>loading the model on the GPU (~40s)`);
+    try{ await fetch('/substrate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); }catch(e){}
+    (function poll(){
+      fetch('/substrate').then(r=>r.json()).then(s=>{
+        if(s.active===name){ setActive(name); hideOv(); stage.src=src; }
+        else setTimeout(poll, 1500);
+      }).catch(()=> setTimeout(poll, 1500));   // server is briefly down during the re-exec
+    })();
+  }
+  tabs.forEach(t=> t.onclick=()=>selectTab(t));
+
+  if(SERVED){ fetch('/substrate').then(r=>r.json()).then(s=>{ setActive(s.active);
+      // open the tab matching whatever substrate is already live
+      const t = tabs.find(x=>x.dataset.sub===s.active) || tabs[0]; selectTab(t);
+    }).catch(()=>{ subpill.style.display='none'; selectTab(tabs[0]); });
+  } else { subpill.innerHTML='opened from disk · boot research/clozn_server.py for the live instrument'; selectTab(tabs[0]); }
 </script>
 </body>
 </html>

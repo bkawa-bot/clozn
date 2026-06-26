@@ -73,19 +73,24 @@ NEUTRAL_REFS = [
 
 
 class SelfTeach:
-    def __init__(self, model_name: str, m: int = 16, four_bit: bool = True):
+    def __init__(self, model_name: str, m: int = 16, four_bit: bool = True, model=None, tok=None):
         self.lock = threading.Lock()
         self.m = m
-        path = resolve_model_path(model_name)
-        print(f"loading {model_name} ({'4-bit nf4' if four_bit else 'bf16'}) on {DEV} from {path} ...", flush=True)
-        self.tok = AutoTokenizer.from_pretrained(path)
-        if four_bit and DEV == "cuda":
-            bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                                     bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
-            self.model = AutoModelForCausalLM.from_pretrained(path, quantization_config=bnb,
-                                                              device_map={"": 0})
+        if model is not None and tok is not None:
+            # share an already-loaded backbone (e.g. the unified clozn server's Qwen-7B) -- one model,
+            # both the concept readout AND the memory. The model is frozen + quantized either way.
+            self.tok, self.model = tok, model
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16).to(DEV)
+            path = resolve_model_path(model_name)
+            print(f"loading {model_name} ({'4-bit nf4' if four_bit else 'bf16'}) on {DEV} from {path} ...", flush=True)
+            self.tok = AutoTokenizer.from_pretrained(path)
+            if four_bit and DEV == "cuda":
+                bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                         bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
+                self.model = AutoModelForCausalLM.from_pretrained(path, quantization_config=bnb,
+                                                                  device_map={"": 0})
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16).to(DEV)
         self.model.eval()
         for p in self.model.parameters():
             p.requires_grad_(False)
