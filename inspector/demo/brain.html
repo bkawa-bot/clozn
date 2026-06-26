@@ -1672,11 +1672,13 @@ elBrain.style.cursor='grab';
   document.body.insertAdjacentHTML('beforeend',
     `<div id="thinkOut"></div><div id="thinkbar">
        <input id="thinkInput" placeholder="say something — it remembers the conversation...">
+       <button id="thinkSrc" title="concept source — the Python model vs the real C++ engine" style="background:transparent;color:#9b8ce8;border:1px solid rgba(140,170,210,.4);border-radius:24px;padding:8px 10px;cursor:pointer;font:600 12px ui-sans-serif">py</button>
        <button id="thinkBtn">think</button>
        <button id="thinkReset" title="new conversation" style="background:transparent;color:#7aa7ff;border:1px solid rgba(140,170,210,.4);border-radius:24px;padding:8px 11px;cursor:pointer;font:600 14px ui-sans-serif">↻</button></div>`);
   const inp=document.getElementById('thinkInput'),btn=document.getElementById('thinkBtn'),out=document.getElementById('thinkOut');
   const show=h=>{out.innerHTML=h;out.style.opacity=h?'1':'0';};
   const SID=(self.crypto&&crypto.randomUUID)?crypto.randomUUID():Math.random().toString(36).slice(2);
+  let SRC='py';   // 'py' = Python HF model (/think, with an answer) | 'engine' = the real C++ Qwen runtime (/engine/concepts)
   // ---- hybrid: the 1000-node atlas is the calm MAP; the concepts a prompt actually engages are pulled
   //      live from the full 131k space and shown as labelled GHOST lights beside their nearest map
   //      neighbour, blooming then fading. Ghosts are standalone sprites parented to the graph's node
@@ -1732,11 +1734,13 @@ elBrain.style.cursor='grab';
   })();
   async function think(){
     const text=inp.value.trim(); if(!text) return;
-    inp.value=''; btn.disabled=true; show('thinking…');
+    inp.value=''; btn.disabled=true; show(SRC==='engine'?'reading the C++ engine…':'thinking…');
+    const ep = SRC==='engine' ? 'engine/concepts' : 'think';     // the real ggml runtime vs the Python model
+    const payload = SRC==='engine' ? {text} : {text,sid:SID};
     let data;
-    try{ const r=await fetch('think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,sid:SID})});
+    try{ const r=await fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
          if(!r.ok) throw 0; data=await r.json(); }
-    catch(e){ show('the thinking server is not connected — open the live tunnel URL to send prompts'); btn.disabled=false; return; }
+    catch(e){ show(SRC==='engine'?'the C++ engine (Qwen) is not reachable — boot a cloze-server on 8092':'the thinking server is not connected — open the live tunnel URL'); btn.disabled=false; return; }
     const considered=data.considered||[];
     const ans=data.output?`<div style="margin-top:6px;opacity:.9;font-style:italic;max-width:560px">“${data.output}”</div>`:'';
     if(!considered.length){ show('no clear concepts for that'+ans); btn.disabled=false; return; }
@@ -1746,7 +1750,8 @@ elBrain.style.cursor='grab';
       fireFrom(c.near, 1, 0.5);                 // ripple the map where this concept lives
     }, 120+i*180));
     const labels=considered.slice(0,7).map(c=>`<b>${c.label}</b>`).join(' · ');
-    show('concepts considered: '+labels+` <span style="opacity:.55">· ${nlit} lights</span>`+ans);
+    const tag = SRC==='engine' ? ` <span style="opacity:.55">· from the C++ engine · layer ${data.layer||15}</span>` : ` <span style="opacity:.55">· ${nlit} lights</span>`;
+    show('concepts considered: '+labels+tag+ans);
     btn.disabled=false;
   }
   btn.addEventListener('click',think);
@@ -1754,6 +1759,14 @@ elBrain.style.cursor='grab';
   document.getElementById('thinkReset').addEventListener('click', async ()=>{
     try{ await fetch('reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sid:SID})}); }catch(e){}
     clearGhosts(); FLARES.clear(); show('new conversation — the brain is clear');
+  });
+  document.getElementById('thinkSrc').addEventListener('click', (e)=>{   // flip the concept source: Python model <-> the real C++ engine
+    SRC = SRC==='py' ? 'engine' : 'py';
+    e.target.textContent = SRC;
+    e.target.style.color = SRC==='py' ? '#9b8ce8' : '#36c4a8';
+    inp.placeholder = SRC==='engine' ? 'read concepts from the real C++ Qwen engine…' : 'say something — it remembers the conversation...';
+    show(SRC==='engine' ? 'source: the real <b>C++ engine</b> (Qwen GGUF) — concepts read from /harvest, no generation'
+                        : 'source: the <b>Python model</b> — concepts + a remembered conversation');
   });
 })();
 
