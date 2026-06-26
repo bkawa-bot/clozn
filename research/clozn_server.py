@@ -31,9 +31,10 @@ sys.path.insert(0, os.path.join(HERE, "..", "engine", "client"))     # the engin
 import numpy as np                                                   # noqa: E402
 try:
     from cloze_engine import EngineClient
-    ENGINE = EngineClient(port=int(os.environ.get("CLOZN_ENGINE_PORT", "8091")))   # the live C++ runtime
+    ENGINE = EngineClient(port=int(os.environ.get("CLOZN_ENGINE_PORT", "8091")))            # the live C++ runtime
+    ENGINE_QWEN = EngineClient(port=int(os.environ.get("CLOZN_ENGINE_QWEN_PORT", "8092")))  # a Qwen GGUF engine -> concepts
 except Exception:
-    ENGINE = None
+    ENGINE = ENGINE_QWEN = None
 
 ARGS = None
 SUB = None         # the active substrate object
@@ -183,6 +184,14 @@ def make_handler():
                                             "position": pos, "scale": scale})
                 except Exception as e:
                     return self._json(502, {"error": f"engine: {e}"})
+            if p == "/engine/concepts":   # the brain's concepts, but read from the Qwen GGUF engine (harvest L15 + SAE)
+                try:
+                    if not (SUB and getattr(SUB, "brain", None)):
+                        return self._json(409, {"error": "concepts need the qwen substrate (it holds the SAE)"})
+                    return self._json(200, SUB.brain.concepts_from_engine(
+                        str(body.get("text", ""))[:300], ENGINE_QWEN, int(body.get("layer", 15))))
+                except Exception as e:
+                    return self._json(502, {"error": f"engine-qwen: {e}"})
             try:
                 r = SUB.handle(p, body) if SUB else None
                 if r is None:

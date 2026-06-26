@@ -104,6 +104,27 @@ class BrainReadout:
                     "concepts": [{"name": c["label"]} for c in considered[:6]],
                     "output": ans, "turn": len(hist) // 2}
 
+    @torch.no_grad()
+    def concepts_from_engine(self, text, ec, layer=15):
+        """The SAME concept readout, but the activations are HARVESTED from the real C++ engine (a
+        cloze-server on the Qwen GGUF) instead of the Python model -- concepts read from the actual
+        ggml runtime. Verified: dragon -> dragon/fear/RPG, grief at a funeral -> crying/funeral/grief."""
+        h = ec.harvest(text, layer=layer)
+        f = self.sae.encode(torch.tensor(np.asarray(h.activations), device=DEV)).cpu().numpy()
+        f[(f > 0).sum(1) > ARTIFACT_NNZ] = 0
+        fmax = f.max(0)
+        acts = {}
+        for fid in self.fids:
+            v = float(fmax[fid])
+            if v > 0:
+                rel = min(1.5, v / max(self.fid2peak[fid], 1e-6))
+                if rel >= 0.25:
+                    acts[fid] = round(rel, 3)
+        considered = self.dynamic_considered(fmax)
+        return {"acts": acts, "considered": considered,
+                "concepts": [{"name": c["label"]} for c in considered[:6]],
+                "source": "engine", "layer": int(h.layer)}
+
     def reset(self, sid):
         with self.lock:
             self.sessions[sid] = []
