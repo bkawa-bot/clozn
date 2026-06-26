@@ -83,6 +83,20 @@
 clozn .venv-sae python research/wire_memory.py      # wire it into memory.html</code>
   </div>
 
+  <div class="card" style="border-color:var(--cyan); box-shadow:0 2px 14px rgba(79,195,214,.16)">
+    <div class="row">
+      <h3><a href="inspector/demo/denoise.html">Watch it denoise — diffusion</a></h3>
+      <span class="pill live">open file</span>
+      <a class="open" href="inspector/demo/denoise.html">open →</a>
+    </div>
+    <p class="desc">A real <b>Dream-7B</b> diffusion LM fills a board of masked slots <b>in parallel</b> over
+      20 passes — the answer crystallising out of the mask, <b>out of order</b> (it commits "Jupiter" before
+      "the solar system", function words last), each token lit by its confidence. The dLLM counterpart to
+      watch-it-think: for a diffusion model the thinking is literally visible.</p>
+    <code>PYTHONPATH=engine/lab cloze .venv python research/denoise_capture.py   # capture a real denoise
+clozn .venv-sae python research/wire_denoise.py                 # wire it into denoise.html</code>
+  </div>
+
   <h2>The runtime · the engine</h2>
 
   <div class="card">

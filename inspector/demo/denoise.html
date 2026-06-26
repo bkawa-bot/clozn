@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clozn · watch it denoise</title>
+<style>
+  :root{ --ink:#27324c; --soft:#5a6788; --faint:#93a0bd; --line:rgba(120,140,190,.20);
+         --halo:#7aa7ff; --cyan:#4fc3d6; --mask:#c3cde0; }
+  *{box-sizing:border-box} html,body{margin:0;height:100%}
+  body{font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);
+    background:radial-gradient(1100px 700px at 15% -10%,#eaf2ff 0,rgba(234,242,255,0) 60%),
+      radial-gradient(1000px 800px at 100% 0,#eafaff 0,rgba(234,250,255,0) 55%),
+      linear-gradient(180deg,#f5f8ff,#eef1fb);min-height:100%}
+  .wrap{max-width:920px;margin:0 auto;padding:34px 26px 80px}
+  h1{font-size:26px;font-weight:680;margin:0 0 4px}
+  .sub{color:var(--soft);max-width:720px}.sub b{color:var(--ink)}
+  .meta{margin-top:10px;color:var(--faint);font-size:12.5px}
+  .qa{margin:22px 0 8px;color:var(--soft)}
+  .qa .q{display:inline-block;background:linear-gradient(90deg,rgba(122,167,255,.14),rgba(79,195,214,.12));
+    border:1px solid var(--line);border-radius:13px;padding:8px 14px;color:var(--ink);font-weight:600}
+  .board{background:rgba(255,255,255,.6);border:1px solid var(--line);border-radius:18px;
+    backdrop-filter:blur(10px);box-shadow:0 12px 36px rgba(120,150,210,.12);
+    padding:24px 24px;margin-top:14px;font-size:19px;line-height:2.0;min-height:160px}
+  .tok{display:inline;border-radius:5px;padding:0 1px;transition:color .5s,opacity .5s,background .5s,text-shadow .5s}
+  .tok.mask{color:var(--mask);opacity:.6}
+  .tok.set{color:var(--ink)}
+  .tok.flash{background:rgba(122,167,255,.18);text-shadow:0 0 14px rgba(122,167,255,.6)}
+  .nav{margin-top:20px;display:flex;flex-wrap:wrap;gap:9px;align-items:center}
+  .nav button{font:inherit;font-size:13px;border:1px solid var(--line);background:rgba(255,255,255,.72);
+    color:var(--ink);border-radius:20px;padding:8px 16px;cursor:pointer}
+  .nav button:hover{background:#fff}
+  .track{flex:1;min-width:160px;height:7px;border-radius:6px;background:rgba(120,140,190,.16);overflow:hidden}
+  .track .fill{height:100%;width:0;background:linear-gradient(90deg,var(--halo),var(--cyan));transition:width .3s}
+  .passlab{color:var(--soft);font-size:13px;min-width:120px}
+  .legend{margin-top:14px;color:var(--faint);font-size:12.5px}
+  .legend .sw{display:inline-block;width:34px;height:8px;border-radius:5px;vertical-align:middle;margin:0 5px}
+  footer{margin-top:26px;color:var(--faint);font-size:12.5px;line-height:1.6} footer b{color:var(--soft)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>watch a diffusion model think</h1>
+  <div class="sub">A diffusion language model doesn't write left-to-right. It starts with a whole board of
+    <b>masked slots</b> and fills them <b>in parallel</b>, refining over a handful of passes — each token
+    landing with a confidence. The answer <b>crystallises out of the noise</b>. This is a real
+    <b>Dream-7B</b> denoise, captured pass by pass.</div>
+  <div class="meta" id="meta"></div>
+
+  <div class="qa"><span class="q" id="q">…</span></div>
+  <div class="board" id="board"></div>
+
+  <div class="nav" id="nav"></div>
+  <div class="legend">brightness when a token lands = the model's <b>confidence</b> in it ·
+    <span class="sw" style="background:linear-gradient(90deg,#c3cde0,#7aa7ff)"></span> low → high</div>
+
+  <footer id="foot"></footer>
+</div>
+
+<!-- DENOISE-INJECT-START -->
+<script>window.DENOISE = {"model": "Dream-v0-Instruct-7B", "prompt": "What is the largest planet in the solar system? Answer in one short sentence.", "prompt_text": "<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+What is the largest planet in the solar system? Answer in one short sentence.<|im_end|>
+<|im_start|>assistant
+", "n_prompt": 35, "board_len": 67, "steps": 20, "final_text": "The largest planet in the solar system is Jupiter.", "passes": [{"pass": 0, "items": [{"pos": 65, "piece": "<|endoftext|>", "conf": 0.856}, {"pos": 66, "piece": "<|endoftext|>", "conf": 0.957}]}, {"pass": 1, "items": [{"pos": 63, "piece": "<|endoftext|>", "conf": 0.976}, {"pos": 64, "piece": "<|endoftext|>", "conf": 0.981}]}, {"pass": 2, "items": [{"pos": 61, "piece": "<|endoftext|>", "conf": 0.977}, {"pos": 62, "piece": "<|endoftext|>", "conf": 0.979}]}, {"pass": 3, "items": [{"pos": 59, "piece": "<|endoftext|>", "conf": 0.982}, {"pos": 60, "piece": "<|endoftext|>", "conf": 0.99}]}, {"pass": 4, "items": [{"pos": 57, "piece": "<|endoftext|>", "conf": 0.982}, {"pos": 58, "piece": "<|endoftext|>", "conf": 0.991}]}, {"pass": 5, "items": [{"pos": 55, "piece": "<|endoftext|>", "conf": 0.983}, {"pos": 56, "piece": "<|endoftext|>", "conf": 0.994}]}, {"pass": 6, "items": [{"pos": 53, "piece": "<|endoftext|>", "conf": 0.981}, {"pos": 54, "piece": "<|endoftext|>", "conf": 0.991}]}, {"pass": 7, "items": [{"pos": 51, "piece": "<|endoftext|>", "conf": 0.978}, {"pos": 52, "piece": "<|endoftext|>", "conf": 0.99}]}, {"pass": 8, "items": [{"pos": 49, "piece": "<|endoftext|>", "conf": 0.969}, {"pos": 50, "piece": "<|endoftext|>", "conf": 0.987}]}, {"pass": 9, "items": [{"pos": 47, "piece": "<|endoftext|>", "conf": 0.929}, {"pos": 48, "piece": "<|endoftext|>", "conf": 0.984}]}, {"pass": 10, "items": [{"pos": 36, "piece": " largest", "conf": 0.878}, {"pos": 46, "piece": "<|endoftext|>", "conf": 0.815}]}, {"pass": 11, "items": [{"pos": 37, "piece": " planet", "conf": 1.0}, {"pos": 38, "piece": " in", "conf": 1.0}]}, {"pass": 12, "items": [{"pos": 35, "piece": "The", "conf": 0.999}]}, {"pass": 13, "items": [{"pos": 42, "piece": " is", "conf": 0.999}]}, {"pass": 14, "items": [{"pos": 43, "piece": " Jupiter", "conf": 0.997}]}, {"pass": 15, "items": [{"pos": 44, "piece": ".", "conf": 0.994}]}, {"pass": 16, "items": [{"pos": 45, "piece": "<|endoftext|>", "conf": 0.992}]}, {"pass": 17, "items": [{"pos": 40, "piece": " solar", "conf": 0.989}]}, {"pass": 18, "items": [{"pos": 41, "piece": " system", "conf": 1.0}]}, {"pass": 19, "items": [{"pos": 39, "piece": " the", "conf": 0.94}]}]};</script>
+<!-- DENOISE-INJECT-END -->
+
+<script>
+const D=window.DENOISE, board=document.getElementById('board'), nav=document.getElementById('nav'),
+      q=document.getElementById('q'), meta=document.getElementById('meta'), foot=document.getElementById('foot');
+const N = D.board_len - (D.n_prompt||0);                 // generated slots only
+const slot = new Array(Math.max(N,0)).fill(null);        // pos(board-local) -> {piece, conf}
+const passes = D.passes||[];
+q.textContent = D.prompt||'';
+meta.textContent = `${D.model} · board of ${N} slots · ${passes.length} passes`;
+
+const isEnd = p => !p || /<\|[^|]*\|>/.test(p) || p.replace(/\s/g,'')==='';   // eos/pad/special -> the answer ends
+function render(flashSet){
+  let html='';
+  for(let i=0;i<N;i++){
+    const s=slot[i];
+    if(s===null){ html += `<span class="tok mask">▦</span>`; }
+    else if(isEnd(s.piece)){ /* end/pad slot: render nothing, the answer simply stops here */ }
+    else {
+      const lit = Math.min(1, 0.35 + s.conf*0.65);
+      const fl = (flashSet && flashSet.has(i)) ? ' flash':'';
+      html += `<span class="tok set${fl}" style="opacity:${lit.toFixed(2)}">${escapeHtml(s.piece)}</span>`;
+    }
+  }
+  board.innerHTML = html;
+}
+function escapeHtml(s){return (s||'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+
+let cur=0;   // next pass to apply
+function applyPass(k){
+  const p=passes[k]; if(!p) return false;
+  const flash=new Set(); let content=false;
+  for(const it of p.items){ const i=it.pos-(D.n_prompt||0);
+    if(i>=0&&i<N){ slot[i]={piece:it.piece,conf:it.conf}; flash.add(i); if(!isEnd(it.piece)) content=true; } }
+  render(flash);
+  setTimeout(()=>render(null), 650);
+  return content;
+}
+function reset(){ for(let i=0;i<N;i++) slot[i]=null; cur=0; render(null); track(); }
+
+let playing=false, timer=null;
+function play(){
+  if(playing){ playing=false; clearTimeout(timer); draw(); return; }
+  if(cur>=passes.length) reset();
+  playing=true; tick();
+}
+function tick(){
+  if(cur>=passes.length){ playing=false; draw(); return; }
+  const content=applyPass(cur); cur++; track(); draw();
+  if(playing) timer=setTimeout(tick, content? 950 : 300);   // linger on content, rush the empty-tail passes
+}
+function track(){ const f=document.querySelector('#track>.fill'); if(f) f.style.width=(passes.length? (cur/passes.length*100):0)+'%';
+  const l=document.getElementById('passlab'); if(l) l.textContent = cur>=passes.length? `done · ${N} slots filled` : `pass ${cur} / ${passes.length}`; }
+function draw(){
+  nav.innerHTML='';
+  const pb=document.createElement('button'); pb.textContent=playing?'❚❚ pause':(cur>=passes.length?'↻ replay':'▶ play'); pb.onclick=()=> (cur>=passes.length&&!playing)?(reset(),play()):play(); nav.appendChild(pb);
+  const sb=document.createElement('button'); sb.textContent='step ▸'; sb.onclick=()=>{ if(cur<passes.length){applyPass(cur);cur++;track();draw();} }; nav.appendChild(sb);
+  const rb=document.createElement('button'); rb.textContent='restart'; rb.onclick=()=>{ playing=false; clearTimeout(timer); reset(); draw(); }; nav.appendChild(rb);
+  const tr=document.createElement('div'); tr.className='track'; tr.id='track'; tr.innerHTML='<div class="fill"></div>'; nav.appendChild(tr);
+  const pl=document.createElement('span'); pl.className='passlab'; pl.id='passlab'; nav.appendChild(pl);
+  track();
+}
+foot.innerHTML = `<b>final answer:</b> ${escapeHtml(D.final_text||'')}<br>`+
+  `<b>why this matters:</b> autoregressive models commit one token per full pass over the weights; a dLLM commits many at once, so the same hardware yields a multiple of tokens/sec — and you can watch it happen.`;
+reset(); draw();
+</script>
+</body>
+</html>
