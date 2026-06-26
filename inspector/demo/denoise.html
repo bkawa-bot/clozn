@@ -35,11 +35,21 @@
   .passlab{color:var(--soft);font-size:13px;min-width:120px}
   .legend{margin-top:14px;color:var(--faint);font-size:12.5px}
   .legend .sw{display:inline-block;width:34px;height:8px;border-radius:5px;vertical-align:middle;margin:0 5px}
+  .nav{display:flex;gap:14px;align-items:center;margin-bottom:12px;font-size:13px;flex-wrap:wrap}
+  .nav a{color:var(--soft);text-decoration:none}.nav a:hover{color:var(--halo)} .nav .here{color:var(--ink);font-weight:680}
+  .composer{display:flex;gap:8px;margin:16px 0 2px;max-width:660px}
+  .composer input{flex:1;font:inherit;border:1px solid var(--line);border-radius:22px;padding:9px 15px;
+    background:rgba(255,255,255,.8);outline:none;color:var(--ink)}
+  .composer button{font:inherit;font-size:13.5px;border:1px solid #a9c6ff;background:linear-gradient(180deg,#cfe0ff,#bcd4ff);
+    color:var(--ink);border-radius:22px;padding:9px 16px;cursor:pointer;font-weight:620}
+  .composer button:disabled{opacity:.5}
   footer{margin-top:26px;color:var(--faint);font-size:12.5px;line-height:1.6} footer b{color:var(--soft)}
 </style>
 </head>
 <body>
 <div class="wrap">
+  <div class="nav"><a href="../../index.html">← clozn</a><a href="brain.html">brain</a>
+    <a href="memory_chat.html">memory</a><span class="here">denoise</span></div>
   <h1>watch a diffusion model think</h1>
   <div class="sub">A diffusion language model doesn't write left-to-right. It starts with a whole board of
     <b>masked slots</b> and fills them <b>in parallel</b>, refining over a handful of passes — each token
@@ -47,6 +57,7 @@
     <b>Dream-7B</b> denoise, captured pass by pass.</div>
   <div class="meta" id="meta"></div>
 
+  <div class="composer"><input id="dprompt" placeholder="ask it anything — watch Dream denoise your prompt live…" autocomplete="off"><button id="dgo">denoise</button></div>
   <div class="qa"><span class="q" id="q">…</span></div>
   <div class="board" id="board"></div>
 
@@ -67,13 +78,19 @@ What is the largest planet in the solar system? Answer in one short sentence.<|i
 <!-- DENOISE-INJECT-END -->
 
 <script>
-const D=window.DENOISE, board=document.getElementById('board'), nav=document.getElementById('nav'),
+const board=document.getElementById('board'), nav=document.getElementById('nav'),
       q=document.getElementById('q'), meta=document.getElementById('meta'), foot=document.getElementById('foot');
-const N = D.board_len - (D.n_prompt||0);                 // generated slots only
-const slot = new Array(Math.max(N,0)).fill(null);        // pos(board-local) -> {piece, conf}
-const passes = D.passes||[];
-q.textContent = D.prompt||'';
-meta.textContent = `${D.model} · board of ${N} slots · ${passes.length} passes`;
+const API = location.origin.startsWith('http') ? '' : 'http://127.0.0.1:8082';
+let D=window.DENOISE, N=0, slot=[], passes=[];
+function loadTrace(t){
+  D=t; N=Math.max(0, D.board_len-(D.n_prompt||0)); slot=new Array(N).fill(null); passes=D.passes||[];
+  q.textContent = D.prompt||''; meta.textContent = `${D.model} · board of ${N} slots · ${passes.length} passes`;
+  setFoot(); playing=false; clearTimeout(timer); cur=0; render(null); draw();
+}
+function setFoot(){
+  foot.innerHTML = `<b>final answer:</b> ${escapeHtml(D.final_text||'')}<br>`+
+    `<b>why this matters:</b> autoregressive models commit one token per full pass over the weights; a dLLM commits many at once, so the same hardware yields a multiple of tokens/sec — and you can watch it happen.`;
+}
 
 const isEnd = p => !p || /<\|[^|]*\|>/.test(p) || p.replace(/\s/g,'')==='';   // eos/pad/special -> the answer ends
 function render(flashSet){
@@ -126,9 +143,19 @@ function draw(){
   const pl=document.createElement('span'); pl.className='passlab'; pl.id='passlab'; nav.appendChild(pl);
   track();
 }
-foot.innerHTML = `<b>final answer:</b> ${escapeHtml(D.final_text||'')}<br>`+
-  `<b>why this matters:</b> autoregressive models commit one token per full pass over the weights; a dLLM commits many at once, so the same hardware yields a multiple of tokens/sec — and you can watch it happen.`;
-reset(); draw();
+// live: type a prompt, ask the server to denoise it, then play the real trace (falls back to the captured run)
+const dgo=document.getElementById('dgo'), dprompt=document.getElementById('dprompt');
+async function live(){
+  const t=dprompt.value.trim(); if(!t) return;
+  dgo.disabled=true; const old=dgo.textContent; dgo.textContent='denoising…';
+  try{
+    const r=await fetch(API+'/denoise',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:t})});
+    if(!r.ok) throw 0; loadTrace(await r.json()); play();
+  }catch(e){ meta.textContent='live server not reachable — boot research/denoise_server.py (showing the captured run instead)'; }
+  dgo.disabled=false; dgo.textContent=old;
+}
+dgo.onclick=live; dprompt.addEventListener('keydown',e=>{if(e.key==='Enter')live();});
+loadTrace(window.DENOISE);
 </script>
 </body>
 </html>

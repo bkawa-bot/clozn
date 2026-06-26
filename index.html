@@ -54,6 +54,17 @@
 
   <h2>The instrument · behold the interior</h2>
 
+  <div class="card" style="border-color:var(--cyan); box-shadow:0 2px 16px rgba(79,195,214,.20)">
+    <div class="row">
+      <h3><a href="inspector/demo/instrument.html">The instrument — all three windows in one</a></h3>
+      <span class="pill live">open file</span>
+      <a class="open" href="inspector/demo/instrument.html">open →</a>
+    </div>
+    <p class="desc">One luminous page that tabs across the three: the <b>brain</b> (concepts it engages),
+      <b>remembering you</b> (memory across a conversation), and <b>denoising</b> (a diffusion model
+      thinking). The unified instrument — opens straight from disk.</p>
+  </div>
+
   <div class="card" style="border-color:var(--angel); box-shadow:0 2px 14px rgba(122,167,255,.18)">
     <div class="row">
       <h3><a href="inspector/demo/brain.html">The brain — luminous concept atlas</a></h3>
@@ -83,6 +94,18 @@
 clozn .venv-sae python research/wire_memory.py      # wire it into memory.html</code>
   </div>
 
+  <div class="card" style="border-color:#e7a8c4; box-shadow:0 2px 14px rgba(231,168,196,.16)">
+    <div class="row">
+      <h3><a href="http://127.0.0.1:8081/">Memory · live chat — talk to it, watch it remember</a></h3>
+      <span class="pill boot">boot · 8081</span>
+      <a class="open" href="http://127.0.0.1:8081/">open →</a>
+    </div>
+    <p class="desc">The interactive version of the window above: chat live with the frozen 7B, press
+      <b>sleep on it</b> to distil the conversation into a 16-vector memory, then ask what it learned or
+      test a fresh prompt — all in the browser.</p>
+    <code>cloze .venv python research/memory_live_server.py --port 8081   # then open http://127.0.0.1:8081/</code>
+  </div>
+
   <div class="card" style="border-color:var(--cyan); box-shadow:0 2px 14px rgba(79,195,214,.16)">
     <div class="row">
       <h3><a href="inspector/demo/denoise.html">Watch it denoise — diffusion</a></h3>
@@ -93,8 +116,8 @@ clozn .venv-sae python research/wire_memory.py      # wire it into memory.html</
       20 passes — the answer crystallising out of the mask, <b>out of order</b> (it commits "Jupiter" before
       "the solar system", function words last), each token lit by its confidence. The dLLM counterpart to
       watch-it-think: for a diffusion model the thinking is literally visible.</p>
-    <code>PYTHONPATH=engine/lab cloze .venv python research/denoise_capture.py   # capture a real denoise
-clozn .venv-sae python research/wire_denoise.py                 # wire it into denoise.html</code>
+    <code>PYTHONPATH=engine/lab cloze .venv python research/denoise_server.py --port 8082   # LIVE: type your own prompts
+PYTHONPATH=engine/lab cloze .venv python research/denoise_capture.py             # or capture a static run</code>
   </div>
 
   <h2>The runtime · the engine</h2>

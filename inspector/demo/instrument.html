@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clozn · the instrument</title>
+<style>
+  :root{ --ink:#27324c; --soft:#5a6788; --halo:#7aa7ff; --cyan:#4fc3d6; --warm:#e7a8c4; --line:rgba(120,140,190,.22); }
+  *{box-sizing:border-box} html,body{margin:0;height:100%;overflow:hidden}
+  body{font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);
+    background:linear-gradient(180deg,#f4f7ff,#eef1fb);display:flex;flex-direction:column;height:100vh}
+  .bar{display:flex;align-items:center;gap:8px;padding:11px 18px;border-bottom:1px solid var(--line);
+    background:rgba(255,255,255,.6);backdrop-filter:blur(12px);box-shadow:0 4px 20px rgba(120,150,210,.08);z-index:2}
+  .logo{font-weight:700;letter-spacing:.3px;margin-right:8px;
+    background:linear-gradient(90deg,var(--halo),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .tab{font:inherit;font-size:13.5px;border:1px solid var(--line);background:rgba(255,255,255,.7);color:var(--soft);
+    border-radius:22px;padding:7px 16px;cursor:pointer;transition:all .25s}
+  .tab:hover{color:var(--ink)}
+  .tab.on{color:var(--ink);font-weight:640;border-color:transparent;
+    background:linear-gradient(180deg,rgba(122,167,255,.18),rgba(79,195,214,.14));box-shadow:0 0 0 1px rgba(122,167,255,.3)}
+  .tab .em{display:block;font-size:10.5px;color:var(--soft);font-weight:500;letter-spacing:.02em}
+  .tab.on .em{color:var(--halo)}
+  .spacer{flex:1}
+  .home{font-size:13px;color:var(--soft);text-decoration:none}.home:hover{color:var(--halo)}
+  iframe{flex:1;width:100%;border:none;background:transparent}
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span class="logo">clozn</span>
+    <button class="tab on" data-src="brain.html">the brain<span class="em">concepts it engages</span></button>
+    <button class="tab" data-src="memory.html">remembering you<span class="em">memory across a conversation</span></button>
+    <button class="tab" data-src="denoise.html">denoising<span class="em">a diffusion model thinking</span></button>
+    <span class="spacer"></span>
+    <a class="home" href="../../index.html">all windows ↗</a>
+  </div>
+  <iframe id="stage" src="brain.html" title="clozn instrument stage"></iframe>
+<script>
+  const stage=document.getElementById('stage'), tabs=[...document.querySelectorAll('.tab')];
+  tabs.forEach(t=> t.onclick=()=>{ tabs.forEach(x=>x.classList.remove('on')); t.classList.add('on');
+    stage.src=t.dataset.src; });
+</script>
+</body>
+</html>
