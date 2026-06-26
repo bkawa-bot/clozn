@@ -27,6 +27,14 @@ DEMO = os.path.join(HERE, "..", "inspector", "demo")
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
 
+sys.path.insert(0, os.path.join(HERE, "..", "engine", "client"))     # the engine white-box SDK
+import numpy as np                                                   # noqa: E402
+try:
+    from cloze_engine import EngineClient
+    ENGINE = EngineClient(port=int(os.environ.get("CLOZN_ENGINE_PORT", "8091")))   # the live C++ runtime
+except Exception:
+    ENGINE = None
+
 ARGS = None
 SUB = None         # the active substrate object
 SUBNAME = "qwen"
@@ -121,6 +129,11 @@ def make_handler():
                 return self._html("instrument.html")
             if p == "/substrate":
                 return self._json(200, {"active": SUBNAME, "available": ["qwen", "dream"]})
+            if p == "/engine/health":
+                try:
+                    return self._json(200, {"engine": ENGINE.health()})
+                except Exception as e:
+                    return self._json(502, {"error": f"engine unreachable: {e}"})
             if p == "/state":
                 return self._json(200, {"substrate": SUBNAME, **(SUB.state() if SUB else {})})
             if p.endswith((".html", ".css", ".js")):
@@ -144,6 +157,32 @@ def make_handler():
                 self._json(200, {"active": name, "switched": True, "note": "reloading -- poll /substrate"})
                 threading.Thread(target=lambda: (time.sleep(0.4), switch_substrate(name)), daemon=True).start()
                 return
+            if p == "/engine/harvest":   # READ the real C++ runtime's activations (any substrate; the engine is separate)
+                try:
+                    h = ENGINE.harvest(str(body.get("text", ""))[:300])
+                    norms = np.linalg.norm(h.activations, axis=1)
+                    return self._json(200, {"tokens": h.tokens, "layer": int(h.layer), "n_embd": h.n_embd,
+                                            "norms": [round(float(x), 3) for x in norms]})
+                except Exception as e:
+                    return self._json(502, {"error": f"engine: {e}"})
+            if p == "/engine/observe":   # WRITE a scaled residual back at one token, OBSERVE how the prediction moves
+                try:
+                    pos = int(body.get("position", 0))
+                    scale = float(body.get("scale", 4.0))
+
+                    def tf(a):
+                        a = a.copy()
+                        if 0 <= pos < a.shape[0]:
+                            a[pos] = a[pos] * scale
+                        return a
+
+                    h, obs = ENGINE.edit_and_observe(str(body.get("text", ""))[:300], transform=tf, positions=[pos])
+                    return self._json(200, {"summary": obs.summary(), "shifted": obs.shifted(),
+                                            "moved_l2": obs.moved_l2, "baseline_top": obs.baseline_top,
+                                            "edited_top": obs.edited_top, "tokens": h.tokens,
+                                            "position": pos, "scale": scale})
+                except Exception as e:
+                    return self._json(502, {"error": f"engine: {e}"})
             try:
                 r = SUB.handle(p, body) if SUB else None
                 if r is None:

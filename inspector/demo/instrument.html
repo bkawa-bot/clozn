@@ -44,6 +44,7 @@
     <button class="tab on" data-src="brain.html" data-sub="qwen">the brain<span class="em">concepts it engages</span></button>
     <button class="tab" data-src="memory_chat.html" data-sub="qwen">remembering you<span class="em">talk · watch it remember</span></button>
     <button class="tab" data-src="denoise.html" data-sub="dream">denoising<span class="em">a diffusion model thinking</span></button>
+    <button class="tab" data-src="engine.html" data-sub="any">the runtime<span class="em">read · edit the real C++ engine</span></button>
     <span class="spacer"></span>
     <span class="sub" id="subpill" title="the model currently loaded on the GPU"></span>
     <a class="home" href="../../index.html">all windows ↗</a>
@@ -64,7 +65,7 @@
     tabs.forEach(x=>x.classList.toggle('on', x===t));
     const need=t.dataset.sub, src=t.dataset.src;
     if(!SERVED){ stage.src=src; return; }                    // static: just show the window (live bits degrade gracefully)
-    if(need===active){ stage.src=src; return; }
+    if(need==='any' || need===active){ stage.src=src; return; }   // 'any' = the engine, a separate process; no switch
     if(!confirm(`“${t.textContent.split('concepts')[0].trim()||src}” runs on the ${need} substrate. Switch now?\nThis unloads the ${active} model and loads ${need} (~40s) — only one fits the GPU.`)) return;
     switchTo(need, src);
   }

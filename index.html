@@ -122,6 +122,19 @@ clozn .venv-sae python research/wire_memory.py      # wire it into memory.html</
 PYTHONPATH=engine/lab cloze .venv python research/denoise_capture.py             # or capture a static run</code>
   </div>
 
+  <div class="card" style="border-color:#9b8ce8; box-shadow:0 2px 14px rgba(155,140,232,.16)">
+    <div class="row">
+      <h3><a href="inspector/demo/engine.html">The runtime — read &amp; edit the real C++ engine</a></h3>
+      <span class="pill boot">via clozn_server</span>
+      <a class="open" href="inspector/demo/engine.html">open →</a>
+    </div>
+    <p class="desc">The white-box loop on the <b>actual C++ engine</b> (cloze-server, ggml), not a Python
+      wrapper: <code>/harvest</code> reads every token's residual in one forward; you scale one and
+      <code>/state</code> writes it back and shows the next-token prediction move. The unified server
+      proxies it, so the instrument literally sits on the real runtime.</p>
+    <code>cd engine/core/build-gpu && ./cloze-server.exe &lt;model.gguf&gt; --port 8091   # the engine (any GGUF)</code>
+  </div>
+
   <h2>The runtime · the engine</h2>
 
   <div class="card">
