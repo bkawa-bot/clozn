@@ -51,8 +51,10 @@ class SteeringControl:
         self.model, self.tok = model, tok
         n = model.config.num_hidden_layers
         self.layer = layer if layer is not None else n // 2     # mid layer (Qwen-7B: 28 -> 14)
-        self.vecs: dict[str, torch.Tensor] = {}                 # axis -> raw diff direction [H] (residual scale)
+        self.vecs: dict[str, torch.Tensor] = {}                 # axis -> UNIT diff direction [H]
         self.strength: dict[str, float] = {}                    # axis -> current slider value (+/-)
+        self.base = 1.0                                         # per-model scale (set by compute())
+        self.resid_norm = 0.0
         self._handle = None
         self._layers = model.model.layers                       # the decoder blocks
 
@@ -67,15 +69,23 @@ class SteeringControl:
 
     @torch.no_grad()
     def compute(self, seeds=SEED_PROMPTS) -> dict:
-        """Build every axis vector as mean(+pole) - mean(-pole) over the seeds. Returns each vector's norm
-        (so we can sanity-check they're non-trivial and pick a sensible default strength range)."""
-        out = {}
+        """Build every axis as a UNIT direction mean(+pole) - mean(-pole) over the seeds, and auto-calibrate
+        `base` from the residual norm so slider 1.0 is a safe, clearly-on effect on ANY model (raw diff
+        magnitudes vary per axis/model; normalizing makes the dials consistent). Hook adds slider*base*dir.
+        Calibrated to this backbone: ~0.14*|resid| is clearly-on; >~0.4*|resid| breaks coherence."""
+        out, norms = {}, []
         for name, ax in AXES.items():
-            pos = torch.stack([self._last_resid(ax["pos"], s) for s in seeds]).mean(0)
-            neg = torch.stack([self._last_resid(ax["neg"], s) for s in seeds]).mean(0)
-            self.vecs[name] = (pos - neg)                       # raw residual-scale diff; strength multiplies it
-            out[name] = round(float(self.vecs[name].norm()), 2)
-        return out
+            pv = [self._last_resid(ax["pos"], s) for s in seeds]
+            nv = [self._last_resid(ax["neg"], s) for s in seeds]
+            pos, neg = torch.stack(pv).mean(0), torch.stack(nv).mean(0)
+            norms += [float(x.norm()) for x in pv + nv]
+            d = pos - neg
+            self.vecs[name] = d / (d.norm() + 1e-8)             # UNIT direction
+            out[name] = round(float(d.norm()), 2)
+        self.resid_norm = sum(norms) / len(norms)
+        self.base = 0.85 * self.resid_norm                      # slider 1.0 -> ~0.85*|resid|: clearly on (raw
+        #                                                         tests: ~1x|resid| good, ~2.5x breaks); cap UI ~1.8
+        return {"raw_norms": out, "resid_norm": round(self.resid_norm, 1), "base": round(self.base, 2)}
 
     def set(self, name: str, value: float):
         """Slider: value 0 = off, +x = toward the first pole, -x = toward the second. Typical |x| ~ 0..1.5."""
@@ -89,7 +99,7 @@ class SteeringControl:
         add = None
         for name, s in self.strength.items():
             if s and name in self.vecs:
-                v = (s * self.vecs[name]).to(h.device, h.dtype)
+                v = (s * self.base * self.vecs[name]).to(h.device, h.dtype)
                 add = v if add is None else add + v
         if add is not None:
             h = h + add

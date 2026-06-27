@@ -49,10 +49,13 @@ class QwenSubstrate:
         from brain_readout import BrainReadout
         from sae7b import GpuSAE, load7b
         from self_teach_server import SelfTeach
+        from steering import SteeringControl
         sae = GpuSAE()
         tok, model = load7b()
         self.brain = BrainReadout(model, tok, sae, DEMO, HERE)
         self.memory = SelfTeach("Qwen/Qwen2.5-7B-Instruct", model=model, tok=tok)   # shares the model
+        self.steer = SteeringControl(model, tok)            # tone dials on the same model
+        self._steer_ready = False
 
     def handle(self, path, body):
         if path == "/think":
@@ -69,6 +72,35 @@ class QwenSubstrate:
         if path == "/reset":
             self.brain.reset(str(body.get("sid", "default")))
             return self.memory.reset(body.get("keep_prefix", False))
+        if path.startswith("/steer/"):
+            return self._steer(path, body)
+        return None
+
+    def _steer(self, path, body):
+        from steering import AXES
+        if path == "/steer/axes":
+            return {"axes": [{"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0)}
+                             for k in AXES], "ready": self._steer_ready}
+        if not self._steer_ready:                 # compute the axis vectors on first real use (~10s)
+            self._steer_info = self.steer.compute()
+            self._steer_ready = True
+        if path == "/steer/compute":
+            return {"ready": True, **self._steer_info}
+        if path == "/steer/set":
+            self.steer.set(str(body["name"]), float(body.get("value", 0.0)))
+            return {"active": self.steer.active()}
+        if path == "/steer/check":                # A/B one dial: baseline vs steered on a prompt
+            prompt = str(body.get("prompt", ""))[:300]
+            mx = int(body.get("max_new", 90))
+            base = self.steer.generate(prompt, mx)
+            self.steer.clear()
+            self.steer.set(str(body["name"]), float(body.get("value", 1.0)))
+            self.steer.engage()
+            steered = self.steer.generate(prompt, mx)
+            self.steer.disengage()
+            self.steer.clear()
+            return {"prompt": prompt, "axis": body.get("name"), "value": body.get("value", 1.0),
+                    "baseline": base, "steered": steered}
         return None
 
     def state(self):
