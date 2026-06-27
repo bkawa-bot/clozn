@@ -80,7 +80,8 @@ NEUTRAL_REFS = [
 
 
 class SelfTeach:
-    def __init__(self, model_name: str, m: int = 16, four_bit: bool = True, model=None, tok=None):
+    def __init__(self, model_name: str, m: int = 16, four_bit: bool = True, model=None, tok=None,
+                 persist_path: str | None = None):
         self.lock = threading.Lock()
         self.m = m
         if model is not None and tok is not None:
@@ -115,7 +116,10 @@ class SelfTeach:
         self.anchor: torch.Tensor | None = None
         self.sim_in = 1.0
         self.sim_neutral = 0.0
+        self.persist = persist_path                         # if set, the memory survives restarts (auto save/load)
         print(f"  ready. hidden={self.H} dtype={self.cdtype} eos={self.eos}", flush=True)
+        if self.persist and self.load(self.persist):
+            print(f"  restored {len(self.rules)} memory card(s) from {self.persist}", flush=True)
 
     # ---- low-level: chat ids, embed, generate with optional prefix ----------------------------
     def _chat_ids(self, messages: list[dict]) -> list[int]:
@@ -280,6 +284,8 @@ class SelfTeach:
                 self.sim_in = float((av @ self.anchor).mean())
                 self.sim_neutral = float((torch.stack([self._domain_vec(p) for p in NEUTRAL_REFS])
                                           @ self.anchor).mean())
+            if self.persist:                                # auto-save so the new memory survives a restart
+                self.save()
             return {"ok": True, "rules": rules, "n_examples": len(self.examples),
                     "start_loss": round(start, 3), "final_loss": round(best, 3), "steps_used": used,
                     "prefix_norm": round(float(self.prefix.detach().norm()), 1),
@@ -344,6 +350,36 @@ class SelfTeach:
                     "max_kl": round(max(t["kl"] for t in toks), 3),
                     "mean_kl": round(sum(t["kl"] for t in toks) / len(toks), 3)}
 
+    # ---- persistence: the consolidated memory (prefix + cards) survives restarts ------------------
+    def save(self, path: str | None = None) -> bool:
+        path = path or self.persist
+        if not path or self.prefix is None:
+            return False
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        torch.save({"m": self.m, "prefix": self.prefix.detach().cpu(), "rules": self.rules,
+                    "examples": self.examples,
+                    "anchor": None if self.anchor is None else self.anchor.detach().cpu(),
+                    "sim_in": self.sim_in, "sim_neutral": self.sim_neutral}, path)
+        return True
+
+    def load(self, path: str | None = None) -> bool:
+        path = path or self.persist
+        if not path or not os.path.isfile(path):
+            return False
+        try:
+            d = torch.load(path, map_location="cpu")
+        except Exception:
+            return False
+        if d.get("m") != self.m:                            # prefix length mismatch -> ignore the stale file
+            return False
+        self.prefix = nn.Parameter(d["prefix"].to(DEV).float())
+        self.rules = d.get("rules", [])
+        self.examples = d.get("examples", [])
+        self.anchor = None if d.get("anchor") is None else d["anchor"].to(DEV)
+        self.sim_in = d.get("sim_in", 1.0)
+        self.sim_neutral = d.get("sim_neutral", 0.0)
+        return True
+
     def reset(self, keep_prefix=False):
         with self.lock:
             self.history = []
@@ -351,6 +387,11 @@ class SelfTeach:
                 self.prefix = None
                 self.examples = []
                 self.rules = []
+                if self.persist and os.path.isfile(self.persist):
+                    try:
+                        os.remove(self.persist)                 # full reset wipes the persisted memory too
+                    except OSError:
+                        pass
             return {"ok": True, "kept_prefix": keep_prefix}
 
     def state(self) -> dict:

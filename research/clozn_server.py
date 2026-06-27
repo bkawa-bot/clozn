@@ -53,9 +53,12 @@ class QwenSubstrate:
         sae = GpuSAE()
         tok, model = load7b()
         self.brain = BrainReadout(model, tok, sae, DEMO, HERE)
-        self.memory = SelfTeach("Qwen/Qwen2.5-7B-Instruct", model=model, tok=tok)   # shares the model
+        self.memory = SelfTeach("Qwen/Qwen2.5-7B-Instruct", model=model, tok=tok,   # shares the model
+                                persist_path=os.path.join(os.path.expanduser("~"), ".clozn", "studio_memory.pt"))
         self.steer = SteeringControl(model, tok)            # tone dials on the same model
         self._steer_ready = False
+        self._pers_steer = os.path.join(os.path.expanduser("~"), ".clozn", "studio_personality.json")
+        self.steer.load_state(self._pers_steer)             # restore the personality dials across restarts
 
     def handle(self, path, body):
         if path == "/think":
@@ -99,6 +102,7 @@ class QwenSubstrate:
             return {"ready": True, **self._steer_info}
         if path == "/steer/set":
             self.steer.set(str(body["name"]), float(body.get("value", 0.0)))
+            self.steer.save_state(self._pers_steer)         # persist the dials across restarts
             return {"active": self.steer.active()}
         if path == "/steer/check":                # A/B one dial: baseline vs steered on a prompt
             prompt = str(body.get("prompt", ""))[:300]
@@ -119,6 +123,9 @@ class QwenSubstrate:
         prefix (learned + added traits) AND the active tone-steering sliders, both on the shared model.
         This is what the OpenAI-compatible endpoint serves -- normal chat on the surface, legible and
         tunable underneath."""
+        if self.steer.strength and not self._steer_ready:   # persisted personality -> ensure vectors are ready
+            self.steer.compute()
+            self._steer_ready = True
         self.steer.engage()
         try:
             return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample, gate=1.0)

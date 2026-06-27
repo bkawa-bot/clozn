@@ -15,6 +15,9 @@ Built to wrap an already-loaded backbone (the clozn server's Qwen-7B), so the to
 """
 from __future__ import annotations
 
+import json
+import os
+
 import torch
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
@@ -116,6 +119,22 @@ class SteeringControl:
 
     def active(self) -> dict:
         return {k: v for k, v in self.strength.items() if v}
+
+    def save_state(self, path: str):
+        """Persist just the slider values (the vectors are cheap to recompute on boot)."""
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(self.strength, f)
+
+    def load_state(self, path: str) -> bool:
+        if not os.path.isfile(path):
+            return False
+        try:
+            with open(path) as f:
+                self.strength = {k: float(v) for k, v in json.load(f).items()}
+            return True
+        except Exception:
+            return False
 
     @torch.no_grad()
     def generate(self, prompt: str, max_new=100) -> str:
