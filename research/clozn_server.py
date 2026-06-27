@@ -60,7 +60,8 @@ class QwenSubstrate:
         if path == "/say":
             return {"reply": self.memory.say(body["message"], body.get("max_new", 200))}
         if path == "/consolidate":
-            return self.memory.consolidate(body.get("rules"), body.get("steps", 55), body.get("lr", 0.03))
+            return self.memory.consolidate(body.get("rules"), body.get("steps", 120), body.get("lr", 0.012),
+                                           body.get("n_probe", 8), body.get("max_norm", 14.0))
         if path == "/whatlearned":
             return {"report": self.memory.what_learned()}
         if path == "/check":

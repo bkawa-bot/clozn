@@ -60,6 +60,13 @@ PROBE_PROMPTS = [
     "What should I cook for dinner tonight?",
     "Recommend a movie for tonight.",
     "Tell me something interesting.",
+    "I'm feeling a bit bored this afternoon.",
+    "What's a good way to spend a Sunday?",
+    "Any ideas for a creative project?",
+    "How should I unwind after a long day?",
+    "Suggest a small goal for me this month.",
+    "What's a fun new thing to learn?",
+    "Plan a cozy evening for me.",
 ]
 
 # Neutral, domain-less reference prompts to calibrate the contextual-gating threshold: a learned
@@ -154,10 +161,15 @@ class SelfTeach:
         return self.tok.decode(out[0], skip_special_tokens=True).strip()
 
     # ---- /say : one conversational turn (current prefix active) --------------------------------
-    def say(self, message: str, max_new=220) -> str:
+    def say(self, message: str, max_new=220, strength=1.0) -> str:
         with self.lock:
             self.history.append({"role": "user", "content": message})
-            reply = self._generate(self.history, use_prefix=True, max_new=max_new, sample=True)
+            # Apply the consolidated prefix at full strength by default. The old "auto" cosine gate is
+            # unreliable (mean-pooled hidden states are too anisotropic -- sim_in 0.968 vs sim_neutral 0.956,
+            # so it scored every prompt ~0 and zeroed the trait). The gentle, norm-capped prefix self-gates
+            # well on its own (clean on mortgage/flat-tire/WWI, only soft analogy bleed elsewhere), so we
+            # default to full and expose `strength` as the user knob. (Future: a KL-effect relevance gate.)
+            reply = self._generate(self.history, use_prefix=True, max_new=max_new, sample=True, gate=strength)
             self.history.append({"role": "assistant", "content": reply})
             return reply
 
@@ -191,7 +203,8 @@ class SelfTeach:
         return F.cross_entropy(pred.float(), torch.tensor(target_ids, device=DEV))
 
     # ---- /consolidate : extract rules, build targets, distill into the prefix (TTT) ------------
-    def consolidate(self, rules: list[str] | None = None, steps=80, lr=0.03, n_probe=5) -> dict:
+    def consolidate(self, rules: list[str] | None = None, steps=120, lr=0.012, n_probe=8,
+                    max_norm=14.0) -> dict:
         with self.lock:
             t0 = time.time()
             rules = rules if rules else self._extract_rules()
@@ -210,31 +223,53 @@ class SelfTeach:
                                      use_prefix=False, max_new=64, sample=False)
                 if not tgt.strip():
                     continue
-                # we TTT the prefix to produce that target from the PLAIN prompt (no rules in context).
-                # cap the target to its rule-bearing opening (~40 tok): a 16-vector prefix can fit a short
-                # opening but not a full free-form response -- the latter is unsatisfiable and blows up.
+                # we TTT the prefix to produce that target's rule-bearing OPENING from the PLAIN prompt
+                # (no rules in context). A short opening is fittable by a 16-vector prefix; forcing the
+                # full free-form response is not, and makes the optimizer crank the prefix into a
+                # degenerate attractor (the divergence we saw: loss UP, norm 43.7, "recipe recipe" mush).
                 plain_ids = self._chat_ids([{"role": "user", "content": pr}])
                 tgt_ids = self.tok.encode(tgt, add_special_tokens=False)
-                new_examples.append((plain_ids, tgt_ids[:40]))
+                new_examples.append((plain_ids, tgt_ids[:32]))
             self.examples.extend(new_examples)
             # init the prefix on first consolidation; keep + grow it after
             if self.prefix is None:
                 init = 0.02 * torch.randn(self.m, self.H, device=DEV, dtype=torch.float32)
                 self.prefix = nn.Parameter(init)
-            # weight_decay keeps the prefix in-distribution; without it the norm explodes on an
-            # imperfectly-fittable objective and the prefix corrupts generation (the v1 failure mode).
-            opt = torch.optim.Adam([self.prefix], lr=lr, weight_decay=1e-3)
+            opt = torch.optim.Adam([self.prefix], lr=lr, weight_decay=2e-3)
 
             def avg_loss():
                 with torch.no_grad():
                     return sum(self._seq_loss(p, t).item() for p, t in self.examples) / len(self.examples)
 
-            start = avg_loss()
-            for _ in range(steps):
+            # STABLE TTT. The objective (a 16-vector prefix reproducing several rule-following openings) is
+            # only partly satisfiable, so naive Adam over-cranks the prefix into corruption. Four guards:
+            # low lr, grad-clip, a HARD norm cap (renormalize so it can never explode), and early-stopping
+            # that keeps the BEST prefix -- so we never ship the diverged final one.
+            start = best = avg_loss()
+            best_prefix = self.prefix.detach().clone()
+            bad, patience, used = 0, 8, 0
+            for step in range(steps):
+                used = step + 1
                 opt.zero_grad()
                 for (p, t) in self.examples:                 # grad-accumulate over all examples (old+new)
                     (self._seq_loss(p, t) / len(self.examples)).backward()
+                torch.nn.utils.clip_grad_norm_([self.prefix], 2.0)
                 opt.step()
+                with torch.no_grad():                        # hard cap: the prefix can NEVER corrupt generation
+                    n = float(self.prefix.norm())
+                    if n > max_norm:
+                        self.prefix.mul_(max_norm / n)
+                if step % 2 == 1:                            # evaluate every other step: keep-best + early-stop
+                    cur = avg_loss()
+                    if cur < best - 1e-3:
+                        best, bad = cur, 0
+                        best_prefix = self.prefix.detach().clone()
+                    else:
+                        bad += 1
+                        if bad >= patience:
+                            break
+            with torch.no_grad():
+                self.prefix.copy_(best_prefix)               # restore the best, never the diverged last
             self.rules = rules
             # contextual-gating anchor: the rule's DOMAIN = mean rep of its probe prompts, with the
             # in-domain and neutral cosine bands so _gate maps a new prompt's relevance to [0,1].
@@ -246,7 +281,7 @@ class SelfTeach:
                 self.sim_neutral = float((torch.stack([self._domain_vec(p) for p in NEUTRAL_REFS])
                                           @ self.anchor).mean())
             return {"ok": True, "rules": rules, "n_examples": len(self.examples),
-                    "start_loss": round(start, 3), "final_loss": round(avg_loss(), 3),
+                    "start_loss": round(start, 3), "final_loss": round(best, 3), "steps_used": used,
                     "prefix_norm": round(float(self.prefix.detach().norm()), 1),
                     "sim_in": round(self.sim_in, 3), "sim_neutral": round(self.sim_neutral, 3),
                     "seconds": round(time.time() - t0, 1)}
@@ -352,7 +387,8 @@ def make_handler(app: SelfTeach):
                 if self.path == "/say":
                     self._send(200, {"reply": app.say(b["message"], b.get("max_new", 220))})
                 elif self.path == "/consolidate":
-                    self._send(200, app.consolidate(b.get("rules"), b.get("steps", 80), b.get("lr", 0.03)))
+                    self._send(200, app.consolidate(b.get("rules"), b.get("steps", 120), b.get("lr", 0.012),
+                                                    b.get("n_probe", 8), b.get("max_norm", 14.0)))
                 elif self.path == "/whatlearned":
                     self._send(200, {"report": app.what_learned()})
                 elif self.path == "/check":
