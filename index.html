@@ -52,6 +52,22 @@
     <p class="sub">Every UI we've built, in one place. Green is live right now; amber needs a boot or a generate step first.</p>
   </header>
 
+  <h2>The tool · chat, see, and shape</h2>
+
+  <div class="card" style="border-color:var(--angel); box-shadow:0 2px 18px rgba(122,167,255,.22)">
+    <div class="row">
+      <h3><a href="inspector/demo/studio.html">clozn studio — a local model you can see and shape</a></h3>
+      <span class="pill boot">needs clozn_server</span>
+      <a class="open" href="inspector/demo/studio.html">open →</a>
+    </div>
+    <p class="desc">Chat with a local model like you would through Ollama — but open the panels and
+      <b>see what it has learned about you</b> (editable trait cards, baked into a soft prefix) and
+      <b>tune its personality live</b> (real-time tone dials: warm, concise, formal, playful). Memory is
+      fast-weight cards; tone is activation steering; both apply on every reply through an
+      <b>OpenAI-compatible endpoint</b>, so any OpenAI client can point at it too.</p>
+    <code>cloze .venv python research/clozn_server.py --port 8090   # then open studio.html (or point any OpenAI client at /v1)</code>
+  </div>
+
   <h2>The instrument · behold the interior</h2>
 
   <div class="card" style="border-color:var(--cyan); box-shadow:0 2px 16px rgba(79,195,214,.20)">

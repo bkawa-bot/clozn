@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clozn · studio</title>
+<link rel="stylesheet" href="clozn.css">
+<style>
+  /* window-specific; palette + shared bits live in clozn.css */
+  *{box-sizing:border-box} html,body{margin:0;height:100%}
+  body{font:15px/1.55 ui-sans-serif,system-ui,"Segoe UI",sans-serif;color:var(--ink);
+    background:linear-gradient(180deg,#f4f7ff,#eef1fb);display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  .top{display:flex;align-items:center;gap:10px;padding:11px 18px;border-bottom:1px solid var(--line);
+    background:rgba(255,255,255,.6);backdrop-filter:blur(12px);z-index:3}
+  .top .logo{font-weight:700;background:linear-gradient(90deg,var(--halo),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .top .tag{color:var(--faint);font-size:12.5px}
+  .top a{margin-left:auto;color:var(--soft);text-decoration:none;font-size:13px}.top a:hover{color:var(--halo)}
+  .main{flex:1;display:flex;min-height:0}
+  .chat{flex:1;display:flex;flex-direction:column;min-width:0}
+  #log{flex:1;overflow:auto;padding:22px 26px;display:flex;flex-direction:column;gap:14px}
+  .turn{max-width:75%;padding:11px 15px;border-radius:16px;white-space:pre-wrap}
+  .turn.u{align-self:flex-end;background:linear-gradient(180deg,rgba(122,167,255,.22),rgba(122,167,255,.13));border:1px solid rgba(122,167,255,.25)}
+  .turn.a{align-self:flex-start;background:rgba(255,255,255,.72);border:1px solid var(--line);box-shadow:0 2px 12px rgba(120,150,210,.07)}
+  .turn.sys{align-self:center;color:var(--faint);font-size:12.5px;background:none;border:none;font-style:italic}
+  .composer{display:flex;gap:9px;padding:14px 22px;border-top:1px solid var(--line);background:rgba(255,255,255,.5)}
+  .composer input{flex:1;border:1px solid var(--line);border-radius:24px;padding:11px 17px;font:inherit;background:#fff;outline:none}
+  .composer input:focus{border-color:var(--halo);box-shadow:0 0 0 3px rgba(122,167,255,.13)}
+  .side{width:340px;flex-shrink:0;border-left:1px solid var(--line);background:rgba(255,255,255,.45);
+    overflow:auto;padding:18px 16px;display:flex;flex-direction:column;gap:16px}
+  .panel{background:rgba(255,255,255,.7);border:1px solid var(--line);border-radius:16px;padding:15px 16px;
+    box-shadow:0 2px 14px rgba(120,150,210,.06)}
+  .panel h2{margin:0 0 3px;font-size:15px;letter-spacing:.2px}
+  .panel .hint{color:var(--faint);font-size:12px;margin-bottom:11px;line-height:1.4}
+  .card{display:flex;align-items:flex-start;gap:8px;background:linear-gradient(180deg,rgba(231,168,196,.13),rgba(231,168,196,.07));
+    border:1px solid rgba(231,168,196,.3);border-radius:12px;padding:8px 11px;margin-bottom:7px;font-size:13px}
+  .card .x{margin-left:auto;cursor:pointer;color:var(--faint);font-weight:700;flex-shrink:0;border:none;background:none;font-size:14px}
+  .card .x:hover{color:var(--warm)}
+  .empty{color:var(--faint);font-size:12.5px;font-style:italic;padding:4px 0 9px}
+  .addrow{display:flex;gap:7px;margin-top:9px}
+  .addrow input{flex:1;border:1px solid var(--line);border-radius:20px;padding:8px 13px;font:inherit;font-size:13px;outline:none;background:#fff}
+  .addrow input:focus{border-color:var(--halo)}
+  .slider{margin:13px 0}
+  .slider .lab{display:flex;justify-content:space-between;font-size:12px;color:var(--soft);margin-bottom:4px}
+  .slider .lab b{color:var(--ink);font-weight:640}
+  .slider input[type=range]{width:100%;accent-color:var(--halo)}
+  .slider .poles{display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint);margin-top:1px}
+  .busy{display:none;align-items:center;gap:8px;color:var(--soft);font-size:12.5px;margin-top:9px}
+  .busy.on{display:flex}
+  .spin{width:14px;height:14px;border-radius:50%;border:2px solid rgba(122,167,255,.3);border-top-color:var(--halo);animation:sp 1s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  button.go{border:none;cursor:pointer;color:#fff;background:linear-gradient(90deg,var(--halo),var(--cyan));border-radius:22px;padding:9px 16px;font:inherit;font-size:13px;font-weight:600}
+  button.go:disabled{opacity:.5;cursor:default}
+</style>
+</head>
+<body>
+  <div class="top">
+    <span class="logo">clozn</span><span class="tag">· studio — chat with a model you can see and shape</span>
+    <a href="../../index.html">all windows ↗</a>
+  </div>
+  <div class="main">
+    <div class="chat">
+      <div id="log"><div class="turn sys">a local model, served like any other — but its memory and its tone are yours to edit, on the right.</div></div>
+      <div class="composer"><input id="msg" placeholder="say something…" autocomplete="off"><button class="go" id="send">send</button></div>
+    </div>
+    <div class="side">
+      <div class="panel">
+        <h2>memory</h2>
+        <div class="hint">traits it has learned about you, plus ones you add. baked into a soft prefix it carries — not a hidden system prompt.</div>
+        <div id="cards"></div>
+        <div class="addrow">
+          <input id="trait" placeholder="add a trait — 'into baking', 'loves sci-fi'…" autocomplete="off">
+          <button class="go" id="add">add</button>
+        </div>
+        <div class="busy" id="mbusy"><div class="spin"></div><span>baking it into memory… (~a few min)</span></div>
+      </div>
+      <div class="panel">
+        <h2>personality</h2>
+        <div class="hint">real-time tone dials — pure activation steering, no training. drag one, then send a message to feel it.</div>
+        <div id="sliders"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const API = location.origin.startsWith('http') ? '' : 'http://127.0.0.1:8090';
+const $=id=>document.getElementById(id), esc=s=>(s||'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+const post=(p,b)=>fetch(API+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}).then(r=>r.json());
+const history=[];
+
+function add(role,text){ const d=document.createElement('div'); d.className='turn '+(role==='user'?'u':role==='assistant'?'a':'sys');
+  d.textContent=text; $('log').appendChild(d); $('log').scrollTop=$('log').scrollHeight; return d; }
+
+async function send(){
+  const t=$('msg').value.trim(); if(!t) return;
+  $('msg').value=''; $('send').disabled=true;
+  add('user',t); history.push({role:'user',content:t});
+  const ph=add('assistant','…');
+  try{
+    const d=await post('/v1/chat/completions',{messages:history,max_tokens:256});
+    const reply=d.choices? d.choices[0].message.content : ('['+(d.error||'error')+']');
+    ph.textContent=reply; history.push({role:'assistant',content:reply});
+  }catch(e){ ph.textContent='[the studio server is not connected — boot research/clozn_server.py]'; }
+  $('send').disabled=false; $('msg').focus();
+}
+
+async function loadCards(){
+  let d; try{ d=await post('/memory/cards',{}); }catch(e){ return; }
+  const cards=d.cards||[];
+  $('cards').innerHTML = cards.length ? cards.map((c,i)=>
+    `<div class="card"><span>${esc(c)}</span><button class="x" data-i="${i}" title="remove">✕</button></div>`).join('')
+    : '<div class="empty">nothing yet — chat a while and it will learn, or add a trait below.</div>';
+  [...document.querySelectorAll('.card .x')].forEach(b=> b.onclick=()=>removeCard(+b.dataset.i));
+}
+async function addTrait(){
+  const t=$('trait').value.trim(); if(!t) return;
+  $('trait').value=''; $('add').disabled=true; $('mbusy').classList.add('on');
+  try{ await post('/memory/add',{text:t}); await loadCards(); add('sys',`learned a new trait: “${t}”`); }
+  catch(e){}
+  $('add').disabled=false; $('mbusy').classList.remove('on');
+}
+async function removeCard(i){
+  $('mbusy').classList.add('on');
+  try{ await post('/memory/remove',{index:i}); await loadCards(); }catch(e){}
+  $('mbusy').classList.remove('on');
+}
+
+let setT=null;
+async function loadSliders(){
+  let d; try{ d=await post('/steer/axes',{}); }catch(e){ return; }
+  $('sliders').innerHTML = (d.axes||[]).map(a=>{
+    const [hi,lo]=a.poles;
+    return `<div class="slider"><div class="lab"><b>${a.name}</b><span class="v" id="v_${a.name}">${(+a.value).toFixed(1)}</span></div>
+      <input type="range" min="-1.5" max="1.5" step="0.1" value="${a.value}" data-name="${a.name}">
+      <div class="poles"><span>${lo}</span><span>${hi}</span></div></div>`;
+  }).join('');
+  [...document.querySelectorAll('#sliders input')].forEach(s=> s.oninput=()=>{
+    $('v_'+s.dataset.name).textContent=(+s.value).toFixed(1);
+    clearTimeout(setT); setT=setTimeout(()=> post('/steer/set',{name:s.dataset.name,value:parseFloat(s.value)}), 160);
+  });
+}
+
+$('send').onclick=send; $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')send();});
+$('add').onclick=addTrait; $('trait').addEventListener('keydown',e=>{if(e.key==='Enter')addTrait();});
+loadCards(); loadSliders();
+</script>
+</body>
+</html>

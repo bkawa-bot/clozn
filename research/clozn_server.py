@@ -72,6 +72,17 @@ class QwenSubstrate:
         if path == "/reset":
             self.brain.reset(str(body.get("sid", "default")))
             return self.memory.reset(body.get("keep_prefix", False))
+        if path == "/memory/cards":
+            return {"cards": self.memory.rules, "has_prefix": self.memory.prefix is not None}
+        if path == "/memory/add":               # add a trait card -> re-consolidate the cumulative set
+            text = str(body.get("text", "")).strip()
+            if not text:
+                return {"ok": False, "reason": "empty trait"}
+            return self.memory.consolidate(list(self.memory.rules) + [text])
+        if path == "/memory/remove":            # drop a card -> rebuild the prefix from the rest
+            remaining = [r for i, r in enumerate(self.memory.rules) if i != int(body.get("index", -1))]
+            self.memory.reset(keep_prefix=False)
+            return self.memory.consolidate(remaining) if remaining else {"ok": True, "cards": []}
         if path.startswith("/steer/"):
             return self._steer(path, body)
         return None
@@ -102,6 +113,17 @@ class QwenSubstrate:
             return {"prompt": prompt, "axis": body.get("name"), "value": body.get("value", 1.0),
                     "baseline": base, "steered": steered}
         return None
+
+    def chat(self, messages, max_new=256, sample=True):
+        """One stateless chat completion with the WHOLE tunable self applied: the consolidated memory
+        prefix (learned + added traits) AND the active tone-steering sliders, both on the shared model.
+        This is what the OpenAI-compatible endpoint serves -- normal chat on the surface, legible and
+        tunable underneath."""
+        self.steer.engage()
+        try:
+            return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample, gate=1.0)
+        finally:
+            self.steer.disengage()
 
     def state(self):
         return self.memory.state()
@@ -163,6 +185,9 @@ def make_handler():
                 return self._html("instrument.html")
             if p == "/substrate":
                 return self._json(200, {"active": SUBNAME, "available": ["qwen", "dream"]})
+            if p == "/v1/models":            # OpenAI-compatible model list (so OAI clients connect)
+                return self._json(200, {"object": "list", "data": [
+                    {"id": "clozn-qwen", "object": "model", "owned_by": "clozn"}]})
             if p == "/engine/health":
                 try:
                     return self._json(200, {"engine": ENGINE.health()})
@@ -225,6 +250,16 @@ def make_handler():
                         str(body.get("text", ""))[:300], ENGINE_QWEN, int(body.get("layer", 15))))
                 except Exception as e:
                     return self._json(502, {"error": f"engine-qwen: {e}"})
+            if p == "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied
+                if not (SUB and getattr(SUB, "chat", None)):
+                    return self._json(503, {"error": "chat needs the qwen substrate"})
+                reply = SUB.chat(body.get("messages", []), int(body.get("max_tokens", 256)),
+                                 float(body.get("temperature", 0.7)) > 0)
+                return self._json(200, {"id": "chatcmpl-clozn", "object": "chat.completion",
+                                        "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
+                                        "choices": [{"index": 0, "finish_reason": "stop",
+                                                     "message": {"role": "assistant", "content": reply}}],
+                                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}})
             try:
                 r = SUB.handle(p, body) if SUB else None
                 if r is None:
