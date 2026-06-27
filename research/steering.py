@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 
+import numpy as np
 import torch
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
@@ -151,3 +152,64 @@ class SteeringControl:
         out = self.model.generate(ids, max_new_tokens=max_new, do_sample=False,
                                   pad_token_id=self.tok.eos_token_id or 0)
         return self.tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+
+
+class DreamSteering(SteeringControl):
+    """Tone dials for a Dream-family DIFFUSION adapter (the cloze_lab ModelAdapter).
+
+    Same idea and same hook/dial machinery as SteeringControl -- a tone axis is a residual-stream
+    direction, added live at a mid layer scaled by the slider. Two differences for diffusion:
+      * residuals are captured with a forward HOOK driven through the adapter's own forward (Dream's
+        custom modeling doesn't expose output_hidden_states cleanly, and the adapter handles its
+        non-causal mask / shifted head), and we mean-pool over ALL prompt tokens (diffusion attends
+        bidirectionally -- there is no privileged 'last' token like in AR);
+      * the dials apply during the iterative DENOISING forwards -- engage the hook, run a denoise,
+        and every unmasking pass is steered.
+    """
+
+    def __init__(self, adapter, layer: int | None = None):
+        self.ad = adapter
+        self.model = adapter._model
+        self.tok = adapter._tok
+        self.dev = adapter._device
+        base_model = getattr(self.model, "model", self.model)        # DreamModel vs *ForCausalLM wrapper
+        self._layers = base_model.layers
+        n = len(self._layers)
+        self.layer = layer if layer is not None else n // 2
+        self.vecs, self.strength = {}, {}
+        self.base, self.resid_norm = 1.0, 0.0
+        self._handle = None
+
+    @torch.no_grad()
+    def _resid(self, text: str) -> torch.Tensor:
+        """Mean-pooled residual at self.layer for a chat-wrapped prompt, captured via a hook on the
+        layer while the ADAPTER drives the forward (so Dream's mask/positions are handled correctly)."""
+        ids = self.ad.encode(text, chat=True)
+        board = np.asarray(ids, dtype=np.int64)
+        n = len(ids)
+        attn = np.ones((n, n), dtype=bool)                            # full (non-causal) attention
+        cap = {}
+
+        def grab(m, i, o):
+            cap["h"] = (o[0] if isinstance(o, tuple) else o).detach()
+
+        hh = self._layers[self.layer].register_forward_hook(grab)
+        try:
+            self.ad.forward(board, attn)
+        finally:
+            hh.remove()
+        return cap["h"][0].float().mean(0)                            # [H], mean over tokens
+
+    @torch.no_grad()
+    def compute(self, seeds=SEED_PROMPTS) -> dict:
+        out, norms = {}, []
+        for name, ax in AXES.items():
+            pos = torch.stack([self._resid(ax["pos"] + "\n\n" + s) for s in seeds]).mean(0)
+            neg = torch.stack([self._resid(ax["neg"] + "\n\n" + s) for s in seeds]).mean(0)
+            norms += [float(pos.norm()), float(neg.norm())]
+            d = pos - neg
+            self.vecs[name] = d / (d.norm() + 1e-8)
+            out[name] = round(float(d.norm()), 2)
+        self.resid_norm = sum(norms) / len(norms)
+        self.base = 0.85 * self.resid_norm
+        return {"raw_norms": out, "resid_norm": round(self.resid_norm, 1), "base": round(self.base, 2)}

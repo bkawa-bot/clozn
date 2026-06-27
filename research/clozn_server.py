@@ -137,22 +137,63 @@ class QwenSubstrate:
 
 
 class DreamSubstrate:
-    """Dream-7B for the diffusion window."""
+    """Dream-7B for the diffusion window -- now with tone dials (the same contrastive steering as qwen,
+    applied during the denoising loop)."""
     name = "dream"
 
     def __init__(self):
         from cloze_lab.cli import build_adapter
         from denoise_server import trace_for
+        from steering import DreamSteering
         self.adapter = build_adapter("dream", device="cuda", quant="nf4")
         self._trace = trace_for
+        self.steer = DreamSteering(self.adapter)            # tone dials on the diffusion model
+        self._steer_ready = False
+        self._pers_steer = os.path.join(os.path.expanduser("~"), ".clozn", "studio_dream_personality.json")
+        self.steer.load_state(self._pers_steer)
 
     def handle(self, path, body):
         if path == "/denoise":
-            return self._trace(self.adapter, str(body.get("prompt", ""))[:300])
+            self.steer.engage()                            # active dials steer every denoising pass
+            try:
+                return self._trace(self.adapter, str(body.get("prompt", ""))[:300])
+            finally:
+                self.steer.disengage()
+        if path.startswith("/steer/"):
+            return self._steer(path, body)
+        return None
+
+    def _steer(self, path, body):
+        from steering import AXES
+        if path == "/steer/axes":
+            return {"axes": [{"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0)}
+                             for k in AXES], "ready": self._steer_ready, "substrate": "dream"}
+        if not self._steer_ready:                          # compute axis vectors on Dream's activations (~once)
+            self._steer_info = self.steer.compute()
+            self._steer_ready = True
+        if path == "/steer/compute":
+            return {"ready": True, **self._steer_info}
+        if path == "/steer/set":
+            self.steer.set(str(body["name"]), float(body.get("value", 0.0)))
+            self.steer.save_state(self._pers_steer)
+            return {"active": self.steer.active()}
+        if path == "/steer/check":                         # A/B a dial: baseline vs steered denoise (final text)
+            prompt = str(body.get("prompt", ""))[:200]
+            base = self._trace(self.adapter, prompt)["final_text"]
+            self.steer.clear()
+            self.steer.set(str(body["name"]), float(body.get("value", 1.0)))
+            self.steer.engage()
+            try:
+                steered = self._trace(self.adapter, prompt)["final_text"]
+            finally:
+                self.steer.disengage()
+                self.steer.clear()
+            return {"prompt": prompt, "axis": body.get("name"), "value": body.get("value", 1.0),
+                    "baseline": base, "steered": steered}
         return None
 
     def state(self):
-        return {}
+        return {"dials": self.steer.active()}
 
 
 def load_substrate(name):
