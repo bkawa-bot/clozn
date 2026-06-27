@@ -64,7 +64,7 @@
     </div>
     <div class="side">
       <div class="panel">
-        <h2>memory</h2>
+        <h2>memory <a id="clearmem" title="forget everything" style="float:right;font-size:11px;font-weight:400;color:var(--faint);cursor:pointer">clear all</a></h2>
         <div class="hint">traits it has learned about you, plus ones you add. baked into a soft prefix it carries — not a hidden system prompt.</div>
         <div id="cards"></div>
         <div class="addrow">
@@ -123,6 +123,12 @@ async function removeCard(i){
   try{ await post('/memory/remove',{index:i}); await loadCards(); }catch(e){}
   $('mbusy').classList.remove('on');
 }
+async function clearMem(){
+  if(!confirm('Forget all memory? This wipes every learned + added trait.')) return;
+  $('mbusy').classList.add('on');
+  try{ await post('/reset',{keep_prefix:false}); await loadCards(); add('sys','memory cleared — starting fresh.'); }catch(e){}
+  $('mbusy').classList.remove('on');
+}
 
 let setT=null;
 async function loadSliders(){
@@ -141,6 +147,7 @@ async function loadSliders(){
 
 $('send').onclick=send; $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')send();});
 $('add').onclick=addTrait; $('trait').addEventListener('keydown',e=>{if(e.key==='Enter')addTrait();});
+$('clearmem').onclick=clearMem;
 loadCards(); loadSliders();
 </script>
 </body>

@@ -34,6 +34,12 @@ AXES = {
                 "neg": "Respond in very casual, slangy, relaxed language.",     "poles": ("formal", "casual")},
     "playful": {"pos": "Respond in a playful, witty, lighthearted tone.",
                 "neg": "Respond in a serious, sober, no-nonsense tone.",        "poles": ("playful", "serious")},
+    "curious": {"pos": "Respond with curiosity, wondering aloud and asking thoughtful questions.",
+                "neg": "Respond flatly, just stating facts with no curiosity.",  "poles": ("curious", "matter-of-fact")},
+    "poetic":  {"pos": "Respond poetically, with vivid imagery and metaphor.",
+                "neg": "Respond plainly and literally, with no figurative language.", "poles": ("poetic", "plain")},
+    "technical": {"pos": "Respond technically, with precise terminology and detail.",
+                  "neg": "Respond in simple, everyday language anyone could follow.", "poles": ("technical", "simple")},
 }
 
 # Neutral user turns to elicit the contrast on. Varied so the captured direction is tone, not topic.
