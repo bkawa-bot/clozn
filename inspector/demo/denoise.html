@@ -43,6 +43,10 @@
   .composer button{font:inherit;font-size:13.5px;border:1px solid #a9c6ff;background:linear-gradient(180deg,#cfe0ff,#bcd4ff);
     color:var(--ink);border-radius:22px;padding:9px 16px;cursor:pointer;font-weight:620}
   .composer button:disabled{opacity:.5}
+  .dials{display:flex;flex-wrap:wrap;gap:13px;align-items:flex-end;margin:6px 0 2px;max-width:780px}
+  .dials .dlab{color:var(--faint);font-size:12px;align-self:center}
+  .dials .dial{display:flex;flex-direction:column;font-size:11px;color:var(--soft);gap:1px;align-items:center}
+  .dials .dial input{width:72px;accent-color:var(--halo)}
   footer{margin-top:26px;color:var(--faint);font-size:12.5px;line-height:1.6} footer b{color:var(--soft)}
 </style>
 </head>
@@ -58,6 +62,7 @@
   <div class="meta" id="meta"></div>
 
   <div class="composer"><input id="dprompt" placeholder="ask it anything — watch Dream denoise your prompt live…" autocomplete="off"><button id="dgo">denoise</button></div>
+  <div id="dials" class="dials"></div>
   <div class="qa"><span class="q" id="q">…</span></div>
   <div class="board" id="board"></div>
 
@@ -155,7 +160,19 @@ async function live(){
   dgo.disabled=false; dgo.textContent=old;
 }
 dgo.onclick=live; dprompt.addEventListener('keydown',e=>{if(e.key==='Enter')live();});
+// tone dials -- steer the denoise live (active when served by clozn_server on the dream substrate)
+async function loadDials(){
+  try{
+    const d=await fetch(API+'/steer/axes',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json());
+    if(!d.axes||!d.axes.length) return;
+    document.getElementById('dials').innerHTML='<span class="dlab">tone · drag, then denoise:</span>'+d.axes.map(a=>
+      `<label class="dial" title="${a.poles[1]} ↔ ${a.poles[0]}">${a.name}<input type="range" min="-1.5" max="1.5" step="0.1" value="${a.value}" data-name="${a.name}"></label>`).join('');
+    [...document.querySelectorAll('#dials input')].forEach(s=> s.oninput=()=>{ clearTimeout(s._t);
+      s._t=setTimeout(()=>fetch(API+'/steer/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:s.dataset.name,value:parseFloat(s.value)})}),150); });
+  }catch(e){}
+}
 loadTrace(window.DENOISE);
+loadDials();
 </script>
 </body>
 </html>
