@@ -28,7 +28,7 @@
     background:radial-gradient(circle at 35% 30%,#fff,var(--halo));box-shadow:0 0 8px var(--halo)}
   .sub.dream .dot{background:radial-gradient(circle at 35% 30%,#fff,var(--cyan));box-shadow:0 0 8px var(--cyan)}
   .home{font-size:13px;color:var(--soft);text-decoration:none}.home:hover{color:var(--halo)}
-  iframe{flex:1;width:100%;border:none;background:transparent}
+  iframe{flex:1;width:100%;border:none;background:transparent;transition:opacity .28s ease}
   #overlay{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
     gap:14px;background:rgba(244,247,255,.86);backdrop-filter:blur(8px);z-index:9;color:var(--soft);text-align:center;padding:24px}
   #overlay.on{display:flex}
@@ -60,12 +60,14 @@
   function setActive(n){ active=n; subpill.className='sub'+(n==='dream'?' dream':''); subpill.innerHTML=`<span class="dot"></span>substrate: ${label(n)}`; }
   function showOv(m){ ovmsg.innerHTML=m; overlay.classList.add('on'); }
   function hideOv(){ overlay.classList.remove('on'); }
+  function setStage(src){ if(stage.getAttribute('src')===src){ stage.style.opacity='1'; return; }   // fade between views
+    stage.style.opacity='0'; stage.onload=()=>{ stage.style.opacity='1'; }; setStage(src); }
 
   function selectTab(t){
     tabs.forEach(x=>x.classList.toggle('on', x===t));
     const need=t.dataset.sub, src=t.dataset.src;
-    if(!SERVED){ stage.src=src; return; }                    // static: just show the window (live bits degrade gracefully)
-    if(need==='any' || need===active){ stage.src=src; return; }   // 'any' = the engine, a separate process; no switch
+    if(!SERVED){ setStage(src); return; }                    // static: just show the window (live bits degrade gracefully)
+    if(need==='any' || need===active){ setStage(src); return; }   // 'any' = the engine, a separate process; no switch
     if(!confirm(`“${t.textContent.split('concepts')[0].trim()||src}” runs on the ${need} substrate. Switch now?\nThis unloads the ${active} model and loads ${need} (~40s) — only one fits the GPU.`)) return;
     switchTo(need, src);
   }
@@ -74,7 +76,7 @@
     try{ await fetch('/substrate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); }catch(e){}
     (function poll(){
       fetch('/substrate').then(r=>r.json()).then(s=>{
-        if(s.active===name){ setActive(name); hideOv(); stage.src=src; }
+        if(s.active===name){ setActive(name); hideOv(); setStage(src); }
         else setTimeout(poll, 1500);
       }).catch(()=> setTimeout(poll, 1500));   // server is briefly down during the re-exec
     })();

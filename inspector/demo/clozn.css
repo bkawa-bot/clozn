@@ -50,8 +50,10 @@ h1{font-size:24px;font-weight:680;letter-spacing:.2px;margin:0 0 3px}
 
 /* buttons */
 button{font:inherit;font-size:13.5px;border:1px solid var(--line);background:rgba(255,255,255,.8);
-  color:var(--ink);border-radius:22px;padding:9px 15px;cursor:pointer;transition:background .2s}
-button:hover{background:#fff}
+  color:var(--ink);border-radius:22px;padding:9px 15px;cursor:pointer;
+  transition:background .2s,transform .15s,box-shadow .2s}
+button:hover:not(:disabled){background:#fff;transform:translateY(-1px);box-shadow:0 5px 16px rgba(120,150,210,.18)}
+button:active:not(:disabled){transform:translateY(0)}
 button:disabled{opacity:.5;cursor:default}
 button.go{background:linear-gradient(180deg,#cfe0ff,#bcd4ff);border-color:#a9c6ff;font-weight:620}
 button.sleep{background:linear-gradient(90deg,rgba(122,167,255,.2),rgba(231,168,196,.2));font-weight:620}
@@ -59,7 +61,8 @@ button.sleep{background:linear-gradient(90deg,rgba(122,167,255,.2),rgba(231,168,
 /* a text/prompt composer (input + button) */
 .composer{display:flex;gap:8px;padding:10px 14px 14px}
 .composer input{flex:1;font:inherit;border:1px solid var(--line);border-radius:22px;padding:9px 14px;
-  background:rgba(255,255,255,.8);outline:none;color:var(--ink)}
+  background:rgba(255,255,255,.8);outline:none;color:var(--ink);transition:border-color .2s,box-shadow .2s}
+.composer input:focus{border-color:var(--halo);box-shadow:0 0 0 3px rgba(122,167,255,.14)}
 
 /* chat bubbles */
 .turn{margin:11px 0;display:flex}
