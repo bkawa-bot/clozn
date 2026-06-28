@@ -160,9 +160,11 @@ class DreamSubstrate:
             prompt = str(body.get("prompt", ""))[:300]
             self.steer.engage()                            # active dials steer every denoising pass
             try:
-                if self.dmem.prefix is not None:           # memory present -> prefix-aware denoise (+ steering)
-                    return self.dmem.denoise(prompt, trace=True)
-                return self._trace(self.adapter, prompt)   # no memory -> the cloze_lab scheduler (+ steering)
+                ad = self.adapter
+                if self.dmem.prefix is not None:           # memory present -> inject the prefix into the REAL scheduler
+                    from dream_memory import PrefixAdapter
+                    ad = PrefixAdapter(self.adapter, self.dmem.prefix.detach())
+                return self._trace(ad, prompt)             # the cloze_lab scheduler (+ the steering hook)
             finally:
                 self.steer.disengage()
         if path == "/memory/cards":

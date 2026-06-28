@@ -21,6 +21,56 @@ PROBES = ["What should I do this weekend?", "Recommend a relaxing hobby.", "I ha
           "Suggest something fun to try.", "How should I unwind tonight?", "Give me an idea for today."]
 
 
+class PrefixAdapter:
+    """Wraps a Dream ModelAdapter so its forward prepends a trained soft prefix in embedding space -- the
+    REAL cloze_lab scheduler then drives generation (confidence unmasking, stepping, the event trace),
+    with the memory injected transparently. KV reuse breaks under a prepended prefix, so this is for the
+    cache-off path (the scheduler's default: full recompute every pass)."""
+
+    def __init__(self, base, prefix):
+        import numpy as np
+        from cloze_lab.models.base import ForwardResult
+        self._base = base
+        self._prefix = prefix                          # [m, H] tensor on device
+        self.m = int(prefix.shape[0])
+        self._model = base._model
+        self._emb = self._model.get_input_embeddings()
+        self._dev = base._device
+        self._dt = next(self._emb.parameters()).dtype
+        self._np = np
+        self._FR = ForwardResult
+
+    @property
+    def config(self):
+        return self._base.config
+
+    def encode(self, text, *, chat=False):
+        return self._base.encode(text, chat=chat)
+
+    def decode(self, ids):
+        return self._base.decode(ids)
+
+    def forward(self, board, attn_mask, *, kv=None, recompute_kv=None, logits_for=None):
+        np = self._np
+        board = np.asarray(board)
+        n = int(board.shape[0])
+        want = list(range(n)) if logits_for is None else list(logits_for)
+        ids = torch.tensor([board.tolist()], device=self._dev)
+        e = self._emb(ids).to(self._dt)
+        e = torch.cat([self._prefix.to(self._dt)[None], e], 1)        # [1, m+n, H]
+        m, L = self.m, self.m + n
+        vis = np.ones((L, L), dtype=bool)                            # prefix visible to all; board per attn_mask
+        vis[m:, m:] = np.asarray(attn_mask)
+        mask4d = torch.zeros((1, 1, L, L), dtype=self._dt, device=self._dev)
+        mask4d.masked_fill_(torch.from_numpy(~vis).to(self._dev)[None, None], torch.finfo(self._dt).min)
+        pos = torch.arange(L, device=self._dev).unsqueeze(0)
+        with torch.inference_mode():
+            out = self._model(inputs_embeds=e, attention_mask=mask4d, position_ids=pos)
+        raw = out.logits[0]
+        rows = [max(m + p - 1, 0) for p in want]                     # Dream's shifted head, prefix-offset
+        return self._FR(logits=raw[rows].float().cpu().numpy(), kv=None)
+
+
 class DreamMemory:
     def __init__(self, adapter, m=16, persist_path=None):
         self.ad = adapter
