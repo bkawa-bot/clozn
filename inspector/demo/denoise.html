@@ -204,8 +204,11 @@ async function loadMem(){
 async function addMem(){
   const t=document.getElementById('mtrait').value.trim(); if(!t) return;
   document.getElementById('mtrait').value=''; document.getElementById('madd').disabled=true;
-  document.getElementById('mbusy').textContent=' training the prefix on the denoising loss… (~a few min)';
+  const busy=document.getElementById('mbusy'), t0=Date.now();
+  const stages=['reading example denoises…','training the diffusion prefix…'];
+  const tick=setInterval(()=>{ const s=Math.round((Date.now()-t0)/1000); busy.textContent=` ${s<25?stages[0]:stages[1]} · ${s}s`; }, 1000);
   try{ await fetch(API+'/memory/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})}); }catch(e){}
+  clearInterval(tick); document.getElementById('madd').disabled=false;
   await loadMem();
 }
 loadTrace(window.DENOISE);
