@@ -22,6 +22,14 @@
   .turn.u{align-self:flex-end;background:linear-gradient(180deg,rgba(122,167,255,.22),rgba(122,167,255,.13));border:1px solid rgba(122,167,255,.25)}
   .turn.a{align-self:flex-start;background:rgba(255,255,255,.72);border:1px solid var(--line);box-shadow:0 2px 12px rgba(120,150,210,.07)}
   .turn.sys{align-self:center;color:var(--faint);font-size:12.5px;background:none;border:none;font-style:italic}
+  .interior{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line);font-size:11px;
+    display:flex;flex-wrap:wrap;gap:5px;align-items:center;animation:fadein .5s ease}
+  @keyframes fadein{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+  .interior .il{color:var(--faint);font-style:italic}
+  .interior .ic{background:rgba(122,167,255,.13);border:1px solid rgba(122,167,255,.28);border-radius:9px;
+    padding:1px 8px;color:var(--soft)}
+  .interior .is{background:rgba(231,168,196,.15);border:1px solid rgba(231,168,196,.34);border-radius:9px;
+    padding:1px 8px;color:var(--soft)}
   .composer{display:flex;gap:9px;padding:14px 22px;border-top:1px solid var(--line);background:rgba(255,255,255,.5)}
   .composer input{flex:1;border:1px solid var(--line);border-radius:24px;padding:11px 17px;font:inherit;background:#fff;outline:none}
   .composer input:focus{border-color:var(--halo);box-shadow:0 0 0 3px rgba(122,167,255,.13)}
@@ -59,7 +67,7 @@
   </div>
   <div class="main">
     <div class="chat">
-      <div id="log"><div class="turn sys">a local model, served like any other — but its memory and its tone are yours to edit, on the right.</div></div>
+      <div id="log"><div class="turn sys">a local model you can see and shape. add a trait on the right (try “into baking”), or drag a tone dial — then chat, and watch the <b>inside</b> line appear under each reply.</div></div>
       <div class="composer"><input id="msg" placeholder="say something…" autocomplete="off"><button class="go" id="send">send</button></div>
     </div>
     <div class="side">
@@ -116,8 +124,25 @@ async function send(){
     }
     if(!reply) ph.textContent='(no response)';
     history.push({role:'assistant',content:reply});
+    if(reply) showInterior(ph, t);                 // annotate the reply with what fired inside
   }catch(e){ ph.textContent='[the studio server is not connected — boot research/clozn_server.py]'; }
   $('send').disabled=false; $('msg').focus();
+}
+// the "see inside" strip: which concepts the prompt engaged + which dials/memory shaped the answer
+async function showInterior(bubble, userText){
+  try{
+    const d=await post('/concepts',{text:userText});
+    const concepts=(d.concepts||[]).slice(0,5);
+    const dials=[...document.querySelectorAll('#sliders input')].filter(s=>parseFloat(s.value)).map(s=>s.dataset.name);
+    let hasMem=false; try{ hasMem=(((await post('/memory/cards',{})).cards)||[]).length>0; }catch(e){}
+    if(!concepts.length && !dials.length && !hasMem) return;
+    const shaped=[...dials]; if(hasMem) shaped.push('memory');
+    let html='';
+    if(concepts.length) html+='<span class="il">inside:</span> '+concepts.map(c=>`<span class="ic">${esc(c)}</span>`).join('');
+    if(shaped.length) html+=' <span class="il">· shaped by</span> '+shaped.map(s=>`<span class="is">${esc(s)}</span>`).join('');
+    const strip=document.createElement('div'); strip.className='interior'; strip.innerHTML=html;
+    bubble.appendChild(strip); $('log').scrollTop=$('log').scrollHeight;
+  }catch(e){}
 }
 
 async function loadCards(){
@@ -131,9 +156,13 @@ async function loadCards(){
 async function addTrait(){
   const t=$('trait').value.trim(); if(!t) return;
   $('trait').value=''; $('add').disabled=true; $('mbusy').classList.add('on');
+  const span=$('mbusy').querySelector('span'), t0=Date.now();          // staged progress (it's real training)
+  const stages=['reading example responses…','training the memory prefix…'];
+  const tick=setInterval(()=>{ const s=Math.round((Date.now()-t0)/1000);
+    if(span) span.textContent=`${s<18?stages[0]:stages[1]} · ${s}s`; }, 1000);
   try{ await post('/memory/add',{text:t}); await loadCards(); add('sys',`learned a new trait: “${t}”`); }
-  catch(e){}
-  $('add').disabled=false; $('mbusy').classList.remove('on');
+  catch(e){ add('sys','couldn’t learn that — is the server up?'); }
+  clearInterval(tick); $('add').disabled=false; $('mbusy').classList.remove('on');
 }
 async function removeCard(i){
   $('mbusy').classList.add('on');

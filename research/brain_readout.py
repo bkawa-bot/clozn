@@ -125,6 +125,20 @@ class BrainReadout:
                 "concepts": [{"name": c["label"]} for c in considered[:6]],
                 "source": "engine", "layer": int(h.layer)}
 
+    @torch.no_grad()
+    def concepts_only(self, text):
+        """Read the concepts a prompt engages -- the same specificity-filtered readout as think(), but with
+        NO generation. Used to annotate a chat reply with what actually fired inside, cheaply."""
+        pieces, feats = feats7b(text, self.tok, self.model, self.sae)
+        f = feats.cpu().numpy()
+        f[(f > 0).sum(1) > ARTIFACT_NNZ] = 0
+        keep = np.array([content_word(p) for p in pieces])
+        fmax = f[keep].max(0) if keep.any() else f.max(0)
+        considered = self.dynamic_considered(fmax, k=8, rel_min=0.26)   # stricter -> fewer, cleaner concepts
+        common = {"like", "work", "works", "copy", "thing", "things", "way", "ways", "make", "get", "good"}
+        considered = [c for c in considered if c["label"].strip().lower() not in common][:6]
+        return {"considered": considered, "concepts": [c["label"] for c in considered]}
+
     def reset(self, sid):
         with self.lock:
             self.sessions[sid] = []

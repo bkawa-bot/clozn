@@ -114,6 +114,8 @@ class QwenSubstrate(Substrate):
     def handle(self, path, body):
         if path == "/think":
             return self.brain.think(str(body.get("text", ""))[:500], str(body.get("sid", "default")))
+        if path == "/concepts":                 # read what fired inside (no generation) -> annotate a reply
+            return self.brain.concepts_only(str(body.get("text", ""))[:500])
         if path == "/say":
             return {"reply": self.memory.say(body["message"], body.get("max_new", 200))}
         if path == "/consolidate":
