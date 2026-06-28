@@ -47,6 +47,17 @@
   .dials .dlab{color:var(--faint);font-size:12px;align-self:center}
   .dials .dial{display:flex;flex-direction:column;font-size:11px;color:var(--soft);gap:1px;align-items:center}
   .dials .dial input{width:72px;accent-color:var(--halo)}
+  .dmem{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:3px 0 2px;max-width:790px;font-size:12.5px}
+  .dmem .dlab{color:var(--faint)}
+  .dmem .mcard{background:linear-gradient(180deg,rgba(231,168,196,.16),rgba(231,168,196,.08));
+    border:1px solid rgba(231,168,196,.32);border-radius:11px;padding:3px 9px;color:var(--ink)}
+  .dmem .mnone{color:var(--faint);font-style:italic}
+  .dmem input{border:1px solid var(--line);border-radius:18px;padding:5px 11px;font:inherit;font-size:12.5px;
+    outline:none;background:rgba(255,255,255,.8);min-width:210px}
+  .dmem button{border:1px solid #a9c6ff;background:linear-gradient(180deg,#cfe0ff,#bcd4ff);border-radius:18px;
+    padding:5px 12px;font:inherit;font-size:12.5px;cursor:pointer}
+  .dmem button:disabled{opacity:.5}
+  .dmem .mbusy{color:var(--soft);font-style:italic}
   footer{margin-top:26px;color:var(--faint);font-size:12.5px;line-height:1.6} footer b{color:var(--soft)}
 </style>
 </head>
@@ -63,6 +74,7 @@
 
   <div class="composer"><input id="dprompt" placeholder="ask it anything — watch Dream denoise your prompt live…" autocomplete="off"><button id="dgo">denoise</button></div>
   <div id="dials" class="dials"></div>
+  <div id="dmem" class="dmem"></div>
   <div class="qa"><span class="q" id="q">…</span></div>
   <div class="board" id="board"></div>
 
@@ -171,8 +183,29 @@ async function loadDials(){
       s._t=setTimeout(()=>fetch(API+'/steer/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:s.dataset.name,value:parseFloat(s.value)})}),150); });
   }catch(e){}
 }
+// diffusion-native memory -- editable trait cards trained into a soft prefix (dream substrate)
+async function loadMem(){
+  try{
+    const d=await fetch(API+'/memory/cards',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json());
+    if(d.cards===undefined) return;
+    const cards=d.cards||[];
+    document.getElementById('dmem').innerHTML='<span class="dlab">memory:</span>'+
+      (cards.length? cards.map(c=>`<span class="mcard">${escapeHtml(c).slice(0,42)}</span>`).join('') : '<span class="mnone">none yet</span>')+
+      `<input id="mtrait" placeholder="teach it a trait — 'into baking'… (trains ~a few min)" autocomplete="off"><button id="madd">add</button><span id="mbusy" class="mbusy"></span>`;
+    document.getElementById('madd').onclick=addMem;
+    document.getElementById('mtrait').addEventListener('keydown',e=>{if(e.key==='Enter')addMem();});
+  }catch(e){}
+}
+async function addMem(){
+  const t=document.getElementById('mtrait').value.trim(); if(!t) return;
+  document.getElementById('mtrait').value=''; document.getElementById('madd').disabled=true;
+  document.getElementById('mbusy').textContent=' training the prefix on the denoising loss… (~a few min)';
+  try{ await fetch(API+'/memory/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})}); }catch(e){}
+  await loadMem();
+}
 loadTrace(window.DENOISE);
 loadDials();
+loadMem();
 </script>
 </body>
 </html>

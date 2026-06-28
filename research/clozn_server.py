@@ -145,20 +145,37 @@ class DreamSubstrate:
         from cloze_lab.cli import build_adapter
         from denoise_server import trace_for
         from steering import DreamSteering
+        from dream_memory import DreamMemory
         self.adapter = build_adapter("dream", device="cuda", quant="nf4")
         self._trace = trace_for
         self.steer = DreamSteering(self.adapter)            # tone dials on the diffusion model
         self._steer_ready = False
         self._pers_steer = os.path.join(os.path.expanduser("~"), ".clozn", "studio_dream_personality.json")
         self.steer.load_state(self._pers_steer)
+        self.dmem = DreamMemory(self.adapter,               # diffusion-native memory (trained soft prefix)
+                                persist_path=os.path.join(os.path.expanduser("~"), ".clozn", "studio_dream_memory.pt"))
 
     def handle(self, path, body):
         if path == "/denoise":
+            prompt = str(body.get("prompt", ""))[:300]
             self.steer.engage()                            # active dials steer every denoising pass
             try:
-                return self._trace(self.adapter, str(body.get("prompt", ""))[:300])
+                if self.dmem.prefix is not None:           # memory present -> prefix-aware denoise (+ steering)
+                    return self.dmem.denoise(prompt, trace=True)
+                return self._trace(self.adapter, prompt)   # no memory -> the cloze_lab scheduler (+ steering)
             finally:
                 self.steer.disengage()
+        if path == "/memory/cards":
+            return {"cards": self.dmem.rules, "has_prefix": self.dmem.prefix is not None}
+        if path == "/memory/add":                          # add a trait card -> train the diffusion prefix
+            text = str(body.get("text", "")).strip()
+            if not text:
+                return {"ok": False, "reason": "empty trait"}
+            return self.dmem.consolidate(list(self.dmem.rules) + [text])
+        if path == "/memory/remove":
+            remaining = [r for i, r in enumerate(self.dmem.rules) if i != int(body.get("index", -1))]
+            self.dmem.reset()
+            return self.dmem.consolidate(remaining) if remaining else {"ok": True, "cards": []}
         if path.startswith("/steer/"):
             return self._steer(path, body)
         return None
@@ -193,7 +210,7 @@ class DreamSubstrate:
         return None
 
     def state(self):
-        return {"dials": self.steer.active()}
+        return {"dials": self.steer.active(), "cards": self.dmem.rules}
 
 
 def load_substrate(name):
