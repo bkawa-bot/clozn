@@ -26,6 +26,8 @@
   .tok.mask{color:var(--mask);opacity:.6}
   .tok.set{color:var(--ink)}
   .tok.flash{background:rgba(122,167,255,.18);text-shadow:0 0 14px rgba(122,167,255,.6)}
+  .tok.revflash{background:rgba(231,120,150,.30);text-shadow:0 0 15px rgba(231,120,150,.8);
+    color:var(--warm,#e7a8c4);border-radius:5px}
   .nav{margin-top:20px;display:flex;flex-wrap:wrap;gap:9px;align-items:center}
   .nav button{font:inherit;font-size:13px;border:1px solid var(--line);background:rgba(255,255,255,.72);
     color:var(--ink);border-radius:20px;padding:8px 16px;cursor:pointer}
@@ -80,7 +82,8 @@
 
   <div class="nav" id="nav"></div>
   <div class="legend">brightness when a token lands = the model's <b>confidence</b> in it ·
-    <span class="sw" style="background:linear-gradient(90deg,#c3cde0,#7aa7ff)"></span> low → high</div>
+    <span class="sw" style="background:linear-gradient(90deg,#c3cde0,#7aa7ff)"></span> low → high ·
+    a <b style="color:#e07a96">red flash</b> = the model <b>changed its mind</b> (re-masked a low-confidence token to redo it)</div>
 
   <footer id="foot"></footer>
 </div>
@@ -110,11 +113,11 @@ function setFoot(){
 }
 
 const isEnd = p => !p || /<\|[^|]*\|>/.test(p) || p.replace(/\s/g,'')==='';   // eos/pad/special -> the answer ends
-function render(flashSet){
+function render(flashSet, revSet){
   let html='';
   for(let i=0;i<N;i++){
     const s=slot[i];
-    if(s===null){ html += `<span class="tok mask">▦</span>`; }
+    if(s===null){ const rf=(revSet && revSet.has(i)) ? ' revflash':''; html += `<span class="tok mask${rf}">▦</span>`; }
     else if(isEnd(s.piece)){ /* end/pad slot: render nothing, the answer simply stops here */ }
     else {
       const lit = Math.min(1, 0.35 + s.conf*0.65);
@@ -129,12 +132,14 @@ function escapeHtml(s){return (s||'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt
 let cur=0;   // next pass to apply
 function applyPass(k){
   const p=passes[k]; if(!p) return false;
-  const flash=new Set(); let content=false;
+  const flash=new Set(), rev=new Set(); let content=false;
+  for(const it of (p.revised||[])){ const i=it.pos-(D.n_prompt||0);     // the model changes its mind: un-commit
+    if(i>=0&&i<N){ slot[i]=null; rev.add(i); } }
   for(const it of p.items){ const i=it.pos-(D.n_prompt||0);
     if(i>=0&&i<N){ slot[i]={piece:it.piece,conf:it.conf}; flash.add(i); if(!isEnd(it.piece)) content=true; } }
-  render(flash);
-  setTimeout(()=>render(null), 650);
-  return content;
+  render(flash, rev);
+  setTimeout(()=>render(null, null), 650);
+  return content || rev.size>0;
 }
 function reset(){ for(let i=0;i<N;i++) slot[i]=null; cur=0; render(null); track(); }
 
