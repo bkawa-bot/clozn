@@ -142,11 +142,11 @@ async function showInterior(bubble, userText){
     if(!items.length && !dials.length && !hasMem) return;
     const shaped=[...dials]; if(hasMem) shaped.push('memory');
     let html='';
-    if(items.length) html+='<span class="il">inside:</span> '+items.map(c=>{
+    if(shaped.length) html+='<span class="il">shaped by</span> '+shaped.map(s=>`<span class="is">${esc(s)}</span>`).join('');
+    if(items.length) html+=(shaped.length?' <span class="il">·</span> ':'')+'<span class="il">engaged</span> '+items.slice(0,3).map(c=>{
       const lit=Math.min(1,0.45+(c.rel||0.3)*0.55);                    // brighter chip = stronger firing
       return `<span class="ic" style="opacity:${lit.toFixed(2)}" title="firing ${(c.rel||0).toFixed(2)}">${esc(c.label||c)}</span>`;
     }).join('');
-    if(shaped.length) html+=' <span class="il">· shaped by</span> '+shaped.map(s=>`<span class="is">${esc(s)}</span>`).join('');
     const strip=document.createElement('div'); strip.className='interior'; strip.innerHTML=html;
     bubble.appendChild(strip); $('log').scrollTop=$('log').scrollHeight;
   }catch(e){}
