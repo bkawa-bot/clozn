@@ -41,8 +41,58 @@ SUB = None         # the active substrate object
 SUBNAME = "qwen"
 
 
-class QwenSubstrate:
-    """One Qwen-7B + SAE behind both the concept readout and the memory."""
+class Substrate:
+    """Shared studio surface for any substrate: the /memory/* trait cards and the /steer/* tone dials, on
+    whatever model the subclass loads. A subclass sets self.steer, self._mem (a memory object exposing
+    .rules / .prefix / .consolidate(rules) / .reset()), self._pers_steer, self._steer_ready/_steer_info,
+    and defines _gen(prompt) -- a one-shot generate used by the /steer/check A/B (AR generate vs denoise).
+    So memory + dials are written ONCE and work identically on Qwen and Dream."""
+
+    def _memory(self, path, body):
+        m = self._mem
+        if path == "/memory/cards":
+            return {"cards": m.rules, "has_prefix": m.prefix is not None}
+        if path == "/memory/add":               # add a trait card -> re-consolidate the cumulative set
+            text = str(body.get("text", "")).strip()
+            return m.consolidate(list(m.rules) + [text]) if text else {"ok": False, "reason": "empty trait"}
+        if path == "/memory/remove":            # drop a card -> rebuild the prefix from the rest
+            remaining = [r for i, r in enumerate(m.rules) if i != int(body.get("index", -1))]
+            m.reset()
+            return m.consolidate(remaining) if remaining else {"ok": True, "cards": []}
+        return None
+
+    def _steer(self, path, body):
+        from steering import AXES
+        if path == "/steer/axes":
+            return {"axes": [{"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0)}
+                             for k in AXES], "ready": self._steer_ready, "substrate": self.name}
+        if not self._steer_ready:               # compute the axis vectors on first real use
+            self._steer_info = self.steer.compute()
+            self._steer_ready = True
+        if path == "/steer/compute":
+            return {"ready": True, **self._steer_info}
+        if path == "/steer/set":
+            self.steer.set(str(body["name"]), float(body.get("value", 0.0)))
+            self.steer.save_state(self._pers_steer)
+            return {"active": self.steer.active()}
+        if path == "/steer/check":              # A/B one dial: baseline vs steered (subclass _gen)
+            prompt = str(body.get("prompt", ""))[:300]
+            base = self._gen(prompt)
+            self.steer.clear()
+            self.steer.set(str(body["name"]), float(body.get("value", 1.0)))
+            self.steer.engage()
+            try:
+                steered = self._gen(prompt)
+            finally:
+                self.steer.disengage()
+                self.steer.clear()
+            return {"prompt": prompt, "axis": body.get("name"), "value": body.get("value", 1.0),
+                    "baseline": base, "steered": steered}
+        return None
+
+
+class QwenSubstrate(Substrate):
+    """One Qwen-7B + SAE behind the concept readout AND the memory + tone dials."""
     name = "qwen"
 
     def __init__(self):
@@ -56,7 +106,8 @@ class QwenSubstrate:
         self.memory = SelfTeach("Qwen/Qwen2.5-7B-Instruct", model=model, tok=tok,   # shares the model
                                 persist_path=os.path.join(os.path.expanduser("~"), ".clozn", "studio_memory.pt"))
         self.steer = SteeringControl(model, tok)            # tone dials on the same model
-        self._steer_ready = False
+        self._mem = self.memory
+        self._steer_ready, self._steer_info = False, {}
         self._pers_steer = os.path.join(os.path.expanduser("~"), ".clozn", "studio_personality.json")
         self.steer.load_state(self._pers_steer)             # restore the personality dials across restarts
 
@@ -75,48 +126,14 @@ class QwenSubstrate:
         if path == "/reset":
             self.brain.reset(str(body.get("sid", "default")))
             return self.memory.reset(body.get("keep_prefix", False))
-        if path == "/memory/cards":
-            return {"cards": self.memory.rules, "has_prefix": self.memory.prefix is not None}
-        if path == "/memory/add":               # add a trait card -> re-consolidate the cumulative set
-            text = str(body.get("text", "")).strip()
-            if not text:
-                return {"ok": False, "reason": "empty trait"}
-            return self.memory.consolidate(list(self.memory.rules) + [text])
-        if path == "/memory/remove":            # drop a card -> rebuild the prefix from the rest
-            remaining = [r for i, r in enumerate(self.memory.rules) if i != int(body.get("index", -1))]
-            self.memory.reset(keep_prefix=False)
-            return self.memory.consolidate(remaining) if remaining else {"ok": True, "cards": []}
+        if path.startswith("/memory/"):
+            return self._memory(path, body)
         if path.startswith("/steer/"):
             return self._steer(path, body)
         return None
 
-    def _steer(self, path, body):
-        from steering import AXES
-        if path == "/steer/axes":
-            return {"axes": [{"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0)}
-                             for k in AXES], "ready": self._steer_ready}
-        if not self._steer_ready:                 # compute the axis vectors on first real use (~10s)
-            self._steer_info = self.steer.compute()
-            self._steer_ready = True
-        if path == "/steer/compute":
-            return {"ready": True, **self._steer_info}
-        if path == "/steer/set":
-            self.steer.set(str(body["name"]), float(body.get("value", 0.0)))
-            self.steer.save_state(self._pers_steer)         # persist the dials across restarts
-            return {"active": self.steer.active()}
-        if path == "/steer/check":                # A/B one dial: baseline vs steered on a prompt
-            prompt = str(body.get("prompt", ""))[:300]
-            mx = int(body.get("max_new", 90))
-            base = self.steer.generate(prompt, mx)
-            self.steer.clear()
-            self.steer.set(str(body["name"]), float(body.get("value", 1.0)))
-            self.steer.engage()
-            steered = self.steer.generate(prompt, mx)
-            self.steer.disengage()
-            self.steer.clear()
-            return {"prompt": prompt, "axis": body.get("name"), "value": body.get("value", 1.0),
-                    "baseline": base, "steered": steered}
-        return None
+    def _gen(self, prompt):                     # AR generate for the /steer/check A/B
+        return self.steer.generate(prompt, 90)
 
     def chat(self, messages, max_new=256, sample=True):
         """One stateless chat completion with the WHOLE tunable self applied: the consolidated memory
@@ -170,9 +187,8 @@ class QwenSubstrate:
         return self.memory.state()
 
 
-class DreamSubstrate:
-    """Dream-7B for the diffusion window -- now with tone dials (the same contrastive steering as qwen,
-    applied during the denoising loop)."""
+class DreamSubstrate(Substrate):
+    """Dream-7B diffusion: the denoise window, plus the SAME trait-card memory and tone dials as Qwen."""
     name = "dream"
 
     def __init__(self):
@@ -183,11 +199,12 @@ class DreamSubstrate:
         self.adapter = build_adapter("dream", device="cuda", quant="nf4")
         self._trace = trace_for
         self.steer = DreamSteering(self.adapter)            # tone dials on the diffusion model
-        self._steer_ready = False
+        self._steer_ready, self._steer_info = False, {}
         self._pers_steer = os.path.join(os.path.expanduser("~"), ".clozn", "studio_dream_personality.json")
         self.steer.load_state(self._pers_steer)
         self.dmem = DreamMemory(self.adapter,               # diffusion-native memory (trained soft prefix)
                                 persist_path=os.path.join(os.path.expanduser("~"), ".clozn", "studio_dream_memory.pt"))
+        self._mem = self.dmem
 
     def handle(self, path, body):
         if path == "/denoise":
@@ -201,49 +218,14 @@ class DreamSubstrate:
                 return self._trace(ad, prompt)             # the cloze_lab scheduler (+ the steering hook)
             finally:
                 self.steer.disengage()
-        if path == "/memory/cards":
-            return {"cards": self.dmem.rules, "has_prefix": self.dmem.prefix is not None}
-        if path == "/memory/add":                          # add a trait card -> train the diffusion prefix
-            text = str(body.get("text", "")).strip()
-            if not text:
-                return {"ok": False, "reason": "empty trait"}
-            return self.dmem.consolidate(list(self.dmem.rules) + [text])
-        if path == "/memory/remove":
-            remaining = [r for i, r in enumerate(self.dmem.rules) if i != int(body.get("index", -1))]
-            self.dmem.reset()
-            return self.dmem.consolidate(remaining) if remaining else {"ok": True, "cards": []}
+        if path.startswith("/memory/"):
+            return self._memory(path, body)
         if path.startswith("/steer/"):
             return self._steer(path, body)
         return None
 
-    def _steer(self, path, body):
-        from steering import AXES
-        if path == "/steer/axes":
-            return {"axes": [{"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0)}
-                             for k in AXES], "ready": self._steer_ready, "substrate": "dream"}
-        if not self._steer_ready:                          # compute axis vectors on Dream's activations (~once)
-            self._steer_info = self.steer.compute()
-            self._steer_ready = True
-        if path == "/steer/compute":
-            return {"ready": True, **self._steer_info}
-        if path == "/steer/set":
-            self.steer.set(str(body["name"]), float(body.get("value", 0.0)))
-            self.steer.save_state(self._pers_steer)
-            return {"active": self.steer.active()}
-        if path == "/steer/check":                         # A/B a dial: baseline vs steered denoise (final text)
-            prompt = str(body.get("prompt", ""))[:200]
-            base = self._trace(self.adapter, prompt)["final_text"]
-            self.steer.clear()
-            self.steer.set(str(body["name"]), float(body.get("value", 1.0)))
-            self.steer.engage()
-            try:
-                steered = self._trace(self.adapter, prompt)["final_text"]
-            finally:
-                self.steer.disengage()
-                self.steer.clear()
-            return {"prompt": prompt, "axis": body.get("name"), "value": body.get("value", 1.0),
-                    "baseline": base, "steered": steered}
-        return None
+    def _gen(self, prompt):                                # base denoise final text for the /steer/check A/B
+        return self._trace(self.adapter, str(prompt)[:200])["final_text"]
 
     def state(self):
         return {"dials": self.steer.active(), "cards": self.dmem.rules}
