@@ -132,6 +132,40 @@ class QwenSubstrate:
         finally:
             self.steer.disengage()
 
+    def chat_stream(self, messages, max_new=256):
+        """Streaming chat: yields text chunks as the AR model generates -- memory prefix + tone steering
+        applied -- via a TextIteratorStreamer with generate() in a thread. Local AR is slow, so this is
+        the big UX win the diffusion side doesn't need (diffusion is trace-based, not left-to-right)."""
+        import threading
+        import torch
+        from transformers import TextIteratorStreamer
+        if self.steer.strength and not self._steer_ready:
+            self.steer.compute()
+            self._steer_ready = True
+        m = self.memory
+        e = m._embed(m._chat_ids(messages))
+        if m.prefix is not None:                            # prepend the consolidated memory prefix
+            e = torch.cat([m.prefix.detach().to(e.dtype)[None], e], 1)
+        att = torch.ones(e.shape[:2], device=e.device, dtype=torch.long)
+        streamer = TextIteratorStreamer(m.tok, skip_prompt=False, skip_special_tokens=True)
+        kw = dict(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new, do_sample=True,
+                  temperature=0.7, top_p=0.9, pad_token_id=m.eos or 0, streamer=streamer)
+
+        def _gen():
+            with torch.no_grad():
+                m.model.generate(**kw)
+
+        self.steer.engage()                                 # tone dials apply during the streamed generation
+        th = threading.Thread(target=_gen, daemon=True)
+        th.start()
+        try:
+            for chunk in streamer:
+                if chunk:
+                    yield chunk
+        finally:
+            th.join()
+            self.steer.disengage()
+
     def state(self):
         return self.memory.state()
 
@@ -246,6 +280,33 @@ def make_handler():
         def _html(self, name):
             self._send(200, open(os.path.join(DEMO, name), encoding="utf-8").read(), "text/html; charset=utf-8")
 
+        def _sse_chat(self, messages, max_new, model):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            def chunk(delta, finish=None):
+                o = {"id": "chatcmpl-clozn", "object": "chat.completion.chunk", "model": model,
+                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+                self.wfile.write(("data: " + json.dumps(o) + "\n\n").encode("utf-8"))
+                self.wfile.flush()
+
+            try:
+                chunk({"role": "assistant"})
+                for piece in SUB.chat_stream(messages, max_new):
+                    chunk({"content": piece})
+                chunk({}, finish="stop")
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except Exception as e:
+                try:
+                    self.wfile.write(("data: " + json.dumps({"error": str(e)}) + "\n\n").encode("utf-8"))
+                    self.wfile.flush()
+                except Exception:
+                    pass
+
         def do_GET(self):
             p = self.path.split("?")[0]
             if p in ("/", "/index.html", "/instrument.html"):
@@ -320,8 +381,10 @@ def make_handler():
             if p == "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied
                 if not (SUB and getattr(SUB, "chat", None)):
                     return self._json(503, {"error": "chat needs the qwen substrate"})
-                reply = SUB.chat(body.get("messages", []), int(body.get("max_tokens", 256)),
-                                 float(body.get("temperature", 0.7)) > 0)
+                msgs, mx = body.get("messages", []), int(body.get("max_tokens", 256))
+                if body.get("stream") and getattr(SUB, "chat_stream", None):
+                    return self._sse_chat(msgs, mx, str(body.get("model", "clozn-qwen")))
+                reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0)
                 return self._json(200, {"id": "chatcmpl-clozn", "object": "chat.completion",
                                         "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
                                         "choices": [{"index": 0, "finish_reason": "stop",

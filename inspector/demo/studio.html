@@ -94,11 +94,28 @@ async function send(){
   const t=$('msg').value.trim(); if(!t) return;
   $('msg').value=''; $('send').disabled=true;
   add('user',t); history.push({role:'user',content:t});
-  const ph=add('assistant','…');
+  const ph=add('assistant','…'); let reply='';
   try{
-    const d=await post('/v1/chat/completions',{messages:history,max_tokens:256});
-    const reply=d.choices? d.choices[0].message.content : ('['+(d.error||'error')+']');
-    ph.textContent=reply; history.push({role:'assistant',content:reply});
+    const r=await fetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:history,max_tokens:256,stream:true})});
+    const reader=r.body.getReader(), dec=new TextDecoder(); let buf='';
+    while(true){
+      const {done,value}=await reader.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true});
+      let i; while((i=buf.indexOf('\n\n'))>=0){
+        const line=buf.slice(0,i).trim(); buf=buf.slice(i+2);
+        if(!line.startsWith('data:')) continue;
+        const payload=line.slice(5).trim();
+        if(payload==='[DONE]') continue;
+        try{ const j=JSON.parse(payload);
+          const c=j.choices&&j.choices[0].delta&&j.choices[0].delta.content;
+          if(c){ reply+=c; ph.textContent=reply; $('log').scrollTop=$('log').scrollHeight; }
+          if(j.error) ph.textContent='['+j.error+']';
+        }catch(e){}
+      }
+    }
+    if(!reply) ph.textContent='(no response)';
+    history.push({role:'assistant',content:reply});
   }catch(e){ ph.textContent='[the studio server is not connected — boot research/clozn_server.py]'; }
   $('send').disabled=false; $('msg').focus();
 }
