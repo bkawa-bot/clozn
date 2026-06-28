@@ -42,6 +42,8 @@
   .panel .hint{color:var(--faint);font-size:12px;margin-bottom:11px;line-height:1.4}
   .card{display:flex;align-items:flex-start;gap:8px;background:linear-gradient(180deg,rgba(231,168,196,.13),rgba(231,168,196,.07));
     border:1px solid rgba(231,168,196,.3);border-radius:12px;padding:8px 11px;margin-bottom:7px;font-size:13px}
+  .card .bead{width:8px;height:8px;border-radius:50%;margin-top:5px;flex:none;
+    background:radial-gradient(circle at 35% 30%,#fff,var(--warm));box-shadow:0 0 9px var(--warm)}
   .card .x{margin-left:auto;cursor:pointer;color:var(--faint);font-weight:700;flex-shrink:0;border:none;background:none;font-size:14px}
   .card .x:hover{color:var(--warm)}
   .empty{color:var(--faint);font-size:12.5px;font-style:italic;padding:4px 0 9px}
@@ -134,13 +136,16 @@ async function send(){
 async function showInterior(bubble, userText){
   try{
     const d=await post('/concepts',{text:userText});
-    const concepts=(d.concepts||[]).slice(0,5);
+    const items=(d.considered||[]).slice(0,5);                          // each carries its firing strength (rel)
     const dials=[...document.querySelectorAll('#sliders input')].filter(s=>parseFloat(s.value)).map(s=>s.dataset.name);
     let hasMem=false; try{ hasMem=(((await post('/memory/cards',{})).cards)||[]).length>0; }catch(e){}
-    if(!concepts.length && !dials.length && !hasMem) return;
+    if(!items.length && !dials.length && !hasMem) return;
     const shaped=[...dials]; if(hasMem) shaped.push('memory');
     let html='';
-    if(concepts.length) html+='<span class="il">inside:</span> '+concepts.map(c=>`<span class="ic">${esc(c)}</span>`).join('');
+    if(items.length) html+='<span class="il">inside:</span> '+items.map(c=>{
+      const lit=Math.min(1,0.45+(c.rel||0.3)*0.55);                    // brighter chip = stronger firing
+      return `<span class="ic" style="opacity:${lit.toFixed(2)}" title="firing ${(c.rel||0).toFixed(2)}">${esc(c.label||c)}</span>`;
+    }).join('');
     if(shaped.length) html+=' <span class="il">· shaped by</span> '+shaped.map(s=>`<span class="is">${esc(s)}</span>`).join('');
     const strip=document.createElement('div'); strip.className='interior'; strip.innerHTML=html;
     bubble.appendChild(strip); $('log').scrollTop=$('log').scrollHeight;
@@ -151,7 +156,7 @@ async function loadCards(){
   let d; try{ d=await post('/memory/cards',{}); }catch(e){ return; }
   const cards=d.cards||[];
   $('cards').innerHTML = cards.length ? cards.map((c,i)=>
-    `<div class="card"><span>${esc(c)}</span><button class="x" data-i="${i}" title="remove">✕</button></div>`).join('')
+    `<div class="card"><span class="bead"></span><span>${esc(c)}</span><button class="x" data-i="${i}" title="remove">✕</button></div>`).join('')
     : '<div class="empty">nothing yet — chat a while and it will learn, or add a trait below.</div>';
   [...document.querySelectorAll('.card .x')].forEach(b=> b.onclick=()=>removeCard(+b.dataset.i));
 }
