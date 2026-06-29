@@ -862,23 +862,42 @@ int main(int argc, char** argv) {
         if (ar_mode && prefix_rows > 0 && body.contains("prefix_embd") && body["prefix_embd"].is_array()) {
             prefix_embd = body["prefix_embd"].get<std::vector<float>>();
         }
+        // Optional RAW tone direction (the studio's engine tone dials): an n_embd control vector applied
+        // via set_steer during THIS generation -- so memory (prefix) + tone steer ride together. AR-only.
+        std::vector<float> steer_vec;
+        if (ar_mode && body.contains("steer_vec") && body["steer_vec"].is_array()) {
+            steer_vec = body["steer_vec"].get<std::vector<float>>();
+        }
 
         // One call into the runtime on a POOLED context (acquire blocks until one is free, so N
         // workers run N requests concurrently; the Lease releases it on any exit).
-        auto run = [&pool, &concept_probes, &steer_probes, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows](
+        auto run = [&pool, &concept_probes, &steer_probes, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);  // white-box tap on for this request (off by default)
             const ConceptProbes* probes = (features && concept_probes.ready()) ? &concept_probes : nullptr;
             const bool steering = !steer_concept.empty() && steer_coef != 0.0 && steer_probes.ready();
-            if (steering) {
+            const bool raw_steer = !steer_vec.empty();   // a raw tone direction (studio engine dials)
+            if (steering || raw_steer) {
                 const int nl = (*lease).n_layer();
                 int lo, hi;
                 if (steer_layer >= 1) { lo = hi = (steer_layer < nl ? steer_layer : nl - 1); }
                 else { const int tl = nl * 2 / 3;  // steer at mid-depth, where steer_probes is calibrated
                        lo = (tl - 2 > 1 ? tl - 2 : 1); hi = (tl + 2 < nl ? tl + 2 : nl - 1); }
                 if (lo < 1) lo = 1;
-                (*lease).set_steer(build_steer_cvec(steer_probes, steer_concept, steer_coef, lo, hi, nl), lo, hi);
+                if (steering) {
+                    (*lease).set_steer(build_steer_cvec(steer_probes, steer_concept, steer_coef, lo, hi, nl), lo, hi);
+                } else {                          // RAW tone direction: build the same cvec layout straight from it
+                    const int ne = static_cast<int>(steer_vec.size());
+                    std::vector<float> cvec(static_cast<size_t>(ne) * nl, 0.0f);
+                    const double c = steer_coef != 0.0 ? steer_coef : 1.0;
+                    for (int L = lo; L <= hi; ++L) {
+                        if (L < 1 || L >= nl) continue;
+                        float* slice = cvec.data() + static_cast<size_t>(L - 1) * ne;
+                        for (int i = 0; i < ne; ++i) slice[i] = static_cast<float>(c * steer_vec[i]);
+                    }
+                    (*lease).set_steer(cvec, lo, hi);
+                }
             }
             // AR model => the causal left-to-right loop (same white-box reads/steering, no scheduler).
             // Diffusion => the denoiser (whole-sequence generate, or infill between prefix/suffix).
@@ -888,7 +907,7 @@ int main(int argc, char** argv) {
                        : (is_infill
                             ? infill(*lease, prompt_ids, suffix_ids, gap, cfg, nullptr, on_event, revise, sample, probes)
                             : generate(*lease, prompt_ids, cfg, cache, nullptr, on_event, revise, sample, probes));
-            if (steering) (*lease).clear_steer();
+            if (steering || raw_steer) (*lease).clear_steer();
             (*lease).set_emit_activations(false);  // reset before returning the pooled context
             return r;
         };

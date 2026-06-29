@@ -425,10 +425,18 @@ def make_handler():
                     if getattr(mem, "prefix", None) is not None:   # inject the trained soft prefix as raw embeddings
                         kw = {"prefix_embd": mem.prefix.detach().float().cpu().flatten().tolist(),
                               "prefix_rows": int(mem.m)}
+                    st = getattr(getattr(SUB, "steer", None), "strength", None)   # AND the active tone dials
+                    if st and any(st.values()):
+                        es = _engine_steer()
+                        sv = es.steer_vector(st) if es is not None else None
+                        if sv:
+                            kw["steer_vec"] = sv
+                            kw["steer"] = {"coef": 1.0, "layer": es.layer}
                     r = ENGINE_QWEN.complete(prompt, max_tokens=mx, temperature=0.0, **kw)
                     ch = r.get("choices") if isinstance(r, dict) else None
                     reply = (ch[0].get("text", "") if ch else str(r)).strip()
-                    return self._json(200, {"reply": reply, "memory": bool(kw), "via": "engine (GGUF)"})
+                    return self._json(200, {"reply": reply, "memory": bool(kw.get("prefix_embd")),
+                                            "tone": bool(kw.get("steer_vec")), "via": "engine (GGUF)"})
                 except Exception as e:
                     return self._json(502, {"error": f"engine-chat: {e}"})
             if p == "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied

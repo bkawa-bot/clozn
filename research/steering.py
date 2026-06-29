@@ -271,3 +271,20 @@ class EngineSteer:
             vec = vec + self.base * float(v) * self.vecs[k]
         return self._text(self.ec.intervene(prompt, vector=vec.tolist(), coef=1.0,
                                              layer=self.layer, max_tokens=max_new))
+
+    def steer_vector(self, strength):
+        """The summed, pre-scaled tone direction for the active dials (or None) -- so another engine call
+        can apply tone alongside something else (e.g. /v1/completions WITH a memory prefix: tone + memory)."""
+        if not self.ready:
+            self.compute()
+        active = {k: v for k, v in (strength or {}).items() if v and k in self.vecs}
+        if not active:
+            return None
+        vec = np.zeros_like(next(iter(self.vecs.values())))
+        for k, v in active.items():
+            vec = vec + self.base * float(v) * self.vecs[k]
+        n = float(np.linalg.norm(vec))            # cap the blend so several dials at once can't over-crank to garbage
+        cap = self.base * 1.3                      # ~the single-dial coherent ceiling (slider 1.3)
+        if n > cap:
+            vec = vec * (cap / n)
+        return vec.tolist()
