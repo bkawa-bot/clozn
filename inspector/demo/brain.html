@@ -1754,7 +1754,7 @@ elBrain.style.cursor='grab';
     const nlit=spawnGhosts(considered);          // labelled lights bloom near their neighbours
     considered.slice(0,5).forEach((c,i)=> setTimeout(()=>{
       if(c.in_atlas){ FLARES.set(c.id,{t:performance.now(),dur:5200,power:Math.min(1.4,c.rel*1.4)}); ENGAGED.add(c.id); NEAR.delete(c.id);
-        if(ADJ[c.id]) ADJ[c.id].forEach(nb=>{ if(!ENGAGED.has(nb)) NEAR.add(nb); });   // pull in its atlas neighbours -> the brain forms outward
+        if(ADJ[c.id]){ let k=0; for(const nb of ADJ[c.id]){ if(k>=6) break; if(!ENGAGED.has(nb)){ NEAR.add(nb); k++; } } }  // reach out to <=6 neighbours/concept so the web can't flood
       }
       fireFrom(c.near, 1, 0.5);                 // ripple the map where this concept lives
       applyHighlight();                          // re-light the real atlas edges among + reaching from the engaged concepts
