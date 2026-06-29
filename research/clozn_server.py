@@ -91,6 +91,15 @@ class Substrate:
             remaining = [r for i, r in enumerate(m.rules) if i != int(body.get("index", -1))]
             m.reset()
             return m.consolidate(remaining) if remaining else {"ok": True, "cards": []}
+        if path == "/memory/strength":          # the memory dial: how hard the prefix bites (0 = off, >1 = stronger)
+            if "value" in body and hasattr(m, "memory_strength"):
+                m.memory_strength = max(0.0, min(2.0, float(body["value"])))
+                if hasattr(m, "save"):
+                    try:
+                        m.save()
+                    except Exception:
+                        pass
+            return {"strength": float(getattr(m, "memory_strength", 1.0)), "has_prefix": m.prefix is not None}
         return None
 
     def _steer(self, path, body):
@@ -179,7 +188,8 @@ class QwenSubstrate(Substrate):
             self._steer_ready = True
         self.steer.engage()
         try:
-            return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample, gate=1.0)
+            return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample,
+                                         gate=self.memory.memory_strength)
         finally:
             self.steer.disengage()
 
@@ -195,8 +205,8 @@ class QwenSubstrate(Substrate):
             self._steer_ready = True
         m = self.memory
         e = m._embed(m._chat_ids(messages))
-        if m.prefix is not None:                            # prepend the consolidated memory prefix
-            e = torch.cat([m.prefix.detach().to(e.dtype)[None], e], 1)
+        if m.prefix is not None:                            # prepend the consolidated memory prefix (scaled by the dial)
+            e = torch.cat([(m.memory_strength * m.prefix.detach()).to(e.dtype)[None], e], 1)
         att = torch.ones(e.shape[:2], device=e.device, dtype=torch.long)
         streamer = TextIteratorStreamer(m.tok, skip_prompt=False, skip_special_tokens=True)
         kw = dict(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new, do_sample=True,
@@ -422,8 +432,9 @@ def make_handler():
                     prompt = _qwen_tmpl(body.get("messages", []))
                     mx = int(body.get("max_tokens", 220))
                     kw, mem = {}, SUB.memory
-                    if getattr(mem, "prefix", None) is not None:   # inject the trained soft prefix as raw embeddings
-                        kw = {"prefix_embd": mem.prefix.detach().float().cpu().flatten().tolist(),
+                    if getattr(mem, "prefix", None) is not None:   # inject the trained soft prefix (scaled by the memory dial)
+                        ms = float(getattr(mem, "memory_strength", 1.0))
+                        kw = {"prefix_embd": (mem.prefix.detach().float().cpu() * ms).flatten().tolist(),
                               "prefix_rows": int(mem.m)}
                     st = getattr(getattr(SUB, "steer", None), "strength", None)   # AND the active tone dials
                     if st and any(st.values()):

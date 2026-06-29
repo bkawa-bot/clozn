@@ -33,6 +33,9 @@
     padding:1px 8px;color:var(--soft)}
   .engtog{display:flex;align-items:center;gap:4px;font-size:11.5px;color:var(--faint);cursor:pointer;user-select:none;white-space:nowrap}
   .engtog input{accent-color:var(--cyan);cursor:pointer;margin:0}
+  .memstr{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--faint);margin-top:10px}
+  .memstr input{flex:1;accent-color:var(--warm)}
+  .memstr b{color:var(--soft);min-width:24px;text-align:right}
   .composer{display:flex;gap:9px;padding:14px 22px;border-top:1px solid var(--line);background:rgba(255,255,255,.5)}
   .composer input{flex:1;border:1px solid var(--line);border-radius:24px;padding:11px 17px;font:inherit;background:#fff;outline:none}
   .composer input:focus{border-color:var(--halo);box-shadow:0 0 0 3px rgba(122,167,255,.13)}
@@ -84,6 +87,9 @@
         <div class="addrow">
           <input id="trait" placeholder="add a trait — 'into baking', 'loves sci-fi'…" autocomplete="off">
           <button class="go" id="add">add</button>
+        </div>
+        <div class="memstr" title="how hard the learned memory bites — 1.0 = as trained, higher = stronger (can over-bleed)">
+          <span>strength</span><input type="range" id="memstr" min="0" max="1.6" step="0.1" value="1"><b id="msval">1.0</b>
         </div>
         <div class="busy" id="mbusy"><div class="spin"></div><span>baking it into memory… (~a few min)</span></div>
       </div>
@@ -213,6 +219,9 @@ $('send').onclick=send; $('msg').addEventListener('keydown',e=>{if(e.key==='Ente
 $('add').onclick=addTrait; $('trait').addEventListener('keydown',e=>{if(e.key==='Enter')addTrait();});
 $('clearmem').onclick=clearMem;
 loadCards(); loadSliders();
+$('memstr').oninput=()=>$('msval').textContent=(+$('memstr').value).toFixed(1);
+$('memstr').onchange=()=>post('/memory/strength',{value:parseFloat($('memstr').value)});
+post('/memory/strength',{}).then(d=>{ if(d&&d.strength!=null){ $('memstr').value=d.strength; $('msval').textContent=(+d.strength).toFixed(1); } }).catch(()=>{});
 </script>
 </body>
 </html>

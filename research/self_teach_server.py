@@ -84,6 +84,7 @@ class SelfTeach:
                  persist_path: str | None = None):
         self.lock = threading.Lock()
         self.m = m
+        self.memory_strength = 1.0          # user dial: scales the prefix injection (0 = off, >1 = bites harder)
         if model is not None and tok is not None:
             # share an already-loaded backbone (e.g. the unified clozn server's Qwen-7B) -- one model,
             # both the concept readout AND the memory. The model is frozen + quantized either way.
@@ -165,15 +166,15 @@ class SelfTeach:
         return self.tok.decode(out[0], skip_special_tokens=True).strip()
 
     # ---- /say : one conversational turn (current prefix active) --------------------------------
-    def say(self, message: str, max_new=220, strength=1.0) -> str:
+    def say(self, message: str, max_new=220, strength=None) -> str:
         with self.lock:
             self.history.append({"role": "user", "content": message})
-            # Apply the consolidated prefix at full strength by default. The old "auto" cosine gate is
-            # unreliable (mean-pooled hidden states are too anisotropic -- sim_in 0.968 vs sim_neutral 0.956,
-            # so it scored every prompt ~0 and zeroed the trait). The gentle, norm-capped prefix self-gates
-            # well on its own (clean on mortgage/flat-tire/WWI, only soft analogy bleed elsewhere), so we
-            # default to full and expose `strength` as the user knob. (Future: a KL-effect relevance gate.)
-            reply = self._generate(self.history, use_prefix=True, max_new=max_new, sample=True, gate=strength)
+            # Apply the consolidated prefix at self.memory_strength (the user dial; 1.0 = as trained). The old
+            # "auto" cosine gate is unreliable (mean-pooled hidden states are too anisotropic -- sim_in 0.968
+            # vs sim_neutral 0.956, so it scored every prompt ~0 and zeroed the trait). The gentle, norm-capped
+            # prefix self-gates well, so we default to the dial and let the user turn it up/down.
+            g = self.memory_strength if strength is None else float(strength)
+            reply = self._generate(self.history, use_prefix=True, max_new=max_new, sample=True, gate=g)
             self.history.append({"role": "assistant", "content": reply})
             return reply
 
@@ -357,7 +358,7 @@ class SelfTeach:
             return False
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         torch.save({"m": self.m, "prefix": self.prefix.detach().cpu(), "rules": self.rules,
-                    "examples": self.examples,
+                    "examples": self.examples, "memory_strength": self.memory_strength,
                     "anchor": None if self.anchor is None else self.anchor.detach().cpu(),
                     "sim_in": self.sim_in, "sim_neutral": self.sim_neutral}, path)
         return True
@@ -378,6 +379,7 @@ class SelfTeach:
         self.anchor = None if d.get("anchor") is None else d["anchor"].to(DEV)
         self.sim_in = d.get("sim_in", 1.0)
         self.sim_neutral = d.get("sim_neutral", 0.0)
+        self.memory_strength = float(d.get("memory_strength", 1.0))
         return True
 
     def reset(self, keep_prefix=False):
