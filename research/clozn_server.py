@@ -36,6 +36,13 @@ try:
 except Exception:
     ENGINE = ENGINE_QWEN = None
 
+CLOZN_DIR = os.path.join(os.path.expanduser("~"), ".clozn")   # studio memory + personality persist here
+
+
+def _pers(name):
+    return os.path.join(CLOZN_DIR, name)
+
+
 ARGS = None
 SUB = None         # the active substrate object
 SUBNAME = "qwen"
@@ -104,11 +111,11 @@ class QwenSubstrate(Substrate):
         tok, model = load7b()
         self.brain = BrainReadout(model, tok, sae, DEMO, HERE)
         self.memory = SelfTeach("Qwen/Qwen2.5-7B-Instruct", model=model, tok=tok,   # shares the model
-                                persist_path=os.path.join(os.path.expanduser("~"), ".clozn", "studio_memory.pt"))
+                                persist_path=_pers("studio_memory.pt"))
         self.steer = SteeringControl(model, tok)            # tone dials on the same model
         self._mem = self.memory
         self._steer_ready, self._steer_info = False, {}
-        self._pers_steer = os.path.join(os.path.expanduser("~"), ".clozn", "studio_personality.json")
+        self._pers_steer = _pers("studio_personality.json")
         self.steer.load_state(self._pers_steer)             # restore the personality dials across restarts
 
     def handle(self, path, body):
@@ -202,10 +209,10 @@ class DreamSubstrate(Substrate):
         self._trace = trace_for
         self.steer = DreamSteering(self.adapter)            # tone dials on the diffusion model
         self._steer_ready, self._steer_info = False, {}
-        self._pers_steer = os.path.join(os.path.expanduser("~"), ".clozn", "studio_dream_personality.json")
+        self._pers_steer = _pers("studio_dream_personality.json")
         self.steer.load_state(self._pers_steer)
         self.dmem = DreamMemory(self.adapter,               # diffusion-native memory (trained soft prefix)
-                                persist_path=os.path.join(os.path.expanduser("~"), ".clozn", "studio_dream_memory.pt"))
+                                persist_path=_pers("studio_dream_memory.pt"))
         self._mem = self.dmem
 
     def handle(self, path, body):
