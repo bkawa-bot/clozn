@@ -15,7 +15,9 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
                            const GenerateConfig& config,
                            const std::function<void(const Event&)>& on_event,
                            const SampleConfig& sample,
-                           const ConceptProbes* read_probes) {
+                           const ConceptProbes* read_probes,
+                           const std::vector<float>* prefix_embd,
+                           int prefix_rows) {
     if (prompt_ids.empty()) throw std::invalid_argument("prompt_ids must be non-empty");
     if (config.max_new < 1) throw std::invalid_argument("max_new must be >= 1");
 
@@ -40,6 +42,14 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     // across decodes (it's on the context, independent of the attention mode).
     adapter.set_causal(true);
 
+    // Optional: splice a PyTorch-trained soft prefix in ahead of the prompt (fills KV [0, prefix_rows))
+    // so a memory learned on the HF model shapes this ggml generation. The prompt then decodes at n_past=base.
+    int base = 0;
+    if (prefix_embd != nullptr && prefix_rows > 0) {
+        adapter.ar_forward_embd(*prefix_embd, prefix_rows, 0);
+        base = prefix_rows;
+    }
+
     std::mt19937_64 rng(sample.seed);
     std::vector<int> seq = prompt_ids;  // full running sequence (for the repetition penalty)
     SampleOpts sopts;
@@ -54,8 +64,8 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     std::string reason = "length";
 
     // Prefill: the last prompt row's logits are the distribution for the first generated token.
-    ForwardResult fwd = adapter.ar_forward(prompt_ids, 0);
-    int n_past = p;
+    ForwardResult fwd = adapter.ar_forward(prompt_ids, base);
+    int n_past = base + p;
     int t = 0;
 
     for (int k = 0; k < config.max_new; ++k) {

@@ -234,6 +234,44 @@ ForwardResult GgmlAdapter::ar_forward(const std::vector<int>& tokens, int n_past
     return out;
 }
 
+ForwardResult GgmlAdapter::ar_forward_embd(const std::vector<float>& embd, int n_rows, int n_past) {
+    if (n_rows <= 0) throw std::invalid_argument("ar_forward_embd: empty");
+    if (n_embd_ <= 0) throw std::runtime_error("ar_forward_embd: n_embd unknown");
+    if (static_cast<int>(embd.size()) != n_rows * n_embd_)
+        throw std::invalid_argument("ar_forward_embd: embd size != n_rows*n_embd");
+    if (n_past < 0) throw std::invalid_argument("ar_forward_embd: n_past < 0");
+    if (n_past + n_rows > n_ctx_) throw std::invalid_argument("ar_forward_embd: exceeds n_ctx");
+    write_from_ = n_past;
+    decoded_tokens_ += n_rows;
+
+    // Splice RAW input embeddings (not token ids) at positions [n_past, n_past+n_rows): the llama_batch
+    // carries `embd` instead of `token` — the same path multimodal models use to inject image vectors.
+    // This is the bridge that lets a PyTorch-trained soft prefix ride into the ggml runtime.
+    llama_batch batch = llama_batch_init(n_rows, n_embd_, 1);
+    batch.n_tokens = n_rows;
+    for (int i = 0; i < n_rows; ++i) {
+        std::memcpy(batch.embd + static_cast<size_t>(i) * n_embd_,
+                    embd.data() + static_cast<size_t>(i) * n_embd_,
+                    static_cast<size_t>(n_embd_) * sizeof(float));
+        batch.pos[i] = n_past + i;          // absolute position: RoPE + KV slot
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = (i == n_rows - 1) ? 1 : 0;
+    }
+    const int rc = llama_decode(ctx_, batch);
+    llama_batch_free(batch);
+    if (rc != 0) throw std::runtime_error("ar_forward_embd: llama_decode failed");
+
+    const int vocab = cfg_.vocab_size;
+    ForwardResult out;
+    out.n_requested = 1;
+    out.vocab = vocab;
+    out.kv = std::make_shared<GgmlKV>(n_past + n_rows);
+    const float* logits = llama_get_logits_ith(ctx_, -1);   // last prefix row (unused if a prompt follows)
+    if (logits) out.logits.assign(logits, logits + vocab);
+    return out;
+}
+
 ForwardResult GgmlAdapter::harvest(const std::vector<int>& tokens) {
     const int len = static_cast<int>(tokens.size());
     if (len <= 0) throw std::invalid_argument("harvest: empty tokens");

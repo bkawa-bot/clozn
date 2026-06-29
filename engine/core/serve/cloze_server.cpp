@@ -855,9 +855,17 @@ int main(int argc, char** argv) {
             return;
         }
 
+        // Optional PyTorch-trained soft prefix (the train-on-HF / serve-on-llama.cpp bridge): a flat
+        // prefix_rows x n_embd float array spliced in ahead of the prompt before decoding. AR-only.
+        std::vector<float> prefix_embd;
+        const int prefix_rows = body.value("prefix_rows", 0);
+        if (ar_mode && prefix_rows > 0 && body.contains("prefix_embd") && body["prefix_embd"].is_array()) {
+            prefix_embd = body["prefix_embd"].get<std::vector<float>>();
+        }
+
         // One call into the runtime on a POOLED context (acquire blocks until one is free, so N
         // workers run N requests concurrently; the Lease releases it on any exit).
-        auto run = [&pool, &concept_probes, &steer_probes, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer](
+        auto run = [&pool, &concept_probes, &steer_probes, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);  // white-box tap on for this request (off by default)
@@ -875,7 +883,8 @@ int main(int argc, char** argv) {
             // AR model => the causal left-to-right loop (same white-box reads/steering, no scheduler).
             // Diffusion => the denoiser (whole-sequence generate, or infill between prefix/suffix).
             auto r = ar_mode
-                       ? generate_ar(*lease, prompt_ids, cfg, on_event, sample, probes)
+                       ? generate_ar(*lease, prompt_ids, cfg, on_event, sample, probes,
+                                     prefix_embd.empty() ? nullptr : &prefix_embd, prefix_rows)
                        : (is_infill
                             ? infill(*lease, prompt_ids, suffix_ids, gap, cfg, nullptr, on_event, revise, sample, probes)
                             : generate(*lease, prompt_ids, cfg, cache, nullptr, on_event, revise, sample, probes));

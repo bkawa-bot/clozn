@@ -147,6 +147,12 @@ public:
     bool causal() const { return causal_; }
     ForwardResult ar_forward(const std::vector<int>& tokens, int n_past);
 
+    // Like ar_forward, but the inputs are RAW embeddings (n_rows x n_embd, row-major) spliced in at
+    // [n_past, n_past+n_rows) via the llama_batch.embd path (the same one multimodal models use to inject
+    // image vectors) instead of token ids. The bridge that lets a PyTorch-trained soft prefix ride into
+    // the ggml runtime: train-on-HF, serve-on-llama.cpp. Returns the last row's next-token logits.
+    ForwardResult ar_forward_embd(const std::vector<float>& embd, int n_rows, int n_past);
+
     // Forward-HARVEST (the §3.1 "activation harvesting at scale" path): one causal forward over a
     // whole text and ALL its per-token residuals at the tap layer — NOT just the last row like
     // ar_forward. Decodes `tokens` at absolute positions [0, n) under causal attention with the tap
