@@ -61,7 +61,7 @@
   function showOv(m){ ovmsg.innerHTML=m; overlay.classList.add('on'); }
   function hideOv(){ overlay.classList.remove('on'); }
   function setStage(src){ if(stage.getAttribute('src')===src){ stage.style.opacity='1'; return; }   // fade between views
-    stage.style.opacity='0'; stage.onload=()=>{ stage.style.opacity='1'; }; setStage(src); }
+    stage.style.opacity='0'; stage.onload=()=>{ stage.style.opacity='1'; }; stage.src=src; }
 
   function selectTab(t){
     tabs.forEach(x=>x.classList.toggle('on', x===t));
