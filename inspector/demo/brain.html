@@ -1253,7 +1253,11 @@ let breathe = true;
 let t0 = performance.now();
 const FLARES = new Map();     // id -> {t, dur, power}  transient activation flares (a "thought")
 const ENGAGED = new Set();    // ids that have ACTUALLY fired this session -> persist a steady glow + light their edges
-const engagedLink = l => ENGAGED.has(l.source.id||l.source) && ENGAGED.has(l.target.id||l.target);
+const NEAR = new Set();       // atlas neighbours of engaged concepts (NOT themselves fired) -> the web reaching outward
+const _es = l => ENGAGED.has(l.source.id||l.source);
+const _et = l => ENGAGED.has(l.target.id||l.target);
+const engagedLink = l => _es(l) && _et(l);    // BOTH fired -> the bright core web
+const reachLink   = l => _es(l) !== _et(l);   // exactly ONE fired -> an edge reaching out to a related, UNfired concept
 
 function animate(){
   const now = performance.now();
@@ -1281,7 +1285,7 @@ function animate(){
       }
     }
     const hl = o.group.userData.hl || 0;       // hover-highlight boost (focal + neighbours)
-    const eng = ENGAGED.has(n.id) ? 0.5 : 0;   // concepts that fired this session stay lit (persistent map)
+    const eng = ENGAGED.has(n.id) ? 0.5 : (NEAR.has(n.id) ? 0.16 : 0);  // FIRED = lit; merely RELATED = a soft halo (clearly dimmer)
     glow = clamp(glow + flarePow + hl*0.6 + eng, 0, 1.8);
     o.glow = glow;                             // stash for dimEase to combine with hover dim
     const dim = o.group.userData.dim ?? 1;
@@ -1350,14 +1354,14 @@ function applyHighlight(){
   });
   // links: highlight those touching the hovered node
   Graph.linkOpacity(l=>{
-    if(!hoverId) return engagedLink(l) ? 0.82 : baseLinkOpacity;   // edges AMONG engaged concepts glow + persist
+    if(!hoverId) return engagedLink(l) ? 0.82 : reachLink(l) ? 0.46 : baseLinkOpacity;  // core web bright, reach-out medium
     const s=l.source.id||l.source, t=l.target.id||l.target;
     if(s===hoverId||t===hoverId) return 0.9;
     return 0.05;
   });
   Graph.linkWidth(l=>{
     const base = 0.16 + (l.weight??0.4)*0.75;
-    if(!hoverId) return engagedLink(l) ? base*2.3 : base;
+    if(!hoverId) return engagedLink(l) ? base*2.3 : reachLink(l) ? base*1.5 : base;
     const s=l.source.id||l.source, t=l.target.id||l.target;
     return (s===hoverId||t===hoverId) ? base*2.4 : base*0.5;
   });
@@ -1749,9 +1753,11 @@ elBrain.style.cursor='grab';
     if(!considered.length){ show('no clear concepts for that'+ans); btn.disabled=false; return; }
     const nlit=spawnGhosts(considered);          // labelled lights bloom near their neighbours
     considered.slice(0,5).forEach((c,i)=> setTimeout(()=>{
-      if(c.in_atlas){ FLARES.set(c.id,{t:performance.now(),dur:5200,power:Math.min(1.4,c.rel*1.4)}); ENGAGED.add(c.id); }
+      if(c.in_atlas){ FLARES.set(c.id,{t:performance.now(),dur:5200,power:Math.min(1.4,c.rel*1.4)}); ENGAGED.add(c.id); NEAR.delete(c.id);
+        if(ADJ[c.id]) ADJ[c.id].forEach(nb=>{ if(!ENGAGED.has(nb)) NEAR.add(nb); });   // pull in its atlas neighbours -> the brain forms outward
+      }
       fireFrom(c.near, 1, 0.5);                 // ripple the map where this concept lives
-      applyHighlight();                          // re-light the real atlas edges among the engaged concepts
+      applyHighlight();                          // re-light the real atlas edges among + reaching from the engaged concepts
     }, 120+i*180));
     const labels=considered.slice(0,7).map(c=>`<b>${c.label}</b>`).join(' · ');
     const tag = SRC==='engine' ? ` <span style="opacity:.55">· from the C++ engine · layer ${data.layer||15}</span>` : ` <span style="opacity:.55">· ${nlit} lights</span>`;
@@ -1762,7 +1768,7 @@ elBrain.style.cursor='grab';
   inp.addEventListener('keydown',e=>{ if(e.key==='Enter') think(); });
   document.getElementById('thinkReset').addEventListener('click', async ()=>{
     try{ await fetch('reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sid:SID})}); }catch(e){}
-    clearGhosts(); FLARES.clear(); ENGAGED.clear(); applyHighlight(); show('new conversation — the brain is clear');
+    clearGhosts(); FLARES.clear(); ENGAGED.clear(); NEAR.clear(); applyHighlight(); show('new conversation — the brain is clear');
   });
   document.getElementById('thinkSrc').addEventListener('click', (e)=>{   // flip the concept source: Python model <-> the real C++ engine
     SRC = SRC==='py' ? 'engine' : 'py';
