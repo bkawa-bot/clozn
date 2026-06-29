@@ -68,6 +68,33 @@ def _qwen_tmpl(messages):
     return s + "<|im_start|>assistant\n"
 
 
+def _disk_memory():
+    """The trained memory prefix + strength, read from disk -- so engine-chat needs NO HF model resident.
+    The prefix is just saved vectors; only TRAINING a new one needs PyTorch's gradients."""
+    import torch
+    path = _pers("studio_memory.pt")
+    if not os.path.isfile(path):
+        return None, 1.0
+    try:
+        d = torch.load(path, map_location="cpu")
+        pre = d.get("prefix")
+        return (pre.float() if pre is not None else None), float(d.get("memory_strength", 1.0))
+    except Exception:
+        return None, 1.0
+
+
+def _disk_dials():
+    """The saved tone-dial values (personality.json IS the strength dict) -- no HF model needed."""
+    path = _pers("studio_personality.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path) as f:
+            return {k: float(v) for k, v in json.load(f).items()}
+    except Exception:
+        return {}
+
+
 ARGS = None
 SUB = None         # the active substrate object
 SUBNAME = "qwen"
@@ -276,6 +303,8 @@ class DreamSubstrate(Substrate):
 
 
 def load_substrate(name):
+    if name == "engine":
+        return None        # pure-engine: NO HF model -- serve the GGUF via the C++ engine + the saved prefix from disk
     return QwenSubstrate() if name == "qwen" else DreamSubstrate()
 
 
@@ -426,17 +455,24 @@ def make_handler():
             if p == "/engine/chat":   # THE HYBRID: chat on the GGUF via the engine, with the HF-trained memory injected
                 if ENGINE_QWEN is None:
                     return self._json(502, {"error": "no engine configured"})
-                if not (SUB and getattr(SUB, "memory", None)):
-                    return self._json(409, {"error": "engine-chat needs the qwen substrate (it holds the trained memory)"})
                 try:
                     prompt = _qwen_tmpl(body.get("messages", []))
                     mx = int(body.get("max_tokens", 220))
-                    kw, mem = {}, SUB.memory
-                    if getattr(mem, "prefix", None) is not None:   # inject the trained soft prefix (scaled by the memory dial)
+                    kw = {}
+                    # MEMORY: the live HF prefix if a qwen substrate is loaded, else the SAVED prefix from disk
+                    # -- so engine-chat works with NO HF model resident (the pure-engine substrate).
+                    mem = getattr(SUB, "memory", None) if SUB else None
+                    if mem is not None and getattr(mem, "prefix", None) is not None:
+                        prefix = mem.prefix.detach().float().cpu()
                         ms = float(getattr(mem, "memory_strength", 1.0))
-                        kw = {"prefix_embd": (mem.prefix.detach().float().cpu() * ms).flatten().tolist(),
-                              "prefix_rows": int(mem.m)}
-                    st = getattr(getattr(SUB, "steer", None), "strength", None)   # AND the active tone dials
+                    else:
+                        prefix, ms = _disk_memory()
+                    if prefix is not None:                         # inject the trained soft prefix (scaled by the dial)
+                        kw = {"prefix_embd": (prefix * ms).flatten().tolist(), "prefix_rows": int(prefix.shape[0])}
+                    # TONE: live dial values if a substrate is up, else the saved values from disk
+                    st = getattr(getattr(SUB, "steer", None), "strength", None) if SUB else None
+                    if not st:
+                        st = _disk_dials()
                     if st and any(st.values()):
                         es = _engine_steer()
                         sv = es.steer_vector(st) if es is not None else None
@@ -479,7 +515,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--substrate", default="qwen", choices=("qwen", "dream"))
+    ap.add_argument("--substrate", default="qwen", choices=("qwen", "dream", "engine"))
     ARGS = ap.parse_args()
     SUBNAME = ARGS.substrate
     print(f"clozn server: loading '{SUBNAME}' substrate ...", flush=True)
