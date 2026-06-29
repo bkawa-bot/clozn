@@ -31,6 +31,8 @@
     padding:1px 8px;color:var(--soft)}
   .interior .is{background:rgba(231,168,196,.15);border:1px solid rgba(231,168,196,.34);border-radius:9px;
     padding:1px 8px;color:var(--soft)}
+  .engtog{display:flex;align-items:center;gap:4px;font-size:11.5px;color:var(--faint);cursor:pointer;user-select:none;white-space:nowrap}
+  .engtog input{accent-color:var(--cyan);cursor:pointer;margin:0}
   .composer{display:flex;gap:9px;padding:14px 22px;border-top:1px solid var(--line);background:rgba(255,255,255,.5)}
   .composer input{flex:1;border:1px solid var(--line);border-radius:24px;padding:11px 17px;font:inherit;background:#fff;outline:none}
   .composer input:focus{border-color:var(--halo);box-shadow:0 0 0 3px rgba(122,167,255,.13)}
@@ -72,7 +74,7 @@
   <div class="main">
     <div class="chat">
       <div id="log"><div class="turn sys">a local model you can see and shape. add a trait on the right (try “into baking”), or drag a tone dial — then chat, and watch the <b>inside</b> line appear under each reply.</div></div>
-      <div class="composer"><input id="msg" placeholder="say something…" autocomplete="off"><button class="go" id="send">send</button></div>
+      <div class="composer"><input id="msg" placeholder="say something…" autocomplete="off"><label class="engtog" title="route this chat through the C++ engine on the GGUF — slower, but your trained memory + tone ride along (the hybrid)"><input type="checkbox" id="engmode"> engine</label><button class="go" id="send">send</button></div>
     </div>
     <div class="side">
       <div class="panel">
@@ -107,6 +109,15 @@ async function send(){
   $('msg').value=''; $('send').disabled=true;
   add('user',t); history.push({role:'user',content:t});
   const ph=add('assistant','…'); let reply='';
+  if($('engmode') && $('engmode').checked){      // HYBRID: chat on the GGUF via the engine, trained memory injected
+    ph.textContent='running on the engine (GGUF)… ~a few seconds';
+    try{
+      const d=await post('/engine/chat',{messages:history,max_tokens:200});
+      reply=d.reply||('['+(d.error||'no response')+']'); ph.textContent=reply;
+      if(d.reply){ history.push({role:'assistant',content:reply}); showInterior(ph,t); }
+    }catch(e){ ph.textContent='[engine not reachable]'; }
+    $('send').disabled=false; $('msg').focus(); return;
+  }
   try{
     const r=await fetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({messages:history,max_tokens:256,stream:true})});

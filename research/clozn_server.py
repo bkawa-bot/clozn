@@ -54,6 +54,20 @@ def _engine_steer():
     return ENGINE_STEER
 
 
+def _qwen_tmpl(messages):
+    """Render chat messages into Qwen's chat-template STRING for the engine's raw /v1/completions -- the
+    same template the HF memory prefix was trained against, so the injected prefix lands in the right context."""
+    sysmsg = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    for m in messages:
+        if m.get("role") == "system" and m.get("content"):
+            sysmsg = m["content"]
+    s = f"<|im_start|>system\n{sysmsg}<|im_end|>\n"
+    for m in messages:
+        if m.get("role") in ("user", "assistant"):
+            s += f"<|im_start|>{m['role']}\n{m.get('content', '')}<|im_end|>\n"
+    return s + "<|im_start|>assistant\n"
+
+
 ARGS = None
 SUB = None         # the active substrate object
 SUBNAME = "qwen"
@@ -399,6 +413,24 @@ def make_handler():
                                             "baseline": base.strip(), "steered": stee.strip()})
                 except Exception as e:
                     return self._json(502, {"error": f"engine-steer: {e}"})
+            if p == "/engine/chat":   # THE HYBRID: chat on the GGUF via the engine, with the HF-trained memory injected
+                if ENGINE_QWEN is None:
+                    return self._json(502, {"error": "no engine configured"})
+                if not (SUB and getattr(SUB, "memory", None)):
+                    return self._json(409, {"error": "engine-chat needs the qwen substrate (it holds the trained memory)"})
+                try:
+                    prompt = _qwen_tmpl(body.get("messages", []))
+                    mx = int(body.get("max_tokens", 220))
+                    kw, mem = {}, SUB.memory
+                    if getattr(mem, "prefix", None) is not None:   # inject the trained soft prefix as raw embeddings
+                        kw = {"prefix_embd": mem.prefix.detach().float().cpu().flatten().tolist(),
+                              "prefix_rows": int(mem.m)}
+                    r = ENGINE_QWEN.complete(prompt, max_tokens=mx, temperature=0.0, **kw)
+                    ch = r.get("choices") if isinstance(r, dict) else None
+                    reply = (ch[0].get("text", "") if ch else str(r)).strip()
+                    return self._json(200, {"reply": reply, "memory": bool(kw), "via": "engine (GGUF)"})
+                except Exception as e:
+                    return self._json(502, {"error": f"engine-chat: {e}"})
             if p == "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied
                 if not (SUB and getattr(SUB, "chat", None)):
                     return self._json(503, {"error": "chat needs the qwen substrate"})
