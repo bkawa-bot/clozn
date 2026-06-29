@@ -43,6 +43,17 @@ def _pers(name):
     return os.path.join(CLOZN_DIR, name)
 
 
+ENGINE_STEER = None        # lazy EngineSteer on the Qwen GGUF engine -- tone dials on the C++ runtime, any GGUF
+
+
+def _engine_steer():
+    global ENGINE_STEER
+    if ENGINE_STEER is None and ENGINE_QWEN is not None:
+        from steering import EngineSteer
+        ENGINE_STEER = EngineSteer(ENGINE_QWEN)
+    return ENGINE_STEER
+
+
 ARGS = None
 SUB = None         # the active substrate object
 SUBNAME = "qwen"
@@ -369,6 +380,25 @@ def make_handler():
                         str(body.get("text", ""))[:300], ENGINE_QWEN, int(body.get("layer", 15))))
                 except Exception as e:
                     return self._json(502, {"error": f"engine-qwen: {e}"})
+            if p == "/engine/steer/axes":   # the tone dials, but they apply on the GGUF via the engine
+                from steering import AXES
+                es = _engine_steer()
+                return self._json(200, {"axes": [{"name": k, "poles": AXES[k]["poles"]} for k in AXES],
+                                        "ready": bool(es and es.ready), "engine": bool(ENGINE_QWEN)})
+            if p == "/engine/steer/check":   # A/B one dial on the engine GGUF: baseline vs steered generation
+                es = _engine_steer()
+                if es is None:
+                    return self._json(502, {"error": "no engine configured (set CLOZN_ENGINE_QWEN_PORT)"})
+                try:
+                    prompt = str(body.get("prompt", "Tell me about the city at night."))[:300]
+                    axis, val = str(body.get("axis", "warm")), float(body.get("value", 1.0))
+                    mx = int(body.get("max_tokens", 60))
+                    base = es.generate(prompt, strength={}, max_new=mx)            # no dial = the baseline
+                    stee = es.generate(prompt, strength={axis: val}, max_new=mx)
+                    return self._json(200, {"prompt": prompt, "axis": axis, "value": val,
+                                            "baseline": base.strip(), "steered": stee.strip()})
+                except Exception as e:
+                    return self._json(502, {"error": f"engine-steer: {e}"})
             if p == "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied
                 if not (SUB and getattr(SUB, "chat", None)):
                     return self._json(503, {"error": "chat needs the qwen substrate"})

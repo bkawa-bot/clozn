@@ -32,7 +32,7 @@
 <body>
 <div class="wrap">
   <div class="nav"><a href="../../index.html">← clozn</a><a href="brain.html">brain</a>
-    <a href="memory_chat.html">memory</a><a href="denoise.html">denoise</a><span class="here">the runtime</span></div>
+    <a href="studio.html">studio</a><a href="denoise.html">denoise</a><span class="here">the runtime</span></div>
   <h1>the runtime — read &amp; write the real model's state</h1>
   <div class="sub">This isn't a Python wrapper — it's the actual <b>C++ engine</b> (cloze-server, on ggml).
     <code>/harvest</code> reads every token's residual in one forward pass; <code>/state</code> writes a
@@ -52,6 +52,19 @@
       <button id="observe">write &amp; observe</button>
     </div>
     <div class="obs" id="obs"></div>
+  </div>
+
+  <div class="panel" id="steerpanel" style="margin-top:16px">
+    <h2>steer this GGUF — a tone dial on the C++ engine</h2>
+    <div class="ctrls">
+      <span>dial</span>
+      <select id="axis" style="font:inherit;padding:7px 10px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.8);color:var(--ink)"></select>
+      <input type="range" id="sval" min="0" max="1.3" step="0.1" value="1.0">
+      <b id="svalv">1.0</b>
+      <button id="steerbtn">steer</button>
+    </div>
+    <div class="composer" style="padding-top:0"><input id="sprompt" value="Tell me about the city at night."></div>
+    <div class="obs" id="steerout"><span class="hint" style="display:block;padding:0 18px 16px">a contrastive tone vector, computed from the engine's <i>own</i> activations (diff-in-means over +pole / −pole prompts) and pushed through <code>/intervene</code> during generation — model-agnostic, no retraining, any GGUF. <i>(the first dial computes the vectors, ~a minute.)</i></span></div>
   </div>
 </div>
 
@@ -100,6 +113,26 @@ async function observe(){
 $('go').onclick=harvest; $('prompt').addEventListener('keydown',e=>{if(e.key==='Enter')harvest();});
 $('scale').oninput=()=> $('scaleval').textContent='×'+parseFloat($('scale').value).toFixed(1);
 $('observe').onclick=observe;
+
+// tone dials on the GGUF, via the engine (compute a contrastive vector from /harvest, apply via /intervene)
+async function loadAxes(){
+  try{ const d=await post('/engine/steer/axes',{});
+    $('axis').innerHTML=(d.axes||[]).map(a=>`<option value="${esc(a.name)}">${esc(a.name)} → ${esc(a.poles?a.poles[0]:a.name)}</option>`).join('');
+  }catch(e){}
+}
+async function steer(){
+  $('steerbtn').disabled=true;
+  $('steerout').innerHTML='<span class="hint" style="display:block;padding:0 18px 16px">steering the GGUF via the engine… <i>(first dial computes the vectors, ~a minute)</i></span>';
+  try{
+    const d=await post('/engine/steer/check',{prompt:$('sprompt').value.trim(), axis:$('axis').value, value:parseFloat($('sval').value), max_tokens:55});
+    $('steerout').innerHTML=
+      `<div class="row2"><div class="ans before"><div class="tag">baseline · no dial</div><div class="top" style="font:13.5px ui-sans-serif,system-ui;line-height:1.5">${esc(d.baseline)}</div></div>`+
+      `<div class="ans after"><div class="tag">${esc(d.axis)} · ${d.value}</div><div class="top" style="font:13.5px ui-sans-serif,system-ui;line-height:1.5">${esc(d.steered)}</div></div></div>`;
+  }catch(e){ $('steerout').innerHTML=`<div class="err">${esc(String(e.message||e))}</div>`; }
+  $('steerbtn').disabled=false;
+}
+$('steerbtn').onclick=steer; $('sval').oninput=()=>$('svalv').textContent=parseFloat($('sval').value).toFixed(1);
+loadAxes();
 fetch(API+'/engine/health').then(r=>r.json()).then(d=>{ const e=d.engine||{};
   $('pill').innerHTML = e.model? `engine: <b>${esc((e.model||'').split(/[\\/]/).pop())}</b> · ${esc(e.mode||'')}` : ''; }).catch(()=>{});
 harvest();

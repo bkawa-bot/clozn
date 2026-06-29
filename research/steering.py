@@ -213,3 +213,61 @@ class DreamSteering(SteeringControl):
         self.resid_norm = sum(norms) / len(norms)
         self.base = 0.85 * self.resid_norm
         return {"raw_norms": out, "resid_norm": round(self.resid_norm, 1), "base": round(self.base, 2)}
+
+
+class EngineSteer:
+    """The SAME tone dials, but on the C++ engine (cloze-server) instead of the HF backbone -- so they
+    work on ANY GGUF the engine has loaded, with no PyTorch and no hooks. An axis is a contrastive
+    direction from /harvest (diff-in-means on the +pole/-pole prompts, unit-normalized); generation
+    applies the active dials by summing them into one vector pushed through /intervene. Calibrated like
+    SteeringControl but for the engine's residual scale: base = 0.08*|resid| (validated in
+    engine_steer_spike -- slider 1.0 clearly-on and coherent). No discovery, no SAE: pure activation
+    arithmetic, which is exactly why it ports to any model."""
+
+    def __init__(self, engine_client, layer=14):
+        self.ec = engine_client
+        self.layer = layer
+        self.vecs = {}                  # axis -> unit np.ndarray [n_embd]
+        self.strength = {}              # axis -> slider value
+        self.base, self.resid_norm = 1.0, 0.0
+        self.ready = False
+
+    def compute(self, seeds=SEED_PROMPTS) -> dict:
+        norms = []
+        for name, ax in AXES.items():
+            pos = np.mean([self.ec.harvest(ax["pos"] + "\n\n" + s, layer=self.layer).activations.mean(0)
+                           for s in seeds], axis=0)
+            neg = np.mean([self.ec.harvest(ax["neg"] + "\n\n" + s, layer=self.layer).activations.mean(0)
+                           for s in seeds], axis=0)
+            norms += [float(np.linalg.norm(pos)), float(np.linalg.norm(neg))]
+            d = pos - neg
+            self.vecs[name] = d / (float(np.linalg.norm(d)) + 1e-8)
+        self.resid_norm = sum(norms) / len(norms)
+        self.base = 0.08 * self.resid_norm
+        self.ready = True
+        return {"resid_norm": round(self.resid_norm, 1), "base": round(self.base, 1), "axes": list(self.vecs)}
+
+    def set(self, name, value):
+        self.strength[name] = float(value)
+
+    @staticmethod
+    def _text(r):
+        ch = r.get("choices") if isinstance(r, dict) else None
+        if ch:
+            return ch[0].get("text") or ch[0].get("message", {}).get("content") or ""
+        return (r.get("text") or "") if isinstance(r, dict) else str(r)
+
+    def generate(self, prompt, strength=None, max_new=70):
+        """Generate through the engine with the active dials applied (the no-dial path is a plain
+        completion, so this doubles as the baseline for an A/B)."""
+        if not self.ready:
+            self.compute()
+        s = self.strength if strength is None else strength
+        active = {k: v for k, v in s.items() if v and k in self.vecs}
+        if not active:
+            return self._text(self.ec.complete(prompt, max_tokens=max_new))
+        vec = np.zeros_like(next(iter(self.vecs.values())))
+        for k, v in active.items():
+            vec = vec + self.base * float(v) * self.vecs[k]
+        return self._text(self.ec.intervene(prompt, vector=vec.tolist(), coef=1.0,
+                                             layer=self.layer, max_tokens=max_new))

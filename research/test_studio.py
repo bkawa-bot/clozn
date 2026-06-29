@@ -43,6 +43,8 @@ ok("7 tone axes", len(steering.AXES) == 7)
 ok("SteeringControl: compute/set/engage/save_state/load_state",
    has_all(steering.SteeringControl, ("compute", "set", "engage", "disengage", "save_state", "load_state")))
 ok("DreamSteering(SteeringControl)", issubclass(steering.DreamSteering, steering.SteeringControl))
+ok("EngineSteer: compute/set/generate (tone dials on any GGUF via the engine)",
+   has_all(steering.EngineSteer, ("compute", "set", "generate")))
 
 # --- memory: AR soft-prefix + diffusion soft-prefix ------------------------------------------------
 import dream_memory
