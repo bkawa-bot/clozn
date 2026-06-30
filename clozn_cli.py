@@ -300,12 +300,17 @@ def _chat_wrap(prompt: str) -> str:
             f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
 
 
-def stream_ar(port: int, prompt: str, max_tokens: int) -> int:
-    """POST /v1/completions with stream:true; print each committed token's piece. -> token count."""
+def stream_ar(port: int, prompt: str, max_tokens: int):
+    """POST /v1/completions (stream); print each committed token. -> (count, trace steps w/ conf + alts).
+
+    The engine emits, per token, a `tokens_committed` frame (the chosen piece + its confidence) and a
+    `step_lens` frame (the top-k it weighed). We pair them by position into a replayable trace -- the raw
+    material for the timeline: where was it uncertain, and what did it almost say."""
     body = json.dumps({"prompt": prompt, "max_tokens": max_tokens, "stream": True}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", data=body,
                                  headers={"Content-Type": "application/json"})
     n = 0
+    by_pos: dict = {}
     with urllib.request.urlopen(req, timeout=600) as resp:
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
@@ -318,11 +323,23 @@ def stream_ar(port: int, prompt: str, max_tokens: int) -> int:
                 obj = json.loads(payload)
             except Exception:
                 continue
-            if obj.get("type") == "tokens_committed":
+            typ = obj.get("type")
+            if typ == "tokens_committed":
                 for it in obj.get("items", []):
                     sys.stdout.write(it.get("piece", "")); sys.stdout.flush()
                     n += 1
-    return n
+                    by_pos[it.get("pos")] = {"pos": it.get("pos"), "piece": it.get("piece", ""),
+                                             "conf": round(float(it.get("conf", 0.0)), 3), "alts": []}
+            elif typ == "step_lens":                            # the top-k the model weighed at this position
+                pos = (obj.get("positions") or [None])[0]
+                step = by_pos.get(pos)
+                if step:
+                    chosen = step["piece"]
+                    step["alts"] = [{"piece": p, "prob": round(float(pr), 3)}
+                                    for p, pr in zip(obj.get("pieces", []), obj.get("probs", []))
+                                    if p != chosen][:3]
+    steps = [by_pos[p] for p in sorted(by_pos, key=lambda x: (x is None, x))]
+    return n, steps
 
 
 def complete_once(port: int, prompt: str, max_tokens: int) -> str:
@@ -333,6 +350,35 @@ def complete_once(port: int, prompt: str, max_tokens: int) -> str:
     with urllib.request.urlopen(req, timeout=600) as resp:
         r = json.loads(resp.read())
     return (r.get("choices") or [{}])[0].get("text", "")
+
+
+# ----------------------------------------------------------------------------- trace (the debugger seam)
+# Every AR run auto-saves its timeline to ~/.clozn/traces/<id>.json so a run is debuggable after the fact:
+# `clozn trace` shows the per-token confidence + what the model almost said -- the seed of branch-a-bad-answer.
+
+def _runid() -> str:
+    return f"{int(time.time())}-{os.getpid() % 1000:03d}"
+
+
+def _save_trace(meta: dict, steps: list) -> str:
+    d = os.path.join(HOME, "traces")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, meta["id"] + ".json")
+    try:
+        json.dump({"meta": meta, "steps": steps}, open(path, "w"))
+    except Exception:
+        return ""
+    for old in sorted(glob.glob(os.path.join(d, "*.json")))[:-25]:   # keep the last 25 runs
+        try:
+            os.remove(old)
+        except Exception:
+            pass
+    return path
+
+
+def _confbar(c: float, width=8) -> str:
+    full = int(round(max(0.0, min(1.0, c)) * width))
+    return "█" * full + "░" * (width - full)
 
 
 # ----------------------------------------------------------------------------- commands
@@ -388,15 +434,20 @@ def cmd_run(args):
         is_chat = flags.get("chat") and mode == "autoregressive"
         text = _chat_wrap(prompt) if is_chat else prompt
         g0 = time.time()
+        traced = False
         if mode == "autoregressive":
-            n = stream_ar(port, text, args.max)
+            n, steps = stream_ar(port, text, args.max)
             sys.stdout.write("\n")
+            traced = bool(_save_trace({"id": _runid(), "model": _friendly(model), "prompt": prompt,
+                          "backend": "GPU" if gpu else "CPU", "mode": mode, "n": n, "t": time.time()}, steps))
         else:                                                  # diffusion: print the final ordered text
             out = complete_once(port, text, args.max).strip()
             print(out); n = len(out.split())
         dt = time.time() - g0
         rate = f", ~{n/dt:.0f} tok/s" if dt > 0 and mode == "autoregressive" else ""
         print(f"{DIM}- {n} tokens in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{RST}", file=sys.stderr)
+        if traced:
+            print(f"{DIM}  clozn trace   inspect where it was uncertain + what it almost said{RST}", file=sys.stderr)
     finally:
         if proc:                                       # only tear down an engine WE spawned; leave warm ones up
             proc.terminate()
@@ -474,6 +525,38 @@ def cmd_stop(args):
     _reg_write(d)
 
 
+def cmd_trace(args):
+    d = os.path.join(HOME, "traces")
+    files = sorted(glob.glob(os.path.join(d, "*.json")))
+    if not files:
+        print('no traces yet -- run something first:  clozn run qwen "..."'); return
+    if args.list:
+        print(f"{'WHEN':<18} {'MODEL':<11} {'TOK':>4}  PROMPT")
+        for f in files[-12:]:
+            m = json.load(open(f)).get("meta", {})
+            print(f"{m.get('id', ''):<18} {m.get('model', ''):<11} {m.get('n', 0):>4}  {m.get('prompt', '')[:46]}")
+        return
+    tr = json.load(open(files[-1]))
+    m, steps = tr.get("meta", {}), tr.get("steps", [])
+    print(f"{BOLD}{m.get('model', '?')}{RST}  \"{m.get('prompt', '')[:64]}\"")
+    print(f"{DIM}{m.get('n', 0)} tokens - {m.get('backend', '?')} - short bar = less sure; "
+          f"'almost' = what it nearly said{RST}")
+    print("-" * 62)
+    for s in steps:
+        piece = (s.get("piece", "") or "").replace("\n", "\\n").replace("\t", "\\t")
+        conf = s.get("conf", 0.0)
+        mark = " " if conf >= 0.5 else "?"
+        line = f" {mark} {piece[:16]:<16} {_confbar(conf)} {conf:.2f}"
+        if conf < 0.5 and s.get("alts"):
+            alts = "  ".join(f"{(a['piece'] or '').strip() or '_'} {a['prob']:.2f}" for a in s["alts"][:3])
+            line += f"   {DIM}almost: {alts}{RST}"
+        print(line)
+    lows = [s for s in steps if s.get("conf", 1) < 0.5]
+    print("-" * 62)
+    tail = " -> " + ", ".join((s.get("piece", "") or "").strip() for s in lows[:6]) if lows else ""
+    print(f"{DIM}{len(lows)} uncertain moment(s){tail}{RST}")
+
+
 def main(argv=None):
     _setup_console()
     p = argparse.ArgumentParser(prog="clozn", description="a reliable front door to the local model engine")
@@ -497,6 +580,9 @@ def main(argv=None):
     sub.add_parser("ps", help="list running serve daemons").set_defaults(fn=cmd_ps)
     pstop = sub.add_parser("stop", help="stop a serve daemon (by model name, port, or 'all')")
     pstop.add_argument("which"); pstop.set_defaults(fn=cmd_stop)
+    pt = sub.add_parser("trace", help="inspect the last run's confidence timeline")
+    pt.add_argument("--list", action="store_true", help="list recent runs instead of showing the last")
+    pt.set_defaults(fn=cmd_trace)
 
     args = p.parse_args(argv)
     if not getattr(args, "fn", None):
