@@ -310,18 +310,31 @@ def _find_warm(model: str):
 SYS = "You are a helpful assistant."
 
 
-def _chat_wrap(prompt: str, family: str = "qwen") -> str:
-    """Wrap a user turn in the model family's chat template. BOS is left to the engine (add_bos)."""
+def _chat_session(history, new_user: str, family: str = "qwen") -> str:
+    """Build the whole conversation in the family's chat template. BOS is left to the engine (add_bos).
+    history: list of (user, assistant) pairs already exchanged; new_user: the current turn."""
     if family == "mistral":
-        return f"[INST] {prompt} [/INST]"
+        s = "".join(f"[INST] {u} [/INST] {a}</s>" for u, a in history)
+        return s + f"[INST] {new_user} [/INST]"
     if family == "llama3":
-        return ("<|start_header_id|>system<|end_header_id|>\n\n" + SYS +
-                "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n" + prompt +
-                "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n")
+        s = f"<|start_header_id|>system<|end_header_id|>\n\n{SYS}<|eot_id|>"
+        for u, a in history:
+            s += (f"<|start_header_id|>user<|end_header_id|>\n\n{u}<|eot_id|>"
+                  f"<|start_header_id|>assistant<|end_header_id|>\n\n{a}<|eot_id|>")
+        return s + (f"<|start_header_id|>user<|end_header_id|>\n\n{new_user}<|eot_id|>"
+                    f"<|start_header_id|>assistant<|end_header_id|>\n\n")
     if family == "gemma":
-        return f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
-    return (f"<|im_start|>system\n{SYS}<|im_end|>\n"
-            f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
+        s = "".join(f"<start_of_turn>user\n{u}<end_of_turn>\n<start_of_turn>model\n{a}<end_of_turn>\n"
+                    for u, a in history)
+        return s + f"<start_of_turn>user\n{new_user}<end_of_turn>\n<start_of_turn>model\n"
+    s = f"<|im_start|>system\n{SYS}<|im_end|>\n"
+    for u, a in history:
+        s += f"<|im_start|>user\n{u}<|im_end|>\n<|im_start|>assistant\n{a}<|im_end|>\n"
+    return s + f"<|im_start|>user\n{new_user}<|im_end|>\n<|im_start|>assistant\n"
+
+
+def _chat_wrap(prompt: str, family: str = "qwen") -> str:
+    return _chat_session([], prompt, family)
 
 
 def stream_ar(port: int, prompt: str, max_tokens: int):
@@ -482,16 +495,64 @@ def cmd_pull(args):
           f"run it:  clozn run {_friendly(dest)} \"hello\"")
 
 
+def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace):
+    """One generation: stream (AR, auto-saving the trace) or denoise (diffusion). Prints stats. -> response."""
+    g0 = time.time()
+    if mode == "autoregressive":
+        n, steps = stream_ar(port, text, max_tokens)
+        sys.stdout.write("\n")
+        _save_trace({"id": _runid(), "model": model_name, "prompt": prompt_for_trace,
+                     "backend": "GPU" if gpu else "CPU", "mode": mode, "n": n, "t": time.time()}, steps)
+        resp = "".join(s["piece"] for s in steps).strip()
+    else:
+        resp = complete_once(port, text, max_tokens).strip()
+        print(resp); n = len(resp.split())
+    dt = time.time() - g0
+    rate = f", ~{n/dt:.0f} tok/s" if dt > 0 and mode == "autoregressive" else ""
+    print(f"{DIM}- {n} tok in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{RST}", file=sys.stderr)
+    return resp
+
+
+def _repl(port, mode, flags, fam, gpu, model, max_tokens):
+    """Interactive chat loop on a warm engine (Ollama-style). /reset clears, /bye quits."""
+    name = _friendly(model)
+    is_chat = flags.get("chat") and mode == "autoregressive"
+    tty = sys.stdin.isatty()
+    print(f"{DIM}chat with {name}  -  /reset clears history, /bye quits{RST}", file=sys.stderr)
+    history = []
+    while True:
+        if tty:
+            try:
+                msg = input("\nyou> ").strip()
+            except EOFError:
+                break
+        else:
+            line = sys.stdin.readline()
+            if not line:
+                break
+            msg = line.strip()
+        if not msg:
+            continue
+        if msg in ("/bye", "/exit", "/quit"):
+            break
+        if msg == "/reset":
+            history = []; print(f"{DIM}(history cleared){RST}", file=sys.stderr); continue
+        text = (_chat_session(history, msg, fam) if is_chat
+                else "".join(f"{u}\n{a}\n" for u, a in history) + msg)
+        sys.stdout.write(f"{BOLD}{name}>{RST} ")
+        resp = _run_turn(port, mode, text, max_tokens, gpu, name, msg)
+        history.append((msg, resp))
+    print(f"{DIM}bye{RST}", file=sys.stderr)
+
+
 def cmd_run(args):
     model = resolve_model(args.model)
-    prompt = args.prompt if args.prompt is not None else (sys.stdin.read() if not sys.stdin.isatty() else None)
-    if not prompt:
-        raise CloznError('no prompt. Usage: clozn run <model> "your prompt"')
     flags = _flags_for(model)
     if args.mask is not None:
         flags["mask"] = args.mask
     if args.eos is not None:
         flags["eos"] = args.eos
+    fam = flags.get("tmpl", "qwen")
     warm = None if args.cpu else _find_warm(model)     # reuse a live `clozn serve` instead of reloading
     proc = logf = None
     if warm:
@@ -509,23 +570,15 @@ def cmd_run(args):
         print(f"{DIM}- {_friendly(model)} on {'GPU' if gpu else 'CPU'} build ({mode}), "
               f"ready in {time.time()-t0:.1f}s{RST}", file=sys.stderr, flush=True)
     try:
-        is_chat = flags.get("chat") and mode == "autoregressive"
-        text = _chat_wrap(prompt, flags.get("tmpl", "qwen")) if is_chat else prompt
-        g0 = time.time()
-        traced = False
-        if mode == "autoregressive":
-            n, steps = stream_ar(port, text, args.max)
-            sys.stdout.write("\n")
-            traced = bool(_save_trace({"id": _runid(), "model": _friendly(model), "prompt": prompt,
-                          "backend": "GPU" if gpu else "CPU", "mode": mode, "n": n, "t": time.time()}, steps))
-        else:                                                  # diffusion: print the final ordered text
-            out = complete_once(port, text, args.max).strip()
-            print(out); n = len(out.split())
-        dt = time.time() - g0
-        rate = f", ~{n/dt:.0f} tok/s" if dt > 0 and mode == "autoregressive" else ""
-        print(f"{DIM}- {n} tokens in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{RST}", file=sys.stderr)
-        if traced:
-            print(f"{DIM}  clozn trace   inspect where it was uncertain + what it almost said{RST}", file=sys.stderr)
+        if args.prompt is not None:                            # one-shot
+            is_chat = flags.get("chat") and mode == "autoregressive"
+            text = _chat_wrap(args.prompt, fam) if is_chat else args.prompt
+            _run_turn(port, mode, text, args.max, gpu, _friendly(model), args.prompt)
+            if mode == "autoregressive":
+                print(f"{DIM}  clozn trace   inspect where it was uncertain + what it almost said{RST}",
+                      file=sys.stderr)
+        else:                                                  # interactive REPL (Ollama-style)
+            _repl(port, mode, flags, fam, gpu, model, args.max)
     finally:
         if proc:                                       # only tear down an engine WE spawned; leave warm ones up
             proc.terminate()

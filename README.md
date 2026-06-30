@@ -26,6 +26,7 @@ clozn ps                                  # what's running    ·    clozn stop q
 ```
 
 Chat templates are per-family (Qwen / Llama-3 / Mistral / Gemma), so pulled models chat coherently, not just Qwen.
+Drop the prompt — `clozn run llama-1b` — for an interactive chat (multi-turn, `/reset` clears, `/bye` quits).
 
 `clozn run` reuses a running `serve` for that model (warm, no reload); otherwise it spawns a temporary
 engine and tears it down after. Stale daemon entries self-heal (a dead one fails its health check).
