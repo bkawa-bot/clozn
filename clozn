@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# clozn launcher (posix) -- runs the stdlib-only CLI with whatever python is on PATH.
+exec python "$(dirname "$0")/clozn_cli.py" "$@"

@@ -11,6 +11,22 @@ inspect.
 → **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design, the layers, the state-stream protocol.
 → **[ROADMAP.md](ROADMAP.md)** — from here to the memory frontier, broken into tasks.
 
+## Quickstart
+
+Run a local model in one command. `clozn` wraps the C++ engine: it finds your build (GPU if present),
+puts the right DLLs on PATH, streams tokens, reports honestly what it's running on, and fails with one
+clear line instead of a stack trace. Stdlib only — no `pip install`.
+
+```bash
+clozn models                              # discover local GGUFs + the backend that would run them
+clozn run qwen "Explain entropy simply."  # one-shot, streams tokens to the terminal
+clozn serve qwen --port 8080              # OpenAI-compatible endpoint — point any client at /v1
+```
+
+`clozn run …` works once the repo root is on PATH; otherwise `python clozn_cli.py run …`. Put GGUFs in
+`~/.clozn/models`, set `CLOZN_MODELS=<dir>`, or list dirs in `~/.clozn/config.json`. Build the engine
+first: `cd engine/core && build_gpu.bat` (GPU, CUDA) or `build_serve.bat` (CPU).
+
 ## Layout
 
 | Dir | What |
