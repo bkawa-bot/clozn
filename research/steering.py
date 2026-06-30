@@ -51,7 +51,10 @@ AXES = {
                  "neg": "Respond abstractly, in general high-level concepts with no specifics.", "poles": ("concrete", "abstract"), "max": 0.5},
 }
 
-# Neutral user turns to elicit the contrast on. Varied so the captured direction is tone, not topic.
+# Neutral user turns to elicit the contrast on. Varied (asking / sharing / venting / deciding; factual,
+# emotional, practical; short + medium) so the averaged direction captures TONE, not any one topic.
+# More + more-varied seeds => a lower-variance, less topic-leaky estimate of the same axis (chat-like on
+# purpose -- the dial is applied during chat, so off-domain seeds would only dilute it).
 SEED_PROMPTS = [
     "Tell me about your weekend plans.",
     "Can you help me with a problem at work?",
@@ -59,6 +62,18 @@ SEED_PROMPTS = [
     "Give me some advice for today.",
     "Explain what you can help with.",
     "I just got back from a trip.",
+    "I'm trying to decide between two job offers.",
+    "Why is the sky blue?",
+    "I had a rough day and just need to vent.",
+    "What's a good book to read this month?",
+    "Walk me through how to set up a budget.",
+    "My friend and I had a disagreement yesterday.",
+    "I'm thinking about picking up a new hobby.",
+    "Summarize what's been going on in the news.",
+    "Honestly, is it worth learning to cook?",
+    "Tell me something interesting.",
+    "I keep procrastinating on a big project.",
+    "What should I make for dinner tonight?",
 ]
 
 

@@ -129,6 +129,15 @@ class Substrate:
             return {"strength": float(getattr(m, "memory_strength", 1.0)), "has_prefix": m.prefix is not None}
         return None
 
+    def _ensure_steer(self):
+        """Compute the axis vectors once, race-safe (double-checked lock). Two dial calls racing on first
+        use could otherwise both run compute() on the shared model at once and corrupt it (IndexError)."""
+        if not self._steer_ready:
+            with self._steer_lock:
+                if not self._steer_ready:
+                    self._steer_info = self.steer.compute()
+                    self._steer_ready = True
+
     def _steer(self, path, body):
         from steering import AXES
         if path == "/steer/axes":
@@ -138,9 +147,7 @@ class Substrate:
                 axes.append({"name": k, "poles": v["poles"], "value": self.steer.strength.get(k, 0.0),
                              "max": v["max"], "custom": True})
             return {"axes": axes, "ready": self._steer_ready, "substrate": self.name}
-        if not self._steer_ready:               # compute the axis vectors on first real use
-            self._steer_info = self.steer.compute()
-            self._steer_ready = True
+        self._ensure_steer()                    # compute the axis vectors once on first real use (race-safe)
         if path == "/steer/compute":
             return {"ready": True, **self._steer_info}
         if path == "/steer/set":
@@ -195,7 +202,7 @@ class QwenSubstrate(Substrate):
                                 persist_path=_pers("studio_memory.pt"))
         self.steer = SteeringControl(model, tok)            # tone dials on the same model
         self._mem = self.memory
-        self._steer_ready, self._steer_info = False, {}
+        self._steer_ready, self._steer_info, self._steer_lock = False, {}, threading.Lock()
         self._pers_steer = _pers("studio_personality.json")
         self.steer.load_state(self._pers_steer)             # restore the personality dials across restarts
         self.steer.load_custom(_pers(f"studio_custom_{self.name}.json"))    # + any user-defined dials
@@ -231,9 +238,8 @@ class QwenSubstrate(Substrate):
         prefix (learned + added traits) AND the active tone-steering sliders, both on the shared model.
         This is what the OpenAI-compatible endpoint serves -- normal chat on the surface, legible and
         tunable underneath."""
-        if self.steer.strength and not self._steer_ready:   # persisted personality -> ensure vectors are ready
-            self.steer.compute()
-            self._steer_ready = True
+        if self.steer.strength:                 # persisted personality -> ensure vectors are ready (race-safe)
+            self._ensure_steer()
         self.steer.engage()
         try:
             return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample,
@@ -248,9 +254,8 @@ class QwenSubstrate(Substrate):
         import threading
         import torch
         from transformers import TextIteratorStreamer
-        if self.steer.strength and not self._steer_ready:
-            self.steer.compute()
-            self._steer_ready = True
+        if self.steer.strength:
+            self._ensure_steer()
         m = self.memory
         e = m._embed(m._chat_ids(messages))
         if m.prefix is not None:                            # prepend the consolidated memory prefix (scaled by the dial)
@@ -292,7 +297,7 @@ class DreamSubstrate(Substrate):
         self.adapter = build_adapter("dream", device="cuda", quant="nf4")
         self._trace = trace_for
         self.steer = DreamSteering(self.adapter)            # tone dials on the diffusion model
-        self._steer_ready, self._steer_info = False, {}
+        self._steer_ready, self._steer_info, self._steer_lock = False, {}, threading.Lock()
         self._pers_steer = _pers("studio_dream_personality.json")
         self.steer.load_state(self._pers_steer)
         self.dmem = DreamMemory(self.adapter,               # diffusion-native memory (trained soft prefix)
