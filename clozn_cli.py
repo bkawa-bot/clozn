@@ -233,6 +233,63 @@ def _log_tail(logf, n=400):
         return ""
 
 
+# --------------------------------------------------------------- warm-daemon registry (clozn serve <-> run)
+# `clozn serve` records {port -> model/gpu/mode} here; `clozn run` reuses a live one instead of reloading.
+# Stale entries self-heal: a dead serve fails the /health check in _find_warm and is ignored (then pruned).
+
+REG = os.path.join(HOME, "daemons.json")
+
+
+def _reg_read() -> dict:
+    try:
+        return json.load(open(REG))
+    except Exception:
+        return {}
+
+
+def _reg_write(d: dict):
+    os.makedirs(HOME, exist_ok=True)
+    try:
+        json.dump(d, open(REG, "w"))
+    except Exception:
+        pass
+
+
+def _register(model: str, port: int, gpu: bool, mode: str, pid: int):
+    d = _reg_read(); d[str(port)] = {"model": model, "gpu": gpu, "mode": mode, "pid": pid}; _reg_write(d)
+
+
+def _kill(pid: int):
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            os.kill(pid, 15)
+    except Exception:
+        pass
+
+
+def _unregister(port: int):
+    d = _reg_read()
+    if d.pop(str(port), None) is not None:
+        _reg_write(d)
+
+
+def _find_warm(model: str):
+    """A live `clozn serve` for this exact model -> (port, gpu, mode), pruning dead entries. Else None."""
+    d = _reg_read(); hit = None; dirty = False
+    for port, ent in list(d.items()):
+        h = _health(int(port), timeout=1.0)
+        if not (h and h.get("status") == "ok"):
+            d.pop(port, None); dirty = True; continue           # prune the dead
+        if ent.get("model") == model and hit is None:
+            hit = (int(port), bool(ent.get("gpu")), ent.get("mode", h.get("mode", "?")))
+    if dirty:
+        _reg_write(d)
+    return hit
+
+
 # ----------------------------------------------------------------------------- prompting
 
 SYS = "You are a helpful assistant."
@@ -311,15 +368,22 @@ def cmd_run(args):
         flags["mask"] = args.mask
     if args.eos is not None:
         flags["eos"] = args.eos
-    os.makedirs(HOME, exist_ok=True)
-    logf = open(os.path.join(HOME, "engine-run.log"), "w")
-    port = args.port or _free_port()
-    print(f"{DIM}- loading {_friendly(model)} …{RST}", file=sys.stderr, flush=True)
-    t0 = time.time()
-    proc, health, gpu = spawn_engine(model, port, flags, prefer_gpu=not args.cpu, logf=logf)
-    mode = health.get("mode", "?")
-    print(f"{DIM}- {_friendly(model)} on {'GPU' if gpu else 'CPU'} build ({mode}), "
-          f"ready in {time.time()-t0:.1f}s{RST}", file=sys.stderr, flush=True)
+    warm = None if args.cpu else _find_warm(model)     # reuse a live `clozn serve` instead of reloading
+    proc = logf = None
+    if warm:
+        port, gpu, mode = warm
+        print(f"{DIM}- {_friendly(model)} warm on port {port} ({'GPU' if gpu else 'CPU'}, {mode}){RST}",
+              file=sys.stderr, flush=True)
+    else:
+        os.makedirs(HOME, exist_ok=True)
+        logf = open(os.path.join(HOME, "engine-run.log"), "w")
+        port = args.port or _free_port()
+        print(f"{DIM}- loading {_friendly(model)} …{RST}", file=sys.stderr, flush=True)
+        t0 = time.time()
+        proc, health, gpu = spawn_engine(model, port, flags, prefer_gpu=not args.cpu, logf=logf)
+        mode = health.get("mode", "?")
+        print(f"{DIM}- {_friendly(model)} on {'GPU' if gpu else 'CPU'} build ({mode}), "
+              f"ready in {time.time()-t0:.1f}s{RST}", file=sys.stderr, flush=True)
     try:
         is_chat = flags.get("chat") and mode == "autoregressive"
         text = _chat_wrap(prompt) if is_chat else prompt
@@ -334,12 +398,14 @@ def cmd_run(args):
         rate = f", ~{n/dt:.0f} tok/s" if dt > 0 and mode == "autoregressive" else ""
         print(f"{DIM}- {n} tokens in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{RST}", file=sys.stderr)
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            proc.kill()
-        logf.close()
+        if proc:                                       # only tear down an engine WE spawned; leave warm ones up
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+        if logf:
+            logf.close()
 
 
 def cmd_serve(args):
@@ -361,7 +427,8 @@ def cmd_serve(args):
     print(f"  OpenAI-compatible endpoint:  {BOLD}{base}/v1{RST}")
     print(f"  text completions:            POST {base}/v1/completions")
     print(f"  live viz / health:           {base}/   -   {base}/health")
-    print(f"\n  {DIM}point any OpenAI client at {base}/v1  -  Ctrl-C to stop{RST}\n")
+    print(f"\n  {DIM}point any OpenAI client at {base}/v1  -  `clozn run {_friendly(model)} ...` reuses this  -  Ctrl-C to stop{RST}\n")
+    _register(model, port, gpu, health.get("mode", "?"), proc.pid)   # so `clozn run`/`ps`/`stop` can find it
     try:
         proc.wait()
     except KeyboardInterrupt:
@@ -371,6 +438,40 @@ def cmd_serve(args):
             proc.wait(timeout=5)
         except Exception:
             proc.kill()
+    finally:
+        _unregister(port)
+
+
+def cmd_ps(_args):
+    d = _reg_read(); live = []; dirty = False
+    for port, ent in list(d.items()):
+        h = _health(int(port), timeout=1.0)
+        if h and h.get("status") == "ok":
+            live.append((port, ent))
+        else:
+            d.pop(port, None); dirty = True
+    if dirty:
+        _reg_write(d)
+    if not live:
+        print("no clozn serve daemons running."); return
+    print(f"{'MODEL':<14} {'PORT':>6}  {'BACKEND':<8} MODE")
+    for port, ent in live:
+        print(f"{_friendly(ent.get('model', '?')):<14} {port:>6}  "
+              f"{('GPU' if ent.get('gpu') else 'CPU'):<8} {ent.get('mode', '?')}")
+
+
+def cmd_stop(args):
+    d = _reg_read()
+    targets = [(port, ent) for port, ent in d.items()
+               if args.which in ("all", str(port)) or _friendly(ent.get("model", "")) == args.which]
+    if not targets:
+        raise CloznError(f"no running daemon matches '{args.which}'. See: clozn ps")
+    for port, ent in targets:
+        if ent.get("pid"):
+            _kill(int(ent["pid"]))
+        d.pop(port, None)
+        print(f"stopped {_friendly(ent.get('model', '?'))} on port {port}")
+    _reg_write(d)
 
 
 def main(argv=None):
@@ -393,6 +494,9 @@ def main(argv=None):
     ps.set_defaults(fn=cmd_serve)
 
     sub.add_parser("models", help="list local models + the engine backend").set_defaults(fn=cmd_models)
+    sub.add_parser("ps", help="list running serve daemons").set_defaults(fn=cmd_ps)
+    pstop = sub.add_parser("stop", help="stop a serve daemon (by model name, port, or 'all')")
+    pstop.add_argument("which"); pstop.set_defaults(fn=cmd_stop)
 
     args = p.parse_args(argv)
     if not getattr(args, "fn", None):

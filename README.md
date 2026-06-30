@@ -21,7 +21,11 @@ clear line instead of a stack trace. Stdlib only — no `pip install`.
 clozn models                              # discover local GGUFs + the backend that would run them
 clozn run qwen "Explain entropy simply."  # one-shot, streams tokens to the terminal
 clozn serve qwen --port 8080              # OpenAI-compatible endpoint — point any client at /v1
+clozn ps                                  # what's running    ·    clozn stop qwen   to stop it
 ```
+
+`clozn run` reuses a running `serve` for that model (warm, no reload); otherwise it spawns a temporary
+engine and tears it down after. Stale daemon entries self-heal (a dead one fails its health check).
 
 `clozn run …` works once the repo root is on PATH; otherwise `python clozn_cli.py run …`. Put GGUFs in
 `~/.clozn/models`, set `CLOZN_MODELS=<dir>`, or list dirs in `~/.clozn/config.json`. Build the engine
