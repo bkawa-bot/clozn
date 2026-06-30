@@ -112,6 +112,10 @@ class SteeringControl:
                 v = (s * self.base * self.vecs[name]).to(h.device, h.dtype)
                 add = v if add is None else add + v
         if add is not None:
+            cap = self.base * 1.0                       # cap the BLEND at the single-dial sweet spot so combined dials stay coherent
+            n = float(add.norm())
+            if n > cap:
+                add = add * (cap / n)
             h = h + add
         return (h,) + out[1:] if isinstance(out, tuple) else h
 
