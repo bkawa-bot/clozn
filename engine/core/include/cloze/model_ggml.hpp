@@ -135,6 +135,13 @@ public:
     void clear_write();
     int n_layer() const { return n_layer_; }
 
+    // Diffusion soft-PREFIX injection (train-on-HF / serve-on-engine hybrid, diffusion side): lay a
+    // continuous prefix (m x n_embd, row-major) as a FROZEN block at positions [0,m) that the whole board
+    // attends to; the board's KV shifts to [m, m+n). Contained to forward() via pos_offset_ -- the scheduler
+    // stays oblivious (the C++ analogue of the lab's PrefixAdapter). Clear before reusing the pooled context.
+    void set_diffusion_prefix(const std::vector<float>& embd, int m);
+    void clear_diffusion_prefix();
+
     // --- Autoregressive (causal) decode: the white-box read/steer harness over a standard
     // left-to-right LLM (any llama.cpp AR GGUF — Llama/Qwen/Mistral/...), as opposed to the
     // diffusion denoiser. The interpretability primitives (tap, probes, steering) are identical;
@@ -182,6 +189,7 @@ private:
     // (triggering the D2H copy): row j == position from+j, valid until the next decode.
     void decode_only(const std::vector<int>& board, int from, int to);
     const float* decode_segment(const std::vector<int>& board, int from, int to);
+    void decode_prefix_embd();   // lay the diffusion soft prefix as embd at [0, diff_m_) (frozen context)
 
     // Decode [from, to) and freeze it: capture the boundary row (logits for position to-1,
     // the shifted-head source for the next block's first slot) and advance frozen_end_.
@@ -218,6 +226,9 @@ private:
     std::vector<int> write_positions_;   // board positions to overwrite
     std::vector<float> write_buf_;       // [write_positions_.size()*n_embd] new residual rows
     int write_from_ = 0;                 // current decode segment's `from` (board position -> tensor row)
+    std::vector<float> diff_prefix_;     // [diff_m_ * n_embd] diffusion soft prefix, laid as a frozen block [0,diff_m_)
+    int diff_m_ = 0;                     // diffusion prefix length (0 = none)
+    int pos_offset_ = 0;                 // = diff_m_ when a prefix is active: shifts the board's physical KV positions
     // ggml scheduler eval callback: grabs the mid-layer residual during llama_decode (no source patch).
     static bool eval_cb_thunk(struct ggml_tensor* t, bool ask, void* user_data);
     bool eval_cb(struct ggml_tensor* t, bool ask);

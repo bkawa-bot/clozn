@@ -87,8 +87,9 @@ GgmlAdapter::~GgmlAdapter() {
 }
 
 void GgmlAdapter::evict_from(int pos) {
-    // Drop KV for positions [pos, inf) on the single sequence (seq 0).
-    llama_memory_seq_rm(llama_get_memory(ctx_), 0, pos, -1);
+    // Drop KV for board positions [pos, inf); pos_offset_ maps to physical positions so a diffusion prefix
+    // laid at [0, pos_offset_) is never evicted (board pos >= 0 => physical >= pos_offset_).
+    llama_memory_seq_rm(llama_get_memory(ctx_), 0, pos_offset_ + pos, -1);
 }
 
 void GgmlAdapter::set_emit_activations(bool on) {
@@ -321,7 +322,7 @@ void GgmlAdapter::decode_only(const std::vector<int>& board, int from, int to) {
     batch.n_tokens = len;
     for (int i = 0; i < len; ++i) {
         batch.token[i] = static_cast<llama_token>(board[from + i]);
-        batch.pos[i] = from + i;            // absolute position: RoPE + KV slot
+        batch.pos[i] = pos_offset_ + from + i;   // physical position (shifted by a diffusion prefix, if any)
         batch.n_seq_id[i] = 1;
         batch.seq_id[i][0] = 0;
         batch.logits[i] = 1;                // logits at every position of the segment
@@ -346,6 +347,42 @@ void GgmlAdapter::freeze_segment(const std::vector<int>& board, int from, int to
     const float* src = rows + static_cast<size_t>((to - 1) - from) * vocab;
     boundary_row_.assign(src, src + vocab);
     frozen_end_ = to;
+}
+
+void GgmlAdapter::decode_prefix_embd() {
+    // Lay the soft prefix as raw embeddings at PHYSICAL positions [0, diff_m_) (NOT offset -- the prefix IS
+    // the offset). In the current bidirectional/diffusion attention mode it attends only to itself (nothing
+    // after it exists yet), so it's frozen-exact under the one-way law; the board then attends to it.
+    if (diff_m_ <= 0 || n_embd_ <= 0) return;
+    decoded_tokens_ += diff_m_;
+    llama_batch batch = llama_batch_init(diff_m_, n_embd_, 1);
+    batch.n_tokens = diff_m_;
+    for (int i = 0; i < diff_m_; ++i) {
+        std::memcpy(batch.embd + static_cast<size_t>(i) * n_embd_,
+                    diff_prefix_.data() + static_cast<size_t>(i) * n_embd_,
+                    static_cast<size_t>(n_embd_) * sizeof(float));
+        batch.pos[i] = i;                   // physical [0, diff_m_): the frozen prefix block
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = (i == diff_m_ - 1) ? 1 : 0;
+    }
+    const int rc = llama_decode(ctx_, batch);
+    llama_batch_free(batch);
+    if (rc != 0) throw std::runtime_error("decode_prefix_embd: llama_decode failed");
+}
+
+void GgmlAdapter::set_diffusion_prefix(const std::vector<float>& embd, int m) {
+    if (m <= 0 || n_embd_ <= 0 || static_cast<int>(embd.size()) != m * n_embd_)
+        throw std::invalid_argument("set_diffusion_prefix: embd size != m*n_embd");
+    diff_prefix_ = embd;
+    diff_m_ = m;
+    pos_offset_ = m;
+}
+
+void GgmlAdapter::clear_diffusion_prefix() {
+    diff_prefix_.clear();
+    diff_m_ = 0;
+    pos_offset_ = 0;
 }
 
 int GgmlAdapter::active_start_from_mask(const Mask& mask, int n) {
@@ -390,6 +427,7 @@ ForwardResult GgmlAdapter::forward(const std::vector<int>& board,
         llama_memory_clear(llama_get_memory(ctx_), true);
         frozen_end_ = 0;
         boundary_row_.clear();
+        if (diff_m_ > 0) decode_prefix_embd();   // lay the soft prefix as a frozen block [0, diff_m_)
     }
     // Lay down + freeze the just-finalized block(s) so [0, active_start) is frozen-exact.
     // The gap is always exactly one block (prompt, or the block that just finalized), so a
@@ -402,6 +440,7 @@ ForwardResult GgmlAdapter::forward(const std::vector<int>& board,
         llama_memory_clear(llama_get_memory(ctx_), true);
         frozen_end_ = 0;
         boundary_row_.clear();
+        if (diff_m_ > 0) decode_prefix_embd();   // re-lay the prefix after the cold reset
         if (active_start > 0) freeze_segment(board, 0, active_start);
     }
 

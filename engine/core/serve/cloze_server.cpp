@@ -859,8 +859,8 @@ int main(int argc, char** argv) {
         // prefix_rows x n_embd float array spliced in ahead of the prompt before decoding. AR-only.
         std::vector<float> prefix_embd;
         const int prefix_rows = body.value("prefix_rows", 0);
-        if (ar_mode && prefix_rows > 0 && body.contains("prefix_embd") && body["prefix_embd"].is_array()) {
-            prefix_embd = body["prefix_embd"].get<std::vector<float>>();
+        if (prefix_rows > 0 && body.contains("prefix_embd") && body["prefix_embd"].is_array()) {
+            prefix_embd = body["prefix_embd"].get<std::vector<float>>();   // AR: ar_forward_embd; diffusion: set_diffusion_prefix
         }
         // Optional RAW tone direction (the studio's engine tone dials): an n_embd control vector applied
         // via set_steer during THIS generation -- so memory (prefix) + tone steer ride together. AR-only.
@@ -901,12 +901,17 @@ int main(int argc, char** argv) {
             }
             // AR model => the causal left-to-right loop (same white-box reads/steering, no scheduler).
             // Diffusion => the denoiser (whole-sequence generate, or infill between prefix/suffix).
+            // Diffusion: a soft prefix rides in as a frozen block via set_diffusion_prefix (AR uses the
+            // ar_forward_embd arg instead). Either way it's the HF-trained memory, injected into the GGUF.
+            const bool diff_prefix = !ar_mode && !prefix_embd.empty() && prefix_rows > 0;
+            if (diff_prefix) (*lease).set_diffusion_prefix(prefix_embd, prefix_rows);
             auto r = ar_mode
                        ? generate_ar(*lease, prompt_ids, cfg, on_event, sample, probes,
                                      prefix_embd.empty() ? nullptr : &prefix_embd, prefix_rows)
                        : (is_infill
                             ? infill(*lease, prompt_ids, suffix_ids, gap, cfg, nullptr, on_event, revise, sample, probes)
                             : generate(*lease, prompt_ids, cfg, cache, nullptr, on_event, revise, sample, probes));
+            if (diff_prefix) (*lease).clear_diffusion_prefix();
             if (steering || raw_steer) (*lease).clear_steer();
             (*lease).set_emit_activations(false);  // reset before returning the pooled context
             return r;
