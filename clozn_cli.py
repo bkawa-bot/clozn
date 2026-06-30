@@ -36,12 +36,27 @@ BUILDS = [("build-gpu", True), ("build-cuda", True),
 # Known models: a filename fragment -> friendly name + launch flags. mask/eos => diffusion; chat => wrap the
 # prompt in the chat template; AR models need no special flags (the engine auto-detects mode from the GGUF).
 KNOWN = [
-    ("qwen2.5-7b-instruct",  "qwen",      {"chat": True}),
+    ("qwen2.5-7b-instruct",   "qwen",      {"chat": True}),
     ("qwen2.5-0.5b-instruct", "qwen-0.5b", {"chat": True}),
-    ("dream-v0-instruct",    "dream",     {"chat": True, "mask": 151666}),
-    ("llada-8b-instruct",    "llada",     {"chat": True, "mask": 126336, "eos": 126081}),
-    ("open-dcoder",          "dcoder",    {"mask": 151666}),
+    ("dream-v0-instruct",     "dream",     {"chat": True, "mask": 151666}),
+    ("llada-8b-instruct",     "llada",     {"chat": True, "mask": 126336, "eos": 126081}),
+    ("open-dcoder",           "dcoder",    {"mask": 151666}),
+    ("mistral-7b-instruct",   "mistral",   {"chat": True, "tmpl": "mistral"}),
+    ("llama-3.2-1b-instruct", "llama-1b",  {"chat": True, "tmpl": "llama3"}),
+    ("llama-3.2-3b-instruct", "llama-3b",  {"chat": True, "tmpl": "llama3"}),
+    ("gemma-2-2b-it",         "gemma-2b",  {"chat": True, "tmpl": "gemma"}),
 ]
+
+# Models `clozn pull` knows how to fetch: name -> (HF repo, file). Verified ungated single-file GGUFs.
+# Anything else: `clozn pull owner/repo/file.gguf`.
+PULLABLE = {
+    "qwen-0.5b": ("bartowski/Qwen2.5-0.5B-Instruct-GGUF",    "Qwen2.5-0.5B-Instruct-Q8_0.gguf"),
+    "qwen":      ("bartowski/Qwen2.5-7B-Instruct-GGUF",      "Qwen2.5-7B-Instruct-Q4_K_M.gguf"),
+    "mistral":   ("bartowski/Mistral-7B-Instruct-v0.3-GGUF", "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"),
+    "llama-1b":  ("bartowski/Llama-3.2-1B-Instruct-GGUF",    "Llama-3.2-1B-Instruct-Q4_K_M.gguf"),
+    "llama-3b":  ("bartowski/Llama-3.2-3B-Instruct-GGUF",    "Llama-3.2-3B-Instruct-Q4_K_M.gguf"),
+    "gemma-2b":  ("bartowski/gemma-2-2b-it-GGUF",            "gemma-2-2b-it-Q4_K_M.gguf"),
+}
 
 DIM = BOLD = RST = ""           # set by _setup_console() when the terminal supports ANSI
 
@@ -295,7 +310,16 @@ def _find_warm(model: str):
 SYS = "You are a helpful assistant."
 
 
-def _chat_wrap(prompt: str) -> str:
+def _chat_wrap(prompt: str, family: str = "qwen") -> str:
+    """Wrap a user turn in the model family's chat template. BOS is left to the engine (add_bos)."""
+    if family == "mistral":
+        return f"[INST] {prompt} [/INST]"
+    if family == "llama3":
+        return ("<|start_header_id|>system<|end_header_id|>\n\n" + SYS +
+                "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n" + prompt +
+                "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n")
+    if family == "gemma":
+        return f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
     return (f"<|im_start|>system\n{SYS}<|im_end|>\n"
             f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
 
@@ -404,6 +428,60 @@ def cmd_models(_args):
     print(f"\nrun one:  clozn run {_friendly(models[0])} \"your prompt\"")
 
 
+def _rm(p):
+    try:
+        os.remove(p)
+    except Exception:
+        pass
+
+
+def cmd_pull(args):
+    spec = args.model
+    if spec in PULLABLE:
+        repo, file = PULLABLE[spec]
+    elif spec.endswith(".gguf") and spec.count("/") >= 2:
+        parts = spec.split("/"); repo, file = "/".join(parts[:-1]), parts[-1]
+    else:
+        raise CloznError(f"don't know how to pull '{spec}'. Known: {', '.join(PULLABLE)}. "
+                         f"Or give an explicit  owner/repo/file.gguf")
+    dest_dir = os.path.join(HOME, "models"); os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, file)
+    if os.path.isfile(dest):
+        print(f"already have {file} ({os.path.getsize(dest) / 1e9:.1f}G)"); return
+    url = f"https://huggingface.co/{repo}/resolve/main/{file}?download=true"
+    print(f"{DIM}pulling{RST} {file}  {DIM}from {repo}{RST}", file=sys.stderr)
+    tmp = dest + ".part"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "clozn/0.1"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            total = int(r.headers.get("Content-Length") or 0)
+            done = 0; t0 = time.time(); last = 0.0
+            with open(tmp, "wb") as f:
+                while True:
+                    b = r.read(1 << 20)
+                    if not b:
+                        break
+                    f.write(b); done += len(b)
+                    now = time.time()
+                    if now - last > 0.4 or done == total:
+                        last = now
+                        sp = done / 1e6 / max(0.1, now - t0)
+                        head = (f"{_confbar(done / total)} {done / total * 100:5.1f}%  "
+                                f"{done / 1e9:.2f}/{total / 1e9:.2f} GB") if total else f"{done / 1e9:.2f} GB"
+                        sys.stderr.write(f"\r  {head}  {sp:4.0f} MB/s   "); sys.stderr.flush()
+        sys.stderr.write("\n")
+        os.replace(tmp, dest)
+    except urllib.error.HTTPError as e:
+        _rm(tmp)
+        raise CloznError(f"{repo}/{file} not found on HuggingFace (404)." if e.code == 404
+                         else f"download failed (HTTP {e.code}).")
+    except Exception as e:
+        _rm(tmp)
+        raise CloznError(f"download failed: {e}")
+    print(f"saved {_friendly(dest)} ({os.path.getsize(dest) / 1e9:.1f}G).  "
+          f"run it:  clozn run {_friendly(dest)} \"hello\"")
+
+
 def cmd_run(args):
     model = resolve_model(args.model)
     prompt = args.prompt if args.prompt is not None else (sys.stdin.read() if not sys.stdin.isatty() else None)
@@ -432,7 +510,7 @@ def cmd_run(args):
               f"ready in {time.time()-t0:.1f}s{RST}", file=sys.stderr, flush=True)
     try:
         is_chat = flags.get("chat") and mode == "autoregressive"
-        text = _chat_wrap(prompt) if is_chat else prompt
+        text = _chat_wrap(prompt, flags.get("tmpl", "qwen")) if is_chat else prompt
         g0 = time.time()
         traced = False
         if mode == "autoregressive":
@@ -625,6 +703,8 @@ def main(argv=None):
     ps.set_defaults(fn=cmd_serve)
 
     sub.add_parser("models", help="list local models + the engine backend").set_defaults(fn=cmd_models)
+    pp = sub.add_parser("pull", help="download a model GGUF (by name, or owner/repo/file.gguf)")
+    pp.add_argument("model"); pp.set_defaults(fn=cmd_pull)
     sub.add_parser("ps", help="list running serve daemons").set_defaults(fn=cmd_ps)
     pstop = sub.add_parser("stop", help="stop a serve daemon (by model name, port, or 'all')")
     pstop.add_argument("which"); pstop.set_defaults(fn=cmd_stop)

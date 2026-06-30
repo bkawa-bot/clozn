@@ -18,11 +18,14 @@ puts the right DLLs on PATH, streams tokens, reports honestly what it's running 
 clear line instead of a stack trace. Stdlib only — no `pip install`.
 
 ```bash
+clozn pull llama-1b                       # download a model (qwen / mistral / gemma-2b / owner/repo/file.gguf)
 clozn models                              # discover local GGUFs + the backend that would run them
-clozn run qwen "Explain entropy simply."  # one-shot, streams tokens to the terminal
+clozn run llama-1b "Explain entropy."     # one-shot, streams tokens to the terminal
 clozn serve qwen --port 8080              # OpenAI-compatible endpoint — point any client at /v1
 clozn ps                                  # what's running    ·    clozn stop qwen   to stop it
 ```
+
+Chat templates are per-family (Qwen / Llama-3 / Mistral / Gemma), so pulled models chat coherently, not just Qwen.
 
 `clozn run` reuses a running `serve` for that model (warm, no reload); otherwise it spawns a temporary
 engine and tears it down after. Stale daemon entries self-heal (a dead one fails its health check).
