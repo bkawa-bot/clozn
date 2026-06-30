@@ -495,6 +495,98 @@ def cmd_pull(args):
           f"run it:  clozn run {_friendly(dest)} \"hello\"")
 
 
+def _open_browser(url):
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def _studio_health(port):
+    try:
+        r = urllib.request.urlopen(f"http://127.0.0.1:{port}/substrate", timeout=3)
+        return json.loads(r.read())
+    except Exception:
+        return None
+
+
+def _studio_python():
+    """The Studio backend needs PyTorch (HF model + SAE), so it can't use the stdlib CLI python. Prefer
+    $CLOZN_STUDIO_PYTHON, then ~/.clozn/config.json['studio_python'], then this process's own python."""
+    if os.environ.get("CLOZN_STUDIO_PYTHON"):
+        return os.environ["CLOZN_STUDIO_PYTHON"]
+    cfg = os.path.join(HOME, "config.json")
+    if os.path.isfile(cfg):
+        try:
+            sp = json.load(open(cfg)).get("studio_python")
+            if sp:
+                return sp
+        except Exception:
+            pass
+    return sys.executable
+
+
+def _studio_banner(base, health):
+    print(f"  Studio UI:        {BOLD}{base}/studio.html{RST}")
+    print(f"  OpenAI endpoint:  {BOLD}{base}/v1{RST}   (point Open WebUI / Cursor / any client here)")
+    print(f"  Lab / brain viz:  {base}/brain.html")
+    if health:
+        print(f"  Substrate:        {health.get('active')}   (available: {', '.join(health.get('available', []))})")
+
+
+def cmd_studio(args):
+    """Launch Clozn Studio -- the glass-box UI + the local OpenAI endpoint your other tools connect to."""
+    port = args.port or 8090
+    base = f"http://127.0.0.1:{port}"
+    h = _studio_health(port)
+    if h:                                                  # already up -> just point at it
+        print(f"{BOLD}Clozn Studio{RST} already running:")
+        _studio_banner(base, h)
+        if args.open:
+            _open_browser(f"{base}/studio.html")
+        return
+    server = os.path.join(REPO, "research", "clozn_server.py")
+    if not os.path.isfile(server):
+        raise CloznError(f"studio backend not found at {server}")
+    cmd = [_studio_python(), server, "--port", str(port)]
+    if args.substrate:
+        cmd += ["--substrate", args.substrate]
+    os.makedirs(HOME, exist_ok=True)
+    logf = open(os.path.join(HOME, "studio.log"), "w")
+    print(f"{DIM}- starting Clozn Studio (loading the model, ~30s) …{RST}", file=sys.stderr, flush=True)
+    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=REPO)
+    t0 = time.time()
+    while time.time() - t0 < 300:
+        if proc.poll() is not None:
+            tail = _log_tail(logf); logf.close()
+            raise CloznError(f"studio exited (code {proc.returncode}). {tail} "
+                             "(the backend needs a PyTorch python -- set CLOZN_STUDIO_PYTHON if import failed)")
+        h = _studio_health(port)
+        if h:
+            break
+        time.sleep(0.5)
+    else:
+        proc.terminate(); logf.close()
+        raise CloznError("studio did not come up within 300s.")
+    print(f"  {BOLD}Clozn Studio{RST} ready in {time.time()-t0:.0f}s\n")
+    _studio_banner(base, h)
+    if args.open:
+        _open_browser(f"{base}/studio.html")
+    print(f"\n  {DIM}your local model now runs under Clozn -- point any client at {base}/v1   -   Ctrl-C to stop{RST}\n")
+    try:
+        proc.wait()
+    except KeyboardInterrupt:
+        print(f"\n{DIM}- stopping studio{RST}", file=sys.stderr)
+        proc.terminate()
+        try:
+            proc.wait(timeout=8)
+        except Exception:
+            proc.kill()
+    finally:
+        logf.close()
+
+
 def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace):
     """One generation: stream (AR, auto-saving the trace) or denoise (diffusion). Prints stats. -> response."""
     g0 = time.time()
@@ -758,6 +850,10 @@ def main(argv=None):
     sub.add_parser("models", help="list local models + the engine backend").set_defaults(fn=cmd_models)
     pp = sub.add_parser("pull", help="download a model GGUF (by name, or owner/repo/file.gguf)")
     pp.add_argument("model"); pp.set_defaults(fn=cmd_pull)
+    pst = sub.add_parser("studio", help="launch Clozn Studio (the glass-box UI + the endpoint your tools connect to)")
+    pst.add_argument("substrate", nargs="?", default=None, help="qwen (default) | dream | engine")
+    pst.add_argument("--port", type=int, default=0); pst.add_argument("--open", action="store_true", help="open the UI in your browser")
+    pst.set_defaults(fn=cmd_studio)
     sub.add_parser("ps", help="list running serve daemons").set_defaults(fn=cmd_ps)
     pstop = sub.add_parser("stop", help="stop a serve daemon (by model name, port, or 'all')")
     pstop.add_argument("which"); pstop.set_defaults(fn=cmd_stop)
