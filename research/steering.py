@@ -70,6 +70,7 @@ class SteeringControl:
         n = model.config.num_hidden_layers
         self.layer = layer if layer is not None else n // 2     # mid layer (Qwen-7B: 28 -> 14)
         self.vecs: dict[str, torch.Tensor] = {}                 # axis -> UNIT diff direction [H]
+        self.custom: dict[str, dict] = {}                       # USER-DEFINED dials: name -> {pos, neg, max, poles}
         self.strength: dict[str, float] = {}                    # axis -> current slider value (+/-)
         self.base = 1.0                                         # per-model scale (set by compute())
         self.resid_norm = 0.0
@@ -105,10 +106,43 @@ class SteeringControl:
         #                                                         tests: ~1x|resid| good, ~2.5x breaks); cap UI ~1.8
         return {"raw_norms": out, "resid_norm": round(self.resid_norm, 1), "base": round(self.base, 2)}
 
+    @torch.no_grad()
+    def add_custom(self, name: str, pos: str, neg: str, mx: float = 0.5, seeds=SEED_PROMPTS) -> dict:
+        """A USER-DEFINED dial: the exact same recipe as the built-ins, on arbitrary poles. mean(+pole) -
+        mean(-pole) over the seeds -> a unit direction stored under `name` next to the static AXES; the
+        slider scales it like any other. Custom dials get a conservative `max` (the safe ceiling varies per
+        axis and is hard to auto-detect -- the user can nudge it)."""
+        name = name.strip()[:24]
+        pv = [self._last_resid(pos, s) for s in seeds]
+        nv = [self._last_resid(neg, s) for s in seeds]
+        d = torch.stack(pv).mean(0) - torch.stack(nv).mean(0)
+        self.vecs[name] = d / (d.norm() + 1e-8)
+        self.custom[name] = {"pos": pos, "neg": neg, "max": float(mx), "poles": [name, "neutral"]}
+        return self.custom[name]
+
+    def remove_custom(self, name: str):
+        self.custom.pop(name, None)
+        self.vecs.pop(name, None)
+        self.strength.pop(name, None)
+
+    def save_custom(self, path: str):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({k: {"pos": v["pos"], "neg": v["neg"], "max": v["max"]} for k, v in self.custom.items()}, f)
+
+    def load_custom(self, path: str):
+        if not os.path.isfile(path):
+            return
+        try:
+            for k, v in json.load(open(path, encoding="utf-8")).items():
+                self.add_custom(k, v["pos"], v["neg"], float(v.get("max", 0.5)))
+        except Exception:
+            pass
+
     def set(self, name: str, value: float):
         """Slider: value 0 = off, +x = toward the first pole, -x = toward the second. Typical |x| ~ 0..1.5.
-        Capped to the axis's per-axis "max" -- cognitive axes (candid) degenerate above their sweet spot."""
-        mx = AXES.get(name, {}).get("max", 1.5)
+        Capped to the axis's per-axis "max" -- cognitive/custom axes degenerate above their sweet spot."""
+        mx = (AXES.get(name) or self.custom.get(name) or {}).get("max", 1.5)
         self.strength[name] = max(-mx, min(mx, float(value)))
 
     def clear(self):

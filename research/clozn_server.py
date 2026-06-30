@@ -132,8 +132,12 @@ class Substrate:
     def _steer(self, path, body):
         from steering import AXES
         if path == "/steer/axes":
-            return {"axes": [{"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0)}
-                             for k in AXES], "ready": self._steer_ready, "substrate": self.name}
+            axes = [{"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0),
+                     "max": AXES[k].get("max", 1.5)} for k in AXES]
+            for k, v in getattr(self.steer, "custom", {}).items():   # user-defined dials alongside the built-ins
+                axes.append({"name": k, "poles": v["poles"], "value": self.steer.strength.get(k, 0.0),
+                             "max": v["max"], "custom": True})
+            return {"axes": axes, "ready": self._steer_ready, "substrate": self.name}
         if not self._steer_ready:               # compute the axis vectors on first real use
             self._steer_info = self.steer.compute()
             self._steer_ready = True
@@ -156,6 +160,22 @@ class Substrate:
                 self.steer.clear()
             return {"prompt": prompt, "axis": body.get("name"), "value": body.get("value", 1.0),
                     "baseline": base, "steered": steered}
+        if path == "/steer/custom":             # USER-DEFINED dial: compute mean(+pole)-mean(-pole) live
+            if not hasattr(self.steer, "add_custom"):
+                return {"error": "custom dials are not supported on this substrate yet"}
+            name = str(body.get("name", "")).strip()[:24]
+            pos, neg = str(body.get("pos", "")).strip(), str(body.get("neg", "")).strip()
+            if not (name and pos and neg):
+                return {"error": "need a name and both poles (pos, neg)"}
+            info = self.steer.add_custom(name, pos, neg, float(body.get("max", 0.5)))
+            self.steer.save_custom(_pers(f"studio_custom_{self.name}.json"))
+            return {"name": name, "max": info["max"], "custom": list(self.steer.custom)}
+        if path == "/steer/custom_delete":
+            if hasattr(self.steer, "remove_custom"):
+                self.steer.remove_custom(str(body.get("name", "")))
+                self.steer.save_custom(_pers(f"studio_custom_{self.name}.json"))
+                self.steer.save_state(self._pers_steer)
+            return {"custom": list(getattr(self.steer, "custom", {}))}
         return None
 
 
@@ -178,6 +198,7 @@ class QwenSubstrate(Substrate):
         self._steer_ready, self._steer_info = False, {}
         self._pers_steer = _pers("studio_personality.json")
         self.steer.load_state(self._pers_steer)             # restore the personality dials across restarts
+        self.steer.load_custom(_pers(f"studio_custom_{self.name}.json"))    # + any user-defined dials
 
     def handle(self, path, body):
         if path == "/think":

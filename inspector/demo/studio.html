@@ -67,6 +67,14 @@
   button.go{border:none;cursor:pointer;color:#fff;background:linear-gradient(90deg,var(--halo),var(--cyan));border-radius:22px;padding:9px 16px;font:inherit;font-size:13px;font-weight:600;transition:transform .15s,box-shadow .2s,filter .2s}
   button.go:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 18px rgba(122,167,255,.4);filter:brightness(1.05)}
   button.go:disabled{opacity:.5;cursor:default}
+  .dialmaker{margin-top:15px;border-top:1px solid var(--line);padding-top:12px}
+  .newdial{background:none;border:1px dashed var(--line);color:var(--soft);border-radius:18px;padding:7px 0;font:inherit;font-size:12.5px;cursor:pointer;width:100%;transition:border-color .15s,color .15s}
+  .newdial:hover{border-color:var(--halo);color:var(--halo)}
+  .dialform{margin-top:9px}
+  .dialform .addrow{margin:7px 0}
+  .slider .lab .dx{cursor:pointer;color:var(--faint);margin-left:7px;font-size:10px;vertical-align:middle}
+  .slider .lab .dx:hover{color:#e0607a}
+  .slider .lab .tag{font-size:9.5px;color:var(--cyan);border:1px solid var(--line);border-radius:7px;padding:0 4px;margin-left:6px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -97,6 +105,16 @@
         <h2>personality</h2>
         <div class="hint">real-time tone dials — pure activation steering, no training. drag one and send a message to feel it. mild settings (~±0.6) blend with memory; cranked high, tone takes over.</div>
         <div id="sliders"></div>
+        <div class="dialmaker">
+          <button class="newdial" id="dialtoggle">+ make your own dial</button>
+          <div class="dialform" id="dialform" style="display:none">
+            <div class="hint" style="margin:0 0 8px">describe the two ends. it runs the same recipe as the built-ins — mean(＋pole) − mean(−pole) over a few probes — and a new slider appears.</div>
+            <div class="addrow"><input id="dname" placeholder="name — e.g. skeptical" maxlength="24" autocomplete="off"></div>
+            <div class="addrow"><input id="dpos" placeholder="＋ pole — respond with sharp skepticism, demand evidence" autocomplete="off"></div>
+            <div class="addrow"><input id="dneg" placeholder="−  pole — accept claims with credulous enthusiasm" autocomplete="off"></div>
+            <div class="addrow"><button class="go" id="dcreate">create dial</button><span class="hint" id="dialmsg" style="margin:0 0 0 11px;align-self:center"></span></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -204,21 +222,38 @@ let setT=null;
 async function loadSliders(){
   let d; try{ d=await post('/steer/axes',{}); }catch(e){ return; }
   $('sliders').innerHTML = (d.axes||[]).map(a=>{
-    const [hi,lo]=a.poles;
-    return `<div class="slider"><div class="lab"><b>${a.name}</b><span class="v" id="v_${a.name}">${(+a.value).toFixed(1)}</span></div>
-      <input type="range" min="-1.5" max="1.5" step="0.1" value="${a.value}" data-name="${a.name}">
+    const [hi,lo]=a.poles; const mx=a.max||1.5;
+    const tag=a.custom?'<span class="tag">yours</span>':'';
+    const del=a.custom?`<span class="dx" data-del="${a.name}" title="delete this dial">✕</span>`:'';
+    return `<div class="slider"><div class="lab"><span><b>${a.name}</b>${tag}${del}</span><span class="v" id="v_${a.name}">${(+a.value).toFixed(2)}</span></div>
+      <input type="range" min="${-mx}" max="${mx}" step="0.05" value="${a.value}" data-name="${a.name}">
       <div class="poles"><span>${lo}</span><span>${hi}</span></div></div>`;
   }).join('');
   [...document.querySelectorAll('#sliders input')].forEach(s=> s.oninput=()=>{
-    $('v_'+s.dataset.name).textContent=(+s.value).toFixed(1);
+    $('v_'+s.dataset.name).textContent=(+s.value).toFixed(2);
     clearTimeout(setT); setT=setTimeout(()=> post('/steer/set',{name:s.dataset.name,value:parseFloat(s.value)}), 160);
   });
+  [...document.querySelectorAll('#sliders .dx')].forEach(x=> x.onclick=()=>deleteDial(x.dataset.del));
 }
+async function createDial(){
+  const name=$('dname').value.trim(), pos=$('dpos').value.trim(), neg=$('dneg').value.trim();
+  if(!name||!pos||!neg){ $('dialmsg').textContent='need a name + both poles'; return; }
+  $('dcreate').disabled=true; $('dialmsg').textContent='computing the direction…';
+  try{ const r=await post('/steer/custom',{name,pos,neg});
+    if(r&&r.error){ $('dialmsg').textContent=r.error; }
+    else{ $('dname').value=$('dpos').value=$('dneg').value=''; $('dialmsg').textContent=''; $('dialform').style.display='none'; await loadSliders(); }
+  }catch(e){ $('dialmsg').textContent='failed'; }
+  $('dcreate').disabled=false;
+}
+async function deleteDial(name){ try{ await post('/steer/custom_delete',{name}); await loadSliders(); }catch(e){} }
 
 $('send').onclick=send; $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')send();});
 $('add').onclick=addTrait; $('trait').addEventListener('keydown',e=>{if(e.key==='Enter')addTrait();});
 $('clearmem').onclick=clearMem;
 loadCards(); loadSliders();
+$('dialtoggle').onclick=()=>{ const f=$('dialform'); const open=f.style.display==='none'; f.style.display=open?'block':'none'; if(open)$('dname').focus(); };
+$('dcreate').onclick=createDial;
+$('dneg').addEventListener('keydown',e=>{if(e.key==='Enter')createDial();});
 $('memstr').oninput=()=>$('msval').textContent=(+$('memstr').value).toFixed(1);
 $('memstr').onchange=()=>post('/memory/strength',{value:parseFloat($('memstr').value)});
 post('/memory/strength',{}).then(d=>{ if(d&&d.strength!=null){ $('memstr').value=d.strength; $('msval').textContent=(+d.strength).toFixed(1); } }).catch(()=>{});
