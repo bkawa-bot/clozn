@@ -375,19 +375,48 @@ def make_handler():
                 self.wfile.write(("data: " + json.dumps(o) + "\n\n").encode("utf-8"))
                 self.wfile.flush()
 
+            t0 = time.time(); acc = []
             try:
                 chunk({"role": "assistant"})
                 for piece in SUB.chat_stream(messages, max_new):
-                    chunk({"content": piece})
+                    acc.append(piece); chunk({"content": piece})
                 chunk({}, finish="stop")
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
+                self._log_run("openai_api", messages, "".join(acc), model, t0)
             except Exception as e:
+                self._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e))
                 try:
                     self.wfile.write(("data: " + json.dumps({"error": str(e)}) + "\n\n").encode("utf-8"))
                     self.wfile.flush()
                 except Exception:
                     pass
+
+        def _client(self, ua):
+            ua = (ua or "").lower()
+            for k, v in (("open-webui", "Open WebUI"), ("openwebui", "Open WebUI"), ("cursor", "Cursor"),
+                         ("vscode", "VS Code"), ("python-requests", "script"), ("httpx", "script"),
+                         ("openai-python", "script"), ("curl", "curl"), ("mozilla", "browser")):
+                if k in ua:
+                    return v
+            return ua[:24] or "unknown"
+
+        def _log_run(self, source, messages, response, model, started, error=None):
+            """Persist this interaction as an inspectable run (never let logging break the request)."""
+            try:
+                import runlog
+                mem = getattr(SUB, "memory", None)
+                cards = getattr(mem, "rules", None) or getattr(mem, "cards", None) or [] if mem else []
+                memd = {"cards_applied": list(cards),
+                        "strength": float(getattr(mem, "memory_strength", 1.0)),
+                        "has_prefix": getattr(mem, "prefix", None) is not None,
+                        "proposed_cards": []} if mem else {}
+                dials = SUB.steer.active() if (SUB and hasattr(SUB, "steer")) else {}
+                runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
+                              model=str(model), substrate=SUBNAME, messages=messages, response=response,
+                              memory=memd, behavior={"active_dials": dials}, started=started, error=error)
+            except Exception:
+                pass
 
         def do_GET(self):
             p = self.path.split("?")[0]
@@ -405,6 +434,13 @@ def make_handler():
                     return self._json(502, {"error": f"engine unreachable: {e}"})
             if p == "/state":
                 return self._json(200, {"substrate": SUBNAME, **(SUB.state() if SUB else {})})
+            if p == "/runs":                 # the Run Log -- every interaction, newest first (the Studio Runs page)
+                import runlog
+                return self._json(200, {"runs": runlog.list_runs(80)})
+            if p.startswith("/runs/"):
+                import runlog
+                r = runlog.get_run(p.split("/runs/", 1)[1])
+                return self._json(200, r) if r else self._json(404, {"error": "run not found"})
             if p.endswith((".html", ".css", ".js")):
                 fn = os.path.join(DEMO, os.path.basename(p))
                 if os.path.isfile(fn):
@@ -519,7 +555,9 @@ def make_handler():
                 msgs, mx = body.get("messages", []), int(body.get("max_tokens", 256))
                 if body.get("stream") and getattr(SUB, "chat_stream", None):
                     return self._sse_chat(msgs, mx, str(body.get("model", "clozn-qwen")))
+                t0 = time.time()
                 reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0)
+                self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0)
                 return self._json(200, {"id": "chatcmpl-clozn", "object": "chat.completion",
                                         "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
                                         "choices": [{"index": 0, "finish_reason": "stop",
