@@ -27,6 +27,13 @@ clozn ps                                  # what's running    ·    clozn stop q
 `clozn run` reuses a running `serve` for that model (warm, no reload); otherwise it spawns a temporary
 engine and tears it down after. Stale daemon entries self-heal (a dead one fails its health check).
 
+Every run is debuggable after the fact — the engine streams per-token confidence + the alternatives it weighed:
+
+```bash
+clozn trace                               # the last run's confidence timeline + what it almost said
+clozn branch                              # re-run from the most uncertain token on the alternative
+```
+
 `clozn run …` works once the repo root is on PATH; otherwise `python clozn_cli.py run …`. Put GGUFs in
 `~/.clozn/models`, set `CLOZN_MODELS=<dir>`, or list dirs in `~/.clozn/config.json`. Build the engine
 first: `cd engine/core && build_gpu.bat` (GPU, CUDA) or `build_serve.bat` (CPU).
