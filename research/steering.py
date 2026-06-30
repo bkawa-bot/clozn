@@ -41,6 +41,14 @@ AXES = {
                 "neg": "Respond plainly and literally, with no figurative language.", "poles": ("poetic", "plain")},
     "technical": {"pos": "Respond technically, with precise terminology and detail.",
                   "neg": "Respond in simple, everyday language anyone could follow.", "poles": ("technical", "simple")},
+    # --- cognitive / behavioral axes (steer HOW it thinks). Finickier than tone: each has a calibrated
+    #     "max" safe strength (validated by dogfooding -- candid is gold at ~0.4 but degenerates by ~0.6). ---
+    "candid":  {"pos": "Respond with candid, critical pushback: point out flaws and disagree when it is warranted, do not just validate.",
+                "neg": "Respond agreeably and supportively: validate the user's view and avoid disagreement.", "poles": ("candid", "agreeable"), "max": 0.45},
+    "confident": {"pos": "Respond with confident, decisive assertions and no hedging.",
+                  "neg": "Respond cautiously and tentatively, hedging with qualifications and uncertainty.", "poles": ("confident", "tentative"), "max": 1.0},
+    "concrete": {"pos": "Respond with concrete, specific detail and vivid, particular examples.",
+                 "neg": "Respond abstractly, in general high-level concepts with no specifics.", "poles": ("concrete", "abstract"), "max": 0.5},
 }
 
 # Neutral user turns to elicit the contrast on. Varied so the captured direction is tone, not topic.
@@ -98,8 +106,10 @@ class SteeringControl:
         return {"raw_norms": out, "resid_norm": round(self.resid_norm, 1), "base": round(self.base, 2)}
 
     def set(self, name: str, value: float):
-        """Slider: value 0 = off, +x = toward the first pole, -x = toward the second. Typical |x| ~ 0..1.5."""
-        self.strength[name] = float(value)
+        """Slider: value 0 = off, +x = toward the first pole, -x = toward the second. Typical |x| ~ 0..1.5.
+        Capped to the axis's per-axis "max" -- cognitive axes (candid) degenerate above their sweet spot."""
+        mx = AXES.get(name, {}).get("max", 1.5)
+        self.strength[name] = max(-mx, min(mx, float(value)))
 
     def clear(self):
         self.strength = {}
@@ -252,7 +262,8 @@ class EngineSteer:
         return {"resid_norm": round(self.resid_norm, 1), "base": round(self.base, 1), "axes": list(self.vecs)}
 
     def set(self, name, value):
-        self.strength[name] = float(value)
+        mx = AXES.get(name, {}).get("max", 1.5)      # cap per-axis (cognitive axes degenerate past their sweet spot)
+        self.strength[name] = max(-mx, min(mx, float(value)))
 
     @staticmethod
     def _text(r):
