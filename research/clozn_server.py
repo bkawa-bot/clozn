@@ -258,7 +258,8 @@ class QwenSubstrate(Substrate):
         att = torch.ones(e.shape[:2], device=e.device, dtype=torch.long)
         streamer = TextIteratorStreamer(m.tok, skip_prompt=False, skip_special_tokens=True)
         kw = dict(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new, do_sample=True,
-                  temperature=0.7, top_p=0.9, pad_token_id=m.eos or 0, streamer=streamer)
+                  temperature=0.7, top_p=0.9, repetition_penalty=1.3, no_repeat_ngram_size=3,
+                  pad_token_id=m.eos or 0, streamer=streamer)            # trim steering-induced loops
 
         def _gen():
             with torch.no_grad():

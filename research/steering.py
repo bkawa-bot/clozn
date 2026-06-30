@@ -198,6 +198,7 @@ class SteeringControl:
         ids = self.tok.apply_chat_template([{"role": "user", "content": prompt}],
                                            add_generation_prompt=True, return_tensors="pt").to(DEV)
         out = self.model.generate(ids, max_new_tokens=max_new, do_sample=False,
+                                  repetition_penalty=1.3, no_repeat_ngram_size=3,   # trim steering loops in the A/B
                                   pad_token_id=self.tok.eos_token_id or 0)
         return self.tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
 

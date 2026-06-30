@@ -162,6 +162,7 @@ class SelfTeach:
         att = torch.ones(e.shape[:2], device=DEV, dtype=torch.long)
         out = self.model.generate(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new,
                                   do_sample=sample, temperature=0.7, top_p=0.9,
+                                  repetition_penalty=1.3, no_repeat_ngram_size=3,   # trim steering loops
                                   pad_token_id=self.eos or 0)
         return self.tok.decode(out[0], skip_special_tokens=True).strip()
 
