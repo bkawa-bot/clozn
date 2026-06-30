@@ -557,6 +557,54 @@ def cmd_trace(args):
     print(f"{DIM}{len(lows)} uncertain moment(s){tail}{RST}")
 
 
+def cmd_branch(args):
+    """Take the road not taken: re-run from an uncertain point with the alternative the model nearly chose.
+
+    Text-level (re-runs prompt + kept tokens + the alt through /v1/completions), so token boundaries can
+    shift a hair -- but it shows, concretely, 'what if it had said X instead'. The seed of branch-a-bad-answer."""
+    files = sorted(glob.glob(os.path.join(HOME, "traces", "*.json")))
+    if not files:
+        raise CloznError('no trace yet -- run something first:  clozn run qwen "..."')
+    tr = json.load(open(files[-1])); meta = tr.get("meta", {})
+    steps = [s for s in tr.get("steps", []) if (s.get("piece", "") or "").strip()]   # branch on real tokens
+    if not steps:
+        raise CloznError("the last trace has no branchable tokens.")
+    idx = (max(0, min(args.at, len(steps) - 1)) if args.at is not None
+           else min(range(len(steps)), key=lambda i: steps[i].get("conf", 1.0)))
+    step = steps[idx]; alts = step.get("alts", [])
+    if not alts:
+        raise CloznError(f"no recorded alternative at '{step['piece'].strip()}' (conf {step.get('conf', 0):.2f}).")
+    alt = alts[max(0, min(args.pick, len(alts) - 1))]
+    model = resolve_model(meta.get("model", "")); flags = _flags_for(model)
+    head = _chat_wrap(meta.get("prompt", "")) if flags.get("chat") else meta.get("prompt", "")
+    kept = "".join(s["piece"] for s in steps[:idx])
+    prefix = head + kept + alt["piece"]
+    print(f"{BOLD}branch{RST} of \"{meta.get('prompt', '')[:54]}\"")
+    print(f"  fork at token {idx}: it chose {BOLD}{step['piece'].strip()!r}{RST} ({step.get('conf', 0):.2f})"
+          f"  ->  branch on {BOLD}{alt['piece'].strip()!r}{RST} ({alt['prob']:.2f})")
+    print(f"  {DIM}original:{RST} {''.join(s['piece'] for s in steps).strip()[:130]}")
+    warm = _find_warm(model); proc = logf = None
+    if warm:
+        port = warm[0]
+    else:
+        os.makedirs(HOME, exist_ok=True); logf = open(os.path.join(HOME, "engine-run.log"), "w")
+        port = _free_port()
+        print(f"{DIM}  - loading {_friendly(model)} …{RST}", file=sys.stderr, flush=True)
+        proc, _h, _g = spawn_engine(model, port, flags, prefer_gpu=not args.cpu, logf=logf)
+    try:
+        cont = complete_once(port, prefix, args.max).strip()
+    finally:
+        if proc:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+        if logf:
+            logf.close()
+    print(f"  {BOLD}branch:{RST}   {(kept + alt['piece'] + cont).strip()[:160]}")
+
+
 def main(argv=None):
     _setup_console()
     p = argparse.ArgumentParser(prog="clozn", description="a reliable front door to the local model engine")
@@ -583,6 +631,11 @@ def main(argv=None):
     pt = sub.add_parser("trace", help="inspect the last run's confidence timeline")
     pt.add_argument("--list", action="store_true", help="list recent runs instead of showing the last")
     pt.set_defaults(fn=cmd_trace)
+    pb = sub.add_parser("branch", help="re-run from an uncertain point on the alternative (the road not taken)")
+    pb.add_argument("--at", type=int, default=None, help="token index to fork at (default: the most uncertain)")
+    pb.add_argument("--pick", type=int, default=0, help="which alternative to take (0 = the runner-up)")
+    pb.add_argument("--max", type=int, default=80); pb.add_argument("--cpu", action="store_true")
+    pb.set_defaults(fn=cmd_branch)
 
     args = p.parse_args(argv)
     if not getattr(args, "fn", None):
