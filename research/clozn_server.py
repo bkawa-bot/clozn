@@ -471,6 +471,23 @@ def make_handler():
                 self._json(200, {"active": name, "switched": True, "note": "reloading -- poll /substrate"})
                 threading.Thread(target=lambda: (time.sleep(0.4), switch_substrate(name)), daemon=True).start()
                 return
+            if p.startswith("/runs/") and p.endswith("/replay"):   # F1: re-run a past run under changed state -> a child run
+                rid = p[len("/runs/"):-len("/replay")]
+                import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(404, {"error": "run not found"})
+                if not (SUB and getattr(SUB, "chat", None)):   # replay generates -> needs the qwen (chat) substrate
+                    return self._json(503, {"error": "replay needs the qwen substrate"})
+                changes = body.get("changes_applied", body.get("changes")) or {}
+                try:
+                    import replay
+                    child = replay.replay(run, changes, SUB)
+                except Exception as e:
+                    return self._json(500, {"error": f"replay failed: {type(e).__name__}: {e}"})
+                if child is None:
+                    return self._json(500, {"error": "replay failed"})
+                return self._json(200, child)
             if p == "/engine/harvest":   # READ the real C++ runtime's activations (any substrate; the engine is separate)
                 try:
                     h = ENGINE.harvest(str(body.get("text", ""))[:300])
