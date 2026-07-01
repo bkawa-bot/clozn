@@ -424,7 +424,10 @@ class QwenSubstrate(Substrate):
             return self.brain.concepts_only(str(body.get("text", ""))[:500])
         if path == "/say":
             with _TRAIN_LOCK:                    # studio chat touches the shared model -> wait out a retrain
-                return {"reply": self.memory.say(body["message"], body.get("max_new", 200))}
+                # body["_trace_out"] (optional, server-side only): the handler passes a list to collect the
+                # per-token trace for the Run Inspector; never echoed to the client. Reply is unchanged.
+                return {"reply": self.memory.say(body["message"], body.get("max_new", 200),
+                                                 trace_out=body.get("_trace_out"))}
         if path == "/consolidate":               # a manual retrain -> the same shared-model lock as card retrains
             with _TRAIN_LOCK:
                 return self.memory.consolidate(body.get("rules"), body.get("steps", 120), body.get("lr", 0.012),
@@ -447,26 +450,38 @@ class QwenSubstrate(Substrate):
     def _gen(self, prompt):                     # AR generate for the /steer/check A/B
         return self.steer.generate(prompt, 90)
 
-    def chat(self, messages, max_new=256, sample=True):
+    def chat(self, messages, max_new=256, sample=True, trace_out=None):
         """One stateless chat completion with the WHOLE tunable self applied: the consolidated memory
         prefix (learned + added traits) AND the active tone-steering sliders, both on the shared model.
         This is what the OpenAI-compatible endpoint serves -- normal chat on the surface, legible and
         tunable underneath. Serializes behind an in-flight memory retrain (_TRAIN_LOCK) so a reply can't
-        race the shared model+gradients mid-consolidate -- it waits, briefly, rather than corrupting."""
+        race the shared model+gradients mid-consolidate -- it waits, briefly, rather than corrupting.
+        trace_out (optional list): filled with the per-token trace for the Run Inspector; reply unchanged."""
         with _TRAIN_LOCK:                        # wait out any background retrain, then hold for this reply
             if self.steer.strength:             # persisted personality -> ensure vectors are ready (race-safe)
                 self._ensure_steer()
             self.steer.engage()
             try:
                 return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample,
-                                             gate=self.memory.memory_strength)
+                                             gate=self.memory.memory_strength, trace_out=trace_out)
             finally:
                 self.steer.disengage()
+
+    def last_stream_trace(self):
+        """The per-token trace captured during the most recent chat_stream (raw step list, or []). The SSE
+        handler reads this AFTER the generator is exhausted to log it -- streaming yields text, not tokens,
+        so the trace is assembled from the recorder's rows + the generated ids, not from the chunks."""
+        return list(getattr(self, "_last_stream_trace", []) or [])
 
     def chat_stream(self, messages, max_new=256):
         """Streaming chat: yields text chunks as the AR model generates -- memory prefix + tone steering
         applied -- via a TextIteratorStreamer with generate() in a thread. Local AR is slow, so this is
-        the big UX win the diffusion side doesn't need (diffusion is trace-based, not left-to-right)."""
+        the big UX win the diffusion side doesn't need (diffusion is trace-based, not left-to-right).
+
+        Per-token trace (B3): a pure pass-through RecordingLogitsProcessor rides along and the generated
+        ids are captured from generate()'s return -> after the stream ends we assemble the trace into
+        self._last_stream_trace for the SSE handler to log. Pass-through means the streamed chunks are
+        byte-identical to before; the whole capture is wrapped so any failure just leaves the trace empty."""
         import threading
         import torch
         from transformers import TextIteratorStreamer
@@ -482,10 +497,24 @@ class QwenSubstrate(Substrate):
         kw = dict(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new, do_sample=True,
                   temperature=0.7, top_p=0.9, repetition_penalty=1.3, no_repeat_ngram_size=3,
                   pad_token_id=m.eos or 0, streamer=streamer)            # trim steering-induced loops
+        self._last_stream_trace = []                        # reset; filled after the stream if capture succeeds
+        recorder = None
+        try:                                                # observe-only trace capture (never affects output)
+            from self_teach_server import RecordingLogitsProcessor
+            from transformers import LogitsProcessorList
+            recorder = RecordingLogitsProcessor()
+            kw["logits_processor"] = LogitsProcessorList([recorder])
+        except Exception:
+            recorder = None
+        gen_out = {}                                        # holder so the thread can hand back generate()'s ids
 
         def _gen():
             with torch.no_grad():
-                m.model.generate(**kw)
+                out = m.model.generate(**kw)
+                try:
+                    gen_out["ids"] = [int(t) for t in out[0].tolist()]   # inputs_embeds -> generated ids only
+                except Exception:
+                    pass
 
         self.steer.engage()                                 # tone dials apply during the streamed generation
         th = threading.Thread(target=_gen, daemon=True)
@@ -496,6 +525,15 @@ class QwenSubstrate(Substrate):
                     yield chunk
         finally:
             th.join()
+            if recorder is not None:                        # assemble the trace from rows + emitted ids
+                try:
+                    from self_teach_server import steps_from_records
+                    gen_ids = gen_out.get("ids", [])
+                    while gen_ids and gen_ids[-1] == (m.eos or -1):
+                        gen_ids.pop()
+                    self._last_stream_trace = steps_from_records(recorder.records, gen_ids, m.tok)
+                except Exception:
+                    self._last_stream_trace = []
             self.steer.disengage()
             _TRAIN_LOCK.release()                           # done streaming -> let a queued retrain proceed
 
@@ -643,9 +681,10 @@ def make_handler():
                 self.wfile.write(("data: " + json.dumps(o) + "\n\n").encode("utf-8"))
                 self.wfile.flush()
 
-            # HF chat stream (QwenSubstrate.chat_stream): pieces only, no per-token confidence/alternatives.
-            # We deliberately DON'T pass `trace` here -> the run's trace stays an empty {}. Capturing one would
-            # mean output_scores on the transformers streaming path -- a separate, riskier issue, out of B3.
+            # HF chat stream (QwenSubstrate.chat_stream): a pure pass-through recorder rides along and the
+            # per-token trace is assembled after the stream (SUB.last_stream_trace()) -- so the run gets the
+            # Run Inspector timeline while the streamed chunks stay byte-identical (B3). runlog.record
+            # normalizes the raw step list; on any hiccup last_stream_trace() is [] -> a clean empty trace.
             t0 = time.time(); acc = []
             try:
                 chunk({"role": "assistant"})
@@ -654,7 +693,8 @@ def make_handler():
                 chunk({}, finish="stop")
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
-                self._log_run("openai_api", messages, "".join(acc), model, t0)
+                trace = SUB.last_stream_trace() if hasattr(SUB, "last_stream_trace") else None
+                self._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace)
             except Exception as e:
                 self._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e))
                 try:
@@ -912,8 +952,10 @@ def make_handler():
                 if body.get("stream") and getattr(SUB, "chat_stream", None):
                     return self._sse_chat(msgs, mx, str(body.get("model", "clozn-qwen")))
                 t0 = time.time()
-                reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0)
-                self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0)
+                trace_steps = []                            # HF non-stream: capture a per-token trace (B3)
+                reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0, trace_out=trace_steps)
+                # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}.
+                self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0, trace=trace_steps)
                 return self._json(200, {"id": "chatcmpl-clozn", "object": "chat.completion",
                                         "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
                                         "choices": [{"index": 0, "finish_reason": "stop",
@@ -924,6 +966,11 @@ def make_handler():
                     return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate"})
                 msg = str(body.get("message", ""))
                 t0 = time.time()
+                # HF studio chat: capture a per-token trace (B3). We hand SUB.handle a collector list via
+                # body["_trace_out"] (server-side only, never echoed); QwenSubstrate's /say fills it through
+                # say()->_generate()'s pass-through recorder. Reply text is byte-identical with or without it.
+                trace_steps = []
+                body["_trace_out"] = trace_steps
                 try:
                     r = SUB.handle(p, body)
                 except Exception as e:
@@ -933,11 +980,10 @@ def make_handler():
                 if r is None:
                     return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
                                             "need": "qwen", "active": SUBNAME})
-                # HF studio chat (QwenSubstrate): no `trace` -> the run's trace stays an empty {}. This path
-                # generates via transformers with no native per-token confidence/alternatives; capturing one
-                # (output_scores on the streaming path) is a separate, riskier issue and out of scope (B3).
+                # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}; a diffusion
+                # substrate (or any path that filled nothing) yields [] -> a clean empty trace.
                 self._log_run("studio_chat", [{"role": "user", "content": msg}],
-                              str(r.get("reply", "")), "clozn-qwen", t0)
+                              str(r.get("reply", "")), "clozn-qwen", t0, trace=trace_steps)
                 return self._json(200, r)
             if p == "/denoise":   # Dream diffusion window -> capture it as a run
                 if not (SUB and getattr(SUB, "handle", None)):

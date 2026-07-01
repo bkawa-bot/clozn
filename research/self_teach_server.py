@@ -42,9 +42,71 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")  # WinError 1314 workaroun
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, LogitsProcessor
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# ------- per-token trace capture (Studio Run Inspector, issue B3) --------------------------------
+# A PURE-passthrough LogitsProcessor: at each decoding step it reads the model's score row, records the
+# top-k tokens the model weighed there (piece + softmax prob), and returns `scores` COMPLETELY UNCHANGED.
+# Because it never mutates the logits, attaching it cannot alter the generated text or the sampled/greedy
+# token sequence one bit -- it only observes. transformers appends the sampling warpers (temperature/top_p)
+# AFTER any custom processor, so the probs we record are the model's own distribution (post repetition-
+# penalty, pre temperature/top_p) -- the honest "how sure was the model" signal, independent of sampling.
+#
+# We record the top-k row (not just the argmax) so the trace can later be aligned to the token that was
+# ACTUALLY committed: under sampling the emitted token often isn't the argmax, and its confidence is its
+# probability, so `steps_from_records` looks the emitted id up in the recorded row. Compact by design
+# (top-k per step, no full-vocab retention), and every use site wraps it in try/except -> any failure
+# degrades to an empty trace and never touches generation.
+class RecordingLogitsProcessor(LogitsProcessor):
+    """Observe-only: record the top-k (piece-id, prob) per decoding step; return scores untouched."""
+
+    def __init__(self, topk: int = 6):
+        self.topk = int(topk)
+        self.records: list[dict] = []          # one per step: {"ids":[...], "probs":[...]}
+
+    def __call__(self, input_ids, scores):     # noqa: D401  (transformers LogitsProcessor contract)
+        try:
+            row = scores[0].detach().float()                       # [V] -- batch size 1 on this path
+            probs = torch.softmax(row, dim=-1)
+            k = min(self.topk, probs.shape[-1])
+            top = torch.topk(probs, k)
+            self.records.append({"ids": [int(i) for i in top.indices.tolist()],
+                                 "probs": [float(p) for p in top.values.tolist()]})
+        except Exception:
+            # never let observation perturb generation; a missing record just yields a shorter trace
+            self.records.append({"ids": [], "probs": []})
+        return scores                                              # UNCHANGED -- pure pass-through
+
+
+def steps_from_records(records: list[dict], gen_ids: list[int], tok) -> list[dict]:
+    """Align recorded top-k rows to the tokens ACTUALLY emitted -> runlog-shaped steps.
+
+    `records[i]` is the top-k the model weighed at step i; `gen_ids[i]` is the token it then committed
+    (the sampled/greedy id, decoded for display). For each committed token we report:
+      confidence = the committed token's own probability (looked up in that step's top-k row; 0.0 if it
+                   fell outside the recorded top-k, e.g. a deep sampling-tail pick), and
+      alternatives = the other top-k tokens (piece + prob), the chosen token excluded, capped at 3.
+    Returned shape matches what runlog.steps_to_trace consumes: {"piece","conf","alts":[{"piece","prob"}]}.
+    Pure aside from tok.decode; defensive throughout (any per-step hiccup -> that step is skipped)."""
+    steps: list[dict] = []
+    n = min(len(records), len(gen_ids))                            # align 1:1; ignore any ragged tail
+    for i in range(n):
+        try:
+            rec = records[i] or {}
+            ids = rec.get("ids", []) or []
+            probs = rec.get("probs", []) or []
+            tid = int(gen_ids[i])
+            prob_by_id = {int(a): float(b) for a, b in zip(ids, probs)}
+            conf = float(prob_by_id.get(tid, 0.0))                 # committed token's own probability
+            alts = [{"piece": tok.decode([a]), "prob": round(float(b), 4)}
+                    for a, b in zip(ids, probs) if int(a) != tid][:3]
+            steps.append({"piece": tok.decode([tid]), "conf": round(conf, 4), "alts": alts})
+        except Exception:
+            continue
+    return steps
 
 
 def resolve_model_path(name: str) -> str:
@@ -177,7 +239,12 @@ class SelfTeach:
         return max(0.0, min(1.0, g))
 
     @torch.no_grad()
-    def _generate(self, messages: list[dict], use_prefix: bool, max_new=200, sample=True, gate="auto") -> str:
+    def _generate(self, messages: list[dict], use_prefix: bool, max_new=200, sample=True, gate="auto",
+                  trace_out: list | None = None) -> str:
+        """Generate one reply. If `trace_out` (a list) is passed, ALSO fill it with per-token trace steps
+        (piece + confidence + alternatives) for the Run Inspector -- captured via a pure pass-through
+        LogitsProcessor, so the returned text is byte-identical whether or not a trace is requested. Any
+        capture failure leaves trace_out empty and never affects the reply. The return type is always str."""
         e = self._embed(self._chat_ids(messages))           # [1, L, H]
         if use_prefix and self.prefix is not None:
             # contextual gate g in [0,1] scales the injection: "auto" => by prompt relevance, else a float.
@@ -189,22 +256,43 @@ class SelfTeach:
             pre = (g * self.prefix.detach()).to(e.dtype)[None]   # [1, m, H], scaled by relevance
             e = torch.cat([pre, e], 1)
         att = torch.ones(e.shape[:2], device=DEV, dtype=torch.long)
-        out = self.model.generate(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new,
-                                  do_sample=sample, temperature=0.7, top_p=0.9,
-                                  repetition_penalty=1.3, no_repeat_ngram_size=3,   # trim steering loops
-                                  pad_token_id=self.eos or 0)
+        gen_kw = dict(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new,
+                      do_sample=sample, temperature=0.7, top_p=0.9,
+                      repetition_penalty=1.3, no_repeat_ngram_size=3,   # trim steering loops
+                      pad_token_id=self.eos or 0)
+        recorder = None
+        if trace_out is not None:                           # opt-in trace: attach the observe-only recorder
+            try:
+                from transformers import LogitsProcessorList
+                recorder = RecordingLogitsProcessor()
+                gen_kw["logits_processor"] = LogitsProcessorList([recorder])   # append; nothing else here to keep
+            except Exception:
+                recorder = None
+        out = self.model.generate(**gen_kw)
+        # With inputs_embeds, out[0] is the GENERATED tokens only (no prompt echo) -> aligns 1:1 with the
+        # recorder's per-step rows. Build the trace defensively; on any failure trace_out stays empty.
+        if recorder is not None:
+            try:
+                gen_ids = [int(t) for t in out[0].tolist()]
+                while gen_ids and gen_ids[-1] == (self.eos or -1):   # drop trailing EOS from the visible trace
+                    gen_ids.pop()
+                trace_out.extend(steps_from_records(recorder.records, gen_ids, self.tok))
+            except Exception:
+                pass
         return self.tok.decode(out[0], skip_special_tokens=True).strip()
 
     # ---- /say : one conversational turn (current prefix active) --------------------------------
-    def say(self, message: str, max_new=220, strength=None) -> str:
+    def say(self, message: str, max_new=220, strength=None, trace_out: list | None = None) -> str:
         with self.lock:
             self.history.append({"role": "user", "content": message})
             # Apply the consolidated prefix at self.memory_strength (the user dial; 1.0 = as trained). The old
             # "auto" cosine gate is unreliable (mean-pooled hidden states are too anisotropic -- sim_in 0.968
             # vs sim_neutral 0.956, so it scored every prompt ~0 and zeroed the trait). The gentle, norm-capped
             # prefix self-gates well, so we default to the dial and let the user turn it up/down.
+            # trace_out (optional): filled with the per-token trace for the Run Inspector; reply is unchanged.
             g = self.memory_strength if strength is None else float(strength)
-            reply = self._generate(self.history, use_prefix=True, max_new=max_new, sample=True, gate=g)
+            reply = self._generate(self.history, use_prefix=True, max_new=max_new, sample=True, gate=g,
+                                   trace_out=trace_out)
             self.history.append({"role": "assistant", "content": reply})
             return reply
 
