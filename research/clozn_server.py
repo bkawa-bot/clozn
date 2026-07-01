@@ -401,20 +401,29 @@ def make_handler():
                     return v
             return ua[:24] or "unknown"
 
-        def _log_run(self, source, messages, response, model, started, error=None):
+        def _log_run(self, source, messages, response, model, started, error=None, trace=None):
             """Persist this interaction as an inspectable run (never let logging break the request)."""
             try:
                 import runlog
-                mem = getattr(SUB, "memory", None)
-                cards = getattr(mem, "rules", None) or getattr(mem, "cards", None) or [] if mem else []
-                memd = {"cards_applied": list(cards),
-                        "strength": float(getattr(mem, "memory_strength", 1.0)),
-                        "has_prefix": getattr(mem, "prefix", None) is not None,
-                        "proposed_cards": []} if mem else {}
+                # cards_applied must match EXACTLY what /memory/cards reports: that reads SUB._mem.rules
+                # (self.memory on qwen, self.dmem on dream). Reading SUB.memory would miss the dream cards.
+                mem = getattr(SUB, "_mem", None) if SUB else None
+                if mem is not None:
+                    cards = getattr(mem, "rules", None) or getattr(mem, "cards", None) or []
+                    memd = {"cards_applied": list(cards),
+                            "strength": float(getattr(mem, "memory_strength", 1.0)),
+                            "has_prefix": getattr(mem, "prefix", None) is not None,
+                            "proposed_cards": []}
+                else:
+                    memd = {}
+                # only meaningfully-nonzero dials (|v| >= 0.05); steer.active() drops exact-zeros but a
+                # slider nudged to a hair (e.g. 0.02) still slips through and would clutter the record.
                 dials = SUB.steer.active() if (SUB and hasattr(SUB, "steer")) else {}
+                dials = {k: v for k, v in dials.items() if abs(float(v)) >= 0.05}
                 runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
                               model=str(model), substrate=SUBNAME, messages=messages, response=response,
-                              memory=memd, behavior={"active_dials": dials}, started=started, error=error)
+                              memory=memd, behavior={"active_dials": dials}, started=started, error=error,
+                              trace=trace)
             except Exception:
                 pass
 
@@ -442,8 +451,8 @@ def make_handler():
                 r = runlog.get_run(p.split("/runs/", 1)[1])
                 return self._json(200, r) if r else self._json(404, {"error": "run not found"})
             if p.endswith((".html", ".css", ".js")):
-                fn = os.path.join(DEMO, os.path.basename(p))
-                if os.path.isfile(fn):
+                fn = os.path.normpath(os.path.join(DEMO, p.lstrip("/")))   # serve subdirs (pages/) too, safely
+                if fn.startswith(os.path.normpath(DEMO)) and os.path.isfile(fn):
                     ct = ("text/html" if p.endswith(".html") else
                           "text/css" if p.endswith(".css") else "application/javascript")
                     return self._send(200, open(fn, encoding="utf-8").read(), ct + "; charset=utf-8")
@@ -518,8 +527,10 @@ def make_handler():
             if p == "/engine/chat":   # THE HYBRID: chat on the GGUF via the engine, with the HF-trained memory injected
                 if ENGINE_QWEN is None:
                     return self._json(502, {"error": "no engine configured"})
+                msgs = body.get("messages", [])
+                t0 = time.time()
                 try:
-                    prompt = _qwen_tmpl(body.get("messages", []))
+                    prompt = _qwen_tmpl(msgs)
                     mx = int(body.get("max_tokens", 220))
                     kw = {}
                     # MEMORY: the live HF prefix if a qwen substrate is loaded, else the SAVED prefix from disk
@@ -545,9 +556,11 @@ def make_handler():
                     r = ENGINE_QWEN.complete(prompt, max_tokens=mx, temperature=0.0, **kw)
                     ch = r.get("choices") if isinstance(r, dict) else None
                     reply = (ch[0].get("text", "") if ch else str(r)).strip()
+                    self._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0)
                     return self._json(200, {"reply": reply, "memory": bool(kw.get("prefix_embd")),
                                             "tone": bool(kw.get("steer_vec")), "via": "engine (GGUF)"})
                 except Exception as e:
+                    self._log_run("engine_chat", msgs, "", "clozn-qwen (engine)", t0, error=str(e))
                     return self._json(502, {"error": f"engine-chat: {e}"})
             if p == "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied
                 if not (SUB and getattr(SUB, "chat", None)):
@@ -563,6 +576,41 @@ def make_handler():
                                         "choices": [{"index": 0, "finish_reason": "stop",
                                                      "message": {"role": "assistant", "content": reply}}],
                                         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}})
+            if p == "/say":   # studio chat (qwen memory model) -> capture it as a run
+                if not (SUB and getattr(SUB, "handle", None)):
+                    return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate"})
+                msg = str(body.get("message", ""))
+                t0 = time.time()
+                try:
+                    r = SUB.handle(p, body)
+                except Exception as e:
+                    self._log_run("studio_chat", [{"role": "user", "content": msg}], "",
+                                  "clozn-qwen", t0, error=str(e))
+                    return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+                if r is None:
+                    return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
+                                            "need": "qwen", "active": SUBNAME})
+                self._log_run("studio_chat", [{"role": "user", "content": msg}],
+                              str(r.get("reply", "")), "clozn-qwen", t0)
+                return self._json(200, r)
+            if p == "/denoise":   # Dream diffusion window -> capture it as a run
+                if not (SUB and getattr(SUB, "handle", None)):
+                    return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
+                                            "need": "dream", "active": SUBNAME})
+                prompt = str(body.get("prompt", ""))
+                t0 = time.time()
+                try:
+                    r = SUB.handle(p, body)
+                except Exception as e:
+                    self._log_run("denoise", [{"role": "user", "content": prompt}], "",
+                                  "clozn-dream", t0, error=str(e))
+                    return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+                if r is None:
+                    return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
+                                            "need": "dream", "active": SUBNAME})
+                self._log_run("denoise", [{"role": "user", "content": prompt}],
+                              str(r.get("final_text", "")), "clozn-dream", t0)
+                return self._json(200, r)
             try:
                 r = SUB.handle(p, body) if SUB else None
                 if r is None:

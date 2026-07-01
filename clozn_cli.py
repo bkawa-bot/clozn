@@ -590,6 +590,7 @@ def cmd_studio(args):
 def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace):
     """One generation: stream (AR, auto-saving the trace) or denoise (diffusion). Prints stats. -> response."""
     g0 = time.time()
+    steps = []
     if mode == "autoregressive":
         n, steps = stream_ar(port, text, max_tokens)
         sys.stdout.write("\n")
@@ -602,7 +603,25 @@ def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace):
     dt = time.time() - g0
     rate = f", ~{n/dt:.0f} tok/s" if dt > 0 and mode == "autoregressive" else ""
     print(f"{DIM}- {n} tok in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{RST}", file=sys.stderr)
+    _log_run_cli(model_name, prompt_for_trace, resp, steps, g0)   # every CLI turn becomes an inspectable run
     return resp
+
+
+def _log_run_cli(model_name, prompt, resp, steps, started):
+    """Write this CLI turn to the Run Log so `clozn run`/REPL turns show up in the Studio alongside chats.
+    runlog.py lives in research/ (a sibling of this stdlib-only CLI) and is itself stdlib-only, so we add
+    its dir to sys.path and import it. Logging must NEVER break a run -- swallow everything."""
+    try:
+        sys.path.insert(0, os.path.join(REPO, "research"))
+        import runlog
+        trace = ({"tokens": [s["piece"] for s in steps],
+                  "confidence": [s["conf"] for s in steps],
+                  "alternatives": [s.get("alts", []) for s in steps]} if steps else {})
+        runlog.record(source="cli", client="cli", model=model_name, substrate="engine",
+                      messages=[{"role": "user", "content": prompt}], response=resp,
+                      trace=trace, started=started)
+    except Exception:
+        pass
 
 
 def _repl(port, mode, flags, fam, gpu, model, max_tokens):
