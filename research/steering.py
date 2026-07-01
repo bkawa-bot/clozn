@@ -154,6 +154,16 @@ class SteeringControl:
         except Exception:
             pass
 
+    # On-distribution headroom for the COMBINED push. One strong dial should steer hard, but the SUM of
+    # many dials must not overwhelm the residual and shove the model off-distribution -- that's what mutes
+    # subtler biases (the learned-memory soft-prefix). So we bound ||sum-of-dials|| to a fraction of the
+    # ACTUAL per-position residual norm, leaving the rest of the residual (>= 1-k of it) for everything the
+    # model was already doing. This is a magnitude ceiling only: direction is untouched. k ~ 0.6-0.8 keeps
+    # steering firmly in the model's real operating range; below the ceiling (a single moderate dial) the
+    # cap never bites, so single-dial behavior is unchanged. The goal is on-distribution steering, NOT
+    # muting tone -- a lone strong dial still pushes to its full per-axis "max".
+    MAX_DELTA_FRAC = 0.75
+
     def set(self, name: str, value: float):
         """Slider: value 0 = off, +x = toward the first pole, -x = toward the second. Typical |x| ~ 0..1.5.
         Capped to the axis's per-axis "max" -- cognitive/custom axes degenerate above their sweet spot."""
@@ -171,12 +181,26 @@ class SteeringControl:
                 v = (s * self.base * self.vecs[name]).to(h.device, h.dtype)
                 add = v if add is None else add + v
         if add is not None:
-            cap = self.base * 1.0                       # cap the BLEND at the single-dial sweet spot so combined dials stay coherent
-            n = float(add.norm())
-            if n > cap:
-                add = add * (cap / n)
-            h = h + add
+            h = h + self._cap_delta(add, h)
         return (h,) + out[1:] if isinstance(out, tuple) else h
+
+    def _cap_delta(self, add: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
+        """Bound the summed steering delta to MAX_DELTA_FRAC * ||residual|| PER POSITION, direction intact.
+
+        `add` is a single [H] vector (same push at every position); `h` is [..., H], so the residual norm
+        varies token-to-token. We scale `add` down only where ||add|| exceeds the per-position ceiling, so:
+          * a single moderate dial (||add|| below the ceiling everywhere) passes through untouched, and
+          * a stack of strong dials is clamped to the ceiling -- staying on-distribution so the memory bias
+            in the residual survives instead of being drowned by an oversized push.
+        Uses the same float reduction on device (no host sync in the common path); returns a [..., H] delta
+        broadcast-added to h by the caller."""
+        add_norm = add.norm()
+        if float(add_norm) <= 0.0:
+            return add
+        ceil = self.MAX_DELTA_FRAC * h.norm(dim=-1, keepdim=True)   # [..., 1] per-position budget
+        # scale = min(1, ceil / ||add||): 1 where the push fits, <1 where it must be trimmed to the budget.
+        scale = torch.clamp(ceil / add_norm, max=1.0)              # [..., 1]
+        return add * scale                                          # broadcasts [H] * [..., 1] -> [..., H]
 
     def engage(self):
         if self._handle is None:
