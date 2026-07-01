@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import numpy as np
 import torch
@@ -50,6 +51,172 @@ AXES = {
     "concrete": {"pos": "Respond with concrete, specific detail and vivid, particular examples.",
                  "neg": "Respond abstractly, in general high-level concepts with no specifics.", "poles": ("concrete", "abstract"), "max": 0.5},
 }
+
+
+# ---- route a STYLE preference to the dial that actually delivers it -------------------------------
+# Live finding (self_teach dogfooding): the trained memory soft-prefix carries TOPICAL preferences
+# ("into baking", "has a dog") well, but STYLE/behavioral ones weakly -- approving a "prefers concise,
+# direct answers" card did NOT shorten replies. The tone DIALS steer style directly and reliably. So
+# when a memory being added/proposed is really a style preference that maps to an axis, we DETECT it and
+# surface the matching dial as the better mechanism. Honest (route the preference to what works) and
+# non-destructive (the card is still created; nothing is auto-applied -- this only SUGGESTS).
+#
+# LEXICON: style/tone phrases -> (axis, sign). sign +1 => the axis's FIRST pole (AXES[axis]["poles"][0],
+# the "pos" instruction), sign -1 => the SECOND pole ("neg"). BOTH poles of every relevant axis are
+# covered so an opposite preference ("wants more detail") routes to the same axis with the opposite sign.
+# Multi-word entries match as phrases; every entry is matched case-insensitively on word/phrase
+# boundaries (so "brief" won't fire inside "briefing", and "warm" won't fire inside "warmup"). Pure
+# activation lexicon -- deterministic, transparent, NO model call.
+#
+# INFLECTIONS: the boundary regex is exact, so a base word does NOT cover its comparatives ("warm" !=
+# "warmer", "friendly" != "friendlier"). Rather than a stem+suffix regex (over-matches on silent-e /
+# -y adjectives: "simple"->"simpler" drops the e, "friendly"->"friendlier" is y->ier), we ENUMERATE the
+# common inflected forms explicitly -- transparent, deterministic, and each one auditable / safe from
+# firing inside an unrelated word. Only single-word cues need this; multi-word phrases aren't inflected.
+_DIAL_LEXICON: list[tuple[str, str, int]] = [
+    # concise (+)  <->  verbose (-)
+    ("concise", "concise", +1), ("brief", "concise", +1), ("briefer", "concise", +1),
+    ("briefly", "concise", +1),
+    ("short", "concise", +1), ("shorter", "concise", +1), ("shortest", "concise", +1),
+    ("terse", "concise", +1), ("terser", "concise", +1),
+    ("succinct", "concise", +1), ("to the point", "concise", +1), ("no fluff", "concise", +1),
+    ("no filler", "concise", +1), ("get to the point", "concise", +1), ("tl;dr", "concise", +1),
+    ("verbose", "concise", -1), ("detailed", "concise", -1), ("more detail", "concise", -1),
+    ("elaborate", "concise", -1), ("thorough", "concise", -1), ("in depth", "concise", -1),
+    ("in-depth", "concise", -1), ("long", "concise", -1), ("longer", "concise", -1),
+    ("longest", "concise", -1), ("lengthy", "concise", -1), ("lengthier", "concise", -1),
+    ("comprehensive", "concise", -1), ("expansive", "concise", -1),
+    # formal (+)  <->  casual (-)
+    ("formal", "formal", +1), ("formally", "formal", +1), ("professional", "formal", +1),
+    ("professionally", "formal", +1), ("polished", "formal", +1),
+    ("businesslike", "formal", +1), ("proper", "formal", +1),
+    ("casual", "formal", -1), ("informal", "formal", -1), ("relaxed", "formal", -1),
+    ("laid-back", "formal", -1), ("laid back", "formal", -1), ("chill", "formal", -1),
+    ("conversational", "formal", -1), ("colloquial", "formal", -1), ("slangy", "formal", -1),
+    # warm (+)  <->  detached/cold (-)
+    ("warm", "warm", +1), ("warmer", "warm", +1), ("warmest", "warm", +1),
+    ("warmhearted", "warm", +1), ("warm-hearted", "warm", +1),
+    ("kind", "warm", +1), ("kinder", "warm", +1), ("kindest", "warm", +1),
+    ("caring", "warm", +1), ("compassionate", "warm", +1),
+    ("friendly", "warm", +1), ("friendlier", "warm", +1), ("friendliest", "warm", +1),
+    ("gentle", "warm", +1), ("gentler", "warm", +1), ("empathetic", "warm", +1),
+    ("supportive", "warm", +1), ("encouraging", "warm", +1), ("nurturing", "warm", +1),
+    ("calm", "warm", +1), ("calmer", "warm", +1),
+    ("cold", "warm", -1), ("colder", "warm", -1), ("detached", "warm", -1), ("neutral", "warm", -1),
+    ("clinical", "warm", -1), ("impersonal", "warm", -1), ("distant", "warm", -1),
+    ("aloof", "warm", -1),
+    # technical (+)  <->  simple/plain (-)
+    ("technical", "technical", +1), ("precise", "technical", +1), ("jargon", "technical", +1),
+    ("rigorous", "technical", +1), ("specialized", "technical", +1),
+    ("simple", "technical", -1), ("simpler", "technical", -1), ("simplest", "technical", -1),
+    ("plain", "technical", -1), ("plainer", "technical", -1), ("plainly", "technical", -1),
+    ("plain english", "technical", -1), ("plain language", "technical", -1),
+    ("layman", "technical", -1), ("layman's terms", "technical", -1), ("laymans terms", "technical", -1),
+    ("no jargon", "technical", -1), ("beginner-friendly", "technical", -1),
+    ("beginner friendly", "technical", -1), ("accessible", "technical", -1),
+    ("everyday language", "technical", -1),
+    # playful (+)  <->  serious (-)
+    ("playful", "playful", +1), ("fun", "playful", +1), ("humor", "playful", +1),
+    ("humorous", "playful", +1), ("witty", "playful", +1), ("wittier", "playful", +1),
+    ("wit", "playful", +1),
+    ("funny", "playful", +1), ("funnier", "playful", +1), ("lighthearted", "playful", +1),
+    ("light-hearted", "playful", +1),
+    ("whimsical", "playful", +1), ("jokes", "playful", +1),
+    ("serious", "playful", -1), ("dry", "playful", -1), ("drier", "playful", -1),
+    ("dryer", "playful", -1), ("sober", "playful", -1),
+    ("no-nonsense", "playful", -1), ("no nonsense", "playful", -1), ("solemn", "playful", -1),
+    ("earnest", "playful", -1),
+    # curious (+)  <->  matter-of-fact (-)
+    ("curious", "curious", +1), ("inquisitive", "curious", +1), ("wondering", "curious", +1),
+    ("exploratory", "curious", +1),
+    ("matter-of-fact", "curious", -1), ("matter of fact", "curious", -1),
+    ("just the facts", "curious", -1), ("just state facts", "curious", -1),
+    # poetic (+)  <->  plain/literal (-)
+    ("poetic", "poetic", +1), ("lyrical", "poetic", +1), ("figurative", "poetic", +1),
+    ("metaphor", "poetic", +1), ("metaphorical", "poetic", +1), ("imagery", "poetic", +1),
+    ("evocative", "poetic", +1),
+    ("literal", "poetic", -1), ("prosaic", "poetic", -1), ("no metaphor", "poetic", -1),
+    ("no metaphors", "poetic", -1),
+    # candid (+)  <->  agreeable (-)   (capped low -- degrades past its sweet spot)
+    ("candid", "candid", +1), ("blunt", "candid", +1), ("blunter", "candid", +1),
+    ("bluntly", "candid", +1),
+    ("frank", "candid", +1), ("direct", "candid", +1), ("straightforward", "candid", +1),
+    ("honest", "candid", +1), ("critical", "candid", +1), ("pushback", "candid", +1),
+    ("push back", "candid", +1), ("no sugarcoating", "candid", +1),
+    ("dont sugarcoat", "candid", +1), ("don't sugarcoat", "candid", +1),
+    ("agreeable", "candid", -1), ("supportive of my view", "candid", -1),
+    ("validating", "candid", -1), ("affirming", "candid", -1), ("dont disagree", "candid", -1),
+    ("don't disagree", "candid", -1),
+    # confident (+)  <->  tentative/hedged (-)
+    ("confident", "confident", +1), ("decisive", "confident", +1), ("assertive", "confident", +1),
+    ("no hedging", "confident", +1), ("dont hedge", "confident", +1), ("don't hedge", "confident", +1),
+    ("definitive", "confident", +1),
+    ("tentative", "confident", -1), ("hedged", "confident", -1), ("cautious", "confident", -1),
+    ("hedge", "confident", -1), ("uncertain", "confident", -1), ("qualified", "confident", -1),
+    ("nuanced caveats", "confident", -1),
+    # concrete (+)  <->  abstract (-)
+    ("concrete", "concrete", +1), ("specific", "concrete", +1), ("with examples", "concrete", +1),
+    ("give examples", "concrete", +1), ("particular", "concrete", +1), ("tangible", "concrete", +1),
+    ("abstract", "concrete", -1), ("high-level", "concrete", -1), ("high level", "concrete", -1),
+    ("conceptual", "concrete", -1), ("theoretical", "concrete", -1), ("general", "concrete", -1),
+]
+
+# Default magnitude for a routed dial: moderate, but never above the axis's calibrated safe ceiling.
+_DIAL_DEFAULT_MAG = 0.6
+
+# Reducer/negation cues: when one of these sits immediately before a matched SINGLE-WORD pole keyword
+# (within ~2 words), the user wants LESS of that pole -> flip the sign to the opposite pole. "less
+# technical" -> the plain pole; "not too formal" -> casual; "less verbose" -> concise. We only flip a
+# bare single-word keyword: an intended multi-word negative phrase ("no fluff", "no jargon", "no-nonsense",
+# "no hedging", "no metaphor") already carries its own polarity and wins the match, so it is NOT re-flipped.
+_DIAL_REDUCERS = ("less", "not", "no", "n't", "too", "overly", "avoid", "avoids", "stop", "without")
+
+
+def suggest_dial_for_preference(text: str) -> dict | None:
+    """If `text` is really a STYLE/tone preference that maps to a tone AXIS, suggest that dial; else None.
+
+    Deterministic + transparent (a lexicon match, no model). Scans `text` for every _DIAL_LEXICON phrase
+    that occurs on a word/phrase boundary (case-insensitive) and routes to the EARLIEST one -- the reader's
+    intuition for "concise, technical answers" is the first cue (concise); ties at the same position break
+    toward the LONGER phrase so a specific multi-word cue ("no jargon", "in-depth") wins over the bare
+    substring it contains ("jargon", "long"). Handles common inflections (warmer/friendlier/shorter map
+    like their base) and NEGATION: a reducer cue ("less", "not", "too", "overly", ...) just before a bare
+    single-word pole keyword flips the sign to the opposite pole ("less technical" -> the plain pole) --
+    but an intended multi-word negative phrase ("no fluff", "no jargon") keeps its own polarity. On a hit:
+        {"axis": <axis name>, "value": <signed magnitude>, "pole_label": <human label of that pole>}
+    where the magnitude is `sign * min(_DIAL_DEFAULT_MAG, axis_max)` -- a moderate default push, sign-
+    adjusted (+ -> the axis's first pole, - -> its second) and CAPPED to that axis's per-axis "max" so a
+    finicky axis (candid 0.45, concrete 0.5) is never over-cranked past its safe range. Returns None on a
+    topical/no-style memory ("is interested in baking") or empty input -- so only style prefs get routed."""
+    if not text or not isinstance(text, str):
+        return None
+    hay = text.lower()
+    best = None                                          # (key, phrase, axis, sign, start) of the winning cue
+    for phrase, axis, sign in _DIAL_LEXICON:
+        # word/phrase boundary match so "brief" doesn't fire inside "briefing" and "warm" not in "warmup";
+        # \w boundaries anchor on the alnum runs (fine for edge cues like "tl;dr" / "no-nonsense").
+        m = re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", hay)
+        if m is None:
+            continue
+        key = (m.start(), -len(phrase))                  # earliest wins; longer phrase breaks a positional tie
+        if best is None or key < best[0]:
+            best = (key, phrase, axis, sign, m.start())
+    if best is None:
+        return None
+    _, phrase, axis, sign, start = best
+    # NEGATION: only a BARE single-word keyword (no space, no hyphen) is eligible to flip -- multi-word /
+    # hyphenated cues ("no fluff", "no-nonsense") already encode their intended polarity and must stand.
+    if " " not in phrase and "-" not in phrase:
+        preceding = re.findall(r"[\w']+", hay[:start])[-2:]   # up to the 2 words immediately before the cue
+        if any(w in _DIAL_REDUCERS or w.endswith("n't") for w in preceding):
+            sign = -sign                                 # "less technical" -> flip to the opposite (plain) pole
+    ax = AXES.get(axis, {})
+    axis_max = float(ax.get("max", 1.5))
+    mag = min(_DIAL_DEFAULT_MAG, axis_max)
+    poles = ax.get("poles", (axis, axis))
+    pole_label = poles[0] if sign > 0 else poles[1]
+    return {"axis": axis, "value": round(sign * mag, 4), "pole_label": pole_label}
+
 
 # Neutral user turns to elicit the contrast on. Varied (asking / sharing / venting / deciding; factual,
 # emotional, practical; short + medium) so the averaged direction captures TONE, not any one topic.

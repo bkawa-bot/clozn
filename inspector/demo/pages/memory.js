@@ -139,6 +139,27 @@
     ".mem-note{margin-top:8px;font-size:12.5px;padding:8px 12px;border-radius:10px}" +
     ".mem-note.err{color:#c0504a;background:rgba(231,120,120,.10);border:1px solid rgba(231,120,120,.34)}" +
     ".mem-note.ok{color:#2b7a5e;background:rgba(91,191,154,.10);border:1px solid rgba(91,191,154,.34)}" +
+    // --- "set the dial instead" suggestion: a style preference reads better as a tone DIAL than a memory. ---
+    ".mem-dial{margin-top:12px;padding:13px 15px;border-radius:13px;border:1px solid rgba(122,167,255,.5);" +
+    "background:linear-gradient(180deg,rgba(122,167,255,.12),rgba(231,168,196,.08))}" +
+    ".mem-dial .dtitle{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.45;color:var(--soft)}" +
+    ".mem-dial .dtitle .spark{flex:none;font-size:14px;line-height:1.3}" +
+    ".mem-dial .dtitle b{color:var(--ink);font-weight:640}" +
+    ".mem-dial .drow{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}" +
+    ".mem-dial .dgo{font-size:12.5px;font-weight:620;padding:7px 14px;border-radius:16px;cursor:pointer;line-height:1;" +
+    "border:1px solid rgba(122,167,255,.55);color:#2f4a7a;background:linear-gradient(180deg,#dbe7ff,#cbdcff);" +
+    "transition:background .16s,transform .15s,box-shadow .16s}" +
+    ".mem-dial .dgo:hover:not(:disabled){background:linear-gradient(180deg,#e3edff,#d6e3ff);transform:translateY(-1px);" +
+    "box-shadow:0 4px 12px rgba(122,150,210,.18)}" +
+    ".mem-dial .dgo:disabled{opacity:.5;cursor:default}" +
+    ".mem-dial .dkeep{font-size:12px;padding:7px 12px;border-radius:16px;cursor:pointer;line-height:1;color:var(--faint);" +
+    "background:none;border:1px dashed var(--line);transition:color .16s,border-color .16s}" +
+    ".mem-dial .dkeep:hover:not(:disabled){color:var(--soft);border-color:var(--halo)}" +
+    ".mem-dial .dkeep:disabled{opacity:.5;cursor:default}" +
+    ".mem-dial .dnote{margin-top:9px;font-size:12px;line-height:1.45;color:var(--soft)}" +
+    ".mem-dial .dnote.ok{color:#2b7a5e}" +
+    ".mem-dial .dnote.err{color:#c0504a}" +
+    ".mem-dial.dismissed{border-color:var(--line);background:rgba(120,140,190,.06)}" +
     ".mem-offline{margin:18px 0 0;padding:10px 13px;border-radius:11px;font-size:12.5px;color:var(--faint);" +
     "background:rgba(120,140,190,.06);border:1px solid var(--line)}";
 
@@ -340,6 +361,8 @@
           ]),
         ]),
         S.el("div", { class: "mem-note", id: "mem-note", style: "display:none" }, []),
+        // "set the dial instead" suggestion host (populated only when /memory/add flags a style preference).
+        S.el("div", { id: "mem-dial-host" }, []),
       ]),
     ]);
 
@@ -817,11 +840,124 @@
         return;
       }
       if (input) input.value = "";
-      showNote("Added to pending — approve it above to take effect.", false);
+      // If the backend spotted a style preference, offer the tone DIAL as the better path (style memories
+      // transfer weakly). Otherwise behave exactly as before: a plain "added to pending" note.
+      var sug = dialSuggestionOf(res);
+      if (sug) {
+        showNote("Added to pending — but this reads like a style preference.", false);
+        showDialSuggestion(ctx, sug, res.card || null);
+      } else {
+        clearDialSuggestion();
+        showNote("Added to pending — approve it above to take effect.", false);
+      }
       // refresh the authoritative list; the new card should surface in Pending review.
       loadCards(ctx).then(function () {
         var inp = document.getElementById("mem-add-input");
         if (inp) inp.focus();
+      });
+    });
+  }
+
+  // ---- "set the dial instead" suggestion -------------------------------------------------------
+  // The backend attaches `dial_suggestion:{axis,value,pole_label}` to /memory/add when the just-added
+  // text is really a tone preference (null/absent otherwise). We surface the dial as the recommended
+  // path and, on accept, set it + reject the weak style card. Everything here is null-safe.
+  function dialSuggestionOf(res) {
+    if (!res || typeof res !== "object") return null;
+    var d = res.dial_suggestion;
+    if (!d || typeof d !== "object") return null;
+    // require the fields we render/act on; treat a malformed suggestion as absent.
+    if (d.axis == null || d.value == null || d.pole_label == null) return null;
+    return { axis: String(d.axis), value: +d.value, pole_label: String(d.pole_label) };
+  }
+
+  function clearDialSuggestion() {
+    var host = document.getElementById("mem-dial-host");
+    if (host) host.innerHTML = "";
+  }
+
+  function showDialSuggestion(ctx, sug, card) {
+    var host = document.getElementById("mem-dial-host");
+    if (!host) return;
+    host.innerHTML = "";
+    var cardId = card && card.id != null ? card.id : null;
+    var valTxt = fmtNum(sug.value);
+
+    var note = S.el("div", { class: "dnote", id: "mem-dial-note", style: "display:none" }, []);
+    var setBtn = S.el("button", { class: "dgo" }, ["Set the " + sug.pole_label + " dial"]);
+    var keepBtn = S.el("button", { class: "dkeep" }, ["keep it as a memory anyway"]);
+
+    setBtn.addEventListener("click", function () {
+      if (setBtn.disabled) return;
+      acceptDial(ctx, sug, cardId, valTxt, setBtn, keepBtn, note);
+    });
+    keepBtn.addEventListener("click", function () {
+      if (keepBtn.disabled) return;
+      // dismiss the suggestion; leave the pending card exactly as it is.
+      var box = document.getElementById("mem-dial-box");
+      if (box) box.className = "mem-dial dismissed";
+      setBtn.disabled = true; keepBtn.disabled = true;
+      showDialNote(note, "Kept as a pending memory. You can approve or reject it above.", "");
+    });
+
+    var box = S.el("div", { class: "mem-dial", id: "mem-dial-box" }, [
+      S.el("div", { class: "dtitle" }, [
+        S.el("span", { class: "spark" }, ["✦"]),
+        S.el("span", {}, [
+          "This reads like a style preference. The ",
+          S.el("b", {}, [sug.pole_label]),
+          " dial steers this directly — memory is weak for style. ",
+          "Recommended: set the dial to " + valTxt + " instead.",
+        ]),
+      ]),
+      S.el("div", { class: "drow" }, [setBtn, keepBtn]),
+      note,
+    ]);
+    host.appendChild(box);
+  }
+
+  function showDialNote(note, msg, kind) {
+    if (!note) return;
+    note.textContent = msg;
+    note.className = "dnote" + (kind ? " " + kind : "");
+    note.style.display = "";
+  }
+
+  // Accept the dial: POST /steer/set, then discard the weak style card via /memory/reject (when it has an
+  // id). Both calls are null-safe (ctx.postJSON -> null on any failure). Confirms inline, then reloads cards.
+  function acceptDial(ctx, sug, cardId, valTxt, setBtn, keepBtn, note) {
+    setBtn.disabled = true; keepBtn.disabled = true;
+    var was = setBtn.textContent;
+    setBtn.textContent = "setting…";
+    showDialNote(note, "Setting the " + sug.pole_label + " dial…", "");
+
+    ctx.postJSON("/steer/set", { name: sug.axis, value: sug.value }, null).then(function (sres) {
+      if (sres == null) {
+        // dial didn't take (offline / endpoint absent) -> nothing changed; let them retry.
+        setBtn.disabled = false; keepBtn.disabled = false; setBtn.textContent = was;
+        showDialNote(note, "Couldn't set the dial — is the studio server up? Nothing was changed; the memory is still pending.", "err");
+        return;
+      }
+      // dial is set. If there's a card to discard, reject it so the weak style memory doesn't linger.
+      if (cardId == null) {
+        setBtn.textContent = was;
+        showDialNote(note, "Set the " + sug.pole_label + " dial to " + valTxt + ". (No pending card to discard.)", "ok");
+        var box0 = document.getElementById("mem-dial-box");
+        if (box0) box0.className = "mem-dial dismissed";
+        return;
+      }
+      ctx.postJSON("/memory/reject", { id: cardId }, null).then(function (rres) {
+        setBtn.textContent = was;
+        var box = document.getElementById("mem-dial-box");
+        if (box) box.className = "mem-dial dismissed";
+        if (rres == null) {
+          // dial set, but the reject didn't land -> be honest; the card is still pending for manual reject.
+          showDialNote(note, "Set the " + sug.pole_label + " dial to " + valTxt + ", but couldn't discard the style memory — reject it above if you like.", "ok");
+        } else {
+          showDialNote(note, "Set " + sug.pole_label + " dial to " + valTxt + "; discarded the style memory.", "ok");
+        }
+        // reflect the reject (and any dial-side memory change) in the authoritative card list.
+        loadCards(ctx);
       });
     });
   }

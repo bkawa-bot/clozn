@@ -136,7 +136,26 @@
       ".ri-prop .added{margin-top:8px;font-size:12px;color:var(--soft,#5a6072)}" +
       ".ri-prop .added a{color:var(--halo,#7aa7ff);text-decoration:none;font-weight:600}" +
       ".ri-prop .added a:hover{text-decoration:underline}" +
-      ".ri-prop .sub{color:var(--faint,#9aa0b3)}";
+      ".ri-prop .sub{color:var(--faint,#9aa0b3)}" +
+      // --- "set the dial instead" suggestion: a proposed style preference works better as a tone DIAL. ---
+      ".ri-dial{margin-top:9px;padding:10px 12px;border-radius:10px;border:1px solid rgba(122,167,255,.5);" +
+      "background:linear-gradient(180deg,rgba(122,167,255,.12),rgba(231,168,196,.08))}" +
+      ".ri-dial .dt{display:flex;gap:7px;align-items:flex-start;font-size:12px;line-height:1.45;color:var(--soft,#5a6072)}" +
+      ".ri-dial .dt .spark{flex:none;font-size:13px;line-height:1.3}" +
+      ".ri-dial .dt b{color:var(--ink,#1b1f2a);font-weight:640}" +
+      ".ri-dial .drow{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}" +
+      ".ri-dial .dgo{font:inherit;font-size:12px;font-weight:620;padding:6px 12px;border-radius:14px;cursor:pointer;line-height:1;" +
+      "border:1px solid rgba(122,167,255,.55);color:#2f4a7a;background:linear-gradient(180deg,#dbe7ff,#cbdcff)}" +
+      ".ri-dial .dgo:hover:not(:disabled){background:linear-gradient(180deg,#e3edff,#d6e3ff)}" +
+      ".ri-dial .dgo:disabled{opacity:.5;cursor:default}" +
+      ".ri-dial .dkeep{font:inherit;font-size:11.5px;padding:6px 11px;border-radius:14px;cursor:pointer;line-height:1;" +
+      "color:var(--faint,#9aa0b3);background:none;border:1px dashed var(--line,#e3e6ef)}" +
+      ".ri-dial .dkeep:hover:not(:disabled){color:var(--soft,#5a6072);border-color:var(--halo,#7aa7ff)}" +
+      ".ri-dial .dkeep:disabled{opacity:.5;cursor:default}" +
+      ".ri-dial .dnote{margin-top:8px;font-size:11.5px;line-height:1.45;color:var(--soft,#5a6072)}" +
+      ".ri-dial .dnote.ok{color:#2f8a54}" +
+      ".ri-dial .dnote.err{color:#a9481f}" +
+      ".ri-dial.dismissed{border-color:var(--line,#e3e6ef);background:rgba(120,140,190,.06)}";
     document.head.appendChild(s);
   }
 
@@ -557,20 +576,21 @@
         btn.disabled = false;
         btn.classList.remove("busy");
         btn.textContent = label;
-        renderProposal(out, res);
+        renderProposal(out, res, ctx);
       }, function () {
         // defensive: ctx.postJSON shouldn't reject, but never leave the button stuck if it somehow does.
         btn.disabled = false;
         btn.classList.remove("busy");
         btn.textContent = label;
-        renderProposal(out, null);
+        renderProposal(out, null, ctx);
       });
     };
   }
 
   // Render the outcome of a propose-memory call into `out`. Handles all four shapes the endpoint can
   // return, plus null (offline / non-2xx swallowed by ctx.postJSON): proposed card, no-proposal, error.
-  function renderProposal(out, res) {
+  // `ctx` (optional) carries the null-safe postJSON used by the "set the dial instead" action.
+  function renderProposal(out, res, ctx) {
     if (!out) return;
     // offline / endpoint absent / any swallowed failure -> a friendly, non-alarming note.
     if (res == null || res.ok === false) {
@@ -603,6 +623,8 @@
     }
     // inline nav to #/memory (a plain hash link is enough; the router mounts the Memory page).
     html += '<div class="added">Added to pending. Review it in <a href="#/memory" data-nav="memory">Memory</a>.</div>';
+    // "set the dial instead" host: filled below (as DOM) when the backend flags this as a style preference.
+    html += '<div class="ri-dial-host"></div>';
     html += "</div>";
     out.innerHTML = html;
 
@@ -613,6 +635,106 @@
       if (S && typeof S.navigate === "function") S.navigate("memory");
       else location.hash = "#/memory";
     };
+
+    // If the proposal is really a style preference, recommend the tone DIAL over the (weak) memory.
+    var sug = dialSuggestionOf(res);
+    if (sug) renderDialSuggestion(out.querySelector(".ri-dial-host"), sug, card, out, res, ctx);
+  }
+
+  // ---- "set the dial instead" (proposed style preference -> tone dial) -------------------------
+  // The backend attaches `dial_suggestion:{axis,value,pole_label}` to propose-memory when the distilled
+  // preference is really a tone knob (null/absent otherwise). Read it defensively; a malformed one is
+  // treated as absent so the plain proposal card stands.
+  function dialSuggestionOf(res) {
+    if (!res || typeof res !== "object") return null;
+    var d = res.dial_suggestion;
+    if (!d || typeof d !== "object") return null;
+    if (d.axis == null || d.value == null || d.pole_label == null) return null;
+    return { axis: String(d.axis), value: +d.value, pole_label: String(d.pole_label) };
+  }
+
+  function fmtDialVal(v) { var n = +v; return isNaN(n) ? String(v) : (n === Math.round(n) ? String(n) : n.toFixed(1)); }
+
+  // Render the recommendation + wire the two buttons into `host` (a child of the proposal `out`). `card`
+  // is the just-proposed pending card ({id,...}); we reject it by id when the dial is chosen.
+  function renderDialSuggestion(host, sug, card, out, res, ctx) {
+    if (!host) return;
+    var cardId = card && card.id != null ? card.id : null;
+    var valTxt = fmtDialVal(sug.value);
+
+    var box = document.createElement("div");
+    box.className = "ri-dial";
+    box.innerHTML =
+      '<div class="dt"><span class="spark">✦</span><span>This reads like a style preference. The <b>' +
+      esc(sug.pole_label) + "</b> dial steers this directly — memory is weak for style. " +
+      "Recommended: set the dial to " + esc(valTxt) + " instead.</span></div>" +
+      '<div class="drow">' +
+      '<button class="dgo">Set the ' + esc(sug.pole_label) + " dial</button>" +
+      '<button class="dkeep">keep it as a memory anyway</button>' +
+      "</div>" +
+      '<div class="dnote" style="display:none"></div>';
+    host.appendChild(box);
+
+    var setBtn = box.querySelector(".dgo");
+    var keepBtn = box.querySelector(".dkeep");
+    var note = box.querySelector(".dnote");
+
+    setBtn.onclick = function () {
+      if (setBtn.disabled) return;
+      acceptDial(sug, cardId, valTxt, setBtn, keepBtn, note, box, ctx);
+    };
+    keepBtn.onclick = function () {
+      if (keepBtn.disabled) return;
+      // dismiss the suggestion; the pending card the propose flow created is left exactly as it is.
+      box.className = "ri-dial dismissed";
+      setBtn.disabled = true; keepBtn.disabled = true;
+      dialNote(note, "Kept as a pending memory — review it on the Memory page.", "");
+    };
+  }
+
+  function dialNote(note, msg, kind) {
+    if (!note) return;
+    note.textContent = msg;
+    note.className = "dnote" + (kind ? " " + kind : "");
+    note.style.display = "";
+  }
+
+  // Accept the dial: POST /steer/set, then discard the weak style card via /memory/reject (when it has an
+  // id). Uses ctx.postJSON when available (null-safe -> null on any failure), else the local one adapted.
+  function acceptDial(sug, cardId, valTxt, setBtn, keepBtn, note, box, ctx) {
+    setBtn.disabled = true; keepBtn.disabled = true;
+    var was = setBtn.textContent;
+    setBtn.textContent = "setting…";
+    dialNote(note, "Setting the " + sug.pole_label + " dial…", "");
+
+    // Prefer ctx.postJSON(path, body, fallback) (null on failure); fall back to the local {ok,status,data}
+    // postJSON, normalized to the same "null on failure" contract so the branches below are uniform.
+    var post = (ctx && ctx.postJSON)
+      ? function (p, b) { return ctx.postJSON(p, b, null); }
+      : function (p, b) { return postJSON(p, b).then(function (r) { return (r && r.ok && r.status !== 404 && r.status !== 503 && r.status !== 0) ? (r.data || {}) : null; }); };
+
+    Promise.resolve(post("/steer/set", { name: sug.axis, value: sug.value })).then(function (sres) {
+      if (sres == null) {
+        setBtn.disabled = false; keepBtn.disabled = false; setBtn.textContent = was;
+        dialNote(note, "Couldn’t set the dial — is the studio server up? Nothing was changed; the memory is still pending.", "err");
+        return;
+      }
+      if (cardId == null) {
+        setBtn.textContent = was;
+        box.className = "ri-dial dismissed";
+        dialNote(note, "Set the " + sug.pole_label + " dial to " + valTxt + ". (No pending card to discard.)", "ok");
+        return;
+      }
+      Promise.resolve(post("/memory/reject", { id: cardId })).then(function (rres) {
+        setBtn.textContent = was;
+        box.className = "ri-dial dismissed";
+        if (rres == null) {
+          dialNote(note, "Set the " + sug.pole_label + " dial to " + valTxt + ", but couldn’t discard the style memory — reject it on the Memory page if you like.", "ok");
+        } else {
+          dialNote(note, "Set " + sug.pole_label + " dial to " + valTxt + "; discarded the style memory.", "ok");
+        }
+      });
+    });
   }
 
   async function render(view, ctx, runId) {

@@ -113,6 +113,18 @@ def _risk_of(text: str) -> str:
     return "suspicious" if any(s in t for s in _SUSPICIOUS) else "low"
 
 
+def _dial_suggestion(text: str):
+    """If a memory's text is really a STYLE preference that maps to a tone dial, return that suggestion
+    ({axis, value, pole_label}); else None. Guarded import of steering.suggest_dial_for_preference so a
+    missing/broken steering module (or the pure-engine substrate) can never break /memory/add or propose.
+    Pure + deterministic (a lexicon match, no model) -- see steering.suggest_dial_for_preference."""
+    try:
+        from steering import suggest_dial_for_preference
+        return suggest_dial_for_preference(text)
+    except Exception:
+        return None
+
+
 def _mem_migrate(m):
     """Seed the card store from a memory object's legacy rule-strings, ONCE. migrate_from_rules is a
     no-op when the store already has cards, and it creates them as ACTIVE -- the prefix is already trained
@@ -275,7 +287,12 @@ class Substrate:
             card = memory_cards.create(text, status="pending", kind="preference",
                                        risk=_risk_of(text), source_run_id=body.get("source_run_id"),
                                        evidence=str(body.get("evidence", "")))
-            return card or {"ok": False, "reason": "could not create card"}
+            if not card:
+                return {"ok": False, "reason": "could not create card"}
+            # If this is really a STYLE preference, surface the tone DIAL that delivers it (the trained
+            # prefix carries topical prefs well but style ones weakly). Card is still created + pending;
+            # this only SUGGESTS the better mechanism -- null when the text isn't a style match.
+            return {**card, "dial_suggestion": _dial_suggestion(text)}
 
         if path == "/memory/remove":            # delete by id -> if it was active, rebuild from the rest
             cid = str(body.get("id", "")).strip()
@@ -850,7 +867,10 @@ def make_handler():
                                            evidence=f"proposed from run {rid}")
                 if not card:
                     return self._json(200, {"proposed": False, "reason": "could not create card"})
-                return self._json(200, {"proposed": True, "card": card})
+                # Route a STYLE preference to the tone dial that delivers it (see /memory/add). The card
+                # is still created + pending; dial_suggestion is null for a topical/non-style proposal.
+                return self._json(200, {"proposed": True, "card": card,
+                                        "dial_suggestion": _dial_suggestion(text)})
             if p == "/engine/harvest":   # READ the real C++ runtime's activations (any substrate; the engine is separate)
                 try:
                     h = ENGINE.harvest(str(body.get("text", ""))[:300])
