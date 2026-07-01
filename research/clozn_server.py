@@ -330,6 +330,22 @@ class Substrate:
                     except Exception:
                         pass
             return {"strength": float(getattr(m, "memory_strength", 1.0)), "has_prefix": m.prefix is not None}
+
+        if path == "/memory/gatecheck":         # DEBUG (live calibration): the topic-relevance gate for a prompt
+            # Exposes both raw signals + the final gate + per-rule cosines for the active rules, so the bands
+            # (lo_t/hi_t/lo_o/hi_o) can be tuned against real on/off-topic prompts. Fully guarded: on any
+            # failure (or no embedder) it reports the no-gating baseline (gate 1.0) rather than raising.
+            prompt = str(body.get("prompt", ""))
+            rules = list(getattr(m, "rules", []) or [])
+            try:
+                from topic_gate import get_gate
+                dbg = get_gate().debug(prompt, rules)
+            except Exception as e:
+                dbg = {"gate": 1.0, "topic": 0.0, "openness": 0.0, "relevance": {},
+                       "ok": False, "error": f"{type(e).__name__}: {e}"}
+            # `gate` here is the RAW topic gate (relevance only); the applied scale is memory_strength x gate.
+            return {"prompt": prompt, "rules": rules,
+                    "strength": float(getattr(m, "memory_strength", 1.0)), **dbg}
         return None
 
     # ---- E1 review lifecycle: a status change rebuilds m.rules from the active set, retrains iff it moved -
@@ -479,8 +495,11 @@ class QwenSubstrate(Substrate):
                 self._ensure_steer()
             self.steer.engage()
             try:
+                # gate="auto" -> _generate scales the memory prefix by memory_strength x TOPIC RELEVANCE, so
+                # the OpenAI /v1/chat path gets the same on-topic gating as /say (fixes the always-on
+                # over-bleed). memory_strength 0 still zeroes it; a missing embedder falls back to no-gating.
                 return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample,
-                                             gate=self.memory.memory_strength, trace_out=trace_out)
+                                             gate="auto", trace_out=trace_out)
             finally:
                 self.steer.disengage()
 
@@ -507,8 +526,13 @@ class QwenSubstrate(Substrate):
             self._ensure_steer()
         m = self.memory
         e = m._embed(m._chat_ids(messages))
-        if m.prefix is not None:                            # prepend the consolidated memory prefix (scaled by the dial)
-            e = torch.cat([(m.memory_strength * m.prefix.detach()).to(e.dtype)[None], e], 1)
+        if m.prefix is not None:                            # prepend the consolidated memory prefix, scaled by
+            # memory_strength x TOPIC RELEVANCE (same on-topic gating as _generate's gate="auto"; this path
+            # inlines generate() for streaming so it can't call _generate, but the scale must match). A
+            # missing embedder makes rel==1.0 (no gating); memory_strength 0 zeroes the prefix entirely.
+            last_user = next((mm["content"] for mm in reversed(messages) if mm.get("role") == "user"), "")
+            g = m.memory_strength * m._gate(last_user)
+            e = torch.cat([(g * m.prefix.detach()).to(e.dtype)[None], e], 1)
         att = torch.ones(e.shape[:2], device=e.device, dtype=torch.long)
         streamer = TextIteratorStreamer(m.tok, skip_prompt=False, skip_special_tokens=True)
         kw = dict(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new, do_sample=True,
@@ -941,7 +965,19 @@ def make_handler():
                         ms = float(getattr(mem, "memory_strength", 1.0))
                     else:
                         prefix, ms = _disk_memory()
-                    if prefix is not None:                         # inject the trained soft prefix (scaled by the dial)
+                    # TOPIC RELEVANCE gate on the injection strength (mirror the HF chat's gate="auto"): scale
+                    # ms by how on-topic the last user turn is vs the active rules. Only when a LIVE memory with
+                    # rules is present (the qwen substrate) -- the pure-engine/disk path has no rule texts to
+                    # gate against, so it degrades to no-gating (rel==1.0), the prior behavior. Defensive: any
+                    # failure leaves ms unscaled.
+                    try:
+                        if mem is not None and getattr(mem, "rules", None):
+                            last_user = next((mm.get("content", "") for mm in reversed(msgs)
+                                              if mm.get("role") == "user"), "")
+                            ms = ms * float(mem._gate(last_user))
+                    except Exception:
+                        pass
+                    if prefix is not None:                         # inject the trained soft prefix (scaled by the dial x relevance)
                         kw = {"prefix_embd": (prefix * ms).flatten().tolist(), "prefix_rows": int(prefix.shape[0])}
                     # TONE: live dial values if a substrate is up, else the saved values from disk
                     st = getattr(getattr(SUB, "steer", None), "strength", None) if SUB else None

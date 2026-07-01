@@ -47,6 +47,18 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def _topic_gate():
+    """The shared TopicGate (a small sentence-embedder that scores prompt<->rule topic relevance), or
+    None if topic_gate isn't importable. Guarded so a missing module can never break SelfTeach -- callers
+    fall back to no-gating (g == 1.0), i.e. the old always-on behavior. The 80MB embedder loads at most
+    once per process (get_gate is a singleton) and only on first real use."""
+    try:
+        from topic_gate import get_gate
+        return get_gate()
+    except Exception:
+        return None
+
+
 # ------- per-token trace capture (Studio Run Inspector, issue B3) --------------------------------
 # A PURE-passthrough LogitsProcessor: at each decoding step it reads the model's score row, records the
 # top-k tokens the model weighed there (piece + softmax prob), and returns `scores` COMPLETELY UNCHANGED.
@@ -234,30 +246,45 @@ class SelfTeach:
         return v / (v.norm() + 1e-8)
 
     def _gate(self, prompt: str) -> float:
-        """Relevance gate in [0,1]: cosine(prompt, domain anchor) rescaled so an in-domain prompt -> ~1
-        and a neutral prompt -> ~0. Returns 1.0 before any anchor is set (gating off)."""
-        if self.anchor is None:
+        """TOPIC-RELEVANCE gate in [0,1]: how strongly the memory should fire for THIS prompt.
+
+        Delegates to a small sentence-embedder (topic_gate.TopicGate) that scores the prompt against the
+        active rule TEXTS (self.rules) and returns the relevance to the best-matching rule, soft-thresholded
+        to [0,1]. On-topic prompts -> ~1, off-topic -> ~0. This REPLACES the old hidden-state cosine gate
+        (self.anchor / sim_in / sim_neutral), which was unreliable because mean-pooled 7B hidden states are
+        too anisotropic to separate domains. Those fields remain on the object for save/load compat but are
+        no longer consulted here.
+
+        Graceful default (the safety contract): returns 1.0 -- i.e. NO gating, the always-on baseline --
+        whenever the embedder is unavailable OR there are no active rules. So a machine without
+        sentence-transformers, or a memory with no rules, behaves exactly as before (no regression)."""
+        gate = _topic_gate()
+        if gate is None:
             return 1.0
-        cos = float(self._domain_vec(prompt) @ self.anchor)
-        g = (cos - self.sim_neutral) / (self.sim_in - self.sim_neutral + 1e-6)
-        return max(0.0, min(1.0, g))
+        try:
+            return float(gate.scalar(prompt, list(self.rules)))
+        except Exception:
+            return 1.0                                       # any gate hiccup -> fall back to no-gating
 
     @torch.no_grad()
     def _generate(self, messages: list[dict], use_prefix: bool, max_new=200, sample=True, gate="auto",
-                  trace_out: list | None = None) -> str:
+                  trace_out: list | None = None, apply_gate: bool = True) -> str:
         """Generate one reply. If `trace_out` (a list) is passed, ALSO fill it with per-token trace steps
         (piece + confidence + alternatives) for the Run Inspector -- captured via a pure pass-through
         LogitsProcessor, so the returned text is byte-identical whether or not a trace is requested. Any
         capture failure leaves trace_out empty and never affects the reply. The return type is always str."""
         e = self._embed(self._chat_ids(messages))           # [1, L, H]
         if use_prefix and self.prefix is not None:
-            # contextual gate g in [0,1] scales the injection: "auto" => by prompt relevance, else a float.
-            if gate == "auto":
-                last_user = next((mm["content"] for mm in reversed(messages) if mm["role"] == "user"), "")
-                g = self._gate(last_user)
-            else:
-                g = float(gate)
-            pre = (g * self.prefix.detach()).to(e.dtype)[None]   # [1, m, H], scaled by relevance
+            # Injection scale = BASE strength x TOPIC RELEVANCE. The base is memory_strength when gate=="auto"
+            # (the /say + chat paths), else the caller's float (treated as an explicit base strength). Either
+            # way we multiply by the topic-relevance gate rel in [0,1] (self._gate on the last user turn), so
+            # the memory fires on-topic and turns OFF off-topic -- the fix for the always-on over-bleed. A
+            # base of 0 (memory dial off) stays 0; a missing embedder makes rel==1 -> the base is used as-is.
+            base = self.memory_strength if gate == "auto" else float(gate)
+            last_user = next((mm["content"] for mm in reversed(messages) if mm["role"] == "user"), "")
+            rel = self._gate(last_user) if apply_gate else 1.0   # diagnostics (whatlearned/check ungated) bypass
+            g = base * rel
+            pre = (g * self.prefix.detach()).to(e.dtype)[None]   # [1, m, H], scaled by base x relevance
             e = torch.cat([pre, e], 1)
         att = torch.ones(e.shape[:2], device=DEV, dtype=torch.long)
         gen_kw = dict(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new,
@@ -289,13 +316,14 @@ class SelfTeach:
     def say(self, message: str, max_new=220, strength=None, trace_out: list | None = None) -> str:
         with self.lock:
             self.history.append({"role": "user", "content": message})
-            # Apply the consolidated prefix at self.memory_strength (the user dial; 1.0 = as trained). The old
-            # "auto" cosine gate is unreliable (mean-pooled hidden states are too anisotropic -- sim_in 0.968
-            # vs sim_neutral 0.956, so it scored every prompt ~0 and zeroed the trait). The gentle, norm-capped
-            # prefix self-gates well, so we default to the dial and let the user turn it up/down.
+            # Apply the consolidated prefix scaled by memory_strength x TOPIC RELEVANCE. gate="auto" makes
+            # _generate use memory_strength (the user dial; 0 = off, 1 = as trained) as the base and multiply
+            # by the topic-relevance gate, so the memory fires on-topic and stays quiet off-topic -- the fix
+            # for the always-on over-bleed (baking invading a cover letter). An explicit `strength` override
+            # is passed as the base float and is STILL topic-gated (the new _generate contract).
             # trace_out (optional): filled with the per-token trace for the Run Inspector; reply is unchanged.
-            g = self.memory_strength if strength is None else float(strength)
-            reply = self._generate(self.history, use_prefix=True, max_new=max_new, sample=True, gate=g,
+            gate = "auto" if strength is None else float(strength)
+            reply = self._generate(self.history, use_prefix=True, max_new=max_new, sample=True, gate=gate,
                                    trace_out=trace_out)
             self.history.append({"role": "assistant", "content": reply})
             return reply
@@ -519,7 +547,7 @@ class SelfTeach:
             ask = ("What have you picked up about me so far -- my interests, anything I seem to care about, "
                    "and how I like you to respond? List what you know, one item per line.")
             return self._generate([{"role": "user", "content": ask}], use_prefix=True, max_new=200,
-                                  sample=False, gate=1.0)
+                                  sample=False, gate=1.0, apply_gate=False)   # self-report shows the FULL memory
 
     # ---- /check : baseline vs UNGATED prefix vs GATED prefix (+ the gate value) on the same probe ---
     def check(self, prompt: str, max_new=200) -> dict:
@@ -530,7 +558,7 @@ class SelfTeach:
                 return {"prompt": prompt, "gate": None, "baseline": base,
                         "ungated": "(no prefix)", "gated": "(no prefix)"}
             g = round(self._gate(prompt), 3)                # how relevant this prompt is to the rule's domain
-            ungated = self._generate(msgs, use_prefix=True, max_new=max_new, sample=False, gate=1.0)
+            ungated = self._generate(msgs, use_prefix=True, max_new=max_new, sample=False, gate=1.0, apply_gate=False)
             gated = self._generate(msgs, use_prefix=True, max_new=max_new, sample=False, gate="auto")
             return {"prompt": prompt, "gate": g, "baseline": base, "ungated": ungated, "gated": gated}
 
