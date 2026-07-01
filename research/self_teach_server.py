@@ -225,6 +225,77 @@ class SelfTeach:
                 rules.append(t)
         return rules[:8]
 
+    # ---- E2: propose ONE durable user preference from a past run, on demand (a PENDING card) -------
+    # The Studio calls this when the reviewer clicks "propose a memory" on a captured run. The model reads
+    # that run's conversation and names a single reusable preference (how they like answers, or a stable
+    # interest) as a short THIRD-PERSON memory -- or nothing, if the run holds no durable signal. This is a
+    # PROPOSAL only: the caller stores it as a pending card (never approves, never retrains).
+    #
+    # CRITICAL -- this read must be CLEAN. We generate on the RAW frozen model+tokenizer (self.model.generate
+    # on plain token ids), NOT via self._generate / the prefix path: the consolidated memory prefix would
+    # color what the model "sees" and bias the extraction toward the already-known traits. (Tone steering is
+    # neutralized by the caller in clozn_server.py before this runs.) Defensive throughout: any failure -> None.
+    @torch.no_grad()
+    def propose_memory(self, messages: list[dict], response: str | None = None,
+                       max_new: int = 48) -> str | None:
+        try:
+            convo_msgs = list(messages or [])
+            if response:                                    # fold the assistant's reply in as the last turn
+                if not (convo_msgs and convo_msgs[-1].get("role") == "assistant"):
+                    convo_msgs = convo_msgs + [{"role": "assistant", "content": response}]
+            convo = "\n".join(f"{m.get('role', '').upper()}: {m.get('content', '')}"
+                              for m in convo_msgs if m.get("content"))
+            if not convo.strip():
+                return None
+            ask = ("Read this conversation between a user and an assistant. Identify ONE durable, reusable "
+                   "preference the USER has -- either how they want answers (tone, length, level of detail) "
+                   "or a stable interest of theirs -- that would help tailor future replies. Write it as a "
+                   "short THIRD-PERSON note about the user, e.g. \"Prefers concise, technical answers\" or "
+                   "\"Is interested in baking\". One line, under 12 words, no quotes, no preamble. If there "
+                   "is no clear durable preference, reply with exactly NONE.\n\n"
+                   "Conversation:\n" + convo + "\n\nDurable user preference:")
+            # RAW model call -- no prefix, greedy, short. (Not self._generate: that path injects the memory
+            # prefix, which must NOT taint the extraction.)
+            ids = self.tok.apply_chat_template([{"role": "user", "content": ask}],
+                                               tokenize=True, add_generation_prompt=True)
+            e = self.emb(torch.tensor([ids], device=DEV))
+            att = torch.ones(e.shape[:2], device=DEV, dtype=torch.long)
+            out = self.model.generate(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new,
+                                      do_sample=False, pad_token_id=self.eos or 0)
+            text = self.tok.decode(out[0], skip_special_tokens=True)
+            return self._clean_proposal(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _clean_proposal(text: str) -> str | None:
+        """Sanitize the model's raw extraction into a short third-person memory, or None.
+
+        None when: empty, a bare NONE/none, a refusal, or (after trimming) longer than ~120 chars -- a long
+        answer means the model didn't commit to a single crisp preference. Strips surrounding quotes and a
+        leading label (e.g. 'Durable user preference:' / 'Memory:' / a bullet)."""
+        t = (text or "").strip()
+        if not t:
+            return None
+        t = t.splitlines()[0].strip()                       # first line only -- one preference
+        t = t.lstrip("-*•0123456789.) ").strip()            # drop bullet / numbering
+        low = t.lower()
+        for label in ("durable user preference:", "user preference:", "preference:", "memory:", "note:"):
+            if low.startswith(label):
+                t = t[len(label):].strip()
+                low = t.lower()
+        if len(t) >= 2 and t[0] in "\"'“”" and t[-1] in "\"'“”":   # strip surrounding quotes
+            t = t[1:-1].strip()
+            low = t.lower()
+        if not t or low in ("none", "n/a", "na", "no preference", "no durable preference"):
+            return None
+        if any(r in low for r in ("i cannot", "i can't", "i'm sorry", "i am sorry", "as an ai",
+                                  "there is no", "no clear", "unable to")):
+            return None
+        if len(t) > 120:                                    # not a crisp single preference -> skip
+            return None
+        return t
+
     # ---- sequence-level TTT loss: prefix + plain prompt must reproduce the rule-following target -
     def _seq_loss(self, prompt_ids: list[int], target_ids: list[int]) -> torch.Tensor:
         e_p = self._embed(prompt_ids)                       # [1, Lp, H]

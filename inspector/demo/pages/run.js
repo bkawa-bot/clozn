@@ -47,7 +47,23 @@
       ".ri-act{display:block;width:100%;text-align:left;border:1px solid var(--line,#e3e6ef);background:#fff;border-radius:10px;padding:8px 11px;margin:6px 0;font:inherit;font-size:13px;cursor:pointer}" +
       ".ri-act:hover{border-color:var(--halo,#7aa7ff)}" +
       ".ri-out{margin-top:10px;font-size:12.5px}" +
-      ".ri-out .diff{background:var(--wash,#f6f8ff);border-radius:9px;padding:8px 10px;margin-top:6px;white-space:pre-wrap}";
+      ".ri-out .diff{background:var(--wash,#f6f8ff);border-radius:9px;padding:8px 10px;margin-top:6px;white-space:pre-wrap}" +
+      // "propose a memory from this run" -- its own action + result block, kept distinct from replay.
+      ".ri-sep{margin:12px 0 2px;border:0;border-top:1px dashed var(--line,#e3e6ef)}" +
+      ".ri-act.busy{opacity:.6;cursor:default}" +
+      ".ri-prop{margin-top:8px;font-size:12.5px}" +
+      ".ri-prop .card{background:var(--wash,#f6f8ff);border:1px solid var(--line,#e3e6ef);border-radius:10px;padding:9px 11px;margin-top:6px}" +
+      ".ri-prop .card .txt{color:var(--ink,#1b1f2a);font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}" +
+      ".ri-prop .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}" +
+      ".ri-prop .chip{font-size:10.5px;letter-spacing:.02em;padding:2px 8px;border-radius:9px;white-space:nowrap;color:var(--soft,#5a6072);background:#fff;border:1px solid var(--line,#e3e6ef)}" +
+      ".ri-prop .chip.pending{color:#a9762a;background:rgba(230,196,120,.16);border-color:rgba(230,196,120,.42)}" +
+      ".ri-prop .chip.risk{color:#c0504a;background:rgba(231,120,120,.12);border-color:rgba(231,120,120,.4)}" +
+      ".ri-prop .warn{display:flex;gap:7px;align-items:flex-start;margin-top:8px;padding:7px 10px;border-radius:9px;font-size:11.5px;line-height:1.4;color:#a33;background:rgba(231,120,120,.12);border:1px solid rgba(231,120,120,.4)}" +
+      ".ri-prop .warn b{color:#8f2f2f}" +
+      ".ri-prop .added{margin-top:8px;font-size:12px;color:var(--soft,#5a6072)}" +
+      ".ri-prop .added a{color:var(--halo,#7aa7ff);text-decoration:none;font-weight:600}" +
+      ".ri-prop .added a:hover{text-decoration:underline}" +
+      ".ri-prop .sub{color:var(--faint,#9aa0b3)}";
     document.head.appendChild(s);
   }
 
@@ -100,11 +116,17 @@
     h += "<button class=\"ri-act\" data-rep='{\"nudge\":\"concise\"}'>Make it more concise + replay</button>";
     h += "<button class=\"ri-act\" data-rep='{\"plain\":true}'>Replay unchanged (re-roll)</button>";
     h += '<div class="ri-out" id="ri-out"></div>';
+    // --- E2: propose a durable memory from this run (drops a PENDING card on the Memory page) ---
+    h += '<hr class="ri-sep">';
+    h += '<button class="ri-act" id="ri-propose">Propose a memory from this run</button>';
+    h += '<div class="ri-prop" id="ri-prop"></div>';
     return h;
   }
 
   function wireRepair(root, run) {
-    root.querySelectorAll(".ri-act").forEach(function (btn) {
+    // Only the replay buttons carry data-rep; scope by it so the E2 "propose" button (also .ri-act,
+    // for visual parity) doesn't get a replay handler bound to it.
+    root.querySelectorAll(".ri-act[data-rep]").forEach(function (btn) {
       btn.onclick = async function () {
         var out = root.querySelector("#ri-out"), changes = JSON.parse(btn.dataset.rep || "{}");
         out.innerHTML = '<span class="sub">replaying…</span>';
@@ -117,6 +139,85 @@
           '<div class="ri-kv" style="margin-top:8px"><span class="k">replay</span></div><div class="diff">' + esc(child.response || child.response_summary || "") + "</div>";
       };
     });
+  }
+
+  // E2: "Propose a memory from this run". Asks the backend to distill a durable preference out of this
+  // conversation and drop it into the PENDING memory queue (reviewed on the Memory page). Uses
+  // ctx.postJSON(path, body, fallback) which NEVER throws -- on any failure (offline, 404, 500) it
+  // resolves to the fallback (null here), so every branch below is safe.
+  function wirePropose(root, run, ctx) {
+    var btn = root.querySelector("#ri-propose");
+    if (!btn) return;
+    var out = root.querySelector("#ri-prop");
+    btn.onclick = function () {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.classList.add("busy");
+      var label = btn.textContent;
+      btn.textContent = "reading the conversation…";
+      if (out) out.innerHTML = '<span class="sub">reading the conversation… distilling a durable preference from this run.</span>';
+
+      var post = ctx && ctx.postJSON ? ctx.postJSON : postJSON;
+      Promise.resolve(post("/runs/" + run.id + "/propose-memory", null, null)).then(function (res) {
+        btn.disabled = false;
+        btn.classList.remove("busy");
+        btn.textContent = label;
+        renderProposal(out, res);
+      }, function () {
+        // defensive: ctx.postJSON shouldn't reject, but never leave the button stuck if it somehow does.
+        btn.disabled = false;
+        btn.classList.remove("busy");
+        btn.textContent = label;
+        renderProposal(out, null);
+      });
+    };
+  }
+
+  // Render the outcome of a propose-memory call into `out`. Handles all four shapes the endpoint can
+  // return, plus null (offline / non-2xx swallowed by ctx.postJSON): proposed card, no-proposal, error.
+  function renderProposal(out, res) {
+    if (!out) return;
+    // offline / endpoint absent / any swallowed failure -> a friendly, non-alarming note.
+    if (res == null || res.ok === false) {
+      var reason = res && res.reason ? " (" + esc(res.reason) + ")" : "";
+      out.innerHTML = '<span class="sub">Couldn’t propose a memory (endpoint offline?)' + reason +
+        " — nothing was changed. This lights up once /runs/&lt;id&gt;/propose-memory exists.</span>";
+      return;
+    }
+    // nothing durable to remember from this run.
+    if (res.proposed === false || !res.card) {
+      var why = res.reason ? esc(res.reason) : "no durable preference found in this run";
+      out.innerHTML = '<span class="sub">No memory proposed — ' + why + ".</span>";
+      return;
+    }
+    // proposed:true with a card -> show the card text, a "pending review" chip, its risk, and a
+    // warning if it reads instruction-like (risk != "low"). Point the user to the Memory page.
+    var card = res.card || {};
+    var text = card.text != null ? String(card.text) : "";
+    var risk = card.risk != null ? String(card.risk) : "";
+    var riskLow = risk === "" || risk.toLowerCase() === "low" || risk.toLowerCase() === "none";
+
+    var html = '<div class="card">';
+    html += '<div class="txt">' + (text ? esc(text) : "(empty proposal)") + "</div>";
+    html += '<div class="chips"><span class="chip pending">pending review</span>';
+    if (risk) html += '<span class="chip' + (riskLow ? "" : " risk") + '">risk: ' + esc(risk) + "</span>";
+    html += "</div>";
+    if (!riskLow) {
+      html += '<div class="warn"><span>⚠</span><span><b>Looks instruction-like.</b> ' +
+        "This reads more like an embedded instruction than a lasting preference — review it carefully before approving.</span></div>";
+    }
+    // inline nav to #/memory (a plain hash link is enough; the router mounts the Memory page).
+    html += '<div class="added">Added to pending. Review it in <a href="#/memory" data-nav="memory">Memory</a>.</div>';
+    html += "</div>";
+    out.innerHTML = html;
+
+    // prefer ctx-style navigation when available, but the href alone already works.
+    var link = out.querySelector('a[data-nav="memory"]');
+    if (link) link.onclick = function (e) {
+      e.preventDefault();
+      if (S && typeof S.navigate === "function") S.navigate("memory");
+      else location.hash = "#/memory";
+    };
   }
 
   async function render(view, ctx, runId) {
@@ -132,6 +233,7 @@
       '<span class="ri-flags">' + flags.map(function (f) { return '<span class="ri-flag ' + (["error", "pending-memory", "low-confidence"].indexOf(f) >= 0 ? "warn" : "") + '">' + esc(f) + "</span>"; }).join("") + "</span></div>" +
       '<div class="ri-cols"><section class="ri-col">' + transcriptCol(run) + '</section><section class="ri-col">' + influenceCol(run) + '</section><section class="ri-col">' + repairCol(run) + "</section></div>";
     wireRepair(root, run);
+    wirePropose(root, run, ctx);
   }
 
   S.register("run", { title: "Run Inspector", render: render });

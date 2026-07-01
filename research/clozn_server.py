@@ -719,6 +719,46 @@ def make_handler():
                 if child is None:
                     return self._json(500, {"error": "replay failed"})
                 return self._json(200, child)
+            if p.startswith("/runs/") and p.endswith("/propose-memory"):   # E2: propose a pending card from a past run
+                rid = p[len("/runs/"):-len("/propose-memory")]
+                import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(200, {"ok": False, "reason": "no such run"})
+                # only a substrate whose memory exposes propose_memory qualifies (QwenSubstrate). Dream's
+                # memory has no such method -> the proposal is simply not offered there.
+                mem = getattr(SUB, "memory", None) if SUB else None
+                if mem is None or not hasattr(mem, "propose_memory"):
+                    return self._json(200, {"ok": False, "reason": "proposal not available for this substrate"})
+                import memory_cards
+                # Neutralize tone steering during the extraction so the dials don't color the read -- snapshot
+                # SUB.steer.strength, zero it, and RESTORE in a finally (mirror replay.py; never persist this).
+                steer = getattr(SUB, "steer", None)
+                saved_strength = dict(getattr(steer, "strength", {}) or {}) if steer is not None else None
+                try:
+                    if steer is not None:
+                        try:
+                            steer.strength = {}             # all dials neutral for the duration of the read
+                        except Exception:
+                            pass
+                    text = mem.propose_memory(run["messages"], run.get("response"))
+                except Exception as e:                      # propose_memory is defensive, but never crash the handler
+                    return self._json(200, {"proposed": False, "reason": f"proposal failed: {type(e).__name__}"})
+                finally:
+                    if steer is not None and saved_strength is not None:
+                        try:
+                            steer.strength = dict(saved_strength)   # restore EXACTLY (temp neutralization only)
+                        except Exception:
+                            pass
+                if text is None:
+                    return self._json(200, {"proposed": False,
+                                            "reason": "no durable preference found in this run"})
+                card = memory_cards.create(text, status="pending", kind="preference",
+                                           risk=_risk_of(text), source_run_id=rid,
+                                           evidence=f"proposed from run {rid}")
+                if not card:
+                    return self._json(200, {"proposed": False, "reason": "could not create card"})
+                return self._json(200, {"proposed": True, "card": card})
             if p == "/engine/harvest":   # READ the real C++ runtime's activations (any substrate; the engine is separate)
                 try:
                     h = ENGINE.harvest(str(body.get("text", ""))[:300])
