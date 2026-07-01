@@ -134,7 +134,7 @@
   function runRow(r, ctx) {
     var mem = r.memory || {};
     var nMem = (mem.cards_applied || []).length;
-    var dials = Object.keys((r.behavior || {}).active_dials || {});
+    var activeDials = (r.behavior || {}).active_dials || {};
     var dur = ((r.timing || {}).duration_ms);
 
     // flag chips (skip 'long' visual noise unless it's the only signal? keep it — cheap + honest)
@@ -144,10 +144,9 @@
       return S.el("span", { class: "rflag " + m.css }, [m.label]);
     });
 
-    var dialChips = dials.slice(0, 4).map(function (d) {
-      return S.el("span", { class: "rdial" }, [d]);
-    });
-    if (dials.length > 4) dialChips.push(S.el("span", { class: "rdial more" }, ["+" + (dials.length - 4)]));
+    // Compact dial readout: a count + the top 2-3 by |value| (a run can carry a dozen dials; a wall
+    // of chips drowns the row). e.g. "5 dials: poetic, formal, technical…". Full list on hover.
+    var dialCells = dialSummary(activeDials);
 
     var row = S.el("div", { class: "runrow", tabindex: "0", role: "button" }, [
       S.el("div", { class: "rc rc-time" }, [
@@ -166,7 +165,7 @@
           ? S.el("span", { class: "rmem on", title: (mem.cards_applied || []).join("\n") }, [String(nMem) + (nMem === 1 ? " memory" : " memories")])
           : S.el("span", { class: "rmem" }, ["—"]),
       ]),
-      S.el("div", { class: "rc rc-dials" }, dialChips.length ? dialChips : [S.el("span", { class: "rmem" }, ["—"])]),
+      S.el("div", { class: "rc rc-dials" }, dialCells),
       S.el("div", { class: "rc rc-dur" }, [ctx.fmtDuration(dur)]),
       S.el("div", { class: "rc rc-flags" }, flagChips),
     ]);
@@ -177,6 +176,30 @@
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
     });
     return row;
+  }
+
+  // active_dials is {name: value}. Return cells for the rc-dials column: a count + the top 2-3
+  // dials by |value| ("5 dials: poetic, formal, technical…"), with the full set on hover.  Falls
+  // back to a bare count if the values aren't numeric (e.g. an older record), and "—" if empty.
+  function dialSummary(active) {
+    var names = Object.keys(active || {});
+    if (!names.length) return [S.el("span", { class: "rmem" }, ["—"])];
+
+    var ranked = names.slice().sort(function (a, b) {
+      return Math.abs(Number(active[b]) || 0) - Math.abs(Number(active[a]) || 0);
+    });
+    var top = ranked.slice(0, 3);
+    var label = names.length + (names.length === 1 ? " dial" : " dials");
+    var listed = top.join(", ") + (names.length > top.length ? "…" : "");
+    var full = names.map(function (n) {
+      var v = Number(active[n]);
+      return isNaN(v) ? n : n + " " + (v >= 0 ? "+" : "") + v.toFixed(2);
+    }).join("\n");
+
+    return [S.el("span", { class: "rmem on", title: full }, [
+      S.el("b", { class: "rdcount" }, [label]),
+      S.el("span", { class: "rdlist" }, [": " + listed]),
+    ])];
   }
 
   // "openai_api" -> "OpenAI API", "studio_chat" -> "Studio", etc.
