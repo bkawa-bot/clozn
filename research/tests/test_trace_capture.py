@@ -1,0 +1,169 @@
+"""Unit tests for the per-token trace capture (issue B3).
+
+The Run Inspector timeline needs, per generated token: the committed piece, the model's confidence, and
+the alternatives it weighed. Two paths feed that -- the CLI's stream_ar and the engine-chat SSE capture --
+and both route their per-token "steps" through the SAME pure helpers in runlog:
+
+  - runlog.accumulate_ar_events(frames)  folds raw SSE frames -> ordered steps (shared by CLI + server)
+  - runlog.steps_to_trace(steps)         maps steps -> the stored {tokens, confidence, alternatives}
+  - runlog._norm_trace(trace)            coerces whatever record() is handed into the stored shape
+
+These are model-free, so we exercise them with fabricated engine frames and fabricated CLI steps -- no
+GGUF, no HF, no network.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))   # research/ (runlog lives here)
+import runlog
+
+
+# --------------------------------------------------------------------------- fixtures
+
+def fake_engine_frames():
+    """The frames the engine streams for a 3-token AR completion: a tokens_committed per token plus a
+    step_lens (top-k) for the uncertain ones. Position order is intentionally not first-seen-sorted."""
+    return [
+        {"type": "tokens_committed", "items": [{"pos": 0, "id": 9, "conf": 0.95, "piece": "The"}]},
+        {"type": "step_lens", "positions": [0], "pieces": ["The", "A", "This"], "probs": [0.95, 0.03, 0.02]},
+        {"type": "tokens_committed", "items": [{"pos": 1, "id": 5, "conf": 0.42, "piece": " cat"}]},
+        {"type": "step_lens", "positions": [1], "pieces": [" cat", " dog", " fox"], "probs": [0.42, 0.31, 0.2]},
+        {"type": "tokens_committed", "items": [{"pos": 2, "id": 7, "conf": 0.88, "piece": " sat"}]},
+        # a final OpenAI-style frame (carries the assembled text, no per-token data) -- must be ignored
+        {"id": "cmpl-x", "object": "text_completion",
+         "choices": [{"text": "The cat sat", "index": 0, "finish_reason": "stop"}]},
+    ]
+
+
+def fake_cli_steps():
+    """The step shape the CLI's stream_ar returns after accumulation: {pos, piece, conf, alts}."""
+    return [
+        {"pos": 0, "piece": "Hello", "conf": 0.99, "alts": []},
+        {"pos": 1, "piece": " there", "conf": 0.55, "alts": [{"piece": " world", "prob": 0.4}]},
+    ]
+
+
+# --------------------------------------------------------------------------- accumulate_ar_events
+
+def test_accumulate_pairs_commits_with_lens_in_order():
+    steps = runlog.accumulate_ar_events(fake_engine_frames())
+    assert [s["piece"] for s in steps] == ["The", " cat", " sat"]        # first-seen position order
+    assert [s["pos"] for s in steps] == [0, 1, 2]
+    # confidences carried through from tokens_committed
+    assert steps[0]["conf"] == 0.95 and steps[1]["conf"] == 0.42
+    # step_lens folded in as alternatives, chosen token excluded, capped at 3
+    assert steps[1]["alts"] == [{"piece": " dog", "prob": 0.31}, {"piece": " fox", "prob": 0.2}]
+    assert steps[2]["alts"] == []                                        # no step_lens for pos 2
+
+
+def test_accumulate_empty_and_garbage():
+    assert runlog.accumulate_ar_events([]) == []
+    assert runlog.accumulate_ar_events(None) == []
+    # malformed frames are skipped, not fatal
+    assert runlog.accumulate_ar_events([1, "x", {"type": "other"}, {"type": "step_lens"}]) == []
+
+
+# --------------------------------------------------------------------------- steps_to_trace
+
+def test_engine_steps_to_trace_full_shape():
+    steps = runlog.accumulate_ar_events(fake_engine_frames())
+    trace = runlog.steps_to_trace(steps)
+    assert set(trace) == {"tokens", "confidence", "alternatives"}
+    assert trace["tokens"] == ["The", " cat", " sat"]
+    assert trace["confidence"] == [0.95, 0.42, 0.88]
+    # parallel arrays: one alternatives entry per token (empty where none were recorded)
+    assert len(trace["alternatives"]) == 3
+    assert trace["alternatives"][1] == [{"piece": " dog", "prob": 0.31}, {"piece": " fox", "prob": 0.2}]
+    assert trace["alternatives"][2] == []
+
+
+def test_cli_steps_to_trace_has_tokens_confidence_and_alts():
+    trace = runlog.steps_to_trace(fake_cli_steps())
+    assert trace["tokens"] == ["Hello", " there"]
+    assert trace["confidence"] == [0.99, 0.55]
+    assert "alternatives" in trace                                       # at least one step had alts
+    assert trace["alternatives"] == [[], [{"piece": " world", "prob": 0.4}]]
+
+
+def test_steps_without_alternatives_omit_the_key():
+    """The non-streaming engine path (and any path with confidence but no top-k) must not store a wall of []."""
+    steps = [{"piece": "a", "conf": 0.7, "alts": []}, {"piece": "b", "conf": 0.6, "alts": []}]
+    trace = runlog.steps_to_trace(steps)
+    assert trace["tokens"] == ["a", "b"]
+    assert trace["confidence"] == [0.7, 0.6]
+    assert "alternatives" not in trace
+
+
+def test_empty_steps_give_clean_empty_trace():
+    for empty in ([], None, [1, "x", {"no": "dict-fields"}][:0]):
+        assert runlog.steps_to_trace(empty) == {}
+    # a list of purely non-dict junk also collapses to empty
+    assert runlog.steps_to_trace([1, "x", None]) == {}
+
+
+def test_legacy_step_keys_accepted():
+    """steps_to_trace also accepts the stored key names (token/confidence/alternatives), not just piece/conf/alts."""
+    steps = [{"token": "x", "confidence": 0.5, "alternatives": [{"piece": "y", "prob": 0.3}]}]
+    trace = runlog.steps_to_trace(steps)
+    assert trace["tokens"] == ["x"] and trace["confidence"] == [0.5]
+    assert trace["alternatives"] == [[{"piece": "y", "prob": 0.3}]]
+
+
+def test_bad_confidence_defaults_to_zero_not_crash():
+    trace = runlog.steps_to_trace([{"piece": "x", "conf": "not-a-number", "alts": []}])
+    assert trace["confidence"] == [0.0]
+
+
+# --------------------------------------------------------------------------- _norm_trace (record's coercion)
+
+def test_norm_trace_accepts_raw_step_list():
+    """record(trace=<step list>) must normalize -- the server hands the raw engine steps straight through."""
+    norm = runlog._norm_trace(fake_cli_steps())
+    assert norm["tokens"] == ["Hello", " there"]
+    assert "confidence" in norm
+
+
+def test_norm_trace_keeps_ready_dict_but_only_known_keys():
+    ready = {"tokens": ["a"], "confidence": [0.5], "alternatives": [[]], "junk": 1}
+    norm = runlog._norm_trace(ready)
+    assert set(norm) == {"tokens", "confidence", "alternatives"}
+    assert "junk" not in norm
+
+
+def test_norm_trace_empty_and_absent_stay_empty():
+    assert runlog._norm_trace(None) == {}
+    assert runlog._norm_trace([]) == {}
+    assert runlog._norm_trace({}) == {}
+    assert runlog._norm_trace("garbage") == {}
+
+
+# --------------------------------------------------------------------------- end-to-end through record()
+
+def test_record_persists_engine_trace(tmp_path, monkeypatch):
+    """A full engine-chat-style record() call: raw steps in -> a stored run whose trace has the timeline."""
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path))
+    steps = runlog.accumulate_ar_events(fake_engine_frames())
+    rid = runlog.record(source="engine_chat", client="test", model="clozn-qwen (engine)",
+                        messages=[{"role": "user", "content": "hi"}], response="The cat sat", trace=steps)
+    assert rid
+    run = runlog.get_run(rid)
+    assert run["trace"]["tokens"] == ["The", " cat", " sat"]
+    assert run["trace"]["confidence"] == [0.95, 0.42, 0.88]
+    # the low-confidence flag is derived from trace.confidence (0.42 < 0.3 is False, so not flagged here)
+    assert "low-confidence" not in run["flags"]
+
+
+def test_record_low_confidence_flag_from_trace(tmp_path, monkeypatch):
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path))
+    steps = [{"piece": "um", "conf": 0.1, "alts": []}]                   # very unsure
+    rid = runlog.record(source="cli", messages=[{"role": "user", "content": "q"}],
+                        response="um", trace=steps)
+    assert "low-confidence" in runlog.get_run(rid)["flags"]
+
+
+def test_record_hf_chat_leaves_trace_empty(tmp_path, monkeypatch):
+    """The HF chat paths pass no trace -> the stored run has a clean empty {} (documented behavior)."""
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path))
+    rid = runlog.record(source="studio_chat", messages=[{"role": "user", "content": "hey"}],
+                        response="hello")                                # no trace= at all
+    assert runlog.get_run(rid)["trace"] == {}

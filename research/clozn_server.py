@@ -561,6 +561,55 @@ def switch_substrate(name):
                   "--host", ARGS.host])
 
 
+def _engine_complete_traced(engine, prompt, max_tokens, kw):
+    """Generate on the engine and ALSO capture a per-token trace (issue B3), returning (reply, steps).
+
+    The engine's non-streaming /v1/completions carries only the final text -- no per-token confidence. To
+    populate the Run Inspector timeline we ask the SAME request with stream:True and fold its per-token
+    `tokens_committed`/`step_lens` frames into steps via runlog.accumulate_ar_events. Generation is greedy
+    (temperature 0), so the reassembled text is identical to the blocking call -- we only capture ALONGSIDE;
+    the client still receives the same single JSON reply (this streams engine<->server, never to the client).
+    Any streaming hiccup falls back to the plain complete() so a run is never lost -- just without a trace.
+    (AR GGUFs only; a diffusion engine commits out of reading order and emits no such per-token stream.)
+    """
+    import urllib.request
+    body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_tokens)
+    body["temperature"] = 0.0; body["stream"] = True
+    try:
+        req = urllib.request.Request(engine.base + "/v1/completions",
+                                     data=json.dumps(body).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"})
+        frames, text = [], ""
+        with urllib.request.urlopen(req, timeout=getattr(engine, "timeout", 600)) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(payload)
+                except Exception:
+                    continue
+                frames.append(obj)
+                ch = obj.get("choices")                     # the final OpenAI-style frame carries the full text
+                if ch and isinstance(ch, list) and ch[0].get("text"):
+                    text = ch[0]["text"]
+        import runlog
+        steps = runlog.accumulate_ar_events(frames)
+        if not text:                                        # no final frame text -> reassemble from the pieces
+            text = "".join(s.get("piece", "") for s in steps)
+        if steps or text:
+            return text, steps
+    except Exception:
+        pass
+    # Fallback: the original blocking path, reply preserved, trace simply empty.
+    r = engine.complete(prompt, max_tokens=max_tokens, temperature=0.0, **kw)
+    ch = r.get("choices") if isinstance(r, dict) else None
+    return (ch[0].get("text", "") if ch else str(r)), []
+
+
 def make_handler():
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -594,6 +643,9 @@ def make_handler():
                 self.wfile.write(("data: " + json.dumps(o) + "\n\n").encode("utf-8"))
                 self.wfile.flush()
 
+            # HF chat stream (QwenSubstrate.chat_stream): pieces only, no per-token confidence/alternatives.
+            # We deliberately DON'T pass `trace` here -> the run's trace stays an empty {}. Capturing one would
+            # mean output_scores on the transformers streaming path -- a separate, riskier issue, out of B3.
             t0 = time.time(); acc = []
             try:
                 chunk({"role": "assistant"})
@@ -841,10 +893,13 @@ def make_handler():
                         if sv:
                             kw["steer_vec"] = sv
                             kw["steer"] = {"coef": 1.0, "layer": es.layer}
-                    r = ENGINE_QWEN.complete(prompt, max_tokens=mx, temperature=0.0, **kw)
-                    ch = r.get("choices") if isinstance(r, dict) else None
-                    reply = (ch[0].get("text", "") if ch else str(r)).strip()
-                    self._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0)
+                    # Generate + capture a per-token trace alongside (B3). Reply is byte-identical to the
+                    # plain complete(); the trace feeds the Run Inspector timeline. steps=[] (diffusion, or a
+                    # stream hiccup) -> runlog stores a clean empty trace.
+                    reply_raw, steps = _engine_complete_traced(ENGINE_QWEN, prompt, mx, kw)
+                    reply = reply_raw.strip()
+                    # Pass the raw step list; runlog.record normalizes it -> {tokens, confidence, alternatives}.
+                    self._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0, trace=steps)
                     return self._json(200, {"reply": reply, "memory": bool(kw.get("prefix_embd")),
                                             "tone": bool(kw.get("steer_vec")), "via": "engine (GGUF)"})
                 except Exception as e:
@@ -878,6 +933,9 @@ def make_handler():
                 if r is None:
                     return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
                                             "need": "qwen", "active": SUBNAME})
+                # HF studio chat (QwenSubstrate): no `trace` -> the run's trace stays an empty {}. This path
+                # generates via transformers with no native per-token confidence/alternatives; capturing one
+                # (output_scores on the streaming path) is a separate, riskier issue and out of scope (B3).
                 self._log_run("studio_chat", [{"role": "user", "content": msg}],
                               str(r.get("reply", "")), "clozn-qwen", t0)
                 return self._json(200, r)

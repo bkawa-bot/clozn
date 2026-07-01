@@ -58,6 +58,103 @@ def _flags(rec: dict) -> list[str]:
     return f
 
 
+# --------------------------------------------------------------------------- trace (per-token timeline)
+# The Run Inspector's timeline (issue B3) wants, per generated token: what was committed, how sure the
+# model was (confidence 0..1), and what it nearly said instead (alternatives). Two code paths already
+# carry that: the CLI's stream_ar and the engine chat (when it captures the SSE event stream). Both hand
+# us the SAME per-token "step" shape -- keep the mapping in ONE pure, testable place so the on-disk trace
+# schema stays a single contract. The three keys below are load-bearing (read by _flags and the UI); do
+# not rename them.
+TRACE_KEYS = ("tokens", "confidence", "alternatives")
+
+
+def _clean_alts(alts) -> list[dict]:
+    """Normalize a step's alternatives to [{piece, prob}] (floats rounded, junk dropped)."""
+    out = []
+    for a in alts or []:
+        if not isinstance(a, dict):
+            continue
+        try:
+            out.append({"piece": str(a.get("piece", "")), "prob": round(float(a.get("prob", 0.0)), 4)})
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def steps_to_trace(steps) -> dict:
+    """Map a list of per-token steps -> the run's `trace` dict {tokens, confidence, alternatives}.
+
+    A step is a dict as produced by stream_ar / the engine-chat capture:
+      {"piece": str, "conf": float, "alts": [{"piece": str, "prob": float}, ...]}
+    (legacy keys "token"/"confidence"/"alternatives" are accepted too). Empty/None in -> a clean empty
+    {} (no half-populated trace): the caller stores that as-is and the timeline simply shows nothing.
+    `alternatives` is only included when at least one step actually recorded some (the non-streaming engine
+    path, for instance, has confidence but no alts -> we omit the key rather than store a wall of []).
+    Pure: no I/O, no model -- unit-testable with fabricated steps.
+    """
+    steps = [s for s in (steps or []) if isinstance(s, dict)]
+    if not steps:
+        return {}
+    tokens, confidence, alternatives = [], [], []
+    for s in steps:
+        tokens.append(str(s.get("piece", s.get("token", ""))))
+        try:
+            confidence.append(round(float(s.get("conf", s.get("confidence", 0.0))), 4))
+        except (TypeError, ValueError):
+            confidence.append(0.0)
+        alternatives.append(_clean_alts(s.get("alts", s.get("alternatives"))))
+    trace = {"tokens": tokens, "confidence": confidence}
+    if any(alternatives):                                   # only carry alts if some token actually had them
+        trace["alternatives"] = alternatives
+    return trace
+
+
+def accumulate_ar_events(events) -> list[dict]:
+    """Fold the engine's autoregressive SSE frames into ordered per-token steps (the raw trace material).
+
+    The engine streams, per committed token, a `tokens_committed` frame (the chosen piece + its confidence)
+    and a `step_lens` frame (the top-k it weighed at that position). We pair them by position -- exactly as
+    the CLI's stream_ar does -- into a replayable step list: where was it uncertain, and what did it almost
+    say. `events` is an iterable of already-parsed frame dicts; unknown/malformed frames are skipped. Pure
+    (no network) so the same accumulation is unit-tested here and reused by both the CLI and the server.
+    """
+    by_pos: dict = {}
+    order: list = []                                        # preserve first-seen order for positions
+    for obj in events or []:
+        if not isinstance(obj, dict):
+            continue
+        typ = obj.get("type")
+        if typ == "tokens_committed":
+            for it in obj.get("items", []):
+                pos = it.get("pos")
+                if pos not in by_pos:
+                    order.append(pos)
+                try:
+                    conf = round(float(it.get("conf", 0.0)), 4)
+                except (TypeError, ValueError):
+                    conf = 0.0
+                by_pos[pos] = {"pos": pos, "piece": str(it.get("piece", "")), "conf": conf, "alts": []}
+        elif typ == "step_lens":                            # the top-k the model weighed at this position
+            pos = (obj.get("positions") or [None])[0]
+            step = by_pos.get(pos)
+            if step:
+                chosen = step["piece"]
+                pieces, probs = obj.get("pieces", []), obj.get("probs", [])
+                step["alts"] = [{"piece": str(p), "prob": round(float(pr), 4)}
+                                for p, pr in zip(pieces, probs) if str(p) != chosen][:3]
+    return [by_pos[p] for p in sorted(order, key=lambda x: (x is None, x))]
+
+
+def _norm_trace(trace) -> dict:
+    """Coerce whatever a caller passes for `trace` into the stored shape. A ready trace dict is kept as-is
+    (only the known keys); a raw list of steps is run through steps_to_trace; anything else -> {}."""
+    if isinstance(trace, list):
+        return steps_to_trace(trace)
+    if isinstance(trace, dict):
+        return {k: trace[k] for k in TRACE_KEYS if k in trace}
+    return {}
+
+
 def record(*, source: str, client: str = "unknown", model: str = "", substrate: str = "",
            messages=None, response: str = "", memory: dict | None = None, behavior: dict | None = None,
            trace: dict | None = None, started: float | None = None, ended: float | None = None,
@@ -78,7 +175,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
             "source": source, "client": client or "unknown", "model": model, "substrate": substrate,
             "prompt_summary": _summ(prompt), "response_summary": _summ(response),
             "messages": msgs, "response": response,
-            "memory": memory or {}, "behavior": behavior or {}, "trace": trace or {},
+            "memory": memory or {}, "behavior": behavior or {}, "trace": _norm_trace(trace),
             "timing": {"started_at": started, "ended_at": ended, "duration_ms": int((ended - started) * 1000)},
             "parent_run_id": parent_run_id, "changes_applied": changes_applied, "error": error,
         }

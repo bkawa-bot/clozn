@@ -347,7 +347,7 @@ def stream_ar(port: int, prompt: str, max_tokens: int):
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", data=body,
                                  headers={"Content-Type": "application/json"})
     n = 0
-    by_pos: dict = {}
+    frames = []                                             # every parsed SSE frame, for the shared accumulator
     with urllib.request.urlopen(req, timeout=600) as resp:
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
@@ -360,22 +360,32 @@ def stream_ar(port: int, prompt: str, max_tokens: int):
                 obj = json.loads(payload)
             except Exception:
                 continue
-            typ = obj.get("type")
-            if typ == "tokens_committed":
+            frames.append(obj)
+            if obj.get("type") == "tokens_committed":       # print live as tokens land (unchanged UX)
                 for it in obj.get("items", []):
                     sys.stdout.write(it.get("piece", "")); sys.stdout.flush()
                     n += 1
+    # Accumulation (pair tokens_committed with step_lens by position) lives in runlog so the CLI and the
+    # engine-chat capture share ONE tested implementation. Fall back to a local pairing if the import fails
+    # -- the stdlib CLI must never break on a missing sibling.
+    try:
+        sys.path.insert(0, os.path.join(REPO, "research"))
+        import runlog
+        steps = runlog.accumulate_ar_events(frames)
+    except Exception:
+        by_pos: dict = {}
+        for obj in frames:
+            if obj.get("type") == "tokens_committed":
+                for it in obj.get("items", []):
                     by_pos[it.get("pos")] = {"pos": it.get("pos"), "piece": it.get("piece", ""),
                                              "conf": round(float(it.get("conf", 0.0)), 3), "alts": []}
-            elif typ == "step_lens":                            # the top-k the model weighed at this position
-                pos = (obj.get("positions") or [None])[0]
-                step = by_pos.get(pos)
+            elif obj.get("type") == "step_lens":
+                step = by_pos.get((obj.get("positions") or [None])[0])
                 if step:
-                    chosen = step["piece"]
                     step["alts"] = [{"piece": p, "prob": round(float(pr), 3)}
                                     for p, pr in zip(obj.get("pieces", []), obj.get("probs", []))
-                                    if p != chosen][:3]
-    steps = [by_pos[p] for p in sorted(by_pos, key=lambda x: (x is None, x))]
+                                    if p != step["piece"]][:3]
+        steps = [by_pos[p] for p in sorted(by_pos, key=lambda x: (x is None, x))]
     return n, steps
 
 
@@ -614,9 +624,9 @@ def _log_run_cli(model_name, prompt, resp, steps, started):
     try:
         sys.path.insert(0, os.path.join(REPO, "research"))
         import runlog
-        trace = ({"tokens": [s["piece"] for s in steps],
-                  "confidence": [s["conf"] for s in steps],
-                  "alternatives": [s.get("alts", []) for s in steps]} if steps else {})
+        # stream_ar hands us per-token steps ({piece, conf, alts}); runlog owns the steps->trace mapping so
+        # the on-disk trace schema stays one contract shared with the engine-chat capture (issue B3).
+        trace = runlog.steps_to_trace(steps)
         runlog.record(source="cli", client="cli", model=model_name, substrate="engine",
                       messages=[{"role": "user", "content": prompt}], response=resp,
                       trace=trace, started=started)
