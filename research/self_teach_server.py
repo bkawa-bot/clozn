@@ -79,6 +79,31 @@ NEUTRAL_REFS = [
 ]
 
 
+def rule_set_changed(trained_on: list[str] | None, incoming: list[str] | None) -> bool:
+    """Did the ACTIVE rule SET change vs the set the current prefix was actually trained on?
+
+    Pure (no torch, no model) so it's unit-testable in isolation. Order- and duplicate-insensitive:
+    what matters is WHICH traits are active, not their sequence. When this returns True the caller must
+    REINIT the prefix and train from scratch so every trait starts on equal footing (a warm-start would
+    let an entrenched trait dominate a freshly-added one -- the "baking drowns out dogs" bug). When it
+    returns False the set is identical (e.g. a strength/steps tweak) and a warm-start is correct.
+    """
+    return set(trained_on or []) != set(incoming or [])
+
+
+def fair_steps(base_steps: int, n_rules: int) -> int:
+    """Give N traits a fair training budget when we retrain from scratch on the full active set.
+
+    A single soft prefix has to fit every active trait's rule-following opening at once; more traits =
+    more to fit, so we scale the step budget modestly with trait count (still bounded so consolidation
+    stays quick). Small documented heuristic, deliberately not tuned to death: base for 1 trait, +50%
+    of base per additional trait, capped at 3x base. Warm-start reruns (identical set) keep base_steps.
+    """
+    n = max(1, int(n_rules))
+    scaled = int(round(base_steps * (1.0 + 0.5 * (n - 1))))
+    return min(scaled, base_steps * 3)
+
+
 class SelfTeach:
     def __init__(self, model_name: str, m: int = 16, four_bit: bool = True, model=None, tok=None,
                  persist_path: str | None = None):
@@ -112,6 +137,10 @@ class SelfTeach:
         self.history: list[dict] = []                       # [{role, content}, ...]
         self.examples: list[tuple] = []                     # accumulated (prompt_ids, target_ids) for TTT
         self.rules: list[str] = []                          # rules consolidated so far (bookkeeping)
+        self._trained_rules: list[str] = []                 # the set the CURRENT prefix was actually trained on
+                                                            # (own signal: self.rules is mutated by the caller
+                                                            #  BEFORE consolidate() runs, so it can't tell us
+                                                            #  whether the set changed -- this can)
         # contextual gating: a domain anchor + in-domain/neutral cosine bands. A learned preference fires
         # only when a prompt is relevant to its domain (fixes the always-on over-bleed).
         self.anchor: torch.Tensor | None = None
@@ -210,12 +239,24 @@ class SelfTeach:
 
     # ---- /consolidate : extract rules, build targets, distill into the prefix (TTT) ------------
     def consolidate(self, rules: list[str] | None = None, steps=120, lr=0.012, n_probe=8,
-                    max_norm=14.0) -> dict:
+                    max_norm=14.0, reinit_on_change: bool = True) -> dict:
+        # NB: back-compat -- m.consolidate(rules) still works; reinit_on_change is an optional keyword.
         with self.lock:
             t0 = time.time()
             rules = rules if rules else self._extract_rules()
             if not rules:
                 return {"ok": False, "reason": "no preferences found in the conversation yet"}
+            # FAIRNESS: did the ACTIVE rule SET change vs the set the CURRENT prefix was trained on?
+            # (Compare against self._trained_rules, NOT self.rules: the card wiring overwrites self.rules
+            #  with the new set BEFORE calling us, so self.rules can't reveal the change; _trained_rules
+            #  records what the prefix in hand actually embodies.) If the set changed we REINIT and train
+            #  from scratch so a freshly-added trait starts on equal footing with an entrenched one --
+            #  a warm-start let the established trait dominate and the new one never registered ("approve
+            #  dogs next to trained baking -> zero dog expression"). Removing a trait would likewise leave
+            #  its residue in a warm-started prefix. Warm-start is correct ONLY for the identical set
+            #  (e.g. a strength/steps tweak), where we keep refining the existing prefix.
+            changed = rule_set_changed(self._trained_rules, rules)
+            reinit = changed and reinit_on_change
             sys_rule = ("You are a helpful assistant talking with a returning user. Here is what you know "
                         "about them; use it naturally to tailor how you respond:\n"
                         + "\n".join("- " + r for r in rules))
@@ -224,7 +265,7 @@ class SelfTeach:
             probes = (recent + PROBE_PROMPTS)[:n_probe + 3]
             new_examples = []
             for pr in probes:
-                # target = a rule-following answer (rules stated in-context, NO prefix)
+                # target = a rule-following answer (ALL current rules stated in-context, NO prefix)
                 tgt = self._generate([{"role": "system", "content": sys_rule}, {"role": "user", "content": pr}],
                                      use_prefix=False, max_new=64, sample=False)
                 if not tgt.strip():
@@ -236,11 +277,21 @@ class SelfTeach:
                 plain_ids = self._chat_ids([{"role": "user", "content": pr}])
                 tgt_ids = self.tok.encode(tgt, add_special_tokens=False)
                 new_examples.append((plain_ids, tgt_ids[:32]))
-            self.examples.extend(new_examples)
-            # init the prefix on first consolidation; keep + grow it after
+            if reinit:
+                # Fresh start: drop the OLD prefix AND the stale accumulated examples (which include
+                # targets for now-removed traits) so the retrain represents ONLY the active set. The new
+                # targets above already reflect the full current rule list.
+                self.prefix = None
+                self.examples = list(new_examples)
+            else:
+                self.examples.extend(new_examples)
+            # init the prefix on first consolidation OR after a set-change reinit; else keep + refine it
             if self.prefix is None:
                 init = 0.02 * torch.randn(self.m, self.H, device=DEV, dtype=torch.float32)
                 self.prefix = nn.Parameter(init)
+            # Give N traits a fair budget when retraining from scratch (a single prefix must fit them all).
+            # A warm-start rerun on the identical set keeps the plain step count.
+            steps_target = fair_steps(steps, len(rules)) if reinit else steps
             opt = torch.optim.Adam([self.prefix], lr=lr, weight_decay=2e-3)
 
             def avg_loss():
@@ -254,7 +305,7 @@ class SelfTeach:
             start = best = avg_loss()
             best_prefix = self.prefix.detach().clone()
             bad, patience, used = 0, 8, 0
-            for step in range(steps):
+            for step in range(steps_target):
                 used = step + 1
                 opt.zero_grad()
                 for (p, t) in self.examples:                 # grad-accumulate over all examples (old+new)
@@ -277,6 +328,8 @@ class SelfTeach:
             with torch.no_grad():
                 self.prefix.copy_(best_prefix)               # restore the best, never the diverged last
             self.rules = rules
+            self._trained_rules = list(rules)                # the set THIS prefix now embodies (fairness signal
+                                                            #  for the next consolidate: warm-start iff unchanged)
             # contextual-gating anchor: the rule's DOMAIN = mean rep of its probe prompts, with the
             # in-domain and neutral cosine bands so _gate maps a new prompt's relevance to [0,1].
             with torch.no_grad():
@@ -290,6 +343,7 @@ class SelfTeach:
                 self.save()
             return {"ok": True, "rules": rules, "n_examples": len(self.examples),
                     "start_loss": round(start, 3), "final_loss": round(best, 3), "steps_used": used,
+                    "reinit": reinit, "set_changed": changed, "steps_target": steps_target,
                     "prefix_norm": round(float(self.prefix.detach().norm()), 1),
                     "sim_in": round(self.sim_in, 3), "sim_neutral": round(self.sim_neutral, 3),
                     "seconds": round(time.time() - t0, 1)}
@@ -359,6 +413,7 @@ class SelfTeach:
             return False
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         torch.save({"m": self.m, "prefix": self.prefix.detach().cpu(), "rules": self.rules,
+                    "trained_rules": self._trained_rules,   # the set this saved prefix embodies (fairness signal)
                     "examples": self.examples, "memory_strength": self.memory_strength,
                     "anchor": None if self.anchor is None else self.anchor.detach().cpu(),
                     "sim_in": self.sim_in, "sim_neutral": self.sim_neutral}, path)
@@ -376,6 +431,9 @@ class SelfTeach:
             return False
         self.prefix = nn.Parameter(d["prefix"].to(DEV).float())
         self.rules = d.get("rules", [])
+        # a restored prefix WAS trained on its saved rules -> seed the fairness signal so a later
+        # consolidate on the identical set warm-starts (old files predate the key: fall back to rules).
+        self._trained_rules = list(d.get("trained_rules", self.rules))
         self.examples = d.get("examples", [])
         self.anchor = None if d.get("anchor") is None else d["anchor"].to(DEV)
         self.sim_in = d.get("sim_in", 1.0)
@@ -390,6 +448,7 @@ class SelfTeach:
                 self.prefix = None
                 self.examples = []
                 self.rules = []
+                self._trained_rules = []                     # no prefix -> next consolidate is a fresh init
                 if self.persist and os.path.isfile(self.persist):
                     try:
                         os.remove(self.persist)                 # full reset wipes the persisted memory too
