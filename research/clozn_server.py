@@ -95,6 +95,83 @@ def _disk_dials():
         return {}
 
 
+# ------- memory cards <-> the working prefix (D2 + E1) --------------------------------------------
+# The cards (research/memory_cards.py) are the metadata + review layer; the trained soft-prefix is
+# UNCHANGED. The contract that keeps the prefix safe: m.rules is ALWAYS the texts of the ACTIVE cards,
+# and the prefix is built from m.rules via m.consolidate(rules) exactly as before. So a card's STATUS
+# decides what's in m.rules, which drives the prefix. We only ever retrain when the active set actually
+# changes (a no-op transition -- e.g. approving a card whose text is already active -- never touches it).
+
+_SUSPICIOUS = ("ignore ", "disregard ", "system prompt", "you are now", "forget ", "override",
+               "jailbreak", "developer mode", "instead of", "from now on you", "pretend ")
+
+
+def _risk_of(text: str) -> str:
+    """Cheap heuristic: flag instruction-like / prompt-injection-ish memory text as 'suspicious' so the
+    reviewer sees it. A memory is meant to be a fact/preference ABOUT the user, not a command to the model."""
+    t = (text or "").lower()
+    return "suspicious" if any(s in t for s in _SUSPICIOUS) else "low"
+
+
+def _mem_migrate(m):
+    """Seed the card store from a memory object's legacy rule-strings, ONCE. migrate_from_rules is a
+    no-op when the store already has cards, and it creates them as ACTIVE -- the prefix is already trained
+    on these exact rules, so we do NOT re-consolidate here. Returns the cards created (or [])."""
+    import memory_cards
+    try:
+        return memory_cards.migrate_from_rules(list(getattr(m, "rules", []) or []))
+    except Exception:
+        return []
+
+
+def _runs_for_card(card_id):
+    """Best-effort: the run summaries whose memory.cards_applied names this card (by id OR by text).
+    cards_applied currently records the active rule TEXTS (see _log_run), so we match on text primarily
+    and on id as a forward-compatible fallback. Returns [] when the card / runs are gone (never raises)."""
+    import memory_cards
+    import runlog
+    try:
+        card = memory_cards.get(card_id)
+        text = (card or {}).get("text", "")
+        needles = {n for n in (card_id, text) if n}
+        if not needles:
+            return []
+        out = []
+        for r in runlog.list_runs(500):
+            applied = ((r.get("memory") or {}).get("cards_applied")) or []
+            applied = [str(a) for a in applied]
+            if needles & set(applied):
+                out.append(r)
+        return out
+    except Exception:
+        return []
+
+
+def _mem_sync_rules(m, reconsolidate=True):
+    """Make m.rules == the active-card texts, then rebuild the prefix ONLY if the active set changed.
+
+    This is the one place the prefix can move. If the active texts are identical to what m.rules already
+    holds, we leave the prefix completely untouched (the expensive, working artifact is preserved). When
+    the set changed and reconsolidate is on, we retrain from the active texts (SLOW -- expected on
+    approve/reject/disable/edit). If the active set became EMPTY (e.g. the last card was disabled), we
+    reset() so the now-unused prefix stops biting -- reset() is zero-arg on both memory backends."""
+    import memory_cards
+    new_rules = memory_cards.active_texts()
+    changed = list(getattr(m, "rules", []) or []) != list(new_rules)
+    m.rules = list(new_rules)
+    result = None
+    if changed and reconsolidate:
+        if new_rules:
+            result = m.consolidate(list(new_rules))
+        else:                                    # nothing active anymore -> drop the prefix entirely
+            try:
+                result = m.reset()
+            except Exception:
+                pass
+            m.rules = []                          # reset() may clear rules; keep them in sync
+    return {"changed": changed, "rules": list(new_rules), "consolidate": result}
+
+
 ARGS = None
 SUB = None         # the active substrate object
 SUBNAME = "qwen"
@@ -108,16 +185,51 @@ class Substrate:
     So memory + dials are written ONCE and work identically on Qwen and Dream."""
 
     def _memory(self, path, body):
+        """Card-backed memory (D2 + E1). Cards carry the metadata + review status; m.rules stays == the
+        ACTIVE-card texts and drives the prefix via consolidate(). Status changes go through _mem_sync_rules,
+        which only retrains when the active set actually moved -- so pending/no-op edits never touch the prefix."""
+        import memory_cards
         m = self._mem
-        if path == "/memory/cards":
-            return {"cards": m.rules, "has_prefix": m.prefix is not None}
-        if path == "/memory/add":               # add a trait card -> re-consolidate the cumulative set
+        self._ensure_cards_migrated()           # one-time seed of legacy rules -> active cards (no retrain)
+
+        if path == "/memory/cards":             # OBJECTS now (not bare strings) -- the review layer
+            return {"cards": memory_cards.list_cards(), "has_prefix": m.prefix is not None}
+
+        if path == "/memory/add":               # propose a card as PENDING -> does NOT affect the prefix
             text = str(body.get("text", "")).strip()
-            return m.consolidate(list(m.rules) + [text]) if text else {"ok": False, "reason": "empty trait"}
-        if path == "/memory/remove":            # drop a card -> rebuild the prefix from the rest
-            remaining = [r for i, r in enumerate(m.rules) if i != int(body.get("index", -1))]
-            m.reset()
-            return m.consolidate(remaining) if remaining else {"ok": True, "cards": []}
+            if not text:
+                return {"ok": False, "reason": "empty trait"}
+            card = memory_cards.create(text, status="pending", kind="preference",
+                                       risk=_risk_of(text), source_run_id=body.get("source_run_id"),
+                                       evidence=str(body.get("evidence", "")))
+            return card or {"ok": False, "reason": "could not create card"}
+
+        if path == "/memory/remove":            # delete by id -> if it was active, rebuild from the rest
+            cid = str(body.get("id", "")).strip()
+            if not cid:                          # (index removed -- ids are the stable handle now)
+                return {"ok": False, "reason": "need a card id"}
+            was_active = (memory_cards.get(cid) or {}).get("status") == "active"
+            ok = memory_cards.delete(cid)
+            if not ok:
+                return {"ok": False, "reason": "no such card"}
+            sync = _mem_sync_rules(m, reconsolidate=was_active) if was_active else {"changed": False}
+            return {"ok": True, "removed": cid, **({"resync": sync} if was_active else {})}
+
+        if path in ("/memory/approve", "/memory/reject", "/memory/disable", "/memory/enable"):
+            return self._card_status(path.rsplit("/", 1)[1], str(body.get("id", "")).strip())
+
+        if path == "/memory/edit":              # change a card's text; if active, retrain on the new text
+            cid = str(body.get("id", "")).strip()
+            new_text = str(body.get("text", "")).strip()
+            if not (cid and new_text):
+                return {"ok": False, "reason": "need id and text"}
+            card = memory_cards.update(cid, text=new_text, risk=_risk_of(new_text))
+            if card is None:
+                return {"ok": False, "reason": "no such card"}
+            if card.get("status") == "active":
+                _mem_sync_rules(m, reconsolidate=True)
+            return card
+
         if path == "/memory/strength":          # the memory dial: how hard the prefix bites (0 = off, >1 = stronger)
             if "value" in body and hasattr(m, "memory_strength"):
                 m.memory_strength = max(0.0, min(2.0, float(body["value"])))
@@ -128,6 +240,28 @@ class Substrate:
                         pass
             return {"strength": float(getattr(m, "memory_strength", 1.0)), "has_prefix": m.prefix is not None}
         return None
+
+    # ---- E1 review lifecycle: a status change rebuilds m.rules from the active set, retrains iff it moved -
+    def _card_status(self, action, cid):
+        """approve->active, reject->rejected, disable->disabled, enable->active. After the transition we
+        set m.rules = active_texts() and reconsolidate ONLY if the active set changed (keep-the-prefix-safe)."""
+        import memory_cards
+        if not cid:
+            return {"ok": False, "reason": "need a card id"}
+        target = {"approve": "active", "reject": "rejected",
+                  "disable": "disabled", "enable": "active"}[action]
+        card = memory_cards.set_status(cid, target)
+        if card is None:
+            return {"ok": False, "reason": "no such card"}
+        _mem_sync_rules(self._mem, reconsolidate=True)   # rebuild rules; retrains only if the active set moved
+        return card
+
+    def _ensure_cards_migrated(self):
+        """Seed the card store from this substrate's legacy rule-strings exactly once per process."""
+        if getattr(self, "_cards_migrated", False):
+            return
+        _mem_migrate(self._mem)
+        self._cards_migrated = True
 
     def _ensure_steer(self):
         """Compute the axis vectors once, race-safe (double-checked lock). Two dial calls racing on first
@@ -405,8 +539,10 @@ def make_handler():
             """Persist this interaction as an inspectable run (never let logging break the request)."""
             try:
                 import runlog
-                # cards_applied must match EXACTLY what /memory/cards reports: that reads SUB._mem.rules
-                # (self.memory on qwen, self.dmem on dream). Reading SUB.memory would miss the dream cards.
+                # cards_applied == the ACTIVE-card texts. Post-D2, SUB._mem.rules is kept in sync with the
+                # active cards (see _mem_sync_rules), so reading .rules still reports exactly what shaped the
+                # reply. Reading SUB.memory would miss the dream cards -- use _mem (self.memory on qwen,
+                # self.dmem on dream). Only ACTIVE cards feed the prefix, so only those count as applied.
                 mem = getattr(SUB, "_mem", None) if SUB else None
                 if mem is not None:
                     cards = getattr(mem, "rules", None) or getattr(mem, "cards", None) or []
@@ -414,6 +550,13 @@ def make_handler():
                             "strength": float(getattr(mem, "memory_strength", 1.0)),
                             "has_prefix": getattr(mem, "prefix", None) is not None,
                             "proposed_cards": []}
+                    if cards:                                    # record that the active cards influenced a run
+                        try:
+                            import memory_cards
+                            for c in memory_cards.list_cards(status="active"):
+                                memory_cards.bump_usage(c["id"])
+                        except Exception:
+                            pass
                 else:
                     memd = {}
                 # only meaningfully-nonzero dials (|v| >= 0.05); steer.active() drops exact-zeros but a
@@ -443,6 +586,9 @@ def make_handler():
                     return self._json(502, {"error": f"engine unreachable: {e}"})
             if p == "/state":
                 return self._json(200, {"substrate": SUBNAME, **(SUB.state() if SUB else {})})
+            if p.startswith("/memory/") and p.endswith("/runs"):   # E1: which runs used this card
+                cid = p[len("/memory/"):-len("/runs")]
+                return self._json(200, {"card_id": cid, "runs": _runs_for_card(cid)})
             if p == "/runs":                 # the Run Log -- every interaction, newest first (the Studio Runs page)
                 import runlog
                 return self._json(200, {"runs": runlog.list_runs(80)})

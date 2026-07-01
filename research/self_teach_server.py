@@ -401,6 +401,23 @@ class SelfTeach:
         return {"turns": len(self.history), "has_prefix": self.prefix is not None,
                 "n_examples": len(self.examples), "rules": self.rules}
 
+    # ---- card layer hook (Studio D2): legacy trait strings <-> reviewable memory cards ----------------
+    def sync_cards(self) -> list[str]:
+        """One-time bridge to the Studio card store: seed any legacy `self.rules` as ACTIVE cards (the
+        prefix is already trained on them, so this does NOT retrain), then adopt the active-card texts as
+        `self.rules`. The prefix/soft-state is untouched -- cards are only the metadata + review layer.
+        Best-effort: if memory_cards isn't importable (standalone use), keeps the current rules."""
+        try:
+            import memory_cards
+        except Exception:
+            return list(self.rules)
+        try:
+            memory_cards.migrate_from_rules(list(self.rules or []))   # no-op once the store has cards
+            self.rules = memory_cards.active_texts()
+        except Exception:
+            pass
+        return list(self.rules)
+
 
 def make_handler(app: SelfTeach):
     class H(BaseHTTPRequestHandler):
