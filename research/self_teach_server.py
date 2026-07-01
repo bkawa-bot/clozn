@@ -171,7 +171,11 @@ class SelfTeach:
                  persist_path: str | None = None):
         self.lock = threading.Lock()
         self.m = m
-        self.memory_strength = 1.0          # user dial: scales the prefix injection (0 = off, >1 = bites harder)
+        self.memory_strength = 0.35         # dialed down from 1.0: at full strength a topical memory over-bleeds
+                                            # into every reply in long chats (baking invaded a cover letter in
+                                            # multi-turn testing); ~0.3 keeps it useful on-topic. User dial
+                                            # raises/lowers it (0 = off, >1 = bites harder). A real relevance
+                                            # gate is the full fix -- strength is only a partial mitigation.
         if model is not None and tok is not None:
             # share an already-loaded backbone (e.g. the unified clozn server's Qwen-7B) -- one model,
             # both the concept readout AND the memory. The model is frozen + quantized either way.
