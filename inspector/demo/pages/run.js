@@ -53,12 +53,39 @@
       ".ri-turn{margin:8px 0;font-size:13.5px;line-height:1.45;white-space:pre-wrap}" +
       ".ri-turn .who{font-size:11px;color:var(--faint,#9aa0b3);text-transform:uppercase;letter-spacing:.04em}" +
       ".ri-turn.assistant{background:var(--wash,#f6f8ff);border-radius:10px;padding:8px 11px}" +
-      ".ri-tl{margin-top:12px;font-family:ui-monospace,Consolas,monospace;font-size:11.5px}" +
-      ".ri-tok{display:flex;gap:8px;align-items:center;white-space:nowrap;overflow:hidden}" +
-      ".ri-tok .p{min-width:78px;color:var(--ink,#1b1f2a)}" +
-      ".ri-tok .b{color:var(--halo,#7aa7ff)}" +
-      ".ri-tok.low .p{color:#c0603a}" +
-      ".ri-tok .alt{color:var(--faint,#9aa0b3);text-overflow:ellipsis;overflow:hidden}" +
+      // --- C2 token timeline: the response as its stream of tokens, each tinted by confidence; the
+      //     unsure ones are warm-tinted + underlined branch points you can click open for the alts. ---
+      ".ri-tl{margin-top:14px}" +
+      ".ri-tl-h{font-size:11px;color:var(--faint,#9aa0b3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}" +
+      ".ri-tl-legend{display:flex;flex-wrap:wrap;gap:5px 12px;align-items:center;font-size:11px;color:var(--soft,#5a6072);margin-bottom:9px}" +
+      ".ri-tl-legend .sw{display:inline-flex;align-items:center;gap:4px}" +
+      ".ri-tl-legend .chip{width:16px;height:11px;border-radius:3px;display:inline-block}" +
+      ".ri-tl-legend .chip.sure{background:var(--ink,#1b1f2a)}" +
+      ".ri-tl-legend .chip.mid{background:rgba(27,31,42,.42)}" +
+      ".ri-tl-legend .chip.low{background:rgba(192,96,58,.16);box-shadow:inset 0 -2px 0 #c0603a}" +
+      ".ri-tl-stream{white-space:pre-wrap;word-break:break-word;line-height:1.85;font-size:13.5px}" +
+      // each token: opacity carries confidence (set inline); low ones get the warm underline + a marker.
+      ".ri-tk{border-radius:3px;cursor:pointer;transition:background .12s,box-shadow .12s;padding:0 .5px}" +
+      ".ri-tk:hover{background:rgba(122,167,255,.14)}" +
+      ".ri-tk.low{color:#a8481f;box-shadow:inset 0 -2px 0 rgba(192,96,58,.55);background:rgba(192,96,58,.06)}" +
+      ".ri-tk.low:hover{background:rgba(192,96,58,.13)}" +
+      ".ri-tk.open{background:rgba(122,167,255,.18)}" +
+      ".ri-tk.low.open{background:rgba(192,96,58,.16)}" +
+      ".ri-tk .mk{font-size:9px;vertical-align:super;color:#c0603a;opacity:.8}" +   // the branch-point dot
+      // the click-to-open detail: this token's confidence + what it almost said, as small prob bars.
+      ".ri-tk-pop{display:block;margin:5px 0 7px;border:1px solid var(--line,#e3e6ef);border-left:3px solid var(--halo,#7aa7ff);" +
+      "border-radius:8px;padding:7px 10px;background:#fff;font-size:12px;white-space:normal;line-height:1.5;box-shadow:0 4px 14px rgba(120,150,210,.10)}" +
+      ".ri-tk-pop.low{border-left-color:#c0603a}" +
+      ".ri-tk-pop .hd{color:var(--soft,#5a6072);margin-bottom:5px}" +
+      ".ri-tk-pop .hd b{color:var(--ink,#1b1f2a)}" +
+      ".ri-tk-pop .alts{margin-top:4px}" +
+      ".ri-tk-pop .arow{display:flex;align-items:center;gap:7px;margin:3px 0}" +
+      ".ri-tk-pop .apiece{min-width:74px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--ink,#1b1f2a)}" +
+      ".ri-tk-pop .atrack{flex:1;height:7px;border-radius:5px;background:var(--wash,#eef1fb);overflow:hidden;min-width:36px}" +
+      ".ri-tk-pop .afill{height:100%;background:var(--halo,#7aa7ff);border-radius:5px}" +
+      ".ri-tk-pop .aprob{min-width:34px;text-align:right;color:var(--faint,#9aa0b3);font-size:11px}" +
+      ".ri-tk-pop .none{color:var(--faint,#9aa0b3)}" +
+      ".ri-tl-note{margin-top:9px;font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45}" +
       ".ri-kv{display:flex;justify-content:space-between;gap:10px;font-size:13px;margin:5px 0}" +
       ".ri-kv .k{color:var(--faint,#9aa0b3)}" +
       ".ri-card{border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:7px 9px;margin:6px 0;font-size:12.5px}" +
@@ -113,6 +140,20 @@
     document.head.appendChild(s);
   }
 
+  var LOW_CONF = 0.5;   // below this a token is "unsure" -> a highlighted branch point (matches CLI cmd_trace).
+
+  // Whitespace-preserving escape for a token piece rendered inline in a `white-space:pre-wrap` stream:
+  // keep the real spaces/newlines (so the response reads naturally) but neutralize markup.
+  function escTok(s) { return String(s == null ? "" : s).replace(/[&<>]/g, function (m) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[m]; }); }
+  // A caret-visible label for a piece in the pop / alternatives list (spaces/newlines shown, never blank).
+  function labelTok(s) {
+    var t = String(s == null ? "" : s).replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+    return t === "" ? "∅" : (t.replace(/ /g, "·"));   // middle-dot for spaces so a lone-space token is legible
+  }
+  // Confidence -> text opacity in [0.5, 1]: sure tokens are full ink; less-sure ones visibly fade (but stay
+  // readable). Low-confidence tokens also pick up the .low warm underline, so faintness never stands alone.
+  function confOpacity(c) { return (0.5 + 0.5 * Math.max(0, Math.min(1, c))).toFixed(3); }
+
   function transcriptCol(run) {
     var msgs = run.messages || [], h = "<h3>Transcript</h3>";
     for (var i = 0; i < msgs.length; i++) {
@@ -121,22 +162,88 @@
     }
     var lastA = msgs.length && msgs[msgs.length - 1].role === "assistant";
     if (run.response && !lastA) h += '<div class="ri-turn assistant"><div class="who">assistant</div>' + esc(run.response) + "</div>";
-    var tr = run.trace || {}, toks = tr.tokens || [], conf = tr.confidence || [], alts = tr.alternatives || [];
-    if (toks.length) {
-      h += '<div class="ri-tl"><div class="who" style="margin-bottom:5px">token timeline &mdash; where it was unsure, and what it almost said</div>';
-      for (var j = 0; j < toks.length; j++) {
-        var c = conf[j] == null ? 1 : conf[j], low = c < 0.5;
-        var piece = esc(String(toks[j]).replace(/\n/g, "\\n")).slice(0, 12);
-        var alt = "";
-        if (low && alts[j] && alts[j].length) {
-          alt = "  almost: " + alts[j].slice(0, 3).map(function (a) { return esc((a.piece || "").trim() || "_") + " " + (a.prob || 0).toFixed(2); }).join("  ");
-        }
-        h += '<div class="ri-tok ' + (low ? "low" : "") + '"><span class="p">' + (low ? "? " : "&nbsp;&nbsp;") + piece + '</span><span class="b">' + bar(c) + "</span><span>" + c.toFixed(2) + '</span><span class="alt">' + alt + "</span></div>";
-      }
-      var lows = conf.filter(function (x) { return x < 0.5; }).length;
-      h += '<div class="sub" style="margin-top:8px">' + lows + " uncertain moment(s)</div></div>";
-    }
+    h += tokenTimeline(run);
     return h;
+  }
+
+  // C2: the token timeline. When run.trace carries a non-empty tokens[] array, render the response as its
+  // stream of tokens -- each tinted by confidence (opacity) and, when unsure (<0.5), warm-underlined as a
+  // clickable branch point that opens this token's confidence + "almost said" alternatives. When the trace
+  // is empty/absent (e.g. the HF chat path), the plain transcript above stands and we add a subtle note.
+  function tokenTimeline(run) {
+    var tr = run.trace || {}, toks = tr.tokens || [];
+    if (!toks.length) {
+      return '<div class="ri-tl-note">No token trace for this run — showing the response as-is. ' +
+        "(Token-by-token confidence is captured on the local engine path, not the hosted chat path.)</div>";
+    }
+    var conf = tr.confidence || [], lows = 0;
+    var h = '<div class="ri-tl"><div class="ri-tl-h">Token timeline — where it was unsure, and what it almost said</div>';
+    // compact legend: what the tint + underline mean.
+    h += '<div class="ri-tl-legend">' +
+      '<span class="sw"><span class="chip sure"></span>confident</span>' +
+      '<span class="sw"><span class="chip mid"></span>less sure (fainter)</span>' +
+      '<span class="sw"><span class="chip low"></span>unsure — click for alternatives</span>' +
+      "</div>";
+    h += '<div class="ri-tl-stream">';
+    for (var j = 0; j < toks.length; j++) {
+      var c = conf[j] == null ? 1 : +conf[j], low = c < LOW_CONF;
+      if (low) lows++;
+      var piece = escTok(toks[j]);
+      // a lone marker so a low-confidence pure-whitespace token is still visibly clickable.
+      var mk = low ? '<span class="mk">◆</span>' : "";
+      var title = "confidence " + (isFinite(c) ? c.toFixed(2) : "?") + (low ? " — click to see what it almost said" : "");
+      h += '<span class="ri-tk' + (low ? " low" : "") + '" data-ti="' + j + '" style="opacity:' + confOpacity(c) + '" title="' + esc(title) + '">' + piece + mk + "</span>";
+    }
+    h += "</div>";   // .ri-tl-stream
+    // a place the click handler injects the open token's detail pop into (kept out of the flowing stream).
+    h += '<div class="ri-tl-pop-host"></div>';
+    var tail = lows ? " — click the underlined ones to branch" : "";
+    h += '<div class="ri-tl-note">' + lows + " uncertain moment" + (lows === 1 ? "" : "s") + tail + "</div>";
+    h += "</div>";   // .ri-tl
+    return h;
+  }
+
+  // Build the detail-pop HTML for token `j`: its confidence bar + the "almost said" alternatives as small
+  // prob bars. Safe for a missing/empty alternatives entry (many tokens, and whole runs, have none).
+  function tokenPopHTML(run, j) {
+    var tr = run.trace || {}, conf = tr.confidence || [], alts = tr.alternatives || [];
+    var c = conf[j] == null ? 1 : +conf[j], low = c < LOW_CONF;
+    var a = Array.isArray(alts[j]) ? alts[j] : [];
+    var h = '<div class="ri-tk-pop' + (low ? " low" : "") + '">';
+    h += '<div class="hd">token <b>' + esc(labelTok((tr.tokens || [])[j])) + "</b> · confidence <b>" +
+      (isFinite(c) ? c.toFixed(2) : "?") + "</b> " + bar(c) + (low ? " · branch point" : "") + "</div>";
+    if (a.length) {
+      h += '<div class="hd" style="margin:6px 0 2px">almost said</div><div class="alts">';
+      a.slice(0, 5).forEach(function (alt) {
+        var p = Math.max(0, Math.min(1, +(alt && alt.prob) || 0));
+        h += '<div class="arow"><span class="apiece">' + esc(labelTok(alt && alt.piece)) + '</span>' +
+          '<span class="atrack"><span class="afill" style="width:' + (p * 100).toFixed(1) + '%"></span></span>' +
+          '<span class="aprob">' + p.toFixed(2) + "</span></div>";
+      });
+      h += "</div>";
+    } else {
+      h += '<div class="none">no recorded alternatives for this token.</div>';
+    }
+    h += "</div>";
+    return h;
+  }
+
+  // Wire the token timeline: click a token to open (toggle) its detail pop; hover already shows the title.
+  // Only one pop is open at a time. No-op when there's no timeline (no-trace runs) -- selectors match nothing.
+  function wireTimeline(root, run) {
+    var host = root.querySelector(".ri-tl-pop-host");
+    if (!host) return;
+    root.querySelectorAll(".ri-tk[data-ti]").forEach(function (tk) {
+      tk.onclick = function () {
+        var was = tk.classList.contains("open");
+        // collapse whatever was open first (only one pop open at a time).
+        root.querySelectorAll(".ri-tk.open").forEach(function (o) { o.classList.remove("open"); });
+        host.innerHTML = "";
+        if (was) return;   // clicking the already-open token closes it.
+        tk.classList.add("open");
+        host.innerHTML = tokenPopHTML(run, +tk.dataset.ti);
+      };
+    });
   }
 
   function influenceCol(run) {
@@ -520,6 +627,7 @@
       '<span class="sub">' + esc(run.created_at) + " · " + esc(run.source) + "/" + esc(run.client) + " · " + esc(run.model) + " · " + ((run.timing || {}).duration_ms != null ? run.timing.duration_ms : "?") + "ms</span>" +
       '<span class="ri-flags">' + flags.map(function (f) { return '<span class="ri-flag ' + (["error", "pending-memory", "low-confidence"].indexOf(f) >= 0 ? "warn" : "") + '">' + esc(f) + "</span>"; }).join("") + "</span></div>" +
       '<div class="ri-cols"><section class="ri-col">' + transcriptCol(run) + '</section><section class="ri-col">' + influenceCol(run) + '</section><section class="ri-col">' + repairCol(run) + "</section></div>";
+    wireTimeline(root, run);
     wireRepair(root, run);
     wireQuickRepair(root, run);
     wirePropose(root, run, ctx);
