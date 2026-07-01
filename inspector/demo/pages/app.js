@@ -1,0 +1,247 @@
+/* app.js -- the Clozn Studio shell: sidebar IA + hash router + shared helpers.
+ *
+ * One coherent shell (see notes/STUDIO_PRODUCT_ROADMAP.md "Recommended Studio structure").
+ * The sidebar is fixed: Agent / Runs / Memory / Behavior / Lab / Settings. The hash router
+ * (#/agent, #/runs, #/run/<id>, ...) mounts a page module into <main id="view">. Page modules
+ * live in pages/*.js and self-register via CloznStudio.register(name, {title, render}); they are
+ * pure consumers of the backend -- this file owns navigation, fetch plumbing, and the frame.
+ *
+ * Plain HTML/JS, no framework, no build step. Reuses clozn.css (its classes + CSS variables).
+ */
+(function () {
+  "use strict";
+
+  // Base = same origin when served over http(s); else the local studio server (opened from file://).
+  var BASE = location.origin && location.origin.indexOf("http") === 0 ? "" : "http://127.0.0.1:8090";
+
+  // ---- shared helpers (every page uses these) --------------------------------------------------
+  var esc = function (s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (m) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m];
+    });
+  };
+
+  // fetch guards: NEVER throw to the page. On any failure return `fallback` (default null) so a
+  // page can always render an empty/placeholder state even when the endpoint is unreachable.
+  function getJSON(path, fallback) {
+    return fetch(BASE + path, { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error(r.status)); })
+      .catch(function () { return fallback === undefined ? null : fallback; });
+  }
+  function postJSON(path, body, fallback) {
+    return fetch(BASE + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error(r.status)); })
+      .catch(function () { return fallback === undefined ? null : fallback; });
+  }
+
+  // "3:42 PM" from an ISO-ish or epoch-seconds created_at.
+  function fmtTime(created_at) {
+    if (created_at == null) return "—";
+    var d = typeof created_at === "number" ? new Date(created_at * 1000) : new Date(created_at);
+    if (isNaN(d.getTime())) return String(created_at);
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  function fmtDate(created_at) {
+    if (created_at == null) return "";
+    var d = typeof created_at === "number" ? new Date(created_at * 1000) : new Date(created_at);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  function fmtDuration(ms) {
+    if (ms == null || isNaN(ms)) return "—";
+    if (ms < 1000) return Math.round(ms) + " ms";
+    return (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + " s";
+  }
+  // Is this created_at within the current local day?
+  function isToday(created_at) {
+    if (created_at == null) return false;
+    var d = typeof created_at === "number" ? new Date(created_at * 1000) : new Date(created_at);
+    if (isNaN(d.getTime())) return false;
+    var n = new Date();
+    return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return fallbackCopy(text); });
+    }
+    return Promise.resolve(fallbackCopy(text));
+  }
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) { return false; }
+  }
+
+  // small DOM builder: el('div', {class:'x'}, [child, 'text'])
+  function el(tag, attrs, kids) {
+    var n = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === "class") n.className = attrs[k];
+      else if (k === "html") n.innerHTML = attrs[k];
+      else if (k === "text") n.textContent = attrs[k];
+      else if (k.indexOf("on") === 0 && typeof attrs[k] === "function") n.addEventListener(k.slice(2), attrs[k]);
+      else if (attrs[k] != null) n.setAttribute(k, attrs[k]);
+    });
+    (kids || []).forEach(function (c) {
+      if (c == null) return;
+      n.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    });
+    return n;
+  }
+
+  // ---- page registry ---------------------------------------------------------------------------
+  var PAGES = {};
+  // The sidebar order/labels (the IA). `route` is the hash key.
+  var NAV = [
+    { route: "agent", label: "Agent" },
+    { route: "runs", label: "Runs" },
+    { route: "memory", label: "Memory" },
+    { route: "behavior", label: "Behavior" },
+    { route: "lab", label: "Lab" },
+    { route: "settings", label: "Settings" },
+  ];
+
+  function register(name, mod) {
+    // mod: { title?: string, render(mountEl, ctx) -> void|Promise }
+    PAGES[name] = mod;
+    // if the app is already up and this page is the current route, (re)render it.
+    if (booted && currentRoute() === name) mountCurrent();
+  }
+
+  // ---- hash router -----------------------------------------------------------------------------
+  // Routes: #/agent  #/runs  #/run/<id>  #/memory  #/behavior  #/lab  #/settings
+  // The "run/<id>" detail route maps to the "run" page module but keeps "runs" highlighted in nav.
+  function parseHash() {
+    var h = (location.hash || "").replace(/^#\/?/, "");
+    var parts = h.split("/").filter(Boolean);
+    if (!parts.length) return { page: "agent", arg: null };
+    if (parts[0] === "run") return { page: "run", arg: parts[1] || null };
+    return { page: parts[0], arg: parts[1] || null };
+  }
+  function currentRoute() { return parseHash().page; }
+  // which nav item should look active for a given page
+  function navKeyFor(page) { return page === "run" ? "runs" : page; }
+
+  var booted = false;
+
+  function ctx() {
+    return {
+      base: BASE,
+      endpoint: (BASE || location.origin) + "/v1",
+      esc: esc, el: el,
+      getJSON: getJSON, postJSON: postJSON,
+      fmtTime: fmtTime, fmtDate: fmtDate, fmtDuration: fmtDuration, isToday: isToday,
+      copyText: copyText,
+      navigate: navigate,
+    };
+  }
+
+  function navigate(route) {
+    // route like "runs" or "run/run_abc"
+    if (location.hash === "#/" + route) { mountCurrent(); return; }
+    location.hash = "#/" + route;
+  }
+
+  function setActiveNav(page) {
+    var key = navKeyFor(page);
+    var links = document.querySelectorAll("#nav a[data-route]");
+    for (var i = 0; i < links.length; i++) {
+      var a = links[i];
+      if (a.getAttribute("data-route") === key) a.classList.add("here");
+      else a.classList.remove("here");
+    }
+  }
+
+  function mountCurrent() {
+    var r = parseHash();
+    setActiveNav(r.page);
+    var view = document.getElementById("view");
+    if (!view) return;
+    var mod = PAGES[r.page];
+    if (!mod) {
+      // page module hasn't loaded (or unknown route): friendly placeholder, not a blank screen.
+      view.innerHTML =
+        '<div class="wrap"><div class="panel" style="padding:22px">' +
+        '<h2 style="text-transform:none;letter-spacing:0;font-size:16px;color:var(--ink)">Loading “' +
+        esc(r.page) + '”…</h2>' +
+        '<p class="sub" style="margin-top:8px">If this stays, the page module <code>pages/' +
+        esc(r.page) + '.js</code> did not load. Check that it is reachable from the studio server.</p>' +
+        "</div></div>";
+      return;
+    }
+    view.innerHTML = "";
+    try {
+      var res = mod.render(view, ctx(), r.arg);
+      if (res && typeof res.catch === "function") res.catch(function (e) { renderError(view, e); });
+    } catch (e) {
+      renderError(view, e);
+    }
+    // scroll the freshly mounted page to top
+    view.scrollTop = 0;
+  }
+
+  function renderError(view, e) {
+    view.innerHTML =
+      '<div class="wrap"><div class="panel" style="padding:22px">' +
+      '<h2 style="text-transform:none;letter-spacing:0;font-size:16px;color:var(--ink)">This page hit an error</h2>' +
+      '<p class="sub" style="margin-top:8px">' + esc(e && e.message ? e.message : String(e)) + "</p>" +
+      "</div></div>";
+  }
+
+  function buildShell() {
+    var app = document.getElementById("app");
+    if (!app) return;
+
+    var navLinks = NAV.map(function (item) {
+      return el("a", { href: "#/" + item.route, "data-route": item.route, class: "navitem" }, [item.label]);
+    });
+
+    var sidebar = el("aside", { id: "sidebar" }, [
+      el("div", { class: "brand" }, [
+        el("span", { class: "logo" }, ["clozn"]),
+        el("span", { class: "studioword" }, ["studio"]),
+      ]),
+      el("div", { class: "brandsub" }, ["glass-box runtime"]),
+      el("nav", { id: "nav" }, navLinks),
+      el("div", { class: "sidefoot" }, [
+        el("a", { href: "studio.html", class: "sidelink", title: "the original chat + memory + dials surface" }, ["classic studio ↗"]),
+        el("a", { href: "../../index.html", class: "sidelink" }, ["all windows ↗"]),
+      ]),
+    ]);
+
+    var main = el("main", { id: "view" }, []);
+    app.appendChild(sidebar);
+    app.appendChild(main);
+  }
+
+  function boot() {
+    buildShell();
+    booted = true;
+    window.addEventListener("hashchange", mountCurrent);
+    if (!location.hash) location.replace("#/agent");
+    mountCurrent();
+  }
+
+  // ---- public API for page modules -------------------------------------------------------------
+  window.CloznStudio = {
+    register: register,
+    navigate: navigate,
+    base: BASE,
+    // expose helpers so pages can reuse them without re-implementing
+    esc: esc, el: el, getJSON: getJSON, postJSON: postJSON,
+    fmtTime: fmtTime, fmtDate: fmtDate, fmtDuration: fmtDuration, isToday: isToday, copyText: copyText,
+  };
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+})();
