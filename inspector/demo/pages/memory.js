@@ -58,6 +58,14 @@
     ".mem-card{display:flex;gap:11px;align-items:flex-start;padding:11px 13px;margin:8px 0;border-radius:13px;" +
     "background:rgba(255,255,255,.72);border:1px solid var(--line);transition:box-shadow .2s,opacity .3s}" +
     ".mem-card.busy{opacity:.55}" +
+    // a card whose prefix is retraining in the background: a soft pulse + an inline "retraining" note.
+    ".mem-card.retraining{border-color:rgba(122,167,255,.5);box-shadow:0 0 0 3px rgba(122,167,255,.10)}" +
+    ".mem-retrain-note{display:flex;align-items:center;gap:9px;margin-top:9px;padding:7px 11px;border-radius:11px;" +
+    "font-size:12px;line-height:1.4;color:var(--soft);background:linear-gradient(90deg,rgba(122,167,255,.12)," +
+    "rgba(231,168,196,.10));border:1px solid rgba(122,167,255,.3)}" +
+    ".mem-retrain-note .spin{width:13px;height:13px;flex:none;border-radius:50%;border:2px solid rgba(122,167,255,.35);" +
+    "border-top-color:var(--halo);animation:memspin .8s linear infinite}" +
+    ".mem-retrain-note b{color:var(--ink);font-weight:600}" +
     ".mem-card .dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none;" +
     "background:radial-gradient(circle at 35% 30%,#fff,var(--halo));box-shadow:0 0 10px var(--halo)}" +
     ".mem-card:nth-child(3n+2) .dot{background:radial-gradient(circle at 35% 30%,#fff,var(--warm));box-shadow:0 0 10px var(--warm)}" +
@@ -222,15 +230,29 @@
   // `cards` holds the raw list from /memory/cards (strings or objects). `busy` keys are the per-card
   // action locks (keyed by the card's stable key). `editing` is the key of the card being edited.
   function freshState() {
-    return { cards: [], hasPrefix: false, offline: false, adding: false, busy: {}, editing: null, showRejected: false };
+    // `retraining` mirrors the server's in-flight retrain signal ({active,card_id,action}); `retrainTimer`
+    // is the poll handle. A card mutation (approve/disable/edit/remove) now returns FAST and kicks off the
+    // slow prefix retrain in the background -- we poll /memory/retrain-status until it's idle, then reload.
+    return { cards: [], hasPrefix: false, offline: false, adding: false, busy: {}, editing: null,
+             showRejected: false, retraining: null, retrainTimer: null };
   }
   var state = freshState();
+
+  // Read the in-flight retrain flag out of a mutation response, tolerant of shape: the card endpoints
+  // return {...card, resync:{retraining,...}}; remove returns {resync:{retraining}}. null if none.
+  function retrainFromRes(res) {
+    if (!res || typeof res !== "object") return null;
+    var r = res.resync || res.retraining || res;
+    if (r && typeof r === "object" && (r.retraining === true || r.active === true)) return r;
+    return null;
+  }
 
   // A stable per-card key for busy/edit tracking: the id if present, else "i:<index>".
   function keyOf(c, i) { var id = cardId(c); return id != null ? "id:" + id : "i:" + i; }
 
   function render(view, ctx) {
     ensureStyle();
+    if (state.retrainTimer) clearInterval(state.retrainTimer);   // don't leak a poll across remounts
     state = freshState();
 
     var root = S.el("div", { class: "wrap" }, [
@@ -274,6 +296,10 @@
           S.el("b", {}, ["2"]), " leans on them harder (can over-bleed into unrelated answers).",
         ]),
       ]),
+
+      // ---- background retrain banner (shown while the prefix is retraining; e.g. after a removal
+      //      where the affected card is gone, or when the page loaded mid-retrain) ----
+      S.el("div", { id: "mem-retrain-host" }, []),
 
       // ---- pending review (mounted only when there are pending cards) ----
       S.el("div", { id: "mem-pending-host" }, []),
@@ -360,10 +386,52 @@
         state.offline = false; markOffline(false);
         state.cards = (d && d.cards) || [];
         state.hasPrefix = !!(d && d.has_prefix);
+        // if the page loaded (or reloaded) while a retrain is in flight, pick it up and keep polling.
+        var rt = d && d.retraining;
+        if (rt && rt.active === true) startRetrainPoll(ctx, rt);
       }
       state.busy = {};
       state.editing = null;
       drawAll(ctx);
+    });
+  }
+
+  // ---- background retrain: poll /memory/retrain-status until idle, then reload ------------------
+  // A card mutation kicks off the slow prefix retrain server-side; we show a "retraining" state on the
+  // affected card and poll every ~3s. Degrades gracefully: if the status endpoint is absent (older
+  // backend), getJSON/postJSON return null and we simply stop polling and reload once.
+  function startRetrainPoll(ctx, info) {
+    state.retraining = { active: true, card_id: (info && info.card_id) || null,
+                         action: (info && info.action) || null };
+    drawAll(ctx);                               // paint the retraining note on the card immediately
+    if (state.retrainTimer) return;             // already polling -> the flag update above is enough
+    state.retrainTimer = setInterval(function () { pollRetrainOnce(ctx); }, 3000);
+  }
+
+  function stopRetrainPoll() {
+    if (state.retrainTimer) { clearInterval(state.retrainTimer); state.retrainTimer = null; }
+    state.retraining = null;
+  }
+
+  function pollRetrainOnce(ctx) {
+    // POST to match the studio's other memory calls (the server routes /memory/* on POST). null-safe.
+    ctx.postJSON("/memory/retrain-status", {}, null).then(function (st) {
+      if (st == null) {                         // endpoint absent / server down -> stop, reload once, done
+        stopRetrainPoll();
+        loadCards(ctx);
+        return;
+      }
+      if (st.active === true) {                 // still training: keep the note fresh (action/card may update)
+        state.retraining = { active: true, card_id: st.card_id || null, action: st.action || null };
+        return;                                 // (no full redraw needed; the note is already up)
+      }
+      // finished (success or error) -> clear the note, surface any error, reload the authoritative list.
+      var err = st.error;
+      stopRetrainPoll();
+      loadCards(ctx).then(function () {
+        if (err) showNote("The memory retrain didn't finish cleanly: " + err, true);
+        else showNote("Memory updated — the prefix finished retraining.", false);
+      });
     });
   }
 
@@ -392,9 +460,36 @@
 
   function drawAll(ctx) {
     var parts = partition();
+    drawRetrainBanner(ctx, parts);
     drawPending(ctx, parts.pending);
     drawActive(ctx, parts.active);
     drawRejected(ctx, parts.rejected);
+  }
+
+  // A global "retraining" banner, shown while a background retrain is in flight but NOT already surfaced
+  // as a per-card note -- i.e. the affected card is gone (a removal) or unknown. Keeps the signal visible
+  // no matter which mutation started it.
+  function drawRetrainBanner(ctx, parts) {
+    var host = document.getElementById("mem-retrain-host");
+    if (!host) return;
+    host.innerHTML = "";
+    var rt = state.retraining;
+    if (!rt || !rt.active) return;
+    // if a visible card already carries the note (its id matches), don't double up with the banner.
+    if (rt.card_id != null) {
+      var shown = (state.cards || []).some(function (c) {
+        var id = cardId(c);
+        return id != null && String(id) === String(rt.card_id);
+      });
+      if (shown) return;
+    }
+    host.appendChild(S.el("div", { class: "mem-busy", style: "margin:18px 0 0" }, [
+      S.el("div", { class: "spin" }, []),
+      S.el("span", { class: "busytext" }, [
+        S.el("b", {}, ["Retraining memory…"]),
+        " folding your change into the prefix (a few minutes). Chats wait until it finishes.",
+      ]),
+    ]));
   }
 
   // ---- pending review zone ---------------------------------------------------------------------
@@ -475,9 +570,15 @@
     var key = keyOf(c, i);
     var busy = !!state.busy[key];
     var editing = state.editing === key;
+    // is THIS card the one whose prefix is retraining right now? (matched by id)
+    var id = cardId(c);
+    var retraining = !!(state.retraining && state.retraining.active &&
+                        state.retraining.card_id != null && id != null &&
+                        String(state.retraining.card_id) === String(id));
     // frame class: recolor by status (fallback to the zone for legacy string cards).
     var frameStatus = status || (zone === "active" ? "" : zone);
-    var cls = "mem-card" + (frameStatus ? " " + frameStatus : "") + (busy ? " busy" : "");
+    var cls = "mem-card" + (frameStatus ? " " + frameStatus : "") + (busy ? " busy" : "") +
+              (retraining ? " retraining" : "");
 
     var body = [];
 
@@ -485,6 +586,17 @@
       body.push(editor(c, i, key, ctx));
     } else {
       body.push(S.el("div", { class: "mem-card-text" }, [cardText(c) || "(empty trait)"]));
+
+      // background-retrain note: this card's change is being folded into the prefix (slow: a few min).
+      if (retraining) {
+        body.push(S.el("div", { class: "mem-retrain-note" }, [
+          S.el("span", { class: "spin" }, []),
+          S.el("span", {}, [
+            S.el("b", {}, ["Retraining memory…"]),
+            " folding this change into the prefix (this takes a few minutes). Chats wait until it's done.",
+          ]),
+        ]));
+      }
 
       // risk banner: prominent when a pending card looks like a suspicious instruction.
       var risk = cardRisk(c);
@@ -605,7 +717,10 @@
         return;
       }
       state.editing = null;
-      loadCards(ctx); // authoritative reload (edit may re-train / normalize)
+      var rt = retrainFromRes(res);             // editing an ACTIVE card retrains in the background
+      loadCards(ctx).then(function () {         // authoritative reload (text/normalize landed)
+        if (rt) startRetrainPoll(ctx, { card_id: id, action: rt.action || "edit" });
+      });
     });
   }
 
@@ -625,7 +740,12 @@
         showNote("That didn't go through — is the studio server up (and is the memory-review backend online)?", true);
         return;
       }
-      loadCards(ctx); // reload the authoritative list (status changed)
+      // the status flip already landed (fast). If it kicked off a background retrain, poll for it; the
+      // affected card shows a "retraining" note until the prefix finishes. Otherwise just reload.
+      var rt = retrainFromRes(res);
+      loadCards(ctx).then(function () {
+        if (rt) startRetrainPoll(ctx, { card_id: id, action: rt.action || null });
+      });
     });
   }
 
@@ -642,7 +762,12 @@
         showNote("Couldn't remove that trait — is the studio server up?", true);
         return;
       }
-      loadCards(ctx); // indices shift after removal -> reload authoritative list
+      // removing an ACTIVE card rebuilds the prefix in the background -> poll for it (the card is gone,
+      // so the retraining note rides the global banner rather than a specific card).
+      var rt = retrainFromRes(res);
+      loadCards(ctx).then(function () {         // indices shift after removal -> reload authoritative list
+        if (rt) startRetrainPoll(ctx, { card_id: null, action: "remove" });
+      });
     });
   }
 

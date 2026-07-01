@@ -176,6 +176,75 @@ ARGS = None
 SUB = None         # the active substrate object
 SUBNAME = "qwen"
 
+# ------- async retrain: one background retrain at a time, chats serialize behind it -----------------
+# Mutating a memory card retrains the soft-prefix via consolidate() -- ~4-5 min on the 4-bit 7B. We must
+# NOT block the HTTP handler for that. So the card STATUS flip (fast) stays synchronous and the RETRAIN
+# runs on a daemon thread. Two module-level guards (a process singleton, like the model itself):
+#   _TRAIN_LOCK  -- held for the WHOLE consolidate(); the chat/generate paths acquire+release it so a
+#                   reply can't race the shared model+gradients mid-retrain (they queue, they don't error).
+#   _RETRAIN     -- the in-flight signal the UI polls: {active, card_id, action, started_at, error}.
+# _RETRAIN_META guards reads/writes of the _RETRAIN dict (a tiny critical section, distinct from the long
+# _TRAIN_LOCK). Mirrors the _ensure_steer double-checked-lock: we don't launch a 2nd retrain while one runs.
+_TRAIN_LOCK = threading.RLock()
+_RETRAIN_META = threading.Lock()
+_RETRAIN = {"active": False, "card_id": None, "action": None, "started_at": None, "error": None}
+
+
+def _retrain_status():
+    """A snapshot of the in-flight retrain signal (copy -- never hand out the live dict)."""
+    with _RETRAIN_META:
+        return dict(_RETRAIN)
+
+
+def _retrain_in_flight():
+    with _RETRAIN_META:
+        return bool(_RETRAIN["active"])
+
+
+def _join_retrain(timeout=None):
+    """Block until no retrain is in flight (acquire+release _TRAIN_LOCK). Used by tests to await the
+    background consolidate deterministically, and available for a graceful shutdown. Returns True once
+    the lock was momentarily held with nothing active; False on timeout."""
+    if not _TRAIN_LOCK.acquire(timeout=timeout if timeout is not None else -1):
+        return False
+    try:
+        return not _retrain_in_flight()
+    finally:
+        _TRAIN_LOCK.release()
+
+
+def _start_retrain(m, action, card_id):
+    """Launch _mem_sync_rules(m) -- the SLOW consolidate() -- on a daemon thread and return immediately.
+
+    Returns {retraining: True} once the thread is running, or {retraining: False} if there's nothing to do
+    (the active set didn't move -- checked synchronously first, so a no-op transition never spins a thread)
+    or a retrain is already in flight (we refuse to stack them, like _ensure_steer refuses a double compute).
+    The worker holds _TRAIN_LOCK for the whole consolidate so chats serialize behind it, and clears _RETRAIN
+    on finish (success OR error) so the UI's poll always terminates."""
+    import memory_cards
+    # cheap synchronous pre-check: would the active set actually change? if not, do NOT spawn a thread.
+    if list(getattr(m, "rules", []) or []) == list(memory_cards.active_texts()):
+        return {"retraining": False, "changed": False}
+    with _RETRAIN_META:
+        if _RETRAIN["active"]:                        # a retrain is already running -> don't stack a second
+            return {"retraining": True, "busy": True, "queued": False}
+        _RETRAIN.update(active=True, card_id=card_id, action=action,
+                        started_at=time.time(), error=None)
+
+    def _work():
+        err = None
+        try:
+            with _TRAIN_LOCK:                         # hold across consolidate() -> chats wait, never race
+                _mem_sync_rules(m, reconsolidate=True)
+        except Exception as e:                        # a failed retrain must still clear the flag
+            err = f"{type(e).__name__}: {e}"
+        finally:
+            with _RETRAIN_META:
+                _RETRAIN.update(active=False, error=err)
+
+    threading.Thread(target=_work, daemon=True).start()
+    return {"retraining": True, "action": action, "card_id": card_id}
+
 
 class Substrate:
     """Shared studio surface for any substrate: the /memory/* trait cards and the /steer/* tone dials, on
@@ -193,7 +262,11 @@ class Substrate:
         self._ensure_cards_migrated()           # one-time seed of legacy rules -> active cards (no retrain)
 
         if path == "/memory/cards":             # OBJECTS now (not bare strings) -- the review layer
-            return {"cards": memory_cards.list_cards(), "has_prefix": m.prefix is not None}
+            return {"cards": memory_cards.list_cards(), "has_prefix": m.prefix is not None,
+                    "retraining": _retrain_status()}   # fold the in-flight signal in (one reload sees it)
+
+        if path == "/memory/retrain-status":    # the poll target: is a background consolidate() running?
+            return _retrain_status()
 
         if path == "/memory/add":               # propose a card as PENDING -> does NOT affect the prefix
             text = str(body.get("text", "")).strip()
@@ -212,8 +285,9 @@ class Substrate:
             ok = memory_cards.delete(cid)
             if not ok:
                 return {"ok": False, "reason": "no such card"}
-            sync = _mem_sync_rules(m, reconsolidate=was_active) if was_active else {"changed": False}
-            return {"ok": True, "removed": cid, **({"resync": sync} if was_active else {})}
+            # delete is synchronous+fast; the retrain (only if an ACTIVE card left the set) is backgrounded.
+            resync = _start_retrain(m, "remove", cid) if was_active else {"retraining": False}
+            return {"ok": True, "removed": cid, "resync": resync}
 
         if path in ("/memory/approve", "/memory/reject", "/memory/disable", "/memory/enable"):
             return self._card_status(path.rsplit("/", 1)[1], str(body.get("id", "")).strip())
@@ -226,8 +300,8 @@ class Substrate:
             card = memory_cards.update(cid, text=new_text, risk=_risk_of(new_text))
             if card is None:
                 return {"ok": False, "reason": "no such card"}
-            if card.get("status") == "active":
-                _mem_sync_rules(m, reconsolidate=True)
+            if card.get("status") == "active":   # editing an active card's text retrains -> in the background
+                card = {**card, "resync": _start_retrain(m, "edit", cid)}
             return card
 
         if path == "/memory/strength":          # the memory dial: how hard the prefix bites (0 = off, >1 = stronger)
@@ -243,8 +317,10 @@ class Substrate:
 
     # ---- E1 review lifecycle: a status change rebuilds m.rules from the active set, retrains iff it moved -
     def _card_status(self, action, cid):
-        """approve->active, reject->rejected, disable->disabled, enable->active. After the transition we
-        set m.rules = active_texts() and reconsolidate ONLY if the active set changed (keep-the-prefix-safe)."""
+        """approve->active, reject->rejected, disable->disabled, enable->active. The STATUS flip (fast) is
+        synchronous; the RETRAIN it may trigger (rebuild the prefix from active_texts) is backgrounded so
+        the response returns immediately. The card keeps its FINAL status; a separate _RETRAIN flag carries
+        the in-flight signal. _start_retrain no-ops when the active set didn't actually move (prefix safe)."""
         import memory_cards
         if not cid:
             return {"ok": False, "reason": "need a card id"}
@@ -253,8 +329,8 @@ class Substrate:
         card = memory_cards.set_status(cid, target)
         if card is None:
             return {"ok": False, "reason": "no such card"}
-        _mem_sync_rules(self._mem, reconsolidate=True)   # rebuild rules; retrains only if the active set moved
-        return card
+        resync = _start_retrain(self._mem, action, cid)  # retrains on a thread iff the active set changed
+        return {**card, "resync": resync}
 
     def _ensure_cards_migrated(self):
         """Seed the card store from this substrate's legacy rule-strings exactly once per process."""
@@ -347,17 +423,21 @@ class QwenSubstrate(Substrate):
         if path == "/concepts":                 # read what fired inside (no generation) -> annotate a reply
             return self.brain.concepts_only(str(body.get("text", ""))[:500])
         if path == "/say":
-            return {"reply": self.memory.say(body["message"], body.get("max_new", 200))}
-        if path == "/consolidate":
-            return self.memory.consolidate(body.get("rules"), body.get("steps", 120), body.get("lr", 0.012),
-                                           body.get("n_probe", 8), body.get("max_norm", 14.0))
+            with _TRAIN_LOCK:                    # studio chat touches the shared model -> wait out a retrain
+                return {"reply": self.memory.say(body["message"], body.get("max_new", 200))}
+        if path == "/consolidate":               # a manual retrain -> the same shared-model lock as card retrains
+            with _TRAIN_LOCK:
+                return self.memory.consolidate(body.get("rules"), body.get("steps", 120), body.get("lr", 0.012),
+                                               body.get("n_probe", 8), body.get("max_norm", 14.0))
         if path == "/whatlearned":
             return {"report": self.memory.what_learned()}
-        if path == "/check":
-            return self.memory.check(body["prompt"], body.get("max_new", 200))
+        if path == "/check":                     # generates on the shared model -> wait out a retrain
+            with _TRAIN_LOCK:
+                return self.memory.check(body["prompt"], body.get("max_new", 200))
         if path == "/reset":
-            self.brain.reset(str(body.get("sid", "default")))
-            return self.memory.reset(body.get("keep_prefix", False))
+            with _TRAIN_LOCK:                     # mutates the prefix/model state -> don't race a retrain
+                self.brain.reset(str(body.get("sid", "default")))
+                return self.memory.reset(body.get("keep_prefix", False))
         if path.startswith("/memory/"):
             return self._memory(path, body)
         if path.startswith("/steer/"):
@@ -371,15 +451,17 @@ class QwenSubstrate(Substrate):
         """One stateless chat completion with the WHOLE tunable self applied: the consolidated memory
         prefix (learned + added traits) AND the active tone-steering sliders, both on the shared model.
         This is what the OpenAI-compatible endpoint serves -- normal chat on the surface, legible and
-        tunable underneath."""
-        if self.steer.strength:                 # persisted personality -> ensure vectors are ready (race-safe)
-            self._ensure_steer()
-        self.steer.engage()
-        try:
-            return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample,
-                                         gate=self.memory.memory_strength)
-        finally:
-            self.steer.disengage()
+        tunable underneath. Serializes behind an in-flight memory retrain (_TRAIN_LOCK) so a reply can't
+        race the shared model+gradients mid-consolidate -- it waits, briefly, rather than corrupting."""
+        with _TRAIN_LOCK:                        # wait out any background retrain, then hold for this reply
+            if self.steer.strength:             # persisted personality -> ensure vectors are ready (race-safe)
+                self._ensure_steer()
+            self.steer.engage()
+            try:
+                return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample,
+                                             gate=self.memory.memory_strength)
+            finally:
+                self.steer.disengage()
 
     def chat_stream(self, messages, max_new=256):
         """Streaming chat: yields text chunks as the AR model generates -- memory prefix + tone steering
@@ -388,6 +470,7 @@ class QwenSubstrate(Substrate):
         import threading
         import torch
         from transformers import TextIteratorStreamer
+        _TRAIN_LOCK.acquire()                    # serialize behind an in-flight retrain (released in finally)
         if self.steer.strength:
             self._ensure_steer()
         m = self.memory
@@ -414,6 +497,7 @@ class QwenSubstrate(Substrate):
         finally:
             th.join()
             self.steer.disengage()
+            _TRAIN_LOCK.release()                           # done streaming -> let a queued retrain proceed
 
     def state(self):
         return self.memory.state()
@@ -441,15 +525,16 @@ class DreamSubstrate(Substrate):
     def handle(self, path, body):
         if path == "/denoise":
             prompt = str(body.get("prompt", ""))[:300]
-            self.steer.engage()                            # active dials steer every denoising pass
-            try:
-                ad = self.adapter
-                if self.dmem.prefix is not None:           # memory present -> inject the prefix into the REAL scheduler
-                    from dream_memory import PrefixAdapter
-                    ad = PrefixAdapter(self.adapter, self.dmem.prefix.detach())
-                return self._trace(ad, prompt)             # the cloze_lab scheduler (+ the steering hook)
-            finally:
-                self.steer.disengage()
+            with _TRAIN_LOCK:                              # wait out a background retrain (it moves dmem.prefix)
+                self.steer.engage()                        # active dials steer every denoising pass
+                try:
+                    ad = self.adapter
+                    if self.dmem.prefix is not None:       # memory present -> inject the prefix into the REAL scheduler
+                        from dream_memory import PrefixAdapter
+                        ad = PrefixAdapter(self.adapter, self.dmem.prefix.detach())
+                    return self._trace(ad, prompt)         # the cloze_lab scheduler (+ the steering hook)
+                finally:
+                    self.steer.disengage()
         if path.startswith("/memory/"):
             return self._memory(path, body)
         if path.startswith("/steer/"):

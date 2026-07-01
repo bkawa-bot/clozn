@@ -58,6 +58,13 @@ def _substrate(mem):
     return sub
 
 
+def _settle(timeout=5.0):
+    """Card retrains now run on a background thread (async retrain, issue: memory retrains block the
+    request). The prefix effect (consolidate/reset on the fake mem) therefore lands slightly AFTER the
+    endpoint returns -- so wait for it before asserting mem.rules / consolidate_calls."""
+    assert cs._join_retrain(timeout=timeout), "background retrain did not finish in time"
+
+
 @pytest.fixture()
 def iso(tmp_path, monkeypatch):
     """Point the card store + run log at tmp files so tests never touch ~/.clozn."""
@@ -124,6 +131,7 @@ def test_approve_activates_card_adds_to_rules_and_consolidates(iso):
 
     updated = sub._memory("/memory/approve", {"id": card["id"]})
     assert updated["status"] == "active"
+    _settle()                                            # await the backgrounded retrain
     # rules now == the active-card texts (both), and consolidate ran on exactly that set
     assert set(mem.rules) == {"likes tea", "wants bullet points"}
     assert len(mem.consolidate_calls) == 1
@@ -139,6 +147,7 @@ def test_disable_removes_from_rules_and_reconsolidates(iso):
     target = next(c for c in memory_cards.list_cards() if c["text"] == "wants bullet points")
 
     sub._memory("/memory/disable", {"id": target["id"]})
+    _settle()                                            # await the backgrounded retrain
     assert mem.rules == ["likes tea"]                    # dropped from the active set
     assert mem.consolidate_calls[-1] == ["likes tea"]   # retrained on the survivors
     # the card is KEPT, just unused
@@ -152,6 +161,7 @@ def test_reject_drops_card_from_rules(iso):
     target = next(c for c in memory_cards.list_cards() if c["text"] == "likes tea")
 
     sub._memory("/memory/reject", {"id": target["id"]})
+    _settle()                                            # await the backgrounded retrain
     assert mem.rules == ["wants bullet points"]
     assert memory_cards.get(target["id"])["status"] == "rejected"
 
@@ -163,6 +173,7 @@ def test_disabling_last_card_resets_the_prefix(iso):
     only = memory_cards.list_cards()[0]
 
     sub._memory("/memory/disable", {"id": only["id"]})
+    _settle()                                            # await the backgrounded retrain (reset here)
     assert mem.rules == []
     assert mem.reset_calls == 1                           # empty active set -> prefix dropped
     assert mem.prefix is None
@@ -174,9 +185,11 @@ def test_reenable_restores_to_rules(iso):
     sub._memory("/memory/cards", {})
     target = next(c for c in memory_cards.list_cards() if c["text"] == "wants bullet points")
     sub._memory("/memory/disable", {"id": target["id"]})
+    _settle()                                            # await the backgrounded retrain
     assert mem.rules == ["likes tea"]
 
     sub._memory("/memory/enable", {"id": target["id"]})
+    _settle()                                            # await the backgrounded retrain
     assert set(mem.rules) == {"likes tea", "wants bullet points"}
 
 
@@ -190,6 +203,7 @@ def test_remove_active_card_reconsolidates_survivors(iso):
 
     res = sub._memory("/memory/remove", {"id": target["id"]})
     assert res["ok"] is True
+    _settle()                                            # await the backgrounded retrain
     assert memory_cards.get(target["id"]) is None        # gone
     assert mem.rules == ["likes tea"]
     assert mem.consolidate_calls[-1] == ["likes tea"]
@@ -217,6 +231,7 @@ def test_edit_active_card_reconsolidates(iso):
 
     updated = sub._memory("/memory/edit", {"id": card["id"], "text": "loves strong tea"})
     assert updated["text"] == "loves strong tea"
+    _settle()                                            # await the backgrounded retrain
     assert mem.rules == ["loves strong tea"]
     assert mem.consolidate_calls[-1] == ["loves strong tea"]
 
