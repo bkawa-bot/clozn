@@ -144,8 +144,12 @@ share one eta-frac, only the L22 probe re-dosed), next-token + short-greedy metr
 templated (six attribute families — diverse free-text cues untested at scale, though the 20-fact bank's
 0.90 covers hand-varied phrasing). Multi-token at 71% (two-token schedule) is still a partial — answers
 past two tokens rely on clean continuation. The write gate's threshold (3.0 nats) is hand-set,
-validated only against 4 known facts. Persistence/serving (a `~/.clozn` store + studio surface) is
-unbuilt — this is the mechanism proven, not the product wired.
+validated only against 4 known facts. Persistence is now built — `SlotMem.save/load(path)` (torch.save
+of keys/values/ans_ids/labels/cues/answers + layer/eta/gate_floor; refuses cross-layer loads), with a
+model-free unit test (`tests/test_slotmem_store.py`, bit-exact round-trip) and a real-model receipt: a
+FRESH process loading the store reproduces all 12 reads exactly, keys/values bit-identical (~147 KB for
+12 entries). The studio surface (serving `memory_mode:"slots"`) remains unbuilt — mechanism proven,
+product not yet wired.
 
 ## Why it matters
 

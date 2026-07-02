@@ -220,8 +220,64 @@ class SlotMem:
             do_sample=False, pad_token_id=self.tok.eos_token_id or 0)
         return self.tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
 
+    # ---- persistence (the ~/.clozn/slotmem.pt rung). The pure work lives in pack_store/unpack_store
+    # so a model-free unit test can cover the round-trip; these methods only add device + layer checks.
+    def save(self, path: str) -> str:
+        """torch.save the store (entries + layer/eta/gate_floor) to `path`. Returns the resolved path."""
+        path = os.path.expanduser(path)
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        torch.save(pack_store(self.entries, self.layer, self.eta, self.gate_floor), path)
+        return path
+
+    def load(self, path: str) -> int:
+        """Restore a store written by save(). Refuses a layer mismatch (keys are residuals OF a layer;
+        reading them at another layer is silent garbage). Replaces entries/eta/gate_floor; returns N."""
+        state = torch.load(os.path.expanduser(path), map_location="cpu")
+        if state.get("layer") != self.layer:
+            raise ValueError(f"store was written at layer {state.get('layer')}, "
+                             f"this SlotMem taps layer {self.layer}")
+        entries, meta = unpack_store(state, device=DEV)
+        self.entries = entries
+        self.eta = meta["eta"]
+        self.gate_floor = meta["gate_floor"]
+        return len(entries)
+
     def close(self):
         self._h.remove()
+
+
+# ---- store (de)serialization: pure, model-free, bit-exact -------------------------------------------
+STORE_VERSION = 1
+
+
+def pack_store(entries: list, layer: int, eta: float, gate_floor) -> dict:
+    """The store as a torch.save-able dict: float32 CPU tensors + plain python only (survives
+    torch.load(weights_only=True); float32 CPU<->CUDA moves are memcpys, so round-trips are bit-exact)."""
+    return {
+        "version": STORE_VERSION,
+        "layer": int(layer),
+        "eta": float(eta),
+        "gate_floor": None if gate_floor is None else float(gate_floor),
+        "keys": torch.stack([e["key"].detach().float().cpu() for e in entries]) if entries else torch.empty(0),
+        "values": torch.stack([e["value"].detach().float().cpu() for e in entries]) if entries else torch.empty(0),
+        "ans_ids": [list(map(int, e["ans_ids"])) for e in entries],
+        "labels": [e["label"] for e in entries],
+        "cues": [e["cue"] for e in entries],
+        "answers": [e["answer"] for e in entries],
+    }
+
+
+def unpack_store(state: dict, device: str = "cpu") -> tuple[list, dict]:
+    """Inverse of pack_store -> (entries, {layer, eta, gate_floor})."""
+    if state.get("version") != STORE_VERSION:
+        raise ValueError(f"unknown slotmem store version {state.get('version')!r}")
+    entries = [{"key": state["keys"][i].to(device), "value": state["values"][i].to(device),
+                "label": state["labels"][i], "ans_ids": list(state["ans_ids"][i]),
+                "cue": state["cues"][i], "answer": state["answers"][i]}
+               for i in range(len(state["labels"]))]
+    return entries, {"layer": state["layer"], "eta": state["eta"], "gate_floor": state["gate_floor"]}
 
 
 def top1_hits(mem: SlotMem, facts: list[dict], gated=False, entries=None):
