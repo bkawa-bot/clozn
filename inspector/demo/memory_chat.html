@@ -156,7 +156,11 @@ function renderMemory(rules){
 async function ask(){
   setBusy(true,'asking it what it picked up…');
   try{ const d=await api('/whatlearned',{}); const rep=$('report');
-    rep.style.display='block'; rep.innerHTML=`<b>it says:</b> “${esc(d.report)}”`; setBusy(false,''); }
+    rep.style.display='block'; rep.innerHTML=`<b>it says:</b> “${esc(d.report)}”`+
+      // honesty label (memory-mode swap): in prompt mode the cards are IN its context here, so this is
+      // the model READING its memory back, not introspecting a trained prefix.
+      (d.mode==='prompt' ? `<div style="margin-top:8px;font-size:12px;opacity:.7">prompt memory mode: the cards were in its context for this answer — it's reading them, not introspecting.</div>` : '');
+    setBusy(false,''); }
   catch(e){ setBusy(false,''); showOffline(); }
 }
 async function test(){
@@ -165,7 +169,8 @@ async function test(){
     $('proof').innerHTML =
       `<div class="q">“${esc(d.prompt)}”</div>`+
       `<div class="ans before"><div class="tag">before · no memory</div>${esc(d.baseline)}</div>`+
-      `<div class="ans after"><div class="tag">after · memory loaded</div>${esc(d.ungated||d.gated||'(no memory yet — sleep on it first)')}</div>`;
+      // the "after" mechanism depends on the memory mode: context block (prompt) vs trained prefix.
+      `<div class="ans after"><div class="tag">after · ${d.mode==='prompt'?'memory in context':'memory loaded'}</div>${esc(d.ungated||d.gated||'(no memory yet — sleep on it first)')}</div>`;
     setBusy(false,''); }
   catch(e){ setBusy(false,''); showOffline(); }
 }

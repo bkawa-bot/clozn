@@ -274,15 +274,29 @@
     });
   }
 
+  // Truncated card text for a per-card receipt button label (whole texts can be a sentence long).
+  function cardLabel(c) {
+    var t = typeof c === "string" ? c : String((c && c.text) || "");
+    return t.length > 42 ? t.slice(0, 40) + "…" : t;
+  }
+
   function influenceCol(run) {
     var mem = run.memory || {}, beh = run.behavior || {}, h = "<h3>What influenced it</h3>";
     h += '<div class="ri-kv"><span class="k">model</span><span>' + esc(run.model || "?") + "</span></div>";
     h += '<div class="ri-kv"><span class="k">backend</span><span>' + esc(run.substrate || "?") + "</span></div>";
     h += '<div class="ri-kv"><span class="k">via</span><span>' + esc(run.source || "?") + " / " + esc(run.client || "?") + "</span></div>";
     var cards = mem.cards_applied || [], strength = mem.strength == null ? 1 : mem.strength;
-    h += '<div class="ri-kv" style="margin-top:12px"><span class="k">memory (strength ' + (+strength).toFixed(2) + ')</span><span>' + cards.length + " card(s)</span></div>";
+    // runs recorded post-mode-swap carry memory.mode ("prompt": cards rode as context, applied per turn;
+    // "internalized": the trained prefix) and, in prompt mode, applied_ids aligned with cards_applied.
+    var modeTag = mem.mode ? " · " + esc(mem.mode) : "";
+    var ids = Array.isArray(mem.applied_ids) ? mem.applied_ids : [];
+    h += '<div class="ri-kv" style="margin-top:12px"><span class="k">memory (strength ' + (+strength).toFixed(2) + modeTag + ')</span><span>' + cards.length + " card(s)</span></div>";
     for (var i = 0; i < cards.length; i++) h += '<div class="ri-card">' + esc(typeof cards[i] === "string" ? cards[i] : cards[i].text) + "</div>";
-    if (!cards.length) h += '<div class="sub">no memory applied</div>';
+    if (!cards.length) {
+      // prompt mode records per-turn application, so "none" there means the block wasn't injected on
+      // THIS turn (topic-gated out / dial at 0) -- not necessarily that no cards exist.
+      h += '<div class="sub">' + (mem.mode === "prompt" ? "no memory applied this turn (block not injected)" : "no memory applied") + "</div>";
+    }
     var dials = beh.active_dials || {}, keys = Object.keys(dials);
     h += '<div class="ri-kv" style="margin-top:12px"><span class="k">behavior dials</span><span>' + keys.length + "</span></div>";
     if (keys.length) h += "<div>" + keys.map(function (k) { return '<span class="ri-dial">' + esc(k) + " " + (+dials[k]).toFixed(2) + "</span>"; }).join("") + "</div>";
@@ -295,6 +309,13 @@
       h += '<div class="ri-prove-h">Receipts — prove it</div>';
       h += '<div class="ri-prove-sub">Re-runs this prompt with one influence off (greedy). The difference <i>is</i> that influence’s contribution — measured, not self-reported.</div>';
       if (cards.length) h += "<button class=\"ri-act\" data-receipt='{\"memory_off\":true,\"greedy\":true}'>Memory receipt — what did the memory change?</button>";
+      // per-card receipts (prompt mode only: applied_ids come from the card store, and the replay
+      // engine can really rebuild the block minus one card there -- internalized would need a retrain).
+      for (var j = 0; j < cards.length && j < ids.length; j++) {
+        if (ids[j] == null) continue;
+        var spec = esc(JSON.stringify({ disabled_memory_ids: [String(ids[j])], greedy: true })).replace(/'/g, "&#39;");
+        h += "<button class=\"ri-act\" data-receipt='" + spec + "'>Card receipt — without “" + esc(cardLabel(cards[j])) + "”</button>";
+      }
       if (keys.length) h += "<button class=\"ri-act\" data-receipt='{\"behavior_off\":true,\"greedy\":true}'>Dials receipt — what did the dials change?</button>";
       h += '<div class="ri-out" id="ri-receipt-out"></div>';
     }

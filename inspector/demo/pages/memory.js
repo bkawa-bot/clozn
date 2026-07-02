@@ -7,15 +7,22 @@
  *
  * Endpoints (all guarded -- the page renders fully offline, and every call still degrades to a
  * friendly note if it 404s while the backend memory-cards work (D2/E1) is mid-flight):
- *   POST /memory/cards    {}            -> {cards:[<string|object>,...], has_prefix}
+ *   POST /memory/cards    {}            -> {cards:[<string|object>,...], has_prefix, mode?, retraining?}
+ *   POST /memory/mode     {mode}        -> swap "prompt" (cards as context) <-> "internalized" (prefix)
  *   POST /memory/strength {}            -> {strength:<float>, has_prefix}   (read)
- *   POST /memory/strength {value}       -> set (0=off, 1=normal, up to 2=stronger)
- *   POST /memory/add      {text}        -> creates a PENDING card (RE-TRAINS: SLOW, tens of s .. min)
- *   POST /memory/approve  {id}          -> pending -> active   (rebuilds the prefix)
+ *   POST /memory/strength {value}       -> set (0=off; in prompt mode any >0 just means "on when relevant")
+ *   POST /memory/add      {text}        -> creates a PENDING card
+ *   POST /memory/approve  {id}          -> pending -> active   (internalized: rebuilds the prefix, SLOW;
+ *                                          prompt: instant -- the card simply joins the context block)
  *   POST /memory/reject   {id}          -> -> rejected (kept, inert)
  *   POST /memory/disable  {id}          -> toggles active <-> disabled
  *   POST /memory/edit     {id, text}    -> updated card / {ok:true}
  *   POST /memory/remove   {id?, index?} -> deletes a card + rebuilds
+ *
+ * Memory MODE (the swap spec): state.mode is read off /memory/cards (absent on an older backend ->
+ * treated as "internalized", the legacy behavior). In prompt mode the retrain banner/notes never show
+ * (the backend's retraining flag is a constant idle) and the copy stops promising a slow prefix fold;
+ * the strength slider relabels to an honest on/off (its value doesn't scale anything there).
  *
  * Card shape: a card is a *string* on the legacy path, or an object after D2:
  *   {id,text,status,source_run_id,created_at,last_used_at,usage_count,kind,risk,evidence,strength}.
@@ -33,6 +40,16 @@
   var STYLE_ID = "memory-page-style";
   var CSS =
     ".mem-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}" +
+    // the memory-mode panel: which mechanism carries the cards (prompt block vs trained prefix).
+    ".mem-mode{margin:20px 0 8px;padding:16px 18px}" +
+    ".mem-mode h2{padding:0 0 4px}" +
+    ".mem-mode .moderow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px}" +
+    ".mem-mode .modechip{font-size:12.5px;font-weight:640;padding:5px 12px;border-radius:14px;" +
+    "border:1px solid rgba(122,167,255,.45);color:#2f4a7a;background:rgba(122,167,255,.12)}" +
+    ".mem-mode .modechip.internalized{border-color:rgba(231,168,196,.55);color:#8a4a66;background:rgba(231,168,196,.14)}" +
+    ".mem-mode .modehint{color:var(--faint);font-size:12.5px;margin-top:10px;line-height:1.55}" +
+    ".mem-mode .modehint b{color:var(--soft);font-weight:600}" +
+    ".mem-mode .modehint .mline{display:block;margin:2px 0}" +
     ".mem-strength{margin:20px 0 8px;padding:16px 18px}" +
     ".mem-strength h2{padding:0 0 4px}" +
     ".mem-strength .strengthrow{display:flex;align-items:center;gap:14px;margin-top:10px}" +
@@ -254,8 +271,10 @@
     // `retraining` mirrors the server's in-flight retrain signal ({active,card_id,action}); `retrainTimer`
     // is the poll handle. A card mutation (approve/disable/edit/remove) now returns FAST and kicks off the
     // slow prefix retrain in the background -- we poll /memory/retrain-status until it's idle, then reload.
+    // `mode` is the memory mechanism ("prompt" | "internalized"); null until /memory/cards reports it
+    // (an older backend never does -> we render the legacy internalized copy without a mode panel).
     return { cards: [], hasPrefix: false, offline: false, adding: false, busy: {}, editing: null,
-             showRejected: false, retraining: null, retrainTimer: null };
+             showRejected: false, retraining: null, retrainTimer: null, mode: null, switching: false };
   }
   var state = freshState();
 
@@ -292,6 +311,9 @@
         ") to load and edit memory.",
       ]),
 
+      // ---- memory mode (populated by drawMode once /memory/cards reports which mechanism is live) ----
+      S.el("div", { id: "mem-mode-host" }, []),
+
       // ---- memory strength ----
       S.el("div", { class: "mem-strength panel" }, [
         S.el("h2", {}, ["Memory strength"]),
@@ -303,12 +325,12 @@
           }, []),
           S.el("b", { class: "strengthval", id: "mem-strength-val" }, ["1.0"]),
         ]),
-        S.el("div", { class: "ticks" }, [
+        S.el("div", { class: "ticks", id: "mem-strength-ticks" }, [
           S.el("span", {}, ["off"]),
           S.el("span", {}, ["normal"]),
           S.el("span", {}, ["stronger"]),
         ]),
-        S.el("div", { class: "strengthhint" }, [
+        S.el("div", { class: "strengthhint", id: "mem-strength-hint" }, [
           "How strongly memory colors replies. ",
           S.el("b", {}, ["0"]), " turns learned traits off, ",
           S.el("b", {}, ["1"]), " is normal, up to ",
@@ -346,7 +368,7 @@
           }, []),
           S.el("button", { class: "go", id: "mem-add-btn", onclick: function () { submitAdd(ctx); } }, ["Propose"]),
         ]),
-        S.el("div", { class: "addhint" }, [
+        S.el("div", { class: "addhint", id: "mem-add-hint" }, [
           "Describe a lasting preference or fact in a short sentence. It's ",
           S.el("b", {}, ["added to pending — approve it above to take effect."]),
           " Clozn folds an approved trait into the model's memory prefix (this trains and takes a while).",
@@ -407,6 +429,8 @@
         state.offline = false; markOffline(false);
         state.cards = (d && d.cards) || [];
         state.hasPrefix = !!(d && d.has_prefix);
+        // the memory MODE rides on the cards response; an older backend omits it -> null (legacy copy).
+        state.mode = (d.mode === "prompt" || d.mode === "internalized") ? d.mode : null;
         // if the page loaded (or reloaded) while a retrain is in flight, pick it up and keep polling.
         var rt = d && d.retraining;
         if (rt && rt.active === true) startRetrainPoll(ctx, rt);
@@ -481,10 +505,128 @@
 
   function drawAll(ctx) {
     var parts = partition();
+    drawMode(ctx);
     drawRetrainBanner(ctx, parts);
     drawPending(ctx, parts.pending);
     drawActive(ctx, parts.active);
     drawRejected(ctx, parts.rejected);
+  }
+
+  // ---- memory mode: indicator + toggle + honest copy -------------------------------------------
+  // One panel that says WHICH mechanism carries the cards and lets you swap it (POST /memory/mode).
+  // Copy rule (from the swap spec): never oversell -- prompt = "applied as context, readable verbatim";
+  // internalized = "trained into a soft prefix; slow to edit; the model can't reliably self-report it".
+  function drawMode(ctx) {
+    var host = document.getElementById("mem-mode-host");
+    if (!host) return;
+    host.innerHTML = "";
+    updateModeCopy(state.mode);
+    if (!state.mode) return;                     // older backend / offline: no panel, legacy copy stands
+    var isPrompt = state.mode === "prompt";
+    var target = isPrompt ? "internalized" : "prompt";
+
+    var btn = S.el("button", { class: "mem-btn", id: "mem-mode-btn" },
+                   [state.switching ? "switching…" : "Switch to " + target]);
+    if (state.switching) btn.disabled = true;
+    btn.addEventListener("click", function () { toggleMode(ctx, target); });
+
+    host.appendChild(S.el("div", { class: "mem-mode panel" }, [
+      S.el("h2", {}, ["Memory mode"]),
+      S.el("div", { class: "moderow" }, [
+        S.el("span", { class: "modechip " + state.mode },
+             [isPrompt ? "prompt — applied as context" : "internalized — trained-in prefix"]),
+        btn,
+      ]),
+      S.el("div", { class: "modehint" }, [
+        S.el("span", { class: "mline" }, [
+          S.el("b", {}, ["prompt:"]),
+          " cards ride as readable context on relevant turns — the card text is exactly what's applied;" +
+          " edits are instant; per-card receipts work.",
+        ]),
+        S.el("span", { class: "mline" }, [
+          S.el("b", {}, ["internalized:"]),
+          " cards are trained into a soft prefix — each change retrains for a few minutes, and the" +
+          " model can't reliably self-report what the prefix does (check receipts, not its word).",
+        ]),
+        S.el("span", { class: "mline" }, [
+          isPrompt
+            ? "Switching to internalized retrains the prefix from your current cards (a few minutes)."
+            : "Switching to prompt is instant and leaves the trained prefix untouched (you can come back).",
+        ]),
+      ]),
+      S.el("div", { class: "mem-note", id: "mem-mode-note", style: "display:none" }, []),
+    ]));
+  }
+
+  function showModeNote(msg, isErr) {
+    var n = document.getElementById("mem-mode-note");
+    if (!n) return;
+    n.textContent = msg;
+    n.className = "mem-note " + (isErr ? "err" : "ok");
+    n.style.display = "";
+  }
+
+  function toggleMode(ctx, target) {
+    if (state.switching) return;
+    state.switching = true;
+    drawMode(ctx);                               // repaint the button as busy
+    ctx.postJSON("/memory/mode", { mode: target }, null).then(function (res) {
+      state.switching = false;
+      if (res == null || res.ok === false) {
+        drawMode(ctx);
+        showModeNote("Couldn't switch the mode — is the studio server up (and the mode endpoint online)? Nothing was changed.", true);
+        return;
+      }
+      // switching to internalized may kick a background catch-up retrain (the prefix was stale vs the
+      // cards); surface it through the normal retrain banner + poll.
+      var rt = res.resync && res.resync.retraining === true;
+      loadCards(ctx).then(function () {
+        if (rt) startRetrainPoll(ctx, { card_id: null, action: "mode-switch" });
+        showModeNote(target === "prompt"
+          ? "Prompt mode: cards now ride as context — edits are instant."
+          : "Internalized mode: cards drive the trained prefix." +
+            (rt ? " Retraining it from your cards now (a few minutes)." : ""), false);
+      });
+    });
+  }
+
+  // Mode-dependent copy on the strength + add panels. Prompt mode: the slider is an honest on/off (the
+  // value scales nothing there) and approval is instant -- the hints must say so instead of promising
+  // a slow prefix fold. null mode (older backend) keeps the legacy internalized copy.
+  function updateModeCopy(mode) {
+    var ticks = document.getElementById("mem-strength-ticks");
+    var hint = document.getElementById("mem-strength-hint");
+    var add = document.getElementById("mem-add-hint");
+    var isPrompt = mode === "prompt";
+    if (ticks) {
+      ticks.innerHTML = "";
+      (isPrompt ? ["off", "on (when relevant)", "on"] : ["off", "normal", "stronger"]).forEach(function (t) {
+        ticks.appendChild(S.el("span", {}, [t]));
+      });
+    }
+    if (hint) {
+      hint.innerHTML = "";
+      if (isPrompt) {
+        [S.el("b", {}, ["0"]), " keeps memory out of every reply; anything above ",
+         S.el("b", {}, ["0"]),
+         " injects the cards when a turn is on-topic. In prompt mode this is an on/off — the value doesn't scale anything.",
+        ].forEach(function (n) { hint.appendChild(typeof n === "string" ? document.createTextNode(n) : n); });
+      } else {
+        ["How strongly memory colors replies. ", S.el("b", {}, ["0"]), " turns learned traits off, ",
+         S.el("b", {}, ["1"]), " is normal, up to ", S.el("b", {}, ["2"]),
+         " leans on them harder (can over-bleed into unrelated answers).",
+        ].forEach(function (n) { hint.appendChild(typeof n === "string" ? document.createTextNode(n) : n); });
+      }
+    }
+    if (add) {
+      add.innerHTML = "";
+      ["Describe a lasting preference or fact in a short sentence. It's ",
+       S.el("b", {}, ["added to pending — approve it above to take effect."]),
+       isPrompt
+         ? " In prompt mode approval is instant: the card is applied as context on relevant turns (no training)."
+         : " Clozn folds an approved trait into the model's memory prefix (this trains and takes a while).",
+      ].forEach(function (n) { add.appendChild(typeof n === "string" ? document.createTextNode(n) : n); });
+    }
   }
 
   // A global "retraining" banner, shown while a background retrain is in flight but NOT already surfaced
