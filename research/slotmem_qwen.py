@@ -187,21 +187,29 @@ class SlotMem:
 
     @torch.no_grad()
     def emit(self, query: str, max_new: int = 6) -> str:
-        """Short greedy generation with the memory injected on the FIRST decode step only -- the
-        multi-token question: does first-token promotion elicit the whole answer?"""
-        r = self.read(query)                                   # sets nothing persistent; we redo inject inline
-        if r["hit"] is None:
-            self._inject = None
-        else:
-            self._inject = self.eta * self.entries[r["hit"]]["value"]
+        """Short greedy generation with a VALUE SCHEDULE: the hit entry's first answer token direction
+        injected at decode step 1, its second (when the answer is multi-token) at step 2, then clean
+        continuation -- the rung-2 fix (first-token-only elicited multi answers just 4/7)."""
+        r = self.read(query)
         ids = self.tok(query, return_tensors="pt").input_ids.to(DEV)
-        try:
-            first = self.model(ids).logits[0, -1].argmax()      # step 1 WITH injection
-        finally:
-            self._inject = None                                 # steps 2+ run clean
-        seq = torch.cat([ids, first.view(1, 1)], 1)
-        out = self.model.generate(seq, attention_mask=torch.ones_like(seq), max_new_tokens=max_new - 1,
-                                  do_sample=False, pad_token_id=self.tok.eos_token_id or 0)
+        seq = ids
+        if r["hit"] is not None:
+            e = self.entries[r["hit"]]
+            sched = [e["value"]]
+            if len(e["ans_ids"]) > 1:                          # second-token direction, unit-normalized
+                v2 = self.W_U[e["ans_ids"][1]].float()
+                sched.append(v2 / (v2.norm() + 1e-8))
+            for vec in sched:                                  # one injected greedy step per scheduled token
+                self._inject = self.eta * vec
+                try:
+                    nxt = self.model(seq).logits[0, -1].argmax()
+                finally:
+                    self._inject = None
+                seq = torch.cat([seq, nxt.view(1, 1)], 1)
+        remaining = max_new - (seq.shape[1] - ids.shape[1])
+        out = seq if remaining <= 0 else self.model.generate(
+            seq, attention_mask=torch.ones_like(seq), max_new_tokens=remaining,
+            do_sample=False, pad_token_id=self.tok.eos_token_id or 0)
         return self.tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
 
     def close(self):
@@ -339,11 +347,74 @@ def run(model_name: str, layer: int, out_path: str, smoke=False):
     return res
 
 
+# ---- CAPACITY SWEEP (the p16/p17 question, on Qwen): does the list hold to N>=200? ----------------
+# Programmatic facts: nonce place names x attribute templates with per-template answer pools. Answers
+# can repeat across facts, so we score p17-style: SELECT (top-1 key == the queried fact's own entry --
+# collision-proof) and EXPRESS (argmax token == the answer). Shuffled-key null beside every N.
+_SUBJ = [a + b for a in ["Vor", "Zel", "Mar", "Quin", "Dra", "Fen", "Hal", "Bry", "Osk", "Tarn"]
+         for b in ["holm", "wick", "dale", "mont", "stead", "fell", "gate", "moor", "ford", "port"]]
+_TEMPL = [
+    ("The secret color of {s} is", [" blue", " red", " green", " gold", " white", " black", " purple", " silver", " orange", " pink", " gray", " brown"]),
+    ("The sacred number of {s} is", [" seven", " three", " nine", " twelve", " five", " eight", " two", " six", " ten", " four"]),
+    ("The guardian animal of {s} is the", [" fox", " owl", " wolf", " bear", " hawk", " deer", " crow", " hare", " lynx", " boar"]),
+    ("The royal metal of {s} is", [" iron", " copper", " tin", " bronze", " steel", " lead", " zinc", " brass"]),
+    ("The official drink of {s} is", [" tea", " coffee", " milk", " wine", " beer", " water", " juice", " honey"]),
+    ("The signal tree of {s} is the", [" oak", " pine", " birch", " elm", " willow", " maple", " ash", " cedar"]),
+]
+
+
+def make_facts(tok, n: int) -> list[dict]:
+    out, i = [], 0
+    while len(out) < n:
+        tpl, pool = _TEMPL[i % len(_TEMPL)]
+        subj = _SUBJ[(i // len(_TEMPL)) % len(_SUBJ)]
+        ans = pool[i % len(pool)]
+        ids = tok.encode(ans, add_special_tokens=False)
+        if len(ids) == 1:                                      # capacity sweep = single-token answers only
+            out.append({"cue": tpl.format(s=subj), "answer": ans, "ans_ids": ids})
+        i += 1
+    return out
+
+
+def sweep(model_name: str, layer: int, out_path: str, sizes=(10, 25, 50, 100, 200)):
+    mem = SlotMem(model_name, layer)
+    res = {"model": model_name, "layer": layer, "eta_frac": INJECT_FRAC, "sweep": []}
+    eval_cap = 40
+    for N in sizes:
+        facts = make_facts(mem.tok, N)
+        mem.entries = []                                       # fresh store per N (model stays loaded)
+        for f in facts:
+            mem.write(f["cue"], f["answer"], gate=False)       # nonce by construction; gate off for the sweep
+        idxs = list(range(N)) if N <= eval_cap else [int(i * N / eval_cap) for i in range(eval_cap)]
+        sel = expr = 0
+        shuf = [dict(e, key=mem.entries[(k + 1) % N]["key"]) for k, e in enumerate(mem.entries)]
+        null_expr = 0
+        for i in idxs:
+            f = facts[i]
+            r = mem.read(f["cue"])
+            sel += int(r["hit"] == i)                          # SELECT: picked its own entry (collision-proof)
+            expr += int(int(r["dist"].argmax()) == f["ans_ids"][0])   # EXPRESS: answer wins the logits
+            rn = mem.read(f["cue"], entries=shuf)
+            null_expr += int(int(rn["dist"].argmax()) == f["ans_ids"][0])
+        row = {"N": N, "n_eval": len(idxs), "select": round(sel / len(idxs), 3),
+               "express": round(expr / len(idxs), 3), "shuffled_null_express": round(null_expr / len(idxs), 3)}
+        res["sweep"].append(row)
+        print(f"[N={N:>3}] select={row['select']}  express={row['express']}  null={row['shuffled_null_express']}", flush=True)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    json.dump(res, open(out_path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    print(f"saved -> {out_path}", flush=True)
+    mem.close()
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct")
     ap.add_argument("--layer", type=int, default=18)          # ~2/3 depth of 28 (p19: deeper = more meaning)
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--sweep", action="store_true", help="capacity sweep N=10..200 (select/express + null)")
     ap.add_argument("--out", default="research/runs/slotmem_qwen1p5b.json")
     a = ap.parse_args()
-    run(a.model, a.layer, a.out.replace(".json", "_smoke.json") if a.smoke else a.out, smoke=a.smoke)
+    if a.sweep:
+        sweep(a.model, a.layer, a.out.replace(".json", "_sweep.json"))
+    else:
+        run(a.model, a.layer, a.out.replace(".json", "_smoke.json") if a.smoke else a.out, smoke=a.smoke)

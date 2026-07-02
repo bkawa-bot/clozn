@@ -18,7 +18,24 @@ eta·value at the query position (eta = 1.5× the layer's mean residual norm). R
 | Specificity | on-target 4/4, **off-target 0/12** — no spurious recall |
 | Surgical delete | victim → 0, **every other fact bit-identical** |
 | Paraphrase (10 rewordings) | ungated: 9/10 right, **1 confident-wrong-fact** (the p19 disease) → **gated: 9/10 right, 0 wrong, 1 abstain** — the gate converts the exact failure mode into an abstention at zero cost |
-| **Multi-token emission** (new) | single 12/13; **multi 4/7 (57%)** — first-token injection elicits the full answer just over half the time |
+| **Multi-token emission** (new) | single 12/13; multi 4/7 with first-token-only → **5/7 (71%) with a two-token VALUE SCHEDULE** (token-1 direction at decode step 1, token-2 at step 2, then clean) |
+
+## Capacity sweep — the p16/p17 question, answered on Qwen
+
+Programmatic nonce facts (place-name × attribute templates), scored p17-style (SELECT = picked its own
+entry, collision-proof; EXPRESS = answer wins the logits), shuffled-key null beside every N:
+
+| N | select | express | shuffled null |
+|---|---|---|---|
+| 10 | 1.00 | 1.00 | 0.00 |
+| 25 | 1.00 | 0.96 | 0.00 |
+| 50 | 1.00 | 0.95 | 0.00 |
+| 100 | 1.00 | 0.95 | 0.00 |
+| **200** | **1.00** | **0.95** | 0.00 |
+
+**Flat to N=200 — no interference regime at all in range.** GPT-2 held ~82% express at N≥200; Qwen
+(centered keys, L18) holds **95%, perfectly selected**. The ~5% express gap is per-token forcing
+difficulty (flat, not decaying), not capacity. The explicit list is, in this regime, a lossless store. |
 
 ## The new finding the port itself produced
 
@@ -32,12 +49,12 @@ weak here; 1.5× residual norm is Qwen's working point — 0.6× lifted P(ans) 1
 
 ## What this rung does NOT show (caveats loud)
 
-One model, one seed, one layer (18; not swept), 20 nonce facts with distinctive single/short answers,
-next-token + short-greedy metrics. Multi-token at 57% is a real partial: the value only promotes token
-one; a two-token value scheme or per-step re-injection is the obvious next lever. No capacity sweep on
-Qwen yet (p17 held to N≥200 on GPT-2; untested here). The write gate's threshold (3.0 nats) is
-hand-set, validated only against 4 known facts. Persistence/serving (a `~/.clozn` store + studio
-surface) is unbuilt — this is the mechanism proven, not the product wired.
+One model, one seed, one layer (18; not swept), next-token + short-greedy metrics; sweep facts are
+templated (six attribute families — diverse free-text cues untested at scale, though the 20-fact bank's
+0.90 covers hand-varied phrasing). Multi-token at 71% (two-token schedule) is still a partial — answers
+past two tokens rely on clean continuation. The write gate's threshold (3.0 nats) is hand-set,
+validated only against 4 known facts. Persistence/serving (a `~/.clozn` store + studio surface) is
+unbuilt — this is the mechanism proven, not the product wired.
 
 ## Why it matters
 
