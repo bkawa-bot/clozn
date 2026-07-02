@@ -155,7 +155,16 @@
       ".ri-dial .dnote{margin-top:8px;font-size:11.5px;line-height:1.45;color:var(--soft,#5a6072)}" +
       ".ri-dial .dnote.ok{color:#2f8a54}" +
       ".ri-dial .dnote.err{color:#a9481f}" +
-      ".ri-dial.dismissed{border-color:var(--line,#e3e6ef);background:rgba(120,140,190,.06)}";
+      ".ri-dial.dismissed{border-color:var(--line,#e3e6ef);background:rgba(120,140,190,.06)}" +
+      // --- receipts: the measured-delta strip under a compare + the influence-column prove-it block ---
+      ".ri-rcpt{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 8px}" +
+      ".ri-rcpt .m{font-size:11px;border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:2px 8px;color:var(--soft,#5a6072);background:#fff}" +
+      ".ri-rcpt .m b{color:var(--ink,#1b1f2a);font-weight:640}" +
+      ".ri-rcpt .m.up b{color:#2f8a54}" +
+      ".ri-rcpt .m.down b{color:#c0603a}" +
+      ".ri-rcpt-note{font-size:11px;color:var(--faint,#9aa0b3);margin:0 0 8px;line-height:1.4}" +
+      ".ri-prove-h{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint,#9aa0b3);margin:14px 0 6px}" +
+      ".ri-prove-sub{font-size:11.5px;color:var(--soft,#5a6072);line-height:1.45;margin-bottom:6px}";
     document.head.appendChild(s);
   }
 
@@ -278,6 +287,17 @@
     h += '<div class="ri-kv" style="margin-top:12px"><span class="k">behavior dials</span><span>' + keys.length + "</span></div>";
     if (keys.length) h += "<div>" + keys.map(function (k) { return '<span class="ri-dial">' + esc(k) + " " + (+dials[k]).toFixed(2) + "</span>"; }).join("") + "</div>";
     else h += '<div class="sub">no dials active</div>';
+    // --- RECEIPTS: don't just LIST the influences -- PROVE them. Each button re-runs this exact prompt
+    //     with one influence removed (greedy, so the delta is attributable), and renders the measured
+    //     difference. Measured, never self-reported: the model cannot reliably narrate what its own
+    //     memory/dials do (the self-audit findings), so the ablation is the only honest receipt.
+    if (cards.length || keys.length) {
+      h += '<div class="ri-prove-h">Receipts — prove it</div>';
+      h += '<div class="ri-prove-sub">Re-runs this prompt with one influence off (greedy). The difference <i>is</i> that influence’s contribution — measured, not self-reported.</div>';
+      if (cards.length) h += "<button class=\"ri-act\" data-receipt='{\"memory_off\":true,\"greedy\":true}'>Memory receipt — what did the memory change?</button>";
+      if (keys.length) h += "<button class=\"ri-act\" data-receipt='{\"behavior_off\":true,\"greedy\":true}'>Dials receipt — what did the dials change?</button>";
+      h += '<div class="ri-out" id="ri-receipt-out"></div>';
+    }
     return h;
   }
 
@@ -355,6 +375,45 @@
     });
   }
 
+  // --- the RECEIPT: transparent, client-computed deltas between original and replayed ----------------
+  // Three honest numbers (no model judges anything): word count, words/sentence, and % of wording changed
+  // (1 - Jaccard overlap of word sets). Every replay path gets this strip for free via renderCompare.
+  function wordsOf(s) { return String(s || "").toLowerCase().match(/[a-z0-9']+/g) || []; }
+  function sentCount(s) { var m = String(s || "").split(/[.!?]+/).filter(function (x) { return x.trim(); }); return Math.max(1, m.length); }
+  function receiptMetrics(orig, repl) {
+    var ow = wordsOf(orig), rw = wordsOf(repl);
+    var oset = {}, rset = {}, inter = 0, uni = 0, k;
+    ow.forEach(function (w) { oset[w] = 1; });
+    rw.forEach(function (w) { rset[w] = 1; });
+    for (k in oset) { uni++; if (rset[k]) inter++; }
+    for (k in rset) { if (!oset[k]) uni++; }
+    return {
+      words: [ow.length, rw.length],
+      wps: [Math.round(ow.length / sentCount(orig) * 10) / 10, Math.round(rw.length / sentCount(repl) * 10) / 10],
+      changed: uni ? Math.round((1 - inter / uni) * 100) : 0
+    };
+  }
+  function receiptStrip(orig, repl, changes) {
+    var m = receiptMetrics(orig, repl);
+    var d = m.words[1] - m.words[0];
+    var chip = function (label, from, to, delta) {
+      var cls = delta === 0 ? "" : (delta < 0 ? " down" : " up");
+      var arrow = delta === 0 ? "±0" : (delta > 0 ? "+" + delta : String(delta));
+      return '<span class="m' + cls + '">' + label + " <b>" + from + " → " + to + "</b> (" + arrow + ")</span>";
+    };
+    var h = '<div class="ri-rcpt">' +
+      chip("words", m.words[0], m.words[1], d) +
+      chip("words/sentence", m.wps[0], m.wps[1], Math.round((m.wps[1] - m.wps[0]) * 10) / 10) +
+      '<span class="m">wording changed <b>' + m.changed + "%</b></span>" +
+      "</div>";
+    var greedy = changes && changes.greedy;
+    h += '<div class="ri-rcpt-note">' + (greedy
+      ? "Measured by ablation, greedy decode — the difference above is attributable to the change, not sampling."
+      : "Sampled replay — differences include sampling noise; re-run to confirm, or use a receipt button (greedy).") +
+      "</div>";
+    return h;
+  }
+
   // Render the Original vs Replayed comparison + change summary + a Save-Fix affordance into `out`.
   // `child` is the child run returned by /runs/<id>/replay (its changes_applied / behavior are authoritative).
   function renderCompare(out, run, child) {
@@ -363,6 +422,7 @@
     var repl = child.response != null && child.response !== "" ? child.response : (child.response_summary || "(no reply)");
     var html =
       '<div class="ri-cmp-sum">Changed: <b>' + summarizeChanges(changes, child) + "</b></div>" +
+      receiptStrip(orig, repl, changes) +
       '<div class="ri-cmp">' +
         '<div class="side"><div class="lbl">Original</div><div class="body">' + esc(orig) + "</div></div>" +
         '<div class="side now"><div class="lbl">Replayed</div><div class="body">' + esc(repl) + "</div></div>" +
@@ -550,6 +610,19 @@
       btn.onclick = function () {
         var out = root.querySelector("#ri-out"), changes = {};
         try { changes = JSON.parse(btn.dataset.rep || "{}"); } catch (e) { changes = {}; }
+        doReplay(out, run, changes, btn);
+      };
+    });
+  }
+
+  // The influence-column receipt buttons: same replay path, greedy, rendered into the influence column so
+  // the proof sits next to the claim it proves.
+  function wireReceipts(root, run) {
+    var out = root.querySelector("#ri-receipt-out");
+    root.querySelectorAll(".ri-act[data-receipt]").forEach(function (btn) {
+      btn.onclick = function () {
+        var changes = {};
+        try { changes = JSON.parse(btn.dataset.receipt || "{}"); } catch (e) { changes = {}; }
         doReplay(out, run, changes, btn);
       };
     });
@@ -751,6 +824,7 @@
       '<div class="ri-cols"><section class="ri-col">' + transcriptCol(run) + '</section><section class="ri-col">' + influenceCol(run) + '</section><section class="ri-col">' + repairCol(run) + "</section></div>";
     wireTimeline(root, run);
     wireRepair(root, run);
+    wireReceipts(root, run);
     wireQuickRepair(root, run);
     wirePropose(root, run, ctx);
   }

@@ -122,7 +122,9 @@ def replay(run: dict, changes: dict, sub) -> dict | None:
         notes = _apply_changes(changes, sub)
         eff_dials = _effective_dials(sub)
         try:
-            reply = chat(messages, max_new=256, sample=True)
+            # greedy:true (the receipts path) decodes deterministically, so the original-vs-replayed
+            # difference is attributable to the CHANGE, not to sampling dice. Default stays sampled.
+            reply = chat(messages, max_new=256, sample=not bool(changes.get("greedy")))
         finally:
             # restore EXACTLY -- and never persist the temporary dials (no save_state here).
             if steer is not None:
