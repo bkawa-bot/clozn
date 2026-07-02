@@ -71,6 +71,61 @@ routing improves 14→18, then verbatim control dies by 22.
 (Eyeball note, applies to all layers: emission's substring scoring counts "rosemary…" as recalling
 "rose" — one visible leniency in the samples; the exact-argmax recall metric is unaffected.)
 
+## 7B (Qwen2.5-7B-Instruct, 4-bit nf4 — the studio's real config): the mechanism transfers, scale does NOT improve it
+
+Rig extension: "7b" in the model name → the studio's exact quantized load (nf4, bf16 compute,
+double-quant, `device_map={"":0}` — `voice_middle.Rig`'s pattern; never `.to()` a quantized model).
+`W_U = lm_head.weight` unchanged (untied at 7B; bnb leaves lm_head unquantized). Same layer 18/28,
+same INJECT_FRAC 1.5. Runs: `runs/slotmem_qwen7b{,_sweep}.json`.
+
+| phase | 1.5B bf16 L18 | 7B nf4 L18 |
+|---|---|---|
+| baseline floor (top1 / P(ans)) | 0.00 / 0.005 | 0.00 / 0.012 |
+| write gate: known facts skipped | 4/4 | 4/4 |
+| write gate: nonce written | 20/20 | **19/20** — refuses "secret color of Zorbland → blue" at 1.62 nats (it can GUESS it; next-lowest nonce 3.70) |
+| recall top1 / P(ans) | **0.90** / 0.71 | 0.80 / 0.68 |
+| shuffled-key null | 0.00 | 0.00 |
+| specificity on / off | 1.00 / 0.00 | 0.75 / 0.00 |
+| surgical delete | victim 0, bystanders bit-identical | victim 0, bystanders bit-identical |
+| paraphrase ungated → gated | 9R/1WF → 9/0/1 | 9R/1WF → **9/0/1 (identical profile)** |
+| emission single / multi | **12/13** / 5/7 | 10/13 / **6/7** |
+| battery wall-time | 12s | 47s |
+
+Capacity sweep at 7B (same templated facts, SELECT/EXPRESS + shuffled null):
+
+| N | select | express | null |   | 1.5B express (ref) |
+|---|---|---|---|---|---|
+| 10 | 1.00 | 0.90 | 0.00 | | 1.00 |
+| 25 | 1.00 | 0.88 | 0.00 | | 0.96 |
+| 50 | 1.00 | 0.875 | 0.00 | | 0.95 |
+| 100 | 1.00 | 0.90 | 0.00 | | 0.95 |
+| 200 | 1.00 | 0.925 | 0.00 | | 0.95 |
+
+**The honest comparison.** (1) **Scale does not improve the mechanism — it slightly hurts the
+verbatim half.** Recall 0.80 vs 0.90, express ~0.89 vs 0.95, specificity-on 0.75 vs 1.00: the
+bigger model's stronger prior fights the injected direction (its emission misses are *coherent
+alternatives* — "the small village of Llan…" — not degeneration). A dose probe at 7B L18 (0.5→0.20,
+0.75→0.35, 1.0→0.70, **1.25→0.85**, 1.5→0.80, 2.0→0.60, 2.5→0.45) shows frac 1.5 sits within one
+fact of the 7B optimum, so this is not miscalibration — the 1.5× rule transfers across *scale at
+the same relative depth*, though not across *layers* (see layer sweep). (2) **What scale buys:**
+routing stays perfect (select 1.00 to N=200, all nulls 0.00), continuation off the first token is
+better (multi 6/7 vs 5/7), the gate profile is identical (9/0/1), and the write gate gets
+*smarter*: 7B refuses a nonce fact it can guess — the "already known" boundary moves with model
+capability, exactly the Titans-style policy intent. (3) **No interference regime at either scale**
+— express flat to N=200 on both; the explicit list stays a lossless-ish store, ~5pt below 1.5B
+throughout.
+
+That gate refusal exposed a harness bug the 1.5B runs never hit: phases 3–4 indexed
+`mem.entries[j]` assuming bank↔entries alignment, which a refused write silently shifts (first 7B
+smoke showed phantom specificity 0/4 + non-surgical deletes). Fixed: refused bank facts are
+force-written (`nonce_forced`, reported), and the store is reset after the known-facts gate test so
+a slipped known fact can't pollute it. 1.5B numbers are unchanged by the fix (0 forced there).
+
+Caveat louder than the win: **7B here means 7B-nf4.** Quantization and scale are confounded (a
+bf16 7B doesn't fit the 16GB card), so "scale slightly hurts verbatim forcing" could partly be
+quantization noise; the sweep express gap (~5pt) is a few eval items at n=40/N. One seed, one
+family, one relative depth.
+
 ## The new finding the port itself produced
 
 **Qwen's keys are anisotropic where GPT-2's weren't.** Raw last-token keys had cross-similarity
@@ -83,7 +138,8 @@ weak here; 1.5× residual norm is Qwen's working point — 0.6× lifted P(ans) 1
 
 ## What this rung does NOT show (caveats loud)
 
-One model, one seed; layers now swept at 14/18/22 on 1.5B (18 confirmed default; the battery rows
+One family, one seed (1.5B bf16 + 7B nf4 — scale and quantization confounded at 7B); layers now
+swept at 14/18/22 on 1.5B (18 confirmed default; the battery rows
 share one eta-frac, only the L22 probe re-dosed), next-token + short-greedy metrics; sweep facts are
 templated (six attribute families — diverse free-text cues untested at scale, though the 20-fact bank's
 0.90 covers hand-varied phrasing). Multi-token at 71% (two-token schedule) is still a partial — answers

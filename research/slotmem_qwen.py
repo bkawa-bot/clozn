@@ -83,9 +83,17 @@ class SlotMem:
     def __init__(self, model_name: str, layer: int):
         path = os.path.join(os.path.expanduser("~"), "hf_models", model_name.split("/")[-1])
         path = path if os.path.isfile(os.path.join(path, "config.json")) else model_name
-        print(f"[load] {model_name} (bf16) layer={layer}", flush=True)
+        four_bit = "7b" in model_name.lower() and DEV == "cuda"   # 7B needs nf4 on a 16GB card (the
+        print(f"[load] {model_name} ({'4-bit nf4' if four_bit else 'bf16'}) layer={layer}", flush=True)
         self.tok = AutoTokenizer.from_pretrained(path)
-        self.model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16).to(DEV).eval()
+        if four_bit:                                              # studio's config -- voice_middle.Rig)
+            from transformers import BitsAndBytesConfig
+            bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                     bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
+            self.model = AutoModelForCausalLM.from_pretrained(   # never .to(DEV) a quantized model
+                path, quantization_config=bnb, device_map={"": 0}).eval()
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16).to(DEV).eval()
         for p in self.model.parameters():
             p.requires_grad_(False)
         self.layer = layer
@@ -252,19 +260,24 @@ def run(model_name: str, layer: int, out_path: str, smoke=False):
           f"p_ans={res['phases']['baseline']['p_ans']}", flush=True)
 
     # ---- phase 1: SURPRISE-GATED WRITES ------------------------------------------------------------
-    wlog = {"written": 0, "skipped_known": 0, "details": []}
+    wlog = {"written": 0, "skipped_known": 0, "forced": 0, "details": []}
     for cue, ans in KNOWN:
         r = mem.write(cue, ans, gate=True)
         wlog["details"].append({"cue": cue, **r, "expected": "skip"})
         wlog["skipped_known"] += int(not r["written"])
+    mem.entries = []       # phase 1 is a gate TEST -- a known fact that slipped past must not pollute the store
     for f in bank:
         r = mem.write(f["cue"], f["answer"], gate=True)
         wlog["details"].append({"cue": f["cue"], **r, "expected": "write"})
         wlog["written"] += int(r["written"])
+        if not r["written"]:                               # a nonce fact the model can GUESS (7B: "secret
+            mem.write(f["cue"], f["answer"], gate=False)   # color... blue" at 1.6 nats) -- store it anyway
+            wlog["forced"] += 1                            # so phases 2-6 stay bank<->entries ALIGNED
     res["phases"]["write_gate"] = {"nonce_written": wlog["written"], "nonce_total": len(bank),
+                                   "nonce_forced": wlog["forced"],
                                    "known_skipped": wlog["skipped_known"], "known_total": len(KNOWN),
                                    "details": wlog["details"]}
-    print(f"[1 write-gate] nonce written {wlog['written']}/{len(bank)}; "
+    print(f"[1 write-gate] nonce written {wlog['written']}/{len(bank)} (forced {wlog['forced']}); "
           f"known skipped {wlog['skipped_known']}/{len(KNOWN)}", flush=True)
     mem.calibrate_gate()
 
