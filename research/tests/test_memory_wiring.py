@@ -23,6 +23,7 @@ sys.path.insert(0, RESEARCH)
 
 import clozn_server as cs      # noqa: E402
 import memory_cards            # noqa: E402
+import memory_mode             # noqa: E402
 import runlog                  # noqa: E402
 
 
@@ -67,9 +68,14 @@ def _settle(timeout=5.0):
 
 @pytest.fixture()
 def iso(tmp_path, monkeypatch):
-    """Point the card store + run log at tmp files so tests never touch ~/.clozn."""
+    """Point the card store + run log at tmp files so tests never touch ~/.clozn, and PIN the memory
+    mode to internalized -- this whole suite asserts the prefix path (consolidate-on-change), which is
+    exactly what the mode swap keeps untouched. Prompt-mode behavior has its own suite."""
     monkeypatch.setattr(memory_cards, "CARDS_PATH", str(tmp_path / "cards.json"))
     monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(memory_mode, "LEGACY_PREFIX_PATHS", [str(tmp_path / "no_such.pt")])
+    assert memory_mode.set_mode("internalized")
     return tmp_path
 
 

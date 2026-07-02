@@ -28,6 +28,7 @@ sys.path.insert(0, RESEARCH)
 
 import clozn_server as cs      # noqa: E402
 import memory_cards            # noqa: E402
+import memory_mode             # noqa: E402
 import runlog                  # noqa: E402
 
 
@@ -75,9 +76,13 @@ def _substrate(mem):
 @pytest.fixture()
 def iso(tmp_path, monkeypatch):
     """Isolate the card store + run log AND reset the module-level retrain singletons so tests don't leak
-    an in-flight flag / a held lock into each other."""
+    an in-flight flag / a held lock into each other. Memory mode is PINNED to internalized: async retrain
+    IS the internalized path (prompt mode short-circuits it entirely -- covered in test_memory_mode)."""
     monkeypatch.setattr(memory_cards, "CARDS_PATH", str(tmp_path / "cards.json"))
     monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(memory_mode, "LEGACY_PREFIX_PATHS", [str(tmp_path / "no_such.pt")])
+    assert memory_mode.set_mode("internalized")
     # fresh retrain state per test (the singletons are process-global)
     with cs._RETRAIN_META:
         cs._RETRAIN.update(active=False, card_id=None, action=None, started_at=None, error=None)

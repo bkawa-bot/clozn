@@ -16,6 +16,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # research/ on path
+import memory_mode  # noqa: E402
 import replay  # noqa: E402
 import runlog  # noqa: E402
 
@@ -77,7 +78,13 @@ RUN = {"id": "run_parent0", "model": "clozn-qwen", "substrate": "QwenSubstrate",
 
 
 @pytest.fixture
-def store(tmp_path):
+def store(tmp_path, monkeypatch):
+    """Isolated run log + memory mode PINNED to internalized: this suite asserts the prefix-era replay
+    semantics (whole-memory suppression; per-card ids an honest "not applied" note), which the mode swap
+    keeps intact. Prompt-mode replay (REAL per-card ablation) is covered in test_memory_mode."""
+    monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(memory_mode, "LEGACY_PREFIX_PATHS", [str(tmp_path / "no_such.pt")])
+    assert memory_mode.set_mode("internalized")
     original = runlog.RUNS_DIR
     runlog.RUNS_DIR = str(tmp_path / "runs")
     try:

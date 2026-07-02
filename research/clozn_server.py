@@ -125,6 +125,90 @@ def _dial_suggestion(text: str):
         return None
 
 
+# ------- memory MODE: prompt-carried cards vs the internalized prefix (MEMORY_MODE_SWAP_SPEC) ------
+# mode "prompt" (the fresh-install default): the ACTIVE card texts are compiled into ONE system block
+# (memory_mode.compile_prompt_block -- verbatim the sys_rule wording the prefix trains toward) and
+# prepended to the chat, topic-gated PER TURN; generation runs with use_prefix=False. Card mutations
+# skip consolidate()/_TRAIN_LOCK entirely (instant). mode "internalized": today's prefix path, exactly
+# as before. An existing trained prefix keeps "internalized" until the user toggles (memory_mode.py).
+
+PROMPT_GATE_MIN = 0.05     # gate below this -> the block is OMITTED for the turn. Prompt mode controls
+                           # over-bleed by omission (binary), not by the prefix's continuous scaling.
+
+
+def _memory_mode():
+    """The active memory mode ("prompt" | "internalized"). Fail-safe: any hiccup reading the setting
+    resolves to "internalized" -- the long-standing prefix behavior -- so a broken settings file can
+    never silently swap the mechanism under a live personality."""
+    try:
+        import memory_mode
+        return memory_mode.get_mode()
+    except Exception:
+        return "internalized"
+
+
+def _last_user(messages):
+    """The last user turn's content ('' if none) -- the topic-gate input, same as the prefix path."""
+    return next((m.get("content", "") for m in reversed(messages or []) if m.get("role") == "user"), "")
+
+
+def _prompt_gate(last_user, texts):
+    """Topic-relevance gate for the prompt-mode block -- the SAME signal the prefix path scales by
+    (topic_gate.scalar over the active texts). 1.0 (no gating) when the embedder is unavailable."""
+    try:
+        from topic_gate import get_gate
+        return float(get_gate().scalar(last_user, list(texts)))
+    except Exception:
+        return 1.0
+
+
+def _prompt_mem_cards(mem, exclude_ids=()):
+    """The ACTIVE cards ({id, text}) that feed the prompt block, minus exclude_ids (replay's REAL
+    per-card ablation). Reads the card store directly (memory_mode.active_cards) -- in prompt mode the
+    cards ARE the memory (m.rules is bookkeeping that can lag right after boot). Falls back to
+    mem.rules (id-less) only if the store module is unavailable, so a broken store degrades to the old
+    rule list rather than to amnesia."""
+    import memory_mode
+    cards = memory_mode.active_cards(exclude_ids)
+    if cards is not None:
+        return cards
+    return [{"id": None, "text": t} for t in (getattr(mem, "rules", []) or []) if t]
+
+
+def _prompt_block_for(mem, last_user, strength=None):
+    """Prompt-mode injection decision for THIS turn -> (block_text | None, applied_cards, gate).
+
+    None == omit the block entirely: no active cards, strength == 0 (the dial maps to on/off in prompt
+    mode -- 0 never injects, >0 injects when gated in), or the topic gate is ~0 (off-topic turn).
+    applied_cards is [] whenever the block is omitted. Honors mem._exclude_card_ids (set temporarily
+    by replay.py for per-card receipts). `strength` overrides mem.memory_strength (the pure-engine
+    path reads it from disk); `mem` may be None on that path -- every read of it is defensive."""
+    cards = _prompt_mem_cards(mem, getattr(mem, "_exclude_card_ids", None) or ())
+    texts = [c["text"] for c in cards]
+    s = float(strength if strength is not None else getattr(mem, "memory_strength", 1.0))
+    if not texts or s <= 0.0:
+        return None, [], 0.0
+    g = _prompt_gate(last_user, texts)
+    if g < PROMPT_GATE_MIN:
+        return None, [], g
+    import memory_mode
+    return memory_mode.compile_prompt_block(texts), cards, g
+
+
+def _inject_block(messages, block):
+    """`messages` with the memory block folded in as system context (a copy -- never mutates the
+    caller's list). Appends to an existing system message (the client's own instructions keep first
+    position) or prepends a new one; a None/empty block returns the messages unchanged."""
+    if not block:
+        return list(messages)
+    msgs = [dict(m) for m in messages]
+    for m in msgs:
+        if m.get("role") == "system":
+            m["content"] = (str(m.get("content") or "") + "\n\n" + block).strip()
+            return msgs
+    return [{"role": "system", "content": block}] + msgs
+
+
 def _mem_migrate(m):
     """Seed the card store from a memory object's legacy rule-strings, ONCE. migrate_from_rules is a
     no-op when the store already has cards, and it creates them as ACTIVE -- the prefix is already trained
@@ -159,20 +243,23 @@ def _runs_for_card(card_id):
         return []
 
 
-def _mem_sync_rules(m, reconsolidate=True):
+def _mem_sync_rules(m, reconsolidate=True, force=False):
     """Make m.rules == the active-card texts, then rebuild the prefix ONLY if the active set changed.
 
     This is the one place the prefix can move. If the active texts are identical to what m.rules already
     holds, we leave the prefix completely untouched (the expensive, working artifact is preserved). When
     the set changed and reconsolidate is on, we retrain from the active texts (SLOW -- expected on
     approve/reject/disable/edit). If the active set became EMPTY (e.g. the last card was disabled), we
-    reset() so the now-unused prefix stops biting -- reset() is zero-arg on both memory backends."""
+    reset() so the now-unused prefix stops biting -- reset() is zero-arg on both memory backends.
+    `force` retrains even when m.rules already matches the store -- used when toggling BACK to
+    internalized mode, where the rules are synced but the PREFIX may be stale (prompt-mode card edits
+    never consolidate)."""
     import memory_cards
     new_rules = memory_cards.active_texts()
     changed = list(getattr(m, "rules", []) or []) != list(new_rules)
     m.rules = list(new_rules)
     result = None
-    if changed and reconsolidate:
+    if (changed or force) and reconsolidate:
         if new_rules:
             result = m.consolidate(list(new_rules))
         else:                                    # nothing active anymore -> drop the prefix entirely
@@ -208,6 +295,14 @@ def _retrain_status():
         return dict(_RETRAIN)
 
 
+def _retrain_status_mode():
+    """The retrain signal the UI polls, MODE-aware: prompt mode never retrains, so it reports a constant
+    idle ({active: false, mode: "prompt"} per the swap spec); internalized reports the live flag."""
+    if _memory_mode() == "prompt":
+        return {"active": False, "mode": "prompt"}
+    return dict(_retrain_status(), mode="internalized")
+
+
 def _retrain_in_flight():
     with _RETRAIN_META:
         return bool(_RETRAIN["active"])
@@ -225,17 +320,27 @@ def _join_retrain(timeout=None):
         _TRAIN_LOCK.release()
 
 
-def _start_retrain(m, action, card_id):
+def _start_retrain(m, action, card_id, force=False):
     """Launch _mem_sync_rules(m) -- the SLOW consolidate() -- on a daemon thread and return immediately.
 
-    Returns {retraining: True} once the thread is running, or {retraining: False} if there's nothing to do
-    (the active set didn't move -- checked synchronously first, so a no-op transition never spins a thread)
-    or a retrain is already in flight (we refuse to stack them, like _ensure_steer refuses a double compute).
-    The worker holds _TRAIN_LOCK for the whole consolidate so chats serialize behind it, and clears _RETRAIN
-    on finish (success OR error) so the UI's poll always terminates."""
+    PROMPT MODE short-circuits the whole machinery: the cards ARE the memory there, so a mutation only
+    syncs m.rules (bookkeeping -- runlog + /state read it) and returns instantly. No consolidate, no
+    _TRAIN_LOCK, no thread, no retrain banner; the trained prefix is left completely untouched (it stays
+    internalized mode's artifact, preserved for a toggle back).
+
+    Internalized: returns {retraining: True} once the thread is running, or {retraining: False} if
+    there's nothing to do (the active set didn't move -- checked synchronously first, so a no-op
+    transition never spins a thread) or a retrain is already in flight (we refuse to stack them, like
+    _ensure_steer refuses a double compute). The worker holds _TRAIN_LOCK for the whole consolidate so
+    chats serialize behind it, and clears _RETRAIN on finish (success OR error) so the UI's poll always
+    terminates. `force` skips the no-op pre-check AND forces the consolidate (the mode-switch catch-up:
+    rules are synced but the prefix is stale)."""
     import memory_cards
+    if _memory_mode() == "prompt":
+        r = _mem_sync_rules(m, reconsolidate=False)          # instant: rules bookkeeping only
+        return {"retraining": False, "changed": r["changed"], "mode": "prompt"}
     # cheap synchronous pre-check: would the active set actually change? if not, do NOT spawn a thread.
-    if list(getattr(m, "rules", []) or []) == list(memory_cards.active_texts()):
+    if not force and list(getattr(m, "rules", []) or []) == list(memory_cards.active_texts()):
         return {"retraining": False, "changed": False}
     with _RETRAIN_META:
         if _RETRAIN["active"]:                        # a retrain is already running -> don't stack a second
@@ -247,7 +352,7 @@ def _start_retrain(m, action, card_id):
         err = None
         try:
             with _TRAIN_LOCK:                         # hold across consolidate() -> chats wait, never race
-                _mem_sync_rules(m, reconsolidate=True)
+                _mem_sync_rules(m, reconsolidate=True, force=force)
         except Exception as e:                        # a failed retrain must still clear the flag
             err = f"{type(e).__name__}: {e}"
         finally:
@@ -275,10 +380,11 @@ class Substrate:
 
         if path == "/memory/cards":             # OBJECTS now (not bare strings) -- the review layer
             return {"cards": memory_cards.list_cards(), "has_prefix": m.prefix is not None,
-                    "retraining": _retrain_status()}   # fold the in-flight signal in (one reload sees it)
+                    "mode": _memory_mode(),     # the UI adapts its copy / hides retrain chrome on this
+                    "retraining": _retrain_status_mode()}   # fold the in-flight signal in (one reload sees it)
 
         if path == "/memory/retrain-status":    # the poll target: is a background consolidate() running?
-            return _retrain_status()
+            return _retrain_status_mode()       # prompt mode: never ({active:false, mode:"prompt"})
 
         if path == "/memory/add":               # propose a card as PENDING -> does NOT affect the prefix
             text = str(body.get("text", "")).strip()
@@ -321,15 +427,23 @@ class Substrate:
                 card = {**card, "resync": _start_retrain(m, "edit", cid)}
             return card
 
-        if path == "/memory/strength":          # the memory dial: how hard the prefix bites (0 = off, >1 = stronger)
+        if path == "/memory/strength":          # the memory dial. Internalized: scales how hard the prefix
+            # bites (0 = off, >1 = stronger). PROMPT mode: on/off only -- 0 never injects the block, any
+            # >0 injects when the topic gate lets it in (nothing scales continuously; the UI hint says so).
             if "value" in body and hasattr(m, "memory_strength"):
                 m.memory_strength = max(0.0, min(2.0, float(body["value"])))
                 if hasattr(m, "save"):
                     try:
-                        m.save()
+                        m.save()                             # persists inside the .pt (needs a prefix)
                     except Exception:
                         pass
-            return {"strength": float(getattr(m, "memory_strength", 1.0)), "has_prefix": m.prefix is not None}
+                try:                                         # mirror to settings so the dial survives a
+                    import memory_mode                       # restart in prompt mode (no .pt to carry it)
+                    memory_mode.set_setting("memory_strength", float(m.memory_strength))
+                except Exception:
+                    pass
+            return {"strength": float(getattr(m, "memory_strength", 1.0)), "has_prefix": m.prefix is not None,
+                    "mode": _memory_mode()}
 
         if path == "/memory/gatecheck":         # DEBUG (live calibration): the topic-relevance gate for a prompt
             # Exposes both raw signals + the final gate + per-rule cosines for the active rules, so the bands
@@ -343,8 +457,9 @@ class Substrate:
             except Exception as e:
                 dbg = {"gate": 1.0, "topic": 0.0, "openness": 0.0, "relevance": {},
                        "ok": False, "error": f"{type(e).__name__}: {e}"}
-            # `gate` here is the RAW topic gate (relevance only); the applied scale is memory_strength x gate.
-            return {"prompt": prompt, "rules": rules,
+            # `gate` here is the RAW topic gate (relevance only); the applied scale is memory_strength x
+            # gate (internalized) or include-iff gate >= PROMPT_GATE_MIN (prompt mode) -- mode says which.
+            return {"prompt": prompt, "rules": rules, "mode": _memory_mode(),
                     "strength": float(getattr(m, "memory_strength", 1.0)), **dbg}
         return None
 
@@ -449,6 +564,19 @@ class QwenSubstrate(Substrate):
         self._pers_steer = _pers("studio_personality.json")
         self.steer.load_state(self._pers_steer)             # restore the personality dials across restarts
         self.steer.load_custom(_pers(f"studio_custom_{self.name}.json"))    # + any user-defined dials
+        if _memory_mode() == "prompt":
+            # PROMPT MODE boots from the CARD STORE (the prefix isn't applied): adopt the active-card
+            # texts as m.rules right away so /state + runlog bookkeeping don't lag until the first
+            # /memory call. sync_cards never touches the prefix; it also runs the one-time migration.
+            self.memory.sync_cards()
+            self._cards_migrated = True
+            try:                                            # in prompt mode the strength dial persists in
+                import memory_mode                          # settings (the .pt needs a prefix to save; a
+                s = memory_mode.get_setting("memory_strength")            # fresh install has none)
+                if s is not None:
+                    self.memory.memory_strength = max(0.0, min(2.0, float(s)))
+            except Exception:
+                pass
 
     def handle(self, path, body):
         if path == "/think":
@@ -457,8 +585,12 @@ class QwenSubstrate(Substrate):
             return self.brain.concepts_only(str(body.get("text", ""))[:500])
         if path == "/say":
             with _TRAIN_LOCK:                    # studio chat touches the shared model -> wait out a retrain
-                # body["_trace_out"] (optional, server-side only): the handler passes a list to collect the
-                # per-token trace for the Run Inspector; never echoed to the client. Reply is unchanged.
+                # body["_trace_out"] / body["_mem_out"] (optional, server-side only): collectors the handler
+                # passes for the Run Inspector trace + the per-turn memory record; never echoed to the client.
+                if _memory_mode() == "prompt":
+                    return {"reply": self._say_prompt(body["message"], body.get("max_new", 200),
+                                                      trace_out=body.get("_trace_out"),
+                                                      mem_out=body.get("_mem_out"))}
                 return {"reply": self.memory.say(body["message"], body.get("max_new", 200),
                                                  trace_out=body.get("_trace_out"))}
         if path == "/consolidate":               # a manual retrain -> the same shared-model lock as card retrains
@@ -466,9 +598,13 @@ class QwenSubstrate(Substrate):
                 return self.memory.consolidate(body.get("rules"), body.get("steps", 120), body.get("lr", 0.012),
                                                body.get("n_probe", 8), body.get("max_norm", 14.0))
         if path == "/whatlearned":
-            return {"report": self.memory.what_learned()}
+            if _memory_mode() == "prompt":
+                return self._whatlearned_prompt()
+            return {"report": self.memory.what_learned(), "mode": "internalized"}
         if path == "/check":                     # generates on the shared model -> wait out a retrain
             with _TRAIN_LOCK:
+                if _memory_mode() == "prompt":
+                    return self._check_prompt(body["prompt"], body.get("max_new", 200))
                 return self.memory.check(body["prompt"], body.get("max_new", 200))
         if path == "/reset":
             with _TRAIN_LOCK:                     # mutates the prefix/model state -> don't race a retrain
@@ -480,21 +616,94 @@ class QwenSubstrate(Substrate):
             return self._steer(path, body)
         return None
 
+    # ---- prompt-mode twins of the SelfTeach conversation endpoints ---------------------------------
+    # Same surfaces, same shapes -- but memory rides as the gated system block and the model runs
+    # prefix-free (use_prefix=False). SelfTeach itself is untouched: it stays the internalized-mode
+    # engine and the research instrument (the self-audit experiments REQUIRE a non-text memory).
+
+    def _say_prompt(self, message, max_new=200, trace_out=None, mem_out=None):
+        """One /say turn in prompt mode: history grows exactly as SelfTeach.say, but the memory is the
+        compiled block (topic-gated on THIS user turn). Runs under the caller's _TRAIN_LOCK; takes
+        m.lock like say() so concurrent history appends can't interleave."""
+        m = self.memory
+        with m.lock:
+            m.history.append({"role": "user", "content": message})
+            block, applied, gate = _prompt_block_for(m, message)
+            if mem_out is not None:
+                mem_out.update(mode="prompt", applied=applied, gate=gate)
+            reply = m._generate(_inject_block(m.history, block), use_prefix=False,
+                                max_new=max_new, sample=True, trace_out=trace_out)
+            m.history.append({"role": "assistant", "content": reply})
+            return reply
+
+    def _whatlearned_prompt(self):
+        """Prompt-mode /whatlearned: ask from a fresh context WITH the block injected, ungated (the
+        self-view shows the full memory, mirroring what_learned's apply_gate=False). Honesty: in this
+        mode the model is READING its cards out of context, not introspecting a trained prefix -- the
+        `mode` field is there so the UI labels it as reading, not self-knowledge."""
+        m = self.memory
+        cards = _prompt_mem_cards(m)
+        if not cards:
+            return {"report": "(no active memory cards yet -- add or approve one on the Memory page)",
+                    "mode": "prompt"}
+        import memory_mode
+        block = memory_mode.compile_prompt_block([c["text"] for c in cards])
+        ask = ("What have you picked up about me so far -- my interests, anything I seem to care about, "
+               "and how I like you to respond? List what you know, one item per line.")   # == what_learned's
+        with m.lock:
+            report = m._generate([{"role": "system", "content": block}, {"role": "user", "content": ask}],
+                                 use_prefix=False, max_new=200, sample=False)
+        return {"report": report, "mode": "prompt"}
+
+    def _check_prompt(self, prompt, max_new=200):
+        """Prompt-mode /check, mirroring check()'s response shape: baseline vs block-in-context. The
+        block is binary per turn, so `ungated` == block always in, and `gated` == what a real chat does
+        (identical when the gate lets it in, the plain baseline when the topic gates it out -- greedy
+        decode makes the reuse exact, no second generation needed)."""
+        m = self.memory
+        with m.lock:
+            msgs = [{"role": "user", "content": prompt}]
+            base = m._generate(msgs, use_prefix=False, max_new=max_new, sample=False)
+            cards = _prompt_mem_cards(m)
+            if not cards:
+                return {"prompt": prompt, "gate": None, "baseline": base, "mode": "prompt",
+                        "ungated": "(no active memory cards)", "gated": "(no active memory cards)"}
+            texts = [c["text"] for c in cards]
+            import memory_mode
+            block = memory_mode.compile_prompt_block(texts)
+            g = round(_prompt_gate(prompt, texts), 3)
+            ungated = m._generate(_inject_block(msgs, block), use_prefix=False, max_new=max_new, sample=False)
+            gated = ungated if g >= PROMPT_GATE_MIN else base
+            return {"prompt": prompt, "gate": g, "baseline": base, "ungated": ungated, "gated": gated,
+                    "mode": "prompt"}
+
     def _gen(self, prompt):                     # AR generate for the /steer/check A/B
         return self.steer.generate(prompt, 90)
 
-    def chat(self, messages, max_new=256, sample=True, trace_out=None):
-        """One stateless chat completion with the WHOLE tunable self applied: the consolidated memory
-        prefix (learned + added traits) AND the active tone-steering sliders, both on the shared model.
-        This is what the OpenAI-compatible endpoint serves -- normal chat on the surface, legible and
-        tunable underneath. Serializes behind an in-flight memory retrain (_TRAIN_LOCK) so a reply can't
-        race the shared model+gradients mid-consolidate -- it waits, briefly, rather than corrupting.
-        trace_out (optional list): filled with the per-token trace for the Run Inspector; reply unchanged."""
+    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+        """One stateless chat completion with the WHOLE tunable self applied: the memory (as the trained
+        prefix in internalized mode, as the topic-gated system block in prompt mode) AND the active
+        tone-steering sliders, both on the shared model. This is what the OpenAI-compatible endpoint
+        serves -- normal chat on the surface, legible and tunable underneath. Serializes behind an
+        in-flight memory retrain (_TRAIN_LOCK) so a reply can't race the shared model+gradients
+        mid-consolidate -- it waits, briefly, rather than corrupting.
+        trace_out (optional list): filled with the per-token trace for the Run Inspector; reply unchanged.
+        mem_out (optional dict): prompt mode fills {mode, applied, gate} -- what memory ACTUALLY rode
+        this turn -- so the run log records per-turn application, not just the active set."""
         with _TRAIN_LOCK:                        # wait out any background retrain, then hold for this reply
             if self.steer.strength:             # persisted personality -> ensure vectors are ready (race-safe)
                 self._ensure_steer()
             self.steer.engage()
             try:
+                if _memory_mode() == "prompt":
+                    # PROMPT MODE: the cards ride as the system block (omitted when the topic gate says
+                    # this turn is off-memory); the model runs prefix-free. The block wording is the
+                    # exact distillation target the prefix trains toward, so behavior stays comparable.
+                    block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
+                    if mem_out is not None:
+                        mem_out.update(mode="prompt", applied=applied, gate=gate)
+                    return self.memory._generate(_inject_block(messages, block), use_prefix=False,
+                                                 max_new=max_new, sample=sample, trace_out=trace_out)
                 # gate="auto" -> _generate scales the memory prefix by memory_strength x TOPIC RELEVANCE, so
                 # the OpenAI /v1/chat path gets the same on-topic gating as /say (fixes the always-on
                 # over-bleed). memory_strength 0 still zeroes it; a missing embedder falls back to no-gating.
@@ -509,10 +718,11 @@ class QwenSubstrate(Substrate):
         so the trace is assembled from the recorder's rows + the generated ids, not from the chunks."""
         return list(getattr(self, "_last_stream_trace", []) or [])
 
-    def chat_stream(self, messages, max_new=256):
-        """Streaming chat: yields text chunks as the AR model generates -- memory prefix + tone steering
+    def chat_stream(self, messages, max_new=256, mem_out=None):
+        """Streaming chat: yields text chunks as the AR model generates -- memory + tone steering
         applied -- via a TextIteratorStreamer with generate() in a thread. Local AR is slow, so this is
         the big UX win the diffusion side doesn't need (diffusion is trace-based, not left-to-right).
+        mem_out: as in chat() -- prompt mode records what memory actually rode this turn.
 
         Per-token trace (B3): a pure pass-through RecordingLogitsProcessor rides along and the generated
         ids are captured from generate()'s return -> after the stream ends we assemble the trace into
@@ -525,14 +735,22 @@ class QwenSubstrate(Substrate):
         if self.steer.strength:
             self._ensure_steer()
         m = self.memory
-        e = m._embed(m._chat_ids(messages))
-        if m.prefix is not None:                            # prepend the consolidated memory prefix, scaled by
-            # memory_strength x TOPIC RELEVANCE (same on-topic gating as _generate's gate="auto"; this path
-            # inlines generate() for streaming so it can't call _generate, but the scale must match). A
-            # missing embedder makes rel==1.0 (no gating); memory_strength 0 zeroes the prefix entirely.
-            last_user = next((mm["content"] for mm in reversed(messages) if mm.get("role") == "user"), "")
-            g = m.memory_strength * m._gate(last_user)
-            e = torch.cat([(g * m.prefix.detach()).to(e.dtype)[None], e], 1)
+        if _memory_mode() == "prompt":
+            # PROMPT MODE: the gated system block replaces the prefix concat below -- it simply becomes
+            # part of the chat template, so the streaming mechanics are untouched.
+            block, applied, gate = _prompt_block_for(m, _last_user(messages))
+            if mem_out is not None:
+                mem_out.update(mode="prompt", applied=applied, gate=gate)
+            e = m._embed(m._chat_ids(_inject_block(messages, block)))
+        else:
+            e = m._embed(m._chat_ids(messages))
+            if m.prefix is not None:                        # prepend the consolidated memory prefix, scaled by
+                # memory_strength x TOPIC RELEVANCE (same on-topic gating as _generate's gate="auto"; this path
+                # inlines generate() for streaming so it can't call _generate, but the scale must match). A
+                # missing embedder makes rel==1.0 (no gating); memory_strength 0 zeroes the prefix entirely.
+                last_user = next((mm["content"] for mm in reversed(messages) if mm.get("role") == "user"), "")
+                g = m.memory_strength * m._gate(last_user)
+                e = torch.cat([(g * m.prefix.detach()).to(e.dtype)[None], e], 1)
         att = torch.ones(e.shape[:2], device=e.device, dtype=torch.long)
         streamer = TextIteratorStreamer(m.tok, skip_prompt=False, skip_special_tokens=True)
         kw = dict(inputs_embeds=e, attention_mask=att, max_new_tokens=max_new, do_sample=True,
@@ -608,8 +826,12 @@ class DreamSubstrate(Substrate):
                 self.steer.engage()                        # active dials steer every denoising pass
                 try:
                     ad = self.adapter
-                    if self.dmem.prefix is not None:       # memory present -> inject the prefix into the REAL scheduler
-                        from dream_memory import PrefixAdapter
+                    # In PROMPT mode the trained dream prefix is NOT applied: cards may have been edited
+                    # instantly (no consolidate), so the prefix can be stale vs the cards -- and denoise
+                    # is a raw completion window with no system slot for the block. Memory simply doesn't
+                    # ride here in prompt mode (honest omission beats a stale injection).
+                    if self.dmem.prefix is not None and _memory_mode() != "prompt":
+                        from dream_memory import PrefixAdapter   # memory present -> inject into the REAL scheduler
                         ad = PrefixAdapter(self.adapter, self.dmem.prefix.detach())
                     return self._trace(ad, prompt)         # the cloze_lab scheduler (+ the steering hook)
                 finally:
@@ -726,18 +948,19 @@ def make_handler():
             # per-token trace is assembled after the stream (SUB.last_stream_trace()) -- so the run gets the
             # Run Inspector timeline while the streamed chunks stay byte-identical (B3). runlog.record
             # normalizes the raw step list; on any hiccup last_stream_trace() is [] -> a clean empty trace.
-            t0 = time.time(); acc = []
+            # memout: prompt mode fills what memory ACTUALLY rode this turn (block gated in/out) for the log.
+            t0 = time.time(); acc = []; memout = {}
             try:
                 chunk({"role": "assistant"})
-                for piece in SUB.chat_stream(messages, max_new):
+                for piece in SUB.chat_stream(messages, max_new, mem_out=memout):
                     acc.append(piece); chunk({"content": piece})
                 chunk({}, finish="stop")
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
                 trace = SUB.last_stream_trace() if hasattr(SUB, "last_stream_trace") else None
-                self._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace)
+                self._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace, mem_out=memout)
             except Exception as e:
-                self._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e))
+                self._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e), mem_out=memout)
                 try:
                     self.wfile.write(("data: " + json.dumps({"error": str(e)}) + "\n\n").encode("utf-8"))
                     self.wfile.flush()
@@ -753,21 +976,49 @@ def make_handler():
                     return v
             return ua[:24] or "unknown"
 
-        def _log_run(self, source, messages, response, model, started, error=None, trace=None):
-            """Persist this interaction as an inspectable run (never let logging break the request)."""
+        def _log_run(self, source, messages, response, model, started, error=None, trace=None,
+                     mem_out=None):
+            """Persist this interaction as an inspectable run (never let logging break the request).
+            mem_out (prompt mode): the {applied, gate, strength?} record the generation path filled --
+            what memory ACTUALLY rode this turn (the topic gate may have omitted the block)."""
             try:
                 import runlog
-                # cards_applied == the ACTIVE-card texts. Post-D2, SUB._mem.rules is kept in sync with the
-                # active cards (see _mem_sync_rules), so reading .rules still reports exactly what shaped the
-                # reply. Reading SUB.memory would miss the dream cards -- use _mem (self.memory on qwen,
-                # self.dmem on dream). Only ACTIVE cards feed the prefix, so only those count as applied.
                 mem = getattr(SUB, "_mem", None) if SUB else None
-                if mem is not None:
+                mode = _memory_mode()
+                if mode == "prompt":
+                    # cards_applied == what was INJECTED this turn -- the per-turn honesty prompt mode
+                    # buys (internalized can only report the whole active set). applied_ids ride along so
+                    # the Run Inspector can offer per-card receipts. A path that filled nothing (or
+                    # errored before generating) honestly records an empty application.
+                    mo = mem_out or {}
+                    applied = [c for c in (mo.get("applied") or []) if isinstance(c, dict)]
+                    strength = mo.get("strength",
+                                      getattr(mem, "memory_strength", 1.0) if mem is not None else 1.0)
+                    memd = {"cards_applied": [c.get("text", "") for c in applied],
+                            "applied_ids": [c.get("id") for c in applied],
+                            "strength": float(strength),
+                            "has_prefix": (getattr(mem, "prefix", None) is not None) if mem is not None else False,
+                            "mode": mode, "proposed_cards": []}
+                    if mo.get("gate") is not None:
+                        memd["gate"] = round(float(mo["gate"]), 4)
+                    if applied:                                  # bump exactly the cards that rode this turn
+                        try:
+                            import memory_cards
+                            for c in applied:
+                                if c.get("id"):
+                                    memory_cards.bump_usage(c["id"])
+                        except Exception:
+                            pass
+                elif mem is not None:
+                    # INTERNALIZED: cards_applied == the ACTIVE-card texts. Post-D2, SUB._mem.rules is kept
+                    # in sync with the active cards (see _mem_sync_rules), so reading .rules still reports
+                    # exactly what shaped the reply. Reading SUB.memory would miss the dream cards -- use
+                    # _mem (self.memory on qwen, self.dmem on dream). Only ACTIVE cards feed the prefix.
                     cards = getattr(mem, "rules", None) or getattr(mem, "cards", None) or []
                     memd = {"cards_applied": list(cards),
                             "strength": float(getattr(mem, "memory_strength", 1.0)),
                             "has_prefix": getattr(mem, "prefix", None) is not None,
-                            "proposed_cards": []}
+                            "mode": mode, "proposed_cards": []}
                     if cards:                                    # record that the active cards influenced a run
                         try:
                             import memory_cards
@@ -776,7 +1027,7 @@ def make_handler():
                         except Exception:
                             pass
                 else:
-                    memd = {}
+                    memd = {"mode": mode}                        # runlog records the mode on EVERY run
                 # only meaningfully-nonzero dials (|v| >= 0.05); steer.active() drops exact-zeros but a
                 # slider nudged to a hair (e.g. 0.02) still slips through and would clutter the record.
                 dials = SUB.steer.active() if (SUB and hasattr(SUB, "steer")) else {}
@@ -803,7 +1054,11 @@ def make_handler():
                 except Exception as e:
                     return self._json(502, {"error": f"engine unreachable: {e}"})
             if p == "/state":
-                return self._json(200, {"substrate": SUBNAME, **(SUB.state() if SUB else {})})
+                return self._json(200, {"substrate": SUBNAME, "memory_mode": _memory_mode(),
+                                        **(SUB.state() if SUB else {})})
+            if p == "/memory/mode":          # which mechanism carries the cards (works on ANY substrate)
+                import memory_mode
+                return self._json(200, {"mode": _memory_mode(), "modes": list(memory_mode.MODES)})
             if p.startswith("/memory/") and p.endswith("/runs"):   # E1: which runs used this card
                 cid = p[len("/memory/"):-len("/runs")]
                 return self._json(200, {"card_id": cid, "runs": _runs_for_card(cid)})
@@ -835,6 +1090,30 @@ def make_handler():
                 self._json(200, {"active": name, "switched": True, "note": "reloading -- poll /substrate"})
                 threading.Thread(target=lambda: (time.sleep(0.4), switch_substrate(name)), daemon=True).start()
                 return
+            if p == "/memory/mode":   # swap the memory mechanism (persisted; takes effect immediately)
+                import memory_mode
+                mode = str(body.get("mode", "")).strip().lower()
+                if mode not in memory_mode.MODES:
+                    return self._json(400, {"error": f"unknown mode (want one of {list(memory_mode.MODES)})"})
+                if not memory_mode.set_mode(mode):
+                    return self._json(200, {"ok": False, "reason": "could not persist the mode setting"})
+                out = {"ok": True, "mode": mode}
+                # Toggling BACK to internalized: prompt-mode card edits never consolidated, so the trained
+                # prefix can be STALE relative to the cards. If the active set differs from what the
+                # current prefix embodies (_trained_rules), kick the normal background retrain so chats
+                # don't serve a personality the cards no longer describe. Cheap guards: nothing to do when
+                # there's no live memory, or when cards and prefix are both empty.
+                if mode == "internalized" and SUB is not None and getattr(SUB, "_mem", None) is not None:
+                    m = SUB._mem
+                    try:
+                        import memory_cards
+                        active = memory_cards.active_texts()
+                        trained = list(getattr(m, "_trained_rules", []) or [])
+                        if set(active) != set(trained) and (active or getattr(m, "prefix", None) is not None):
+                            out["resync"] = _start_retrain(m, "mode-switch", None, force=True)
+                    except Exception:
+                        pass
+                return self._json(200, out)
             if p.startswith("/runs/") and p.endswith("/replay"):   # F1: re-run a past run under changed state -> a child run
                 rid = p[len("/runs/"):-len("/replay")]
                 import runlog
@@ -953,32 +1232,44 @@ def make_handler():
                     return self._json(502, {"error": "no engine configured"})
                 msgs = body.get("messages", [])
                 t0 = time.time()
+                memout = {}
                 try:
-                    prompt = _qwen_tmpl(msgs)
                     mx = int(body.get("max_tokens", 220))
                     kw = {}
-                    # MEMORY: the live HF prefix if a qwen substrate is loaded, else the SAVED prefix from disk
-                    # -- so engine-chat works with NO HF model resident (the pure-engine substrate).
                     mem = getattr(SUB, "memory", None) if SUB else None
-                    if mem is not None and getattr(mem, "prefix", None) is not None:
-                        prefix = mem.prefix.detach().float().cpu()
-                        ms = float(getattr(mem, "memory_strength", 1.0))
+                    if _memory_mode() == "prompt":
+                        # PROMPT MODE on the engine: the cards ride as the system block INSIDE the chat
+                        # template (compiled straight from the card store -- no HF model needed at all),
+                        # and the trained prefix is NOT injected. Strength maps to on/off; the topic gate
+                        # omits the block off-topic, exactly as on the HF path. This also means a FRESH
+                        # install (no trained prefix) finally gets memory over the engine.
+                        ms = float(getattr(mem, "memory_strength", 1.0)) if mem is not None \
+                            else _disk_memory()[1]
+                        block, applied, gate = _prompt_block_for(mem, _last_user(msgs), strength=ms)
+                        memout.update(mode="prompt", applied=applied, gate=gate, strength=ms)
+                        prompt = _qwen_tmpl(_inject_block(msgs, block))
                     else:
-                        prefix, ms = _disk_memory()
-                    # TOPIC RELEVANCE gate on the injection strength (mirror the HF chat's gate="auto"): scale
-                    # ms by how on-topic the last user turn is vs the active rules. Only when a LIVE memory with
-                    # rules is present (the qwen substrate) -- the pure-engine/disk path has no rule texts to
-                    # gate against, so it degrades to no-gating (rel==1.0), the prior behavior. Defensive: any
-                    # failure leaves ms unscaled.
-                    try:
-                        if mem is not None and getattr(mem, "rules", None):
-                            last_user = next((mm.get("content", "") for mm in reversed(msgs)
-                                              if mm.get("role") == "user"), "")
-                            ms = ms * float(mem._gate(last_user))
-                    except Exception:
-                        pass
-                    if prefix is not None:                         # inject the trained soft prefix (scaled by the dial x relevance)
-                        kw = {"prefix_embd": (prefix * ms).flatten().tolist(), "prefix_rows": int(prefix.shape[0])}
+                        prompt = _qwen_tmpl(msgs)
+                        # MEMORY: the live HF prefix if a qwen substrate is loaded, else the SAVED prefix from
+                        # disk -- so engine-chat works with NO HF model resident (the pure-engine substrate).
+                        if mem is not None and getattr(mem, "prefix", None) is not None:
+                            prefix = mem.prefix.detach().float().cpu()
+                            ms = float(getattr(mem, "memory_strength", 1.0))
+                        else:
+                            prefix, ms = _disk_memory()
+                        # TOPIC RELEVANCE gate on the injection strength (mirror the HF chat's gate="auto"):
+                        # scale ms by how on-topic the last user turn is vs the active rules. Only when a LIVE
+                        # memory with rules is present (the qwen substrate) -- the pure-engine/disk path has no
+                        # rule texts to gate against, so it degrades to no-gating (rel==1.0), the prior
+                        # behavior. Defensive: any failure leaves ms unscaled.
+                        try:
+                            if mem is not None and getattr(mem, "rules", None):
+                                ms = ms * float(mem._gate(_last_user(msgs)))
+                        except Exception:
+                            pass
+                        if prefix is not None:             # inject the trained soft prefix (dial x relevance)
+                            kw = {"prefix_embd": (prefix * ms).flatten().tolist(),
+                                  "prefix_rows": int(prefix.shape[0])}
                     # TONE: live dial values if a substrate is up, else the saved values from disk
                     st = getattr(getattr(SUB, "steer", None), "strength", None) if SUB else None
                     if not st:
@@ -995,11 +1286,15 @@ def make_handler():
                     reply_raw, steps = _engine_complete_traced(ENGINE_QWEN, prompt, mx, kw)
                     reply = reply_raw.strip()
                     # Pass the raw step list; runlog.record normalizes it -> {tokens, confidence, alternatives}.
-                    self._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0, trace=steps)
-                    return self._json(200, {"reply": reply, "memory": bool(kw.get("prefix_embd")),
+                    self._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0, trace=steps,
+                                  mem_out=memout)
+                    # "memory" == did memory actually ride this reply (block in prompt mode, prefix otherwise)
+                    return self._json(200, {"reply": reply,
+                                            "memory": bool(memout.get("applied")) or bool(kw.get("prefix_embd")),
                                             "tone": bool(kw.get("steer_vec")), "via": "engine (GGUF)"})
                 except Exception as e:
-                    self._log_run("engine_chat", msgs, "", "clozn-qwen (engine)", t0, error=str(e))
+                    self._log_run("engine_chat", msgs, "", "clozn-qwen (engine)", t0, error=str(e),
+                                  mem_out=memout)
                     return self._json(502, {"error": f"engine-chat: {e}"})
             if p == "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied
                 if not (SUB and getattr(SUB, "chat", None)):
@@ -1009,9 +1304,12 @@ def make_handler():
                     return self._sse_chat(msgs, mx, str(body.get("model", "clozn-qwen")))
                 t0 = time.time()
                 trace_steps = []                            # HF non-stream: capture a per-token trace (B3)
-                reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0, trace_out=trace_steps)
+                memout = {}                                 # prompt mode: what memory actually rode this turn
+                reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0, trace_out=trace_steps,
+                                 mem_out=memout)
                 # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}.
-                self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0, trace=trace_steps)
+                self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0,
+                              trace=trace_steps, mem_out=memout)
                 return self._json(200, {"id": "chatcmpl-clozn", "object": "chat.completion",
                                         "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
                                         "choices": [{"index": 0, "finish_reason": "stop",
@@ -1022,16 +1320,19 @@ def make_handler():
                     return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate"})
                 msg = str(body.get("message", ""))
                 t0 = time.time()
-                # HF studio chat: capture a per-token trace (B3). We hand SUB.handle a collector list via
-                # body["_trace_out"] (server-side only, never echoed); QwenSubstrate's /say fills it through
-                # say()->_generate()'s pass-through recorder. Reply text is byte-identical with or without it.
+                # HF studio chat: capture a per-token trace (B3) + the per-turn memory record. We hand
+                # SUB.handle collectors via body["_trace_out"] / body["_mem_out"] (server-side only, never
+                # echoed); QwenSubstrate's /say fills them through say()/_say_prompt -> _generate's
+                # pass-through recorder. Reply text is byte-identical with or without them.
                 trace_steps = []
                 body["_trace_out"] = trace_steps
+                memout = {}
+                body["_mem_out"] = memout
                 try:
                     r = SUB.handle(p, body)
                 except Exception as e:
                     self._log_run("studio_chat", [{"role": "user", "content": msg}], "",
-                                  "clozn-qwen", t0, error=str(e))
+                                  "clozn-qwen", t0, error=str(e), mem_out=memout)
                     return self._json(500, {"error": f"{type(e).__name__}: {e}"})
                 if r is None:
                     return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
@@ -1039,7 +1340,7 @@ def make_handler():
                 # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}; a diffusion
                 # substrate (or any path that filled nothing) yields [] -> a clean empty trace.
                 self._log_run("studio_chat", [{"role": "user", "content": msg}],
-                              str(r.get("reply", "")), "clozn-qwen", t0, trace=trace_steps)
+                              str(r.get("reply", "")), "clozn-qwen", t0, trace=trace_steps, mem_out=memout)
                 return self._json(200, r)
             if p == "/denoise":   # Dream diffusion window -> capture it as a run
                 if not (SUB and getattr(SUB, "handle", None)):
