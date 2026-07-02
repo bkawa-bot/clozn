@@ -378,3 +378,69 @@ def test_round_trip_against_live_diffusion_engine():
     # SNAPSHOT — the board (token ids) from the run's terminal frame.
     board = src.get_state()["board"]
     assert board.ndim == 1 and board.shape[0] > 5
+
+
+# --------------------------------------------------------------------------------------------------
+# Phase 1.4 — the FULL GATE, live: drive the engine through the Spine (view), snapshot the board,
+# EDIT the state and watch behavior move, then RESTORE the original state and watch behavior return
+# to baseline. This is the roadmap's "one spine, proven end-to-end" — the last leg (restore-returns-
+# baseline) exercised at the wire level via the engine client's /state write (the same server-side
+# write_state that EngineStateSource.set_state targets; the /intervene kind="edit" client payload is
+# codec-tested above). Needs a live AR engine on :8080 (see the AR gate above for the boot line).
+# --------------------------------------------------------------------------------------------------
+@pytest.mark.model
+def test_spine_full_gate_view_snapshot_edit_restore():
+    import os
+    import sys
+    import urllib.error
+    import urllib.request
+
+    base = "http://127.0.0.1:8080"
+    try:
+        with urllib.request.urlopen(base + "/health", timeout=2) as r:
+            health = json.loads(r.read())
+    except (urllib.error.URLError, OSError):
+        pytest.skip("no Clozn engine reachable on :8080")
+    if health.get("mode") != "autoregressive":
+        pytest.skip(f"engine on :8080 is {health.get('mode')!r}, not autoregressive")
+
+    from clozn.spine import Spine
+
+    # VIEW — the Spine drives the live engine and fans every aggregated step to a consumer.
+    class Collect:
+        def __init__(self):
+            self.steps = []
+
+        def on_step(self, st):
+            self.steps.append(st)
+
+    src = EngineStateSource(base_url=base, substrate="autoregressive", max_tokens=8)
+    sink = Collect()
+    spine = Spine(src, [sink])
+    outs = list(spine.run(["The capital of France is", "Two plus two equals"]))
+    assert len(outs) == 2 and len(sink.steps) == 2         # every input -> one fanned step
+    assert all(s.meta.get("n_frames", 0) >= 1 for s in sink.steps)
+    assert any(r.name == "logit-lens" for s in sink.steps for r in s.readouts)
+
+    # SNAPSHOT — the board off the terminal frame, via the StateSource interface.
+    board = src.get_state()["board"]
+    assert board.ndim == 1 and board.shape[0] > 3
+
+    # EDIT -> behavior moves; RESTORE (write the ORIGINAL rows back) -> behavior returns to baseline.
+    # Uses the engine client (the thin SDK over the same server /harvest + /state endpoints).
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "engine", "client"))
+    from cloze_engine import EngineClient
+
+    eng = EngineClient(port=8080)
+    prompt = "The capital of France is"
+    h = eng.harvest(prompt)                                # [n_tokens, n_embd] residuals at the tap layer
+    last = h.n_tokens - 1
+
+    edited = eng.write_state(prompt, h.layer, positions=[last],
+                             values=h.activations[last] * 4.0)
+    assert edited.moved_l2 > 1.0                           # the edit measurably moved the next-token dist
+
+    restored = eng.write_state(prompt, h.layer, positions=[last],
+                               values=h.activations[last])  # the ORIGINAL state, written back
+    assert restored.moved_l2 < 1e-3                        # restore -> distribution back to baseline
+    assert restored.edited_top == restored.baseline_top    # and the top candidates are identical
