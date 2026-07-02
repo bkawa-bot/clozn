@@ -31,15 +31,12 @@
   function render(view, ctx) {
     view.appendChild(
       S.el("div", { class: "wrap" }, [
-        S.el("div", { class: "runshead" }, [
-          S.el("div", {}, [
-            S.el("h1", {}, [S.el("span", { class: "glow" }, ["Runs"])]),
-            S.el("p", { class: "sub" }, [
-              "Every request from any connected client, newest first. Click a run to inspect what memory, dials, and runtime state influenced it.",
-            ]),
-          ]),
-          S.el("button", { id: "runsrefresh", title: "reload" }, ["Refresh"]),
-        ]),
+        S.pageHead({
+          kicker: "the run log",
+          kickerRight: S.el("button", { id: "runsrefresh", class: "phead-btn", title: "reload" }, ["↻ refresh"]),
+          title: "runs",
+          counter: S.el("span", { id: "runs-count" }, ["every request, newest first"]),
+        }),
         S.el("div", { class: "filters", id: "filters" }, []),
         S.el("div", { class: "runlist panel", id: "runlist" }, [
           S.el("div", { class: "runloading" }, ["Loading runs…"]),
@@ -63,6 +60,13 @@
   function draw(ctx) {
     drawFilters(ctx);
     drawList(ctx);
+    var c = document.getElementById("runs-count");
+    if (c) {
+      var n = state.runs.length;
+      var shown = filtered().length;
+      c.textContent = n ? (shown === n ? n + (n === 1 ? " run" : " runs")
+        : shown + " of " + n + " runs") : "every request, newest first";
+    }
   }
 
   function sourcesInData() {

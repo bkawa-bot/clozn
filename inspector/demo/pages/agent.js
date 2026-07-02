@@ -28,16 +28,79 @@
     return S.el("span", { class: "chip " + (cls || "") }, [text]);
   }
 
+  // Editorial "cover" layout (see inspo: Canon ad / NEW FORMS sleeve). Zones, not a form:
+  //   masthead line (micro-caps manifesto) | oversized lowercase title + counter-title on a rule |
+  //   an asymmetric body: the runtime SPEC SHEET (left, narrow) | a hairline | the TEST zone (right) |
+  //   a footnote gag pinned bottom-right. Injected once; scoped to .ag-*.
+  function edStyle() {
+    if (document.getElementById("ag-ed")) return;
+    var s = document.createElement("style");
+    s.id = "ag-ed";
+    s.textContent =
+      ".ag{max-width:1060px;margin:0 auto;padding:30px 34px 40px;position:relative}" +
+      ".ag-kicker{font-family:var(--display);font-size:10px;letter-spacing:.34em;text-transform:uppercase;color:var(--faint);" +
+      "border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:6px 0;margin-bottom:26px;" +
+      "display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;box-shadow:0 2px 0 rgba(50,90,100,.05)}" +
+      ".ag-kicker .r{color:var(--soft)}" +
+      // the cover title block: oversized lowercase, a counter-title beneath sharing the baseline rule
+      ".ag-cover{display:grid;grid-template-columns:1fr auto;align-items:end;gap:10px 20px;" +
+      "border-bottom:1px solid var(--line);padding-bottom:14px;box-shadow:0 2px 0 rgba(50,90,100,.06)}" +
+      ".ag-title{font-family:var(--display);font-size:clamp(46px,8vw,88px);line-height:.92;font-weight:600;" +
+      "letter-spacing:-.01em;text-transform:lowercase;color:var(--ink);margin:0;" +
+      "text-shadow:3px 0 0 rgba(47,163,146,.16),-3px 0 0 rgba(79,136,184,.13)}" +
+      ".ag-title .dot{color:var(--cyan)}" +
+      ".ag-countertitle{font-family:var(--display);font-size:13px;letter-spacing:.2em;text-transform:uppercase;" +
+      "color:var(--faint);text-align:right;max-width:230px;line-height:1.5;padding-bottom:6px}" +
+      // the asymmetric body: spec sheet | rule | test zone (Canon's narrow-copy + product-column split)
+      ".ag-body{display:grid;grid-template-columns:minmax(0,340px) 1fr;gap:0;margin-top:30px}" +
+      "@media(max-width:820px){.ag-body{grid-template-columns:1fr}}" +
+      ".ag-spec{padding-right:30px}" +
+      ".ag-test{padding-left:30px;border-left:1px solid var(--line);box-shadow:-2px 0 0 rgba(50,90,100,.04)}" +
+      "@media(max-width:820px){.ag-test{padding-left:0;border-left:none;box-shadow:none;border-top:1px solid var(--line);padding-top:22px;margin-top:26px}}" +
+      ".ag-zone-h{font-family:var(--display);font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;" +
+      "color:var(--cyan);margin-bottom:12px}" +
+      // the spec sheet reads like a credits block: label left in caps, value right, dotted leader rows
+      ".ag-endpoint{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--soft);cursor:pointer;" +
+      "word-break:break-all;padding:8px 10px;background:var(--wash);border:1px solid var(--line);border-radius:3px;margin:14px 0}" +
+      ".ag-endpoint:hover{color:var(--cyan);border-color:rgba(47,163,146,.4)}" +
+      ".ag-endpoint .k{color:var(--faint);letter-spacing:.16em;text-transform:uppercase;font-size:9.5px;display:block;margin-bottom:3px}" +
+      // footnote gag, bottom-right (Canon's "you can*")
+      ".ag-foot{margin-top:34px;display:flex;justify-content:flex-end;align-items:baseline;gap:8px;" +
+      "border-top:1px solid var(--line);padding-top:10px}" +
+      ".ag-foot .gag{font-family:var(--display);font-size:15px;letter-spacing:.04em;color:var(--soft)}" +
+      ".ag-foot .gag b{color:var(--cyan);font-weight:600}" +
+      ".ag-foot .star{font-size:10px;color:var(--faint)}";
+    document.head.appendChild(s);
+  }
+
   function render(view, ctx) {
+    edStyle();
     view.appendChild(
-      S.el("div", { class: "wrap" }, [
-        S.el("h1", {}, [S.el("span", { class: "glow" }, ["Agent"])]),
-        S.el("p", { class: "sub" }, [
-          "Your local runtime and the endpoint your tools connect to. Keep using your normal clients — Clozn runs underneath and captures every request as an inspectable run.",
+      S.el("div", { class: "ag" }, [
+        // the manifesto now lives in the masthead; the page opens straight on its cover title.
+        // the cover: oversized title + counter-title on the baseline rule
+        S.el("div", { class: "ag-cover" }, [
+          S.el("h1", { class: "ag-title" }, ["agent", S.el("span", { class: "dot" }, ["."])]),
+          S.el("div", { class: "ag-countertitle" }, ["the runtime behind your tools — running, watched, yours to steer"]),
         ]),
-        S.el("div", { class: "agentgrid", id: "agentgrid" }, [
-          statusCardShell(),
-          testCardShell(ctx),
+        // asymmetric body
+        S.el("div", { class: "ag-body" }, [
+          S.el("div", { class: "ag-spec" }, [
+            S.el("div", { class: "ag-zone-h" }, ["runtime status"]),
+            S.el("div", { class: "srows", id: "statusbody" }, [
+              S.el("div", { class: "srow" }, [
+                S.el("span", { class: "slabel" }, ["Local runtime"]),
+                S.el("span", { class: "sval faintv" }, ["checking…"]),
+              ]),
+            ]),
+            S.el("div", { class: "cardactions", id: "statusactions" }, []),
+          ]),
+          testZone(ctx),
+        ]),
+        // footnote gag
+        S.el("div", { class: "ag-foot" }, [
+          S.el("span", { class: "gag" }, ["run it ", S.el("b", {}, ["local"]), "*"]),
+          S.el("span", { class: "star" }, ["*and see exactly what it did"]),
         ]),
       ])
     );
@@ -47,22 +110,14 @@
     var body = document.getElementById("statusbody");
     var actions = document.getElementById("statusactions");
 
-    // endpoint is known immediately; wire Copy right away.
-    var copyBtn = S.el("button", { class: "go" }, ["Copy endpoint"]);
-    copyBtn.addEventListener("click", function () {
-      ctx.copyText(endpoint).then(function (ok) {
-        copyBtn.textContent = ok ? "Copied ✓" : "Copy failed";
-        setTimeout(function () { copyBtn.textContent = "Copy endpoint"; }, 1400);
-      });
-    });
-    var latestBtn = S.el("button", {}, ["Open latest run"]);
+    // endpoint copies from its own framed block below; actions stay minimal (references favor restraint).
+    var latestBtn = S.el("button", {}, ["open latest run →"]);
     latestBtn.disabled = true;
     latestBtn.addEventListener("click", function () {
       if (latestBtn.dataset.rid) ctx.navigate("run/" + latestBtn.dataset.rid);
     });
-    var labBtn = S.el("button", {}, ["Open Lab"]);
+    var labBtn = S.el("button", {}, ["open lab →"]);
     labBtn.addEventListener("click", function () { ctx.navigate("lab"); });
-    actions.appendChild(copyBtn);
     actions.appendChild(latestBtn);
     actions.appendChild(labBtn);
 
@@ -102,8 +157,20 @@
       body.appendChild(statusRow("Active substrate", activeSub ? cap(activeSub) : "unknown"));
       body.appendChild(statusRow("Model", model || "—", { mono: true }));
 
-      var epRow = statusRow("Endpoint", endpoint, { mono: true });
-      body.appendChild(epRow);
+      // endpoint gets its own framed block (Canon product-tag energy) -- click to copy
+      var epBlock = S.el("div", { class: "ag-endpoint", title: "click to copy" }, [
+        S.el("span", { class: "k" }, ["openai-compatible endpoint"]),
+        endpoint,
+      ]);
+      epBlock.addEventListener("click", function () {
+        ctx.copyText(endpoint).then(function (ok) {
+          if (!ok) return;
+          var kids = epBlock.childNodes;
+          epBlock.lastChild.textContent = "copied ✓";
+          setTimeout(function () { epBlock.lastChild.textContent = endpoint; }, 1100);
+        });
+      });
+      body.appendChild(epBlock);
 
       body.appendChild(statusRow("Memory",
         cards.length ? cards.length + (cards.length === 1 ? " memory" : " memories") : "none",
@@ -142,31 +209,19 @@
     });
   }
 
-  function statusCardShell() {
-    return S.el("section", { class: "panel statuscard" }, [
-      S.el("h2", {}, ["runtime status"]),
-      S.el("div", { class: "srows", id: "statusbody" }, [
-        S.el("div", { class: "srow" }, [
-          S.el("span", { class: "slabel" }, ["Local runtime"]),
-          S.el("span", { class: "sval faintv" }, ["checking…"]),
-        ]),
-      ]),
-      S.el("div", { class: "cardactions", id: "statusactions" }, []),
-    ]);
-  }
-
-  function testCardShell(ctx) {
+  // the test zone -- an editorial column, not a card. Same IDs/logic as before.
+  function testZone(ctx) {
     var out = S.el("div", { class: "testout", id: "testout" }, []);
     var input = S.el("textarea", {
-      class: "testinput", id: "testprompt", rows: "3",
-      placeholder: "Test the runtime — e.g. “Explain what a KV cache is in one sentence.”",
+      class: "testinput", id: "testprompt", rows: "4",
+      placeholder: "test the runtime — e.g. “explain a KV cache in one sentence.”",
     }, []);
-    var send = S.el("button", { class: "go", id: "testsend" }, ["Test prompt"]);
+    var send = S.el("button", { class: "go", id: "testsend" }, ["test prompt"]);
 
     function run() {
       var text = (input.value || "").trim();
       if (!text) { input.focus(); return; }
-      send.disabled = true; send.textContent = "Running…";
+      send.disabled = true; send.textContent = "running…";
       out.innerHTML = "";
       out.appendChild(S.el("div", { class: "who" }, ["Reply"]));
       var bubble = S.el("div", { class: "testreply" }, ["…"]);
@@ -177,7 +232,7 @@
       }, null).then(function (d) {
         var reply = pickReply(d);
         bubble.textContent = reply || "(no response — is the model loaded?)";
-        send.disabled = false; send.textContent = "Test prompt";
+        send.disabled = false; send.textContent = "test prompt";
       });
     }
     send.addEventListener("click", run);
@@ -185,9 +240,9 @@
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) run();
     });
 
-    return S.el("section", { class: "panel testcard" }, [
-      S.el("h2", {}, ["test prompt"]),
-      S.el("p", { class: "cardhint" }, ["A quick sanity check that the runtime answers. This POSTs the same OpenAI endpoint your clients use. ⌘/Ctrl+Enter to send."]),
+    return S.el("div", { class: "ag-test" }, [
+      S.el("div", { class: "ag-zone-h" }, ["test prompt"]),
+      S.el("p", { class: "cardhint", style: "margin:0 0 12px" }, ["a sanity check that the runtime answers — same OpenAI endpoint your clients use. ⌘/Ctrl+Enter to send."]),
       input,
       S.el("div", { class: "cardactions" }, [send]),
       out,

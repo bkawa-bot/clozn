@@ -82,6 +82,21 @@
     } catch (e) { return false; }
   }
 
+  // Shared editorial page header (the sleeve "cover" used on every page): a ruled caps kicker line
+  // (left + optional right), then an oversized lowercase title with an optional counter-title on the
+  // baseline rule. title/kicker are strings; kickerRight/counter may be a string OR a DOM node.
+  function pageHead(o) {
+    o = o || {};
+    var kickKids = [el("span", {}, [o.kicker || ""])];
+    if (o.kickerRight != null) kickKids.push(el("span", { class: "r" }, [o.kickerRight]));
+    var coverKids = [el("h1", { class: "phead-title" }, [o.title || ""])];
+    if (o.counter != null) coverKids.push(el("div", { class: "phead-counter" }, [o.counter]));
+    return el("div", { class: "phead" }, [
+      el("div", { class: "phead-kick" }, kickKids),
+      el("div", { class: "phead-cover" }, coverKids),
+    ]);
+  }
+
   // small DOM builder: el('div', {class:'x'}, [child, 'text'])
   function el(tag, attrs, kids) {
     var n = document.createElement(tag);
@@ -198,6 +213,9 @@
       "</div></div>";
   }
 
+  // The shell, sleeve-style (see notes/inspo): a top MASTHEAD band (brand · nav · live substrate
+  // chip), the scrolling view, and a bottom SPEC STRIP -- dense, tiny, utilitarian fine-print
+  // (endpoint / substrate / model / window links), like the back of a compilation cover.
   function buildShell() {
     var app = document.getElementById("app");
     if (!app) return;
@@ -206,22 +224,60 @@
       return el("a", { href: "#/" + item.route, "data-route": item.route, class: "navitem" }, [item.label]);
     });
 
-    var sidebar = el("aside", { id: "sidebar" }, [
-      el("div", { class: "brand" }, [
-        el("span", { class: "logo" }, ["clozn"]),
-        el("span", { class: "studioword" }, ["studio"]),
-      ]),
-      el("div", { class: "brandsub" }, ["glass-box runtime"]),
+    // Masthead as ONE ruled caps band (the NEW FORMS micro-line format): brand · nav tabs (tracked
+    // caps) on the left, the tag + live substrate chip on the right, a hairline above and below.
+    var masthead = el("header", { id: "masthead" }, [
+      el("span", { class: "logo" }, ["clozn"]),
+      el("span", { class: "studioword" }, ["studio"]),
       el("nav", { id: "nav" }, navLinks),
-      el("div", { class: "sidefoot" }, [
-        el("a", { href: "studio.html", class: "sidelink", title: "the original chat + memory + dials surface" }, ["classic studio ↗"]),
-        el("a", { href: "../../index.html", class: "sidelink" }, ["all windows ↗"]),
+      el("span", { class: "mh-right" }, [
+        el("span", { class: "mh-tag", id: "mh-tag" }, ["local · openai-compatible"]),
+        el("span", { class: "subchip", id: "subchip", title: "active substrate" }, ["·"]),
       ]),
     ]);
 
     var main = el("main", { id: "view" }, []);
-    app.appendChild(sidebar);
+
+    var strip = el("footer", { id: "specstrip" }, [
+      el("span", { class: "spec brandline" }, ["clozn studio — glass-box runtime"]),
+      el("span", { class: "spec", id: "spec-endpoint", title: "click to copy the OpenAI-compatible endpoint" },
+        [(BASE || location.origin) + "/v1"]),
+      el("span", { class: "spec", id: "spec-model" }, ["model —"]),
+      el("span", { class: "spec grow" }, []),
+      el("a", { href: "studio.html", class: "spec speclink", title: "the original chat + memory + dials surface" }, ["classic studio ↗"]),
+      el("a", { href: "../../index.html", class: "spec speclink" }, ["all windows ↗"]),
+    ]);
+
+    app.appendChild(masthead);
     app.appendChild(main);
+    app.appendChild(strip);
+
+    var ep = document.getElementById("spec-endpoint");
+    if (ep) ep.addEventListener("click", function () {
+      copyText(ep.textContent).then(function (ok) {
+        if (!ok) return;
+        var t = ep.textContent;
+        ep.textContent = "copied.";
+        setTimeout(function () { ep.textContent = t; }, 900);
+      });
+    });
+    refreshSpec();
+  }
+
+  // Best-effort: fill the substrate chip + spec strip from whatever status endpoint answers.
+  // Defensive on shape (servers differ across versions); silent when nothing is reachable.
+  function refreshSpec() {
+    getJSON("/health", null).then(function (h) {
+      return h || getJSON("/state", null);
+    }).then(function (h) {
+      if (!h || typeof h !== "object") return;
+      var sub = h.substrate || h.active_substrate || null;
+      var model = h.model || h.model_name || null;
+      var chip = document.getElementById("subchip");
+      if (chip && sub) { chip.textContent = String(sub)[0]; chip.title = "substrate: " + sub; }
+      var m = document.getElementById("spec-model");
+      if (m && (model || sub)) m.textContent = "model " + (model || sub);
+    });
   }
 
   function boot() {
@@ -238,7 +294,7 @@
     navigate: navigate,
     base: BASE,
     // expose helpers so pages can reuse them without re-implementing
-    esc: esc, el: el, getJSON: getJSON, postJSON: postJSON,
+    esc: esc, el: el, pageHead: pageHead, getJSON: getJSON, postJSON: postJSON,
     fmtTime: fmtTime, fmtDate: fmtDate, fmtDuration: fmtDuration, isToday: isToday, copyText: copyText,
   };
 

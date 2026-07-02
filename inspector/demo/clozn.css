@@ -1,94 +1,242 @@
-/* clozn.css -- the Artificial Angels design system. ONE source of truth for the luminous pearl-sky look
-   every window shares (palette + background + the common components: nav, panel, button, composer, chat
-   bubble, memory card, answer card). A window links this, then adds only its window-specific styles.
-   Light/heaven sci-fi: frosted glass on a pearl sky, cool halos; warm hues are reserved for accents. */
+/* clozn.css -- the GEN X SOFT CLUB design system. ONE source of truth every window shares.
+   The look: late-90s soft futurism in COLD DAYLIGHT -- overexposed airport glass, icy cyan wash,
+   steel hairlines, sleeve typography (lowercase display titles closed with a period; tracked-out
+   caps micro-labels). Visual interest comes from the AFTER-IMAGE layer: translucent geometric
+   planes and light-streaks blurred together behind the content (see body::before), plus scanline
+   texture and film grain. Accents stay muted: steel blue + seafoam; tan for warm notes; sodium
+   amber for warnings (streetlight, not alarm).
+   Pages keep the same variable names (--ink/--soft/--faint/--line/--card/--halo/--cyan/--warm/
+   --gold/--good/--mask/--wash/--card2/--display) so every window re-themes from here. */
 
 :root{
-  --ink:#27324c;          /* primary text */
-  --soft:#5a6788;         /* secondary text */
-  --faint:#8c97b4;        /* labels, hints */
-  --line:rgba(120,140,190,.20);
-  --card:rgba(255,255,255,.62);
-  --halo:#7aa7ff;         /* the signature angel-blue */
-  --cyan:#4fc3d6;         /* celestial cyan (the signal) */
-  --warm:#e7a8c4;         /* soft rose accent */
-  --gold:#e6c478;         /* halo gold accent */
-  --good:#5bbf9a;         /* a confirmed / "after" state */
-  --mask:#c3cde0;         /* unresolved / masked */
+  --bg0:#d9e6ec;          /* deep ice */
+  --bg1:#eef5f7;          /* pale ice */
+  --ink:#22343c;          /* deep petrol slate */
+  --soft:#527078;         /* steel sage */
+  --faint:#7e959c;        /* labels, hints */
+  --line:rgba(50,90,100,.17);
+  --card:rgba(255,255,255,.55);   /* frosted white glass */
+  --card2:#f4fafb;                /* solid popover surface */
+  --wash:rgba(120,170,185,.08);   /* subtle cyan wells */
+  --halo:#4f88b8;         /* steel blue (wayfinding) */
+  --cyan:#2fa392;         /* seafoam (the signal) */
+  --warm:#b98d5e;         /* tan / beige */
+  --gold:#b3a26a;         /* faded brass */
+  --good:#2f9a6e;         /* confirmed / "after" */
+  --mask:#a9bcc0;         /* unresolved / masked */
+  --amber:#c08a3e;        /* sodium streetlight -- warnings only */
+  --display:"Century Gothic","CenturyGothic",Futura,"URW Gothic","Questrial",ui-sans-serif,system-ui,sans-serif;
 }
 
 *{box-sizing:border-box}
 html,body{margin:0}
-body{
-  font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  color:var(--ink); min-height:100%;
+/* the base: cold daylight + soft blooms + a horizontal SCANLINE texture (the LED-screen grain of
+   blurred-transit photography). Lives on html so body's pseudo-layers can sit above it. */
+html{
+  min-height:100%;
   background:
-    radial-gradient(1200px 700px at 18% -10%, #eaf2ff 0%, rgba(234,242,255,0) 60%),
-    radial-gradient(1100px 800px at 100% 0%, #f6ecff 0%, rgba(246,236,255,0) 55%),
-    radial-gradient(900px 900px at 50% 120%, #eafff6 0%, rgba(234,255,246,0) 60%),
-    linear-gradient(180deg,#f4f7ff 0%, #eef1fb 100%);
+    repeating-linear-gradient(180deg, rgba(40,80,90,.030) 0 1px, rgba(40,80,90,0) 1px 4px),
+    radial-gradient(1100px 700px at 12% -8%, rgba(255,255,255,.85) 0%, rgba(255,255,255,0) 55%),
+    radial-gradient(1000px 760px at 96% 2%, rgba(126,190,204,.28) 0%, rgba(126,190,204,0) 58%),
+    radial-gradient(1200px 900px at 50% 115%, rgba(100,150,180,.20) 0%, rgba(100,150,180,0) 60%),
+    linear-gradient(180deg,#f2f8fa 0%,#e4eef2 48%,var(--bg0) 100%);
+  background-attachment:fixed;
 }
+body{
+  font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI","Helvetica Neue",Roboto,sans-serif;
+  color:var(--ink); min-height:100%; background:none; position:relative;
+}
+/* THE AFTER-IMAGE LAYER -- overlapping translucent planes + light streaks, the long-exposure
+   architecture of the reference photography. Two fixed layers behind all content:
+     body::before -- the big soft PLANES (blur 16px: edges melt but the shapes stay LEGIBLE)
+     html::before -- the crisp details: thin light-bars + vertical window-seam mullions (blur 2px)
+   Pure CSS, no assets. Tuning knobs: per-plane alpha, the two blur radii, plane positions. */
+body::before{
+  content:""; position:fixed; inset:-4%; z-index:-1; pointer-events:none;
+  filter:blur(20px) saturate(1.05); opacity:.30;   /* a whisper of the concourse -- the real after-images live on the lines */
+  background:
+    /* white overexposure band, upper third */
+    linear-gradient(180deg, rgba(255,255,255,.95), rgba(255,255,255,0)) 0 8% / 100% 190px no-repeat,
+    /* cyan glass plane, left */
+    linear-gradient(90deg, rgba(64,190,175,.55), rgba(64,190,175,0) 78%) 0 20% / 60% 270px no-repeat,
+    /* steel plane, right */
+    linear-gradient(270deg, rgba(70,140,205,.50), rgba(70,140,205,0) 72%) 100% 10% / 54% 310px no-repeat,
+    /* thin white light-bar (the walkway rail) */
+    linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.95) 38% 62%, rgba(255,255,255,0)) 85% 42% / 76% 18px no-repeat,
+    /* sodium streak (the yellow lights in the concourse photo) */
+    linear-gradient(90deg, rgba(228,168,60,0), rgba(228,168,60,.60) 30% 50%, rgba(228,168,60,0) 76%) 8% 55% / 46% 30px no-repeat,
+    /* second cyan bar, lower */
+    linear-gradient(90deg, rgba(64,200,185,0), rgba(64,200,185,.65) 42% 58%, rgba(64,200,185,0)) 28% 70% / 60% 16px no-repeat,
+    /* steel needle, low right */
+    linear-gradient(90deg, rgba(90,150,210,0), rgba(90,150,210,.55) 45% 55%, rgba(90,150,210,0)) 88% 82% / 40% 10px no-repeat,
+    /* seafoam floor bloom */
+    linear-gradient(0deg, rgba(90,170,160,.40), rgba(90,170,160,0)) 0 100% / 100% 32% no-repeat;
+}
+html::before{
+  content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+  filter:blur(2px); opacity:.14;
+  background:
+    /* vertical window-seam mullions (the glass-curtain verticals in the concourse photo) */
+    linear-gradient(90deg, rgba(70,120,140,.35), rgba(70,120,140,.35)) 21% 0 / 1px 100% no-repeat,
+    linear-gradient(90deg, rgba(70,120,140,.28), rgba(70,120,140,.28)) 79% 0 / 1px 100% no-repeat,
+    /* two crisp light needles */
+    linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.9) 45% 55%, rgba(255,255,255,0)) 60% 33% / 44% 3px no-repeat,
+    linear-gradient(90deg, rgba(64,200,185,0), rgba(64,200,185,.8) 45% 55%, rgba(64,200,185,0)) 15% 64% / 34% 2px no-repeat;
+}
+/* film grain -- the analogue haze over everything (pure CSS, no asset) */
+body::after{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:9999; opacity:.035;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+::selection{background:rgba(47,163,146,.22)}
+/* quiet scrollbars (webkit) */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:rgba(60,100,110,.22);border-radius:6px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:rgba(60,100,110,.35);background-clip:content-box;border:2px solid transparent}
+::-webkit-scrollbar-track{background:transparent}
+
 .wrap{max-width:1180px;margin:0 auto;padding:26px 24px 80px}
 
 /* cross-window nav */
 .nav{display:flex;gap:14px;align-items:center;margin-bottom:14px;font-size:13px;flex-wrap:wrap}
-.nav a{color:var(--soft);text-decoration:none}
-.nav a:hover{color:var(--halo)}
-.nav .here{color:var(--ink);font-weight:680}
+.nav a{color:var(--soft);text-decoration:none;transition:color .18s}
+.nav a:hover{color:var(--cyan)}
+.nav .here{color:var(--ink);font-weight:640}
 
-/* headings */
-h1{font-size:24px;font-weight:680;letter-spacing:.2px;margin:0 0 3px}
+/* headings -- sleeve titles: lowercase display face, closed with a period, ghost-glow after-image */
+/* titles carry a MISREGISTERED PRINT echo: a seafoam copy nudged right, a steel copy nudged left,
+   plus a faint bloom -- the doubled-pass silkscreen of the reference sleeves. */
+h1{font-family:var(--display);font-size:24px;font-weight:600;letter-spacing:.05em;margin:0 0 3px;
+  text-transform:lowercase;
+  text-shadow:2px 0 0 rgba(47,163,146,.20), -2px 0 0 rgba(79,136,184,.16), 0 0 14px rgba(47,163,146,.14)}
+h1::after{content:".";color:var(--cyan)}
 .sub{color:var(--soft);max-width:780px}
 .sub b{color:var(--ink)}
 .glow{background:linear-gradient(90deg,var(--halo),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
 
-/* frosted panels */
-.panel{background:var(--card);border:1px solid var(--line);border-radius:18px;backdrop-filter:blur(10px);
-  box-shadow:0 10px 34px rgba(120,150,210,.10)}
-.panel h2{font-size:12px;font-weight:680;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);
-  margin:0;padding:15px 18px 6px}
+/* frosted glass BANDS -- near-square corners, hairline rules; sleeves, not SaaS cards */
+.panel{background:var(--card);border:1px solid var(--line);border-radius:4px;backdrop-filter:blur(14px);
+  box-shadow:0 12px 34px rgba(70,110,125,.14), inset 0 1px 0 rgba(255,255,255,.5)}
+/* every structural hairline gets a fainter TWIN a couple px away -- double-exposed rules */
+.panel h2{font-family:var(--display);font-size:10.5px;font-weight:600;letter-spacing:.24em;text-transform:uppercase;
+  color:var(--faint);margin:0;padding:15px 18px 6px;border-bottom:1px solid var(--line);
+  box-shadow:0 2px 0 rgba(50,90,100,.07)}
+/* tracked-out caps between hairlines -- the "YOUNG ADULT" micro-label, as a utility class */
+.microlabel{font-family:var(--display);font-size:10px;letter-spacing:.3em;text-transform:uppercase;
+  color:var(--faint);border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  padding:4px 2px;display:inline-block;
+  box-shadow:0 2px 0 rgba(50,90,100,.06), 0 -2px 0 rgba(50,90,100,.06)}
 
-/* buttons */
-button{font:inherit;font-size:13.5px;border:1px solid var(--line);background:rgba(255,255,255,.8);
-  color:var(--ink);border-radius:22px;padding:9px 15px;cursor:pointer;
-  transition:background .2s,transform .15s,box-shadow .2s}
-button:hover:not(:disabled){background:#fff;transform:translateY(-1px);box-shadow:0 5px 16px rgba(120,150,210,.18)}
+/* buttons -- white glass, hairline steel, seafoam signal on hover */
+button{font:inherit;font-size:13.5px;border:1px solid var(--line);background:rgba(255,255,255,.6);
+  color:var(--ink);border-radius:20px;padding:9px 15px;cursor:pointer;
+  transition:background .2s,border-color .2s,transform .15s,box-shadow .2s}
+button:hover:not(:disabled){background:rgba(255,255,255,.9);border-color:rgba(47,163,146,.45);
+  transform:translateY(-1px);box-shadow:0 6px 18px rgba(70,110,125,.18),0 0 14px rgba(47,163,146,.10)}
 button:active:not(:disabled){transform:translateY(0)}
-button:disabled{opacity:.5;cursor:default}
-button.go{background:linear-gradient(180deg,#cfe0ff,#bcd4ff);border-color:#a9c6ff;font-weight:620}
-button.sleep{background:linear-gradient(90deg,rgba(122,167,255,.2),rgba(231,168,196,.2));font-weight:620}
+button:disabled{opacity:.45;cursor:default}
+button.go{background:linear-gradient(180deg,rgba(47,163,146,.16),rgba(47,163,146,.08));
+  border-color:rgba(47,163,146,.42);color:#1d6f60;font-weight:600}
+button.sleep{background:linear-gradient(90deg,rgba(79,136,184,.12),rgba(185,141,94,.10));font-weight:600}
 
 /* a text/prompt composer (input + button) */
 .composer{display:flex;gap:8px;padding:10px 14px 14px}
-.composer input{flex:1;font:inherit;border:1px solid var(--line);border-radius:22px;padding:9px 14px;
-  background:rgba(255,255,255,.8);outline:none;color:var(--ink);transition:border-color .2s,box-shadow .2s}
-.composer input:focus{border-color:var(--halo);box-shadow:0 0 0 3px rgba(122,167,255,.14)}
+.composer input{flex:1;font:inherit;border:1px solid var(--line);border-radius:20px;padding:9px 14px;
+  background:rgba(255,255,255,.65);outline:none;color:var(--ink);transition:border-color .2s,box-shadow .2s}
+.composer input::placeholder{color:var(--faint)}
+.composer input:focus{border-color:rgba(47,163,146,.5);box-shadow:0 0 0 3px rgba(47,163,146,.11)}
 
 /* chat bubbles */
 .turn{margin:11px 0;display:flex}
 .turn.u{justify-content:flex-end}
-.bubble{max-width:80%;padding:9px 13px;border-radius:15px;white-space:pre-wrap}
-.u .bubble{background:linear-gradient(180deg,#dceaff,#cfe0ff);color:#243355;border-bottom-right-radius:5px}
-.a .bubble{background:rgba(255,255,255,.85);border:1px solid var(--line);border-bottom-left-radius:5px}
-.who{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:0 6px 3px}
+.bubble{max-width:80%;padding:9px 13px;border-radius:14px;white-space:pre-wrap}
+.u .bubble{background:linear-gradient(180deg,rgba(79,136,184,.15),rgba(79,136,184,.09));
+  border:1px solid rgba(79,136,184,.28);color:#23425c;border-bottom-right-radius:5px}
+.a .bubble{background:rgba(255,255,255,.6);border:1px solid var(--line);border-bottom-left-radius:5px}
+.who{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin:0 6px 3px}
 
-/* a "learned trait" / memory card with a luminous bead */
-.mcard{display:flex;gap:9px;align-items:flex-start;padding:9px 12px;margin:7px 0;border-radius:12px;
-  background:rgba(255,255,255,.72);border:1px solid var(--line);
+/* a "learned trait" / memory card with a signal bead */
+.mcard{display:flex;gap:9px;align-items:flex-start;padding:9px 12px;margin:7px 0;border-radius:4px;
+  background:rgba(255,255,255,.55);border:1px solid var(--line);
   opacity:0;transform:translateY(6px);transition:opacity .5s,transform .5s}
 .mcard.in{opacity:1;transform:none}
-.mcard.fresh{box-shadow:0 0 0 2px rgba(122,167,255,.35),0 6px 18px rgba(122,167,255,.18)}
+.mcard.fresh{box-shadow:0 0 0 1.5px rgba(47,163,146,.35),0 6px 20px rgba(47,163,146,.14)}
 .dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none;
-  background:radial-gradient(circle at 35% 30%,#fff,var(--halo));box-shadow:0 0 10px var(--halo)}
-.mcard:nth-child(3n+2) .dot,.mcard.k1 .dot{background:radial-gradient(circle at 35% 30%,#fff,var(--warm));box-shadow:0 0 10px var(--warm)}
-.mcard:nth-child(3n) .dot,.mcard.k2 .dot{background:radial-gradient(circle at 35% 30%,#fff,var(--gold));box-shadow:0 0 10px var(--gold)}
+  background:radial-gradient(circle at 35% 30%,#eafff6,var(--cyan));box-shadow:0 0 10px rgba(47,163,146,.5)}
+.mcard:nth-child(3n+2) .dot,.mcard.k1 .dot{background:radial-gradient(circle at 35% 30%,#faf1e4,var(--warm));box-shadow:0 0 10px rgba(185,141,94,.5)}
+.mcard:nth-child(3n) .dot,.mcard.k2 .dot{background:radial-gradient(circle at 35% 30%,#eef3fb,var(--halo));box-shadow:0 0 10px rgba(79,136,184,.5)}
 
 /* before/after answer cards */
-.ans{padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:rgba(255,255,255,.7)}
-.ans .tag{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px;font-weight:680}
+.ans{padding:12px 14px;border-radius:4px;border:1px solid var(--line);background:rgba(255,255,255,.5)}
+.ans .tag{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;font-weight:640}
 .ans.before .tag{color:var(--faint)}
 .ans.after .tag{color:var(--good)}
-.ans.after{box-shadow:0 0 0 1.5px rgba(91,191,154,.30)}
+.ans.after{box-shadow:0 0 0 1.5px rgba(47,154,110,.30)}
 
 footer{margin-top:26px;color:var(--faint);font-size:12px;line-height:1.6}
 footer b{color:var(--soft)}
+
+/* ---------------------------------------------------------------------------------------------------
+   THEME OVERRIDES for page-injected styles that hardcode surfaces. Pages append their <style> at
+   runtime (after this sheet), so these win by SPECIFICITY (body-prefixed), not order. */
+body .ri-col{background:var(--card);backdrop-filter:blur(14px);border-radius:4px}
+body .ri-col h3{font-family:var(--display);letter-spacing:.24em;border-bottom:1px solid var(--line);padding-bottom:8px;
+  box-shadow:0 2px 0 rgba(50,90,100,.07)}
+body .ri-turn.assistant{background:var(--wash);border-radius:4px}
+body .ri-tk-pop{background:var(--card2);box-shadow:0 8px 24px rgba(70,110,125,.2);border-radius:3px}
+body .ri-tk:hover{background:rgba(47,163,146,.10)}
+body .ri-tk.open{background:rgba(47,163,146,.14)}
+body .ri-act{background:rgba(255,255,255,.6);color:var(--ink);border-radius:3px}
+body .ri-act:hover{border-color:rgba(47,163,146,.45)}
+body .ri-qr-btn{background:rgba(255,255,255,.55);color:var(--soft);border-radius:3px}
+body .ri-qr-btn:hover{color:var(--ink);border-color:rgba(47,163,146,.45)}
+body .ri-card{border-radius:3px}
+body .ri-cmp .body{background:var(--wash);color:var(--ink);border-radius:3px}
+body .ri-cmp .side.now .lbl{color:var(--cyan)}
+body .ri-cmp .side.now .body{border-color:rgba(47,163,146,.35)}
+body .ri-save-btn{background:rgba(47,163,146,.10);border-color:rgba(47,163,146,.35);color:#1d6f60;border-radius:3px}
+body .ri-save-btn:hover{background:rgba(47,163,146,.16);border-color:rgba(47,163,146,.5)}
+body .ri-save-note.ok{color:var(--good)}
+body .ri-save-note.warn{color:var(--amber)}
+body .ri-prop .card{background:var(--wash)}
+body .ri-prop .chip{background:rgba(255,255,255,.6);color:var(--soft)}
+body .ri-prop .chip.pending{color:var(--amber);background:rgba(192,138,62,.10);border-color:rgba(192,138,62,.36)}
+body .ri-rcpt .m{background:rgba(255,255,255,.6);color:var(--soft);border-radius:3px}
+body .ri-rcpt .m b{color:var(--ink)}
+body .ri-rcpt .m.up b{color:var(--good)}
+body .ri-rcpt .m.down b{color:var(--amber)}
+body .ri-dial{border-color:rgba(79,136,184,.4);background:linear-gradient(180deg,rgba(79,136,184,.08),rgba(47,163,146,.05))}
+body .ri-dial .dgo{background:linear-gradient(180deg,rgba(79,136,184,.18),rgba(79,136,184,.10));border-color:rgba(79,136,184,.5);color:#2c4d6e}
+body .ri-dial .dgo:hover:not(:disabled){background:linear-gradient(180deg,rgba(79,136,184,.26),rgba(79,136,184,.14))}
+body .mem-card-remove{background:rgba(255,255,255,.6);color:var(--soft)}
+body .set-select{background:rgba(255,255,255,.6);color:var(--ink)}
+
+/* ---- shared editorial PAGE HEADER (the sleeve cover, via S.pageHead) ---- */
+.phead{margin-bottom:24px}
+.phead-kick{font-family:var(--display);font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--faint);
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:6px 0;
+  display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;
+  box-shadow:0 2px 0 rgba(50,90,100,.05)}   /* the doubled-rule echo */
+.phead-kick .r{color:var(--soft)}
+.phead-cover{display:grid;grid-template-columns:1fr auto;align-items:end;gap:8px 20px;
+  border-bottom:1px solid var(--line);padding:16px 0 12px;box-shadow:0 2px 0 rgba(50,90,100,.06)}
+.phead-title{font-size:clamp(34px,5.5vw,58px);line-height:.95;margin:0}   /* inherits the display face + period + misregister from h1 */
+.phead-counter{font-family:var(--display);font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--faint);text-align:right;max-width:320px;line-height:1.55;padding-bottom:5px}
+/* a small ghost button that can ride the kicker's right slot (e.g. Runs' refresh) */
+.phead-btn{font:inherit;font-size:10.5px;font-family:var(--display);letter-spacing:.16em;text-transform:uppercase;
+  color:var(--soft);background:rgba(255,255,255,.5);border:1px solid var(--line);border-radius:3px;padding:5px 11px;cursor:pointer}
+.phead-btn:hover:not(:disabled){color:var(--ink);border-color:rgba(47,163,146,.45);background:rgba(255,255,255,.8);transform:none;box-shadow:none}
+
+/* ---- editorial rollout: square the rounded page surfaces + display-font the section subheads ----
+   (centralized here so the pages' own big CSS blocks don't need rewriting; body-prefixed to win.) */
+body .mem-card,body .mem-strength,body .mem-pending,body .mem-list,body .mem-add,body .mem-dial,
+body .mem-retrain-note,body .mem-busy,body .mem-note,body .mem-risk-flag,body .mem-meta-chip,
+body .mem-btn,body .mem-card-remove,body .mem-add input[type=text],body .mem-edit textarea,
+body .bx-replytext,body .bx-err,body .bx-addrow input,body .bx-newdial,body .bx-tag,
+body .set-count,body .set-select,body .set-warn,body .set-ep code,body .cmp .ans,
+body .ans,body .lab-need,body .lab-card,body .chip,body .rmem.on,body .rdial,body .rflag{border-radius:3px}
+body .mem-listhead h2{font-family:var(--display);letter-spacing:.22em;font-size:11px}
+body .lab-t{font-family:var(--display);letter-spacing:.04em;text-transform:lowercase}
+/* pill buttons inside pages -> squared to match the band aesthetic */
+body .mem-btn,body .bx-newdial,body .mem-add input[type=text],body .bx-addrow input{border-radius:3px}

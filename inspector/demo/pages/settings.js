@@ -100,11 +100,12 @@
 
     view.appendChild(
       S.el("div", { class: "wrap" }, [
-        S.el("h1", {}, [S.el("span", { class: "glow" }, ["Settings"])]),
-        S.el("p", { class: "sub" }, [
-          "Your local runtime, where its data lives, and a couple of safe controls. Deliberately boring — ",
-          "nothing here changes how the model answers except switching the active model.",
-        ]),
+        S.pageHead({
+          kicker: "local runtime & data",
+          kickerRight: "deliberately boring",
+          title: "settings",
+          counter: "where it runs, where your data lives, and a couple of safe controls",
+        }),
 
         // reachability banner (shown only when nothing answered)
         S.el("div", { class: "set-offline", id: "set-offline", style: "display:none" }, [

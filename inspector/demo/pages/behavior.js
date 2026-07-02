@@ -42,12 +42,12 @@
   function render(view, ctx) {
     view.appendChild(
       S.el("div", { class: "wrap" }, [
-        S.el("h1", {}, [S.el("span", { class: "glow" }, ["Behavior"])]),
-        S.el("p", { class: "sub" }, [
-          "How the model responds. Drag a dial to shift its tone or thinking, add your own, then ",
-          S.el("b", {}, ["test it below"]),
-          " to feel the change — or replay your latest real request with these settings to see the difference.",
-        ]),
+        S.pageHead({
+          kicker: "how it responds",
+          kickerRight: "tune · test · replay",
+          title: "behavior",
+          counter: "dials over its tone and thinking — drag, test, then replay a real run to compare",
+        }),
 
         // the dials
         S.el("div", { class: "panel", style: "margin-top:18px" }, [

@@ -89,13 +89,12 @@
 
     view.appendChild(
       S.el("div", { class: "wrap" }, [
-        S.el("h1", {}, [S.el("span", { class: "glow" }, ["Lab"])]),
-        S.el("p", { class: "sub" }, [
-          "The deep glass-box surfaces — the ones that read and write the model's actual internals. ",
-          "Open one below to mount it right here in the shell, or pop it out into its own window. These stay ",
-          "experimental: they talk straight to the runtime, so they need the studio server (and, where noted, ",
-          "a specific model or the C++ engine) running.",
-        ]),
+        S.pageHead({
+          kicker: "deep glass-box tools",
+          kickerRight: "reads & writes real internals",
+          title: "lab",
+          counter: "experimental surfaces that talk straight to the runtime — open one here or pop it out",
+        }),
 
         S.el("div", { class: "lab-cards" }, SURFACES.map(function (s) { return card(s, ctx); })),
 

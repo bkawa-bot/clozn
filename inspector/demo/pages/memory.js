@@ -277,14 +277,12 @@
     state = freshState();
 
     var root = S.el("div", { class: "wrap" }, [
-      S.el("div", { class: "mem-head" }, [
-        S.el("div", {}, [
-          S.el("h1", {}, [S.el("span", { class: "glow" }, ["Memory"])]),
-          S.el("p", { class: "sub" }, [
-            "What the agent has learned to carry across replies — its remembered traits. Review what it wants to remember, adjust how strongly memory colors responses, add a trait, or remove one.",
-          ]),
-        ]),
-      ]),
+      S.pageHead({
+        kicker: "what it remembers about you",
+        kickerRight: "review · edit · delete",
+        title: "memory",
+        counter: "the traits it carries across replies — yours to read, approve, and remove",
+      }),
 
       S.el("div", { class: "mem-offline", id: "mem-offline", style: "display:none" }, [
         "The studio server is not reachable — showing an empty memory. Start ",

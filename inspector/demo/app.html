@@ -6,136 +6,160 @@
 <title>clozn · studio</title>
 <link rel="stylesheet" href="clozn.css">
 <style>
-  /* Studio shell layout + page styles. Palette + shared components (panel, button, nav, chat
-     bubble, memory card, answer card) come from clozn.css -- this file only adds the shell frame
-     (sidebar + scrolling view) and the Agent/Runs page-specific bits. No redesign. */
+  /* Studio shell -- SLEEVE LAYOUT on the Gen X Soft Club system (clozn.css owns palette + type).
+     The frame is three horizontal BANDS, like a compilation cover: masthead (brand · nav · substrate
+     glyph) / the view / a dense spec-strip footer. No sidebar, no floating cards: full-width bands,
+     hairline rules, lowercase display type, tracked-out caps micro-labels, tiny utilitarian fine print. */
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
-  body{font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);
+  body{font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI","Helvetica Neue",Roboto,sans-serif;color:var(--ink);
     height:100vh;overflow:hidden}
-  #app{display:flex;height:100vh}
+  #app{display:flex;flex-direction:column;height:100vh}
 
-  /* ---- sidebar (the IA) ---- */
-  #sidebar{width:214px;flex:none;display:flex;flex-direction:column;gap:2px;
-    padding:20px 14px 16px;border-right:1px solid var(--line);
-    background:rgba(255,255,255,.55);backdrop-filter:blur(12px)}
-  #sidebar .brand{display:flex;align-items:baseline;gap:7px;padding:2px 8px}
-  #sidebar .logo{font-weight:800;font-size:20px;letter-spacing:.2px;
-    background:linear-gradient(90deg,var(--halo),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
-  #sidebar .studioword{font-size:13px;color:var(--faint);font-weight:600}
-  #sidebar .brandsub{font-size:11px;color:var(--faint);padding:0 8px 14px;letter-spacing:.02em}
-  #nav{display:flex;flex-direction:column;gap:2px}
-  #nav a{display:block;text-decoration:none;color:var(--soft);font-size:14px;font-weight:560;
-    padding:9px 12px;border-radius:11px;transition:background .16s,color .16s}
-  #nav a:hover{background:rgba(122,167,255,.10);color:var(--ink)}
-  #nav a.here{background:linear-gradient(90deg,rgba(122,167,255,.18),rgba(79,195,214,.12));
-    color:var(--ink);font-weight:680;box-shadow:inset 0 0 0 1px rgba(122,167,255,.22)}
-  .sidefoot{margin-top:auto;display:flex;flex-direction:column;gap:6px;padding:12px 10px 0;border-top:1px solid var(--line)}
-  .sidelink{font-size:12px;color:var(--faint);text-decoration:none}
-  .sidelink:hover{color:var(--halo)}
+  /* ---- masthead: ONE ruled caps band -- brand · tabs (tracked caps) | tag · chip -- rule above+below ---- */
+  #masthead{flex:none;display:flex;align-items:center;gap:18px;padding:9px 28px;
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+    background:rgba(250,253,254,.66);backdrop-filter:blur(18px);
+    box-shadow:0 2px 0 rgba(50,90,100,.06), 0 5px 0 rgba(50,90,100,.03)}   /* fading echo of the lower rule */
+  #masthead .logo{font-family:var(--display);font-weight:600;font-size:16px;letter-spacing:.06em;text-transform:lowercase;flex:none;
+    background:linear-gradient(90deg,var(--halo),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent;
+    text-shadow:2px 0 0 rgba(47,163,146,.15), -2px 0 0 rgba(79,136,184,.12)}  /* misregistered print echo */
+  #masthead .studioword{font-family:var(--display);font-size:9px;color:var(--faint);letter-spacing:.32em;text-transform:uppercase;flex:none;margin-left:-10px}
+  #nav{display:flex;gap:2px;align-items:center;margin-left:8px}
+  #nav a{display:block;text-decoration:none;color:var(--soft);font-family:var(--display);font-size:11px;
+    letter-spacing:.2em;text-transform:uppercase;padding:5px 12px;border-bottom:2px solid transparent;
+    transition:color .16s,border-color .16s}
+  #nav a:hover{color:var(--ink)}
+  #nav a.here{color:var(--ink);border-bottom:2px solid var(--cyan);
+    box-shadow:0 3px 0 -1px rgba(47,163,146,.30), 0 7px 9px -3px rgba(47,163,146,.35)}  /* doubled underline + light trail */
+  .mh-right{margin-left:auto;display:flex;align-items:center;gap:12px;flex:none}
+  .mh-tag{font:10px/1 ui-monospace,Consolas,monospace;letter-spacing:.1em;color:var(--soft);white-space:nowrap}
+  @media(max-width:640px){.mh-tag{display:none}}
+  .subchip{flex:none;width:20px;height:20px;display:flex;align-items:center;justify-content:center;
+    border:1px solid rgba(47,163,146,.5);border-radius:3px;
+    font-family:var(--display);font-size:11px;color:var(--cyan);letter-spacing:0;text-transform:lowercase;
+    background:rgba(255,255,255,.5);box-shadow:0 0 10px rgba(47,163,146,.14)}
 
   /* ---- main scroll view ---- */
   #view{flex:1;min-width:0;overflow:auto}
-  #view .wrap{max-width:1120px;margin:0 auto;padding:30px 34px 70px}
-  #view h1{font-size:26px}
+  #view .wrap{max-width:1060px;margin:0 auto;padding:34px 34px 70px}
+  #view h1{font-size:27px}
   code{font:12.5px/1.5 ui-monospace,"Cascadia Code",Consolas,monospace;
-    background:rgba(122,167,255,.10);border:1px solid var(--line);border-radius:7px;padding:1px 7px;color:#3b485a}
+    background:rgba(79,136,184,.10);border:1px solid var(--line);border-radius:3px;padding:1px 7px;color:#35607a}
+
+  /* ---- spec strip: the fine-print band ---- */
+  #specstrip{flex:none;display:flex;align-items:center;gap:18px;padding:7px 28px;
+    border-top:1px solid var(--line);background:rgba(250,253,254,.62);backdrop-filter:blur(18px);
+    box-shadow:0 -2px 0 rgba(50,90,100,.06), 0 -5px 0 rgba(50,90,100,.03)}  /* mirrored echo, upward */
+  .spec{font:10.5px/1.4 ui-monospace,"Cascadia Code",Consolas,monospace;color:var(--faint);
+    letter-spacing:.06em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .spec.brandline{color:var(--soft)}
+  .spec.grow{flex:1}
+  #spec-endpoint{cursor:pointer;color:var(--soft)}
+  #spec-endpoint:hover{color:var(--cyan)}
+  .speclink{text-decoration:none}
+  .speclink:hover{color:var(--cyan)}
 
   /* ---- Agent page ---- */
-  .agentgrid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:20px;margin-top:22px}
+  .agentgrid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:1px;margin-top:22px;
+    background:var(--line);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
   @media (max-width:920px){.agentgrid{grid-template-columns:1fr}}
+  .agentgrid>.panel{border:none;border-radius:0;box-shadow:none}
   .statuscard,.testcard{padding:0 0 16px}
   .srows{padding:6px 18px 4px}
   .srow{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px dashed var(--line)}
   .srow:last-child{border-bottom:none}
-  .slabel{color:var(--faint);font-size:13px;flex:none}
+  .slabel{color:var(--faint);font-size:11px;letter-spacing:.14em;text-transform:uppercase;flex:none;padding-top:2px}
   .sval-wrap{display:flex;align-items:center;gap:7px;text-align:right;justify-content:flex-end;flex-wrap:wrap}
-  .sval{color:var(--ink);font-size:13.5px;font-weight:560;word-break:break-word}
-  .sval.mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12.5px;font-weight:500;color:#3b485a}
+  .sval{color:var(--ink);font-size:13.5px;font-weight:520;word-break:break-word}
+  .sval.mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12.5px;font-weight:450;color:#35607a}
   .sval.faintv,.faintv{color:var(--faint);font-weight:400;font-style:italic}
   .sdot{width:8px;height:8px;border-radius:50%;flex:none}
-  .sdot.ok{background:radial-gradient(circle at 35% 30%,#fff,var(--good));box-shadow:0 0 8px var(--good)}
+  .sdot.ok{background:radial-gradient(circle at 35% 30%,#eafff6,var(--good));box-shadow:0 0 8px rgba(140,207,174,.7)}
   .sdot.idle{background:var(--mask)}
-  .sdot.off{background:radial-gradient(circle at 35% 30%,#fff,var(--warm));box-shadow:0 0 8px var(--warm)}
+  .sdot.off{background:radial-gradient(circle at 35% 30%,#f6ecdf,var(--amber));box-shadow:0 0 8px rgba(216,169,94,.6)}
   .chips{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
-  .chip{font-size:11.5px;padding:2px 9px;border-radius:11px;white-space:nowrap}
-  .chip.steer{background:rgba(122,167,255,.14);border:1px solid rgba(122,167,255,.30);color:var(--soft)}
+  .chip{font-size:11.5px;padding:2px 9px;border-radius:3px;white-space:nowrap}
+  .chip.steer{background:rgba(143,184,216,.12);border:1px solid rgba(143,184,216,.30);color:var(--soft)}
   .cardactions{display:flex;gap:9px;flex-wrap:wrap;padding:12px 18px 2px}
   .cardhint{color:var(--faint);font-size:12.5px;margin:2px 18px 10px;line-height:1.45}
-  .testinput{width:calc(100% - 36px);margin:0 18px;border:1px solid var(--line);border-radius:13px;
-    padding:11px 13px;font:inherit;font-size:14px;background:#fff;outline:none;resize:vertical;color:var(--ink)}
-  .testinput:focus{border-color:var(--halo);box-shadow:0 0 0 3px rgba(122,167,255,.13)}
+  .testinput{width:calc(100% - 36px);margin:0 18px;border:1px solid var(--line);border-radius:3px;
+    padding:11px 13px;font:inherit;font-size:14px;background:rgba(255,255,255,.6);outline:none;resize:vertical;color:var(--ink)}
+  .testinput::placeholder{color:var(--faint)}
+  .testinput:focus{border-color:rgba(47,163,146,.5);box-shadow:0 0 0 3px rgba(47,163,146,.11)}
   .testout{padding:4px 18px 0}
-  .testout .who{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:8px 0 3px}
-  .testreply{background:rgba(255,255,255,.85);border:1px solid var(--line);border-radius:13px;
+  .testout .who{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);margin:8px 0 3px}
+  .testreply{background:var(--wash);border:1px solid var(--line);border-radius:3px;
     padding:11px 13px;white-space:pre-wrap;font-size:14px;color:var(--ink)}
-  .notewarn{margin:12px 0 0;padding:10px 12px;border-radius:11px;font-size:12.5px;color:#8a5a2a;
-    background:rgba(230,196,120,.14);border:1px solid rgba(230,196,120,.4)}
+  .notewarn{margin:12px 0 0;padding:10px 12px;border-radius:3px;font-size:12.5px;color:var(--amber);
+    background:rgba(216,169,94,.10);border:1px solid rgba(216,169,94,.32)}
 
-  /* ---- Runs page ---- */
+  /* ---- Runs page: a band list with hairline separators, not hover-cards ---- */
   .runshead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-  .filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:18px 0 12px}
-  .filterlabel{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:0 4px 0 8px}
+  .filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:18px 0 0;padding-bottom:12px;border-bottom:1px solid var(--line);
+    box-shadow:0 2px 0 rgba(50,90,100,.05)}
+  .filterlabel{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint);margin:0 4px 0 8px}
   .filterlabel:first-child{margin-left:0}
-  .fchip{font:inherit;font-size:12.5px;border:1px solid var(--line);background:rgba(255,255,255,.7);
-    color:var(--soft);border-radius:16px;padding:5px 12px;cursor:pointer;transition:background .15s,color .15s,border-color .15s}
-  .fchip:hover{color:var(--ink);border-color:var(--halo)}
-  .fchip.on{background:linear-gradient(90deg,rgba(122,167,255,.20),rgba(79,195,214,.14));
-    color:var(--ink);border-color:rgba(122,167,255,.4);font-weight:620}
-  .runlist{padding:6px 6px;overflow:hidden}
+  .fchip{font:inherit;font-size:12px;border:1px solid var(--line);background:rgba(255,255,255,.55);
+    color:var(--soft);border-radius:3px;padding:4px 11px;cursor:pointer;letter-spacing:.04em;
+    transition:background .15s,color .15s,border-color .15s}
+  .fchip:hover{color:var(--ink);border-color:rgba(47,163,146,.45)}
+  .fchip.on{background:rgba(47,163,146,.10);color:var(--ink);border-color:rgba(47,163,146,.4);font-weight:600}
+  .runlist{padding:0;overflow:hidden;border:none;border-radius:0;background:none;box-shadow:none;backdrop-filter:none}
   .runloading,.runempty{padding:34px 20px;text-align:center;color:var(--faint)}
   .runempty-t{font-size:15px;color:var(--soft);margin-bottom:6px}
   .runempty-s{font-size:13px;max-width:520px;margin:0 auto;line-height:1.5}
   .runrow{display:grid;grid-template-columns:78px 128px minmax(0,1fr) 116px 150px 66px auto;
-    align-items:center;gap:12px;padding:12px 14px;border-radius:12px;cursor:pointer;
-    border:1px solid transparent;transition:background .14s,border-color .14s,box-shadow .14s}
-  .runrow:hover{background:rgba(122,167,255,.07);border-color:rgba(122,167,255,.22);box-shadow:0 3px 14px rgba(120,150,210,.09)}
-  .runrow:focus{outline:none;background:rgba(122,167,255,.09);border-color:rgba(122,167,255,.35)}
-  .runrow + .runrow{margin-top:2px}
+    align-items:center;gap:12px;padding:13px 10px;cursor:pointer;border:none;border-radius:0;
+    border-bottom:1px solid var(--line);transition:background .14s}
+  .runrow:hover{background:rgba(47,163,146,.06)}
+  .runrow:focus{outline:none;background:rgba(47,163,146,.08);box-shadow:inset 2px 0 0 var(--cyan)}
+  .runrow + .runrow{margin-top:0}
   .rc{min-width:0}
   .rc-time{display:flex;flex-direction:column;line-height:1.25}
-  .rtime{font-size:13px;font-weight:620;color:var(--ink)}
+  .rtime{font-size:12.5px;font-weight:600;color:var(--ink);font-family:ui-monospace,Consolas,monospace}
   .rdate{font-size:10.5px;color:var(--faint)}
-  .rsource{display:block;font-size:12.5px;font-weight:600;color:var(--soft)}
+  .rsource{display:block;font-size:12.5px;font-weight:560;color:var(--soft)}
   .rclient{display:block;font-size:10.5px;color:var(--faint)}
   .rprompt{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink);font-size:13.5px}
   .rmem{font-size:12px;color:var(--faint)}
-  .rmem.on{color:var(--soft);background:rgba(231,168,196,.14);border:1px solid rgba(231,168,196,.34);border-radius:10px;padding:1px 8px}
-  .rdial{font-size:11px;color:var(--soft);background:rgba(122,167,255,.12);border:1px solid rgba(122,167,255,.26);
-    border-radius:9px;padding:1px 7px;margin:1px 3px 1px 0;display:inline-block;white-space:nowrap}
+  .rmem.on{color:var(--soft);background:rgba(216,180,142,.10);border:1px solid rgba(216,180,142,.30);border-radius:3px;padding:1px 8px}
+  .rdial{font-size:11px;color:var(--soft);background:rgba(143,184,216,.10);border:1px solid rgba(143,184,216,.26);
+    border-radius:3px;padding:1px 7px;margin:1px 3px 1px 0;display:inline-block;white-space:nowrap}
   .rdial.more{background:none;border-color:var(--line);color:var(--faint)}
   .rc-dur{font-size:12px;color:var(--faint);text-align:right;font-family:ui-monospace,Consolas,monospace}
   .rc-flags{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
-  .rflag{font-size:10px;letter-spacing:.02em;padding:2px 7px;border-radius:9px;white-space:nowrap;font-weight:600}
-  .f-memory{background:rgba(231,168,196,.16);border:1px solid rgba(231,168,196,.4);color:#b06a8a}
-  .f-steered{background:rgba(122,167,255,.14);border:1px solid rgba(122,167,255,.34);color:#5a78c0}
-  .f-pending{background:rgba(230,196,120,.16);border:1px solid rgba(230,196,120,.42);color:#a9762a}
-  .f-low{background:rgba(230,196,120,.16);border:1px solid rgba(230,196,120,.42);color:#a9762a}
-  .f-replay{background:rgba(79,195,214,.14);border:1px solid rgba(79,195,214,.36);color:#2f97a8}
-  .f-error{background:rgba(231,120,120,.14);border:1px solid rgba(231,120,120,.4);color:#c0504a}
-  .f-long{background:rgba(120,140,190,.10);border:1px solid var(--line);color:var(--faint)}
+  .rflag{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;border-radius:3px;white-space:nowrap;font-weight:560}
+  .f-memory{background:rgba(216,180,142,.12);border:1px solid rgba(216,180,142,.34);color:var(--warm)}
+  .f-steered{background:rgba(143,184,216,.12);border:1px solid rgba(143,184,216,.32);color:var(--halo)}
+  .f-pending{background:rgba(216,169,94,.12);border:1px solid rgba(216,169,94,.36);color:var(--amber)}
+  .f-low{background:rgba(216,169,94,.12);border:1px solid rgba(216,169,94,.36);color:var(--amber)}
+  .f-replay{background:rgba(47,163,146,.10);border:1px solid rgba(47,163,146,.34);color:var(--cyan)}
+  .f-error{background:rgba(190,100,100,.10);border:1px solid rgba(190,100,100,.34);color:#a85454}
+  .f-long{background:rgba(154,176,170,.08);border:1px solid var(--line);color:var(--faint)}
 
   /* ---- stub pages (Memory / Behavior / Lab / Settings / Run) ---- */
-  .stubnote{margin:18px 0 16px;padding:12px 15px;border-radius:13px;font-size:13px;color:var(--soft);
-    background:rgba(122,167,255,.08);border:1px solid var(--line);line-height:1.5}
-  .stubnote a{color:var(--halo);text-decoration:none;font-weight:600}
+  .stubnote{margin:18px 0 16px;padding:12px 15px;border-radius:3px;font-size:13px;color:var(--soft);
+    background:rgba(143,184,216,.07);border:1px solid var(--line);line-height:1.5}
+  .stubnote a{color:var(--cyan);text-decoration:none;font-weight:560}
   .stubnote a:hover{text-decoration:underline}
-  .cs-badge{display:inline-block;font-size:10px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;
-    color:var(--cyan);background:rgba(79,195,214,.12);border:1px solid rgba(79,195,214,.34);border-radius:9px;padding:2px 8px;margin-right:8px}
+  .cs-badge{display:inline-block;font-size:10px;letter-spacing:.2em;text-transform:uppercase;font-weight:640;
+    color:var(--cyan);background:rgba(47,163,146,.08);border:1px solid rgba(47,163,146,.32);border-radius:3px;padding:2px 8px;margin-right:8px}
   .comingsoon{text-align:center;max-width:560px;margin:0 auto;padding:14px 0}
-  .embed{width:100%;height:calc(100vh - 250px);min-height:420px;border:1px solid var(--line);border-radius:16px;
-    background:#fff;box-shadow:0 10px 34px rgba(120,150,210,.10)}
-  .labgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;margin-top:8px}
-  .labtool{display:block;text-decoration:none;padding:16px 17px;border-radius:15px;border:1px solid var(--line);
-    background:rgba(255,255,255,.7);transition:transform .15s,box-shadow .2s,border-color .15s}
-  .labtool:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(120,150,210,.14);border-color:rgba(122,167,255,.3)}
-  .labtool-n{font-size:15px;font-weight:660;color:var(--ink)}
-  .labtool-arrow{color:var(--halo)}
+  .embed{width:100%;height:calc(100vh - 250px);min-height:420px;border:1px solid var(--line);border-radius:4px;
+    background:var(--bg1);box-shadow:0 12px 34px rgba(70,110,125,.16)}
+  .labgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1px;margin-top:8px;
+    background:var(--line);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .labtool{display:block;text-decoration:none;padding:16px 17px;border:none;border-radius:0;
+    background:var(--card);backdrop-filter:blur(10px);transition:background .15s}
+  .labtool:hover{background:rgba(47,163,146,.06);transform:none;box-shadow:none}
+  .labtool-n{font-family:var(--display);font-size:14.5px;font-weight:600;letter-spacing:.04em;text-transform:lowercase;color:var(--ink)}
+  .labtool-arrow{color:var(--cyan)}
   .labtool-d{font-size:12.5px;color:var(--faint);margin-top:4px;line-height:1.45}
 </style>
 </head>
 <body>
-  <div id="app"><!-- shell (sidebar + #view) is built by pages/app.js --></div>
+  <div id="app"><!-- shell (masthead + #view + spec strip) is built by pages/app.js --></div>
 
   <!-- Router + shared helpers first, then each self-registering page module.
        Load order doesn't matter for correctness: app.js re-renders the current route as modules
