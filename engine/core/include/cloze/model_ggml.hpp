@@ -134,6 +134,7 @@ public:
                      const std::vector<float>& values) override;
     void clear_write();
     int n_layer() const { return n_layer_; }
+    int n_embd() const { return n_embd_; }  // hidden size (e.g. the --sae dim check at startup)
 
     // Diffusion soft-PREFIX injection (train-on-HF / serve-on-engine hybrid, diffusion side): lay a
     // continuous prefix (m x n_embd, row-major) as a FROZEN block at positions [0,m) that the whole board

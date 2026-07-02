@@ -118,7 +118,13 @@ int main(int argc, char** argv) {
         std::printf("  encode_dense failed: %s\n", sae.error().c_str());
         return 1;
     }
-    double max_d = 0.0, sum_d = 0.0;
+    // fp16 error is RELATIVE (ulp at 13000 is 8.0; real first-token attention-sink rows reach that),
+    // so the contract is |d| <= max(0.05, 4e-3 * magnitude) — ~4 fp16 ulps, loose enough for
+    // accumulation-order noise, tight enough that a wrong bias/layer/transpose (O(1) relative)
+    // fails loudly. Track the worst absolute AND worst relative excess.
+    const double kAbsTol = 0.05, kRelTol = 4e-3;
+    double max_d = 0.0, sum_d = 0.0, max_rel = 0.0;
+    long long out_of_tol = 0;
     long long flips = 0;           // one side zero (gated off), the other live — a threshold flip
     double max_flip_mag = 0.0;     // magnitude of the live side at the worst flip
     for (size_t i = 0; i < gated.size(); ++i) {
@@ -129,12 +135,17 @@ int main(int argc, char** argv) {
             continue;  // flips are counted, not folded into the numeric diff
         }
         const double d = std::fabs(r - g);
+        const double mag = std::max(std::fabs(r), std::fabs(g));
         sum_d += d;
         if (d > max_d) max_d = d;
+        if (mag > 1.0) max_rel = std::max(max_rel, d / mag);
+        if (d > std::max(kAbsTol, kRelTol * mag)) ++out_of_tol;
     }
-    std::printf("  gated matrix: max|d|=%.4g mean|d|=%.3g over %zu elems; gate flips=%lld (worst mag %.3g)\n",
-                max_d, sum_d / static_cast<double>(gated.size()), gated.size(), flips, max_flip_mag);
-    expect(max_d <= 0.05, "gated values within fp16 tolerance (max|d| <= 0.05)");
+    std::printf("  gated matrix: max|d|=%.4g max rel=%.3g mean|d|=%.3g over %zu elems; "
+                "out-of-tol=%lld gate flips=%lld (worst mag %.3g)\n",
+                max_d, max_rel, sum_d / static_cast<double>(gated.size()), gated.size(),
+                out_of_tol, flips, max_flip_mag);
+    expect(out_of_tol == 0, "gated values within fp16 tolerance (|d| <= max(0.05, 4e-3*mag))");
     expect(flips <= 20, "threshold gate flips rare (<= 20 of ~1M)");
     expect(max_flip_mag <= 4.0, "any flip is a near-threshold feature (mag <= 4.0)");
 
@@ -146,7 +157,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     double min_overlap = 1.0, sum_overlap = 0.0;
-    double max_val_d = 0.0;
+    double max_val_d = 0.0, max_val_rel = 0.0;
+    long long val_out_of_tol = 0;
     for (int r = 0; r < rows; ++r) {
         std::map<int32_t, float> ref_live, got_live;  // live = value > 0 (pad slots carry 0)
         for (int c = 0; c < k; ++c) {
@@ -159,7 +171,11 @@ int main(int argc, char** argv) {
             const auto it = got_live.find(kv.first);
             if (it == got_live.end()) continue;
             ++inter;
-            max_val_d = std::max(max_val_d, static_cast<double>(std::fabs(kv.second - it->second)));
+            const double d = std::fabs(kv.second - it->second);
+            const double mag = std::max(std::fabs(kv.second), std::fabs(it->second));
+            max_val_d = std::max(max_val_d, d);
+            if (mag > 1.0) max_val_rel = std::max(max_val_rel, d / mag);
+            if (d > std::max(kAbsTol, kRelTol * mag)) ++val_out_of_tol;
         }
         const size_t denom = std::max(ref_live.size(), got_live.size());
         const double overlap = denom == 0 ? 1.0 : static_cast<double>(inter) / static_cast<double>(denom);
@@ -168,11 +184,11 @@ int main(int argc, char** argv) {
         std::printf("  row %d: live ref=%zu got=%zu inter=%d overlap=%.3f\n",
                     r, ref_live.size(), got_live.size(), inter, overlap);
     }
-    std::printf("  top-k: mean overlap=%.4f min=%.4f, matched-value max|d|=%.4g\n",
-                sum_overlap / rows, min_overlap, max_val_d);
+    std::printf("  top-k: mean overlap=%.4f min=%.4f, matched-value max|d|=%.4g max rel=%.3g\n",
+                sum_overlap / rows, min_overlap, max_val_d, max_val_rel);
     expect(sum_overlap / rows >= 0.97, "top-k index sets agree (mean overlap >= 0.97)");
     expect(min_overlap >= 0.9, "worst row still agrees (min overlap >= 0.90)");
-    expect(max_val_d <= 0.05, "matched top-k values within fp16 tolerance (<= 0.05)");
+    expect(val_out_of_tol == 0, "matched top-k values within fp16 tolerance (rel-aware)");
 
     // --- perf receipt (workspace already grown; the steady-state per-readout cost) ---
     const auto t0 = std::chrono::steady_clock::now();

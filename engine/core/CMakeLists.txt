@@ -239,6 +239,12 @@ if(CLOZE_BUILD_SERVE AND CLOZE_BUILD_GGML)
     add_executable(cloze-server serve/cloze_server.cpp ${_vendor}/cpp-httplib/httplib.cpp)
     target_include_directories(cloze-server PRIVATE ${_vendor}/cpp-httplib ${_vendor})
     target_link_libraries(cloze-server PRIVATE cloze_ggml)
+    if(CLOZE_BUILD_SAE)
+        # --sae <dir>: the on-device SAE feature readout rides the server (cloze/sae.hpp is a
+        # CUDA-free pimpl header, so this stays a plain-CXX target; cloze_sae brings cudart).
+        target_link_libraries(cloze-server PRIVATE cloze_sae)
+        target_compile_definitions(cloze-server PRIVATE CLOZE_SAE)
+    endif()
     find_package(Threads REQUIRED)
     target_link_libraries(cloze-server PRIVATE Threads::Threads)
     if(WIN32)

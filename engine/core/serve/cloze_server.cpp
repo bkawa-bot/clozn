@@ -21,6 +21,9 @@
 #include "cloze/generate.hpp"
 #include "cloze/generate_ar.hpp"
 #include "cloze/model_ggml.hpp"
+#ifdef CLOZE_SAE
+#include "cloze/sae.hpp"  // on-device SAE feature readout (--sae; built with CLOZE_BUILD_SAE)
+#endif
 #include "viz_html.hpp"
 
 #include <atomic>
@@ -432,6 +435,94 @@ json board_layout_json(const GgmlModel& model, const std::vector<int>& board, in
     return layout;
 }
 
+// ---- on-device SAE feature readout (--sae <dir>; ROADMAP 3.3 wired into the server) ----
+// When active, every featureful request taps the residual at the SAE's OWN layer, encodes the
+// tapped rows on the GPU (cloze/sae.hpp: JumpReLU GEMV + the sae_topk kernel) and rides each pass's
+// top-k features onto the stream as a SECOND StepFeatures event whose names are raw feature indices
+// ("sae:<id>") — the same positions-x-features wire shape the concept probes already use, so
+// StateStepBuilder / the inspector parse it unchanged. The Neuronpedia id -> label mapping stays
+// host/Python side (research/np_labels_l15.json via brain_readout.py), by design: the engine ships
+// indices, never a 131k-entry string table. The holder exists in every build so the run lambdas
+// capture it uniformly; without CLOZE_BUILD_SAE it is permanently off and --sae refuses at startup.
+struct SaeServe {
+#ifdef CLOZE_SAE
+    SaeEncoder enc;   // the device-resident encoder weights (loaded once at startup)
+#endif
+    bool on = false;  // loaded + n_embd == d_in verified; readouts ride featureful requests
+    int layer = 0;    // the SAE's residual layer — the read tap moves here when on
+    int k = 16;       // features kept per position (--sae-k)
+};
+
+#ifdef CLOZE_SAE
+// One pass's SAE readout: encode the raw-activation event's rows (chunked so the encoder workspace
+// stays bounded at ~16 MB regardless of diffusion block size) and fold every row's top-k into one
+// StepFeatures over the UNION of lit features (score 0 where a feature missed a row's top-k).
+// nullopt when nothing lit / dims mismatch / CUDA failure — the pass just has no SAE readout.
+std::optional<StepFeatures> sae_features_from(const StepActivations& sa, SaeEncoder& enc, int k) {
+    const int rows = static_cast<int>(sa.positions.size());
+    if (rows <= 0 || sa.n_embd != enc.d_in()) return std::nullopt;
+    constexpr int kRowChunk = 32;  // 0.5 MB/row of device workspace; 32 caps it while covering blocks
+    std::vector<int32_t> idx;
+    std::vector<float> val;
+    idx.reserve(static_cast<size_t>(rows) * k);
+    val.reserve(static_cast<size_t>(rows) * k);
+    for (int r0 = 0; r0 < rows; r0 += kRowChunk) {
+        const int rn = rows - r0 < kRowChunk ? rows - r0 : kRowChunk;
+        std::vector<int32_t> ci;
+        std::vector<float> cv;
+        if (!enc.encode_topk(sa.values.data() + static_cast<size_t>(r0) * sa.n_embd, rn, k, ci, cv))
+            return std::nullopt;
+        idx.insert(idx.end(), ci.begin(), ci.end());
+        val.insert(val.end(), cv.begin(), cv.end());
+    }
+    // Union of live features (value > 0; zero-valued slots are the top-k pad), ascending ids.
+    std::vector<int32_t> feats;
+    for (size_t i = 0; i < idx.size(); ++i)
+        if (val[i] > 0.0f) feats.push_back(idx[i]);
+    std::sort(feats.begin(), feats.end());
+    feats.erase(std::unique(feats.begin(), feats.end()), feats.end());
+    if (feats.empty()) return std::nullopt;
+
+    StepFeatures sf;
+    sf.t = sa.t;
+    sf.block = sa.block;
+    sf.positions = sa.positions;
+    sf.features.reserve(feats.size());
+    for (int32_t f : feats) sf.features.push_back("sae:" + std::to_string(f));
+    sf.scores.assign(static_cast<size_t>(rows) * feats.size(), 0.0f);
+    for (int r = 0; r < rows; ++r)
+        for (int j = 0; j < k; ++j) {
+            const size_t i = static_cast<size_t>(r) * k + j;
+            if (val[i] <= 0.0f) continue;
+            const size_t c = std::lower_bound(feats.begin(), feats.end(), idx[i]) - feats.begin();
+            sf.scores[static_cast<size_t>(r) * feats.size() + c] = val[i];
+        }
+    return sf;
+}
+#endif  // CLOZE_SAE
+
+// Wrap a run's event sink so each StepActivations (emitted whenever the white-box tap is on) also
+// yields its SAE readout, BEFORE the activations event itself — both land in the same StateStep.
+// Identity when inactive (or in a CLOZE_SAE-less build), so the plain path is byte-identical.
+std::function<void(const Event&)> with_sae_readout(const std::function<void(const Event&)>& on_event,
+                                                   SaeServe& sae, bool active) {
+#ifdef CLOZE_SAE
+    if (active && sae.on && on_event) {
+        SaeEncoder* enc = &sae.enc;
+        const int k = sae.k;
+        return [on_event, enc, k](const Event& e) {
+            if (const auto* sa = std::get_if<StepActivations>(&e))
+                if (auto sf = sae_features_from(*sa, *enc, k)) on_event(Event(*sf));
+            on_event(e);
+        };
+    }
+#else
+    (void)sae;
+    (void)active;
+#endif
+    return on_event;
+}
+
 // ---- white-box concept probe calibration (Tier 2) ----
 // Categorize a decoded token piece: "number" (has a digit), "punct" (no alphanumerics), "word"
 // (all letters), or nullptr (mixed / unknown). Mirrors lab p4_dream_probe.category. ASCII-only
@@ -727,12 +818,15 @@ private:
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <model.gguf> [--port N] [--host H] [--gpu-layers N] "
-                             "[--mask-token ID] [--eos ID] [--ctx N] [--workers N]\n", argv[0]);
+                             "[--mask-token ID] [--eos ID] [--ctx N] [--workers N] "
+                             "[--sae <dir>] [--sae-k N]\n", argv[0]);
         return 1;
     }
     const std::string model_path = argv[1];
     int port = 8080, gpu_layers = 0, mask_token = 151665, eos = -1, n_ctx = 4096, workers = 1;
     std::string host = "127.0.0.1";
+    std::string sae_dir;  // --sae: exported SAE weight dir (tools/export_sae_weights.py); off by default
+    int sae_k = 16;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() { return (i + 1 < argc) ? argv[++i] : ""; };
@@ -743,13 +837,39 @@ int main(int argc, char** argv) {
         else if (a == "--eos") eos = std::atoi(next());
         else if (a == "--ctx") n_ctx = std::atoi(next());
         else if (a == "--workers") workers = std::atoi(next());
+        else if (a == "--sae") sae_dir = next();
+        else if (a == "--sae-k") sae_k = std::atoi(next());
     }
     if (workers < 1) workers = 1;
+    if (sae_k < 1) sae_k = 1;
 
     llama_log_set(quiet_log, nullptr);
     // One copy of the weights, N contexts over it — concurrent requests, one model in (V)RAM.
     auto model = std::make_shared<GgmlModel>(model_path, mask_token, eos, gpu_layers);
     ContextPool pool(model, workers, n_ctx);
+
+    // --sae: load the on-device SAE encoder BEFORE probe calibration (the read tap must move to the
+    // SAE's layer so the probes calibrate in the space they'll project). Refusals are hard errors —
+    // a server that silently dropped the requested readout would be lying about what it emits.
+    SaeServe sae_serve;
+    sae_serve.k = sae_k;
+    if (!sae_dir.empty()) {
+#ifdef CLOZE_SAE
+        if (!sae_serve.enc.load(sae_dir)) {
+            std::fprintf(stderr, "[cloze-server] --sae load failed: %s\n", sae_serve.enc.error().c_str());
+            return 1;
+        }
+        sae_serve.layer = sae_serve.enc.layer();
+        sae_serve.on = true;  // n_embd-vs-d_in verified against the model below (calibration block)
+        std::fprintf(stderr, "[cloze-server] SAE ready: %d features, d_in %d, layer %d, k %d (%.0f MB device)\n",
+                     sae_serve.enc.d_sae(), sae_serve.enc.d_in(), sae_serve.layer, sae_serve.k,
+                     sae_serve.enc.device_bytes() / 1e6);
+#else
+        std::fprintf(stderr, "[cloze-server] --sae requires a server built with -DCLOZE_BUILD_SAE=ON "
+                             "(this binary has no CUDA SAE encoder)\n");
+        return 1;
+#endif
+    }
 
     // Mode follows the MODEL: a diffusion dLLM (LLaDA/Dream) carries a mask token in its GGUF; a
     // standard autoregressive LLM (Llama/Qwen/Mistral/...) does not. AR mode serves /v1/completions
@@ -782,7 +902,25 @@ int main(int argc, char** argv) {
         // the per-token causal hidden states the AR tap also sees.
         if (ar_mode) cal.set_causal(true);
         cal.set_emit_activations(true);
-        const int read_tap = cal.tap_layer();                   // default early tap (read-optimal)
+#ifdef CLOZE_SAE
+        if (sae_serve.on) {
+            // The SAE only reads the residual space it was trained on: n_embd must equal d_in (the
+            // cached andyrdt L15 SAE is Qwen2.5-7B-Instruct's 3584 — a Llama-1B GGUF can't serve it).
+            if (cal.n_embd() != sae_serve.enc.d_in()) {
+                std::fprintf(stderr, "[cloze-server] --sae mismatch: model n_embd %d != SAE d_in %d "
+                                     "(this SAE targets Qwen2.5-7B-Instruct layer %d residuals)\n",
+                             cal.n_embd(), sae_serve.enc.d_in(), sae_serve.layer);
+                return 1;
+            }
+            // Featureful requests will tap at the SAE's layer, so the concept probes must calibrate
+            // THERE (a diff-in-means direction only reads in the space it was calibrated in). Costs
+            // the early-tap sharpness; keeping the display honest matters more than the sharpness.
+            cal.set_tap_layer(sae_serve.layer);
+            std::fprintf(stderr, "[cloze-server] --sae active: read tap + concept probes move to layer %d\n",
+                         sae_serve.layer);
+        }
+#endif
+        const int read_tap = cal.tap_layer();                   // default early tap (SAE layer when --sae)
         concept_probes = calibrate_concept_probes(cal, *model);
         const int steer_tap = cal.n_layer() * 2 / 3;
         cal.set_tap_layer(steer_tap);
@@ -795,8 +933,13 @@ int main(int argc, char** argv) {
     httplib::Server svr;
 
     svr.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
-        res.set_content(json{{"status", "ok"}, {"model", model_path},
-                             {"mode", ar_mode ? "autoregressive" : "diffusion"}}.dump(), "application/json");
+        json h{{"status", "ok"}, {"model", model_path},
+               {"mode", ar_mode ? "autoregressive" : "diffusion"}};
+#ifdef CLOZE_SAE
+        if (sae_serve.on)
+            h["sae"] = {{"d_sae", sae_serve.enc.d_sae()}, {"layer", sae_serve.layer}, {"k", sae_serve.k}};
+#endif
+        res.set_content(h.dump(), "application/json");
     });
 
     // The real-time denoise visualization (a pure consumer of the SSE event stream).
@@ -871,10 +1014,15 @@ int main(int argc, char** argv) {
 
         // One call into the runtime on a POOLED context (acquire blocks until one is free, so N
         // workers run N requests concurrently; the Lease releases it on any exit).
-        auto run = [&pool, &concept_probes, &steer_probes, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec](
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);  // white-box tap on for this request (off by default)
+            // --sae: read at the SAE's own layer and ride each pass's top-k features on the stream.
+            const bool sae_on = features && sae_serve.on;
+            const int default_tap = (*lease).tap_layer();
+            if (sae_on) (*lease).set_tap_layer(sae_serve.layer);
+            const std::function<void(const Event&)> ev = with_sae_readout(on_event, sae_serve, sae_on);
             const ConceptProbes* probes = (features && concept_probes.ready()) ? &concept_probes : nullptr;
             const bool steering = !steer_concept.empty() && steer_coef != 0.0 && steer_probes.ready();
             const bool raw_steer = !steer_vec.empty();   // a raw tone direction (studio engine dials)
@@ -906,13 +1054,14 @@ int main(int argc, char** argv) {
             const bool diff_prefix = !ar_mode && !prefix_embd.empty() && prefix_rows > 0;
             if (diff_prefix) (*lease).set_diffusion_prefix(prefix_embd, prefix_rows);
             auto r = ar_mode
-                       ? generate_ar(*lease, prompt_ids, cfg, on_event, sample, probes,
+                       ? generate_ar(*lease, prompt_ids, cfg, ev, sample, probes,
                                      prefix_embd.empty() ? nullptr : &prefix_embd, prefix_rows)
                        : (is_infill
-                            ? infill(*lease, prompt_ids, suffix_ids, gap, cfg, nullptr, on_event, revise, sample, probes)
-                            : generate(*lease, prompt_ids, cfg, cache, nullptr, on_event, revise, sample, probes));
+                            ? infill(*lease, prompt_ids, suffix_ids, gap, cfg, nullptr, ev, revise, sample, probes)
+                            : generate(*lease, prompt_ids, cfg, cache, nullptr, ev, revise, sample, probes));
             if (diff_prefix) (*lease).clear_diffusion_prefix();
             if (steering || raw_steer) (*lease).clear_steer();
+            if (sae_on) (*lease).set_tap_layer(default_tap);
             (*lease).set_emit_activations(false);  // reset before returning the pooled context
             return r;
         };
@@ -1212,9 +1361,13 @@ int main(int argc, char** argv) {
             steer_layer = body["steer"].value("layer", 0);
         }
 
-        auto run = [&pool, &concept_probes, &steer_probes, board, cfg, revise, sample, features, steer_concept, steer_coef, steer_layer](const std::function<void(const Event&)>& on_event) {
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, board, cfg, revise, sample, features, steer_concept, steer_coef, steer_layer](const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);
+            const bool sae_on = features && sae_serve.on;
+            const int default_tap = (*lease).tap_layer();
+            if (sae_on) (*lease).set_tap_layer(sae_serve.layer);
+            const std::function<void(const Event&)> ev = with_sae_readout(on_event, sae_serve, sae_on);
             const ConceptProbes* probes = (features && concept_probes.ready()) ? &concept_probes : nullptr;
             const bool steering = !steer_concept.empty() && steer_coef != 0.0 && steer_probes.ready();
             if (steering) {
@@ -1226,8 +1379,9 @@ int main(int argc, char** argv) {
                 if (lo < 1) lo = 1;
                 (*lease).set_steer(build_steer_cvec(steer_probes, steer_concept, steer_coef, lo, hi, nl), lo, hi);
             }
-            auto r = denoise(*lease, board, cfg, nullptr, on_event, revise, sample, probes);
+            auto r = denoise(*lease, board, cfg, nullptr, ev, revise, sample, probes);
             if (steering) (*lease).clear_steer();
+            if (sae_on) (*lease).set_tap_layer(default_tap);
             (*lease).set_emit_activations(false);
             return r;
         };
@@ -1315,9 +1469,13 @@ int main(int argc, char** argv) {
             steer_layer = body["steer"].value("layer", 0);
         }
 
-        auto run = [&pool, &concept_probes, &steer_probes, board, cfg, revise, sample, features, steer_concept, steer_coef, steer_layer](const std::function<void(const Event&)>& on_event) {
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, board, cfg, revise, sample, features, steer_concept, steer_coef, steer_layer](const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);
+            const bool sae_on = features && sae_serve.on;
+            const int default_tap = (*lease).tap_layer();
+            if (sae_on) (*lease).set_tap_layer(sae_serve.layer);
+            const std::function<void(const Event&)> ev = with_sae_readout(on_event, sae_serve, sae_on);
             const ConceptProbes* probes = (features && concept_probes.ready()) ? &concept_probes : nullptr;
             const bool steering = !steer_concept.empty() && steer_coef != 0.0 && steer_probes.ready();
             if (steering) {
@@ -1329,8 +1487,9 @@ int main(int argc, char** argv) {
                 if (lo < 1) lo = 1;
                 (*lease).set_steer(build_steer_cvec(steer_probes, steer_concept, steer_coef, lo, hi, nl), lo, hi);
             }
-            auto r = denoise(*lease, board, cfg, nullptr, on_event, revise, sample, probes);
+            auto r = denoise(*lease, board, cfg, nullptr, ev, revise, sample, probes);
             if (steering) (*lease).clear_steer();
+            if (sae_on) (*lease).set_tap_layer(default_tap);
             (*lease).set_emit_activations(false);
             return r;
         };
@@ -1453,11 +1612,15 @@ int main(int argc, char** argv) {
         // generate, then clear. The layer window matches the per-request steer path (mid-depth, where
         // steer_probes is calibrated) unless target.layer pins one.
         json applied_layers = json::array();
-        auto run = [&pool, &steer_probes, &concept_probes, &raw_vec, concept, coef, req_layer, prompt_ids,
+        auto run = [&pool, &steer_probes, &concept_probes, &sae_serve, &raw_vec, concept, coef, req_layer, prompt_ids,
                     cfg, revise, sample, features, ar_mode, &applied_layers](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);
+            const bool sae_on = features && sae_serve.on;
+            const int default_tap = (*lease).tap_layer();
+            if (sae_on) (*lease).set_tap_layer(sae_serve.layer);
+            const std::function<void(const Event&)> ev = with_sae_readout(on_event, sae_serve, sae_on);
             const ConceptProbes* probes = (features && concept_probes.ready()) ? &concept_probes : nullptr;
             const int nl = (*lease).n_layer();
             int lo, hi;
@@ -1481,9 +1644,10 @@ int main(int argc, char** argv) {
             }
             applied_layers = json::array({lo, hi});
             (*lease).set_steer(cvec, lo, hi);
-            auto r = ar_mode ? generate_ar(*lease, prompt_ids, cfg, on_event, sample, probes)
-                             : generate(*lease, prompt_ids, cfg, CacheConfig{}, nullptr, on_event, revise, sample, probes);
+            auto r = ar_mode ? generate_ar(*lease, prompt_ids, cfg, ev, sample, probes)
+                             : generate(*lease, prompt_ids, cfg, CacheConfig{}, nullptr, ev, revise, sample, probes);
             (*lease).clear_steer();
+            if (sae_on) (*lease).set_tap_layer(default_tap);
             (*lease).set_emit_activations(false);
             return r;
         };
