@@ -80,7 +80,16 @@ add_test(NAME state_write COMMAND test_state_write)
 # installed into VS, which the CUDA-toolkit-only setup here lacks — Ninja sidesteps that.
 # Validated on an RTX 5080 (sm_120, CUDA 13.3): test_kernel_selector PASSES (5/5 parity cases).
 option(CLOZE_BUILD_CUDA "Build the CUDA confidence-select selector + parity test" OFF)
-if(CLOZE_BUILD_CUDA)
+
+# --- On-device SAE readout (ROADMAP 3.3 wired into the engine) ---
+# cloze_sae (src/sae_encoder.cu + cloze/sae.hpp): the JumpReLU SAE encoder GEMV + the vendored
+# sae_topk kernel, behind a CUDA-free pimpl header so cloze-server links it untouched by nvcc.
+# Weights come from tools/export_sae_weights.py; parity vs the torch oracle is gated by
+# test_sae_encoder against tools/dump_sae_vectors.py artifacts (SKIPs where the export is absent).
+#   cmake -S core -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DCLOZE_BUILD_SAE=ON
+option(CLOZE_BUILD_SAE "Build the on-device SAE readout (JumpReLU encoder + sae_topk, CUDA)" OFF)
+
+if(CLOZE_BUILD_CUDA OR CLOZE_BUILD_SAE)
     # Ampere/Ada/Blackwell for all CUDA targets — set BEFORE enable_language (CMake otherwise
     # pre-seeds a default at enable time), matching kernels/confidence_select/CMakeLists.txt.
     if(NOT CMAKE_CUDA_ARCHITECTURES)
@@ -90,6 +99,17 @@ if(CLOZE_BUILD_CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+    # SAE-sparsify top-k kernel (ROADMAP 3.3: the confidence-select top-k repointed at the FEATURE
+    # dim), vendored from kernels/ — shared by the CUDA parity tests AND the SAE readout library.
+    # Validated on sm_120: selected indices exact, values within f32-vs-f64 eps (also proven
+    # standalone by kernels/sae_topk/validate.py vs the numpy reference).
+    set(SAE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../kernels/sae_topk)  # monorepo: engine/core -> kernels/
+    add_library(cloze_sae_topk STATIC ${SAE_DIR}/sae_topk.cu)
+    set_target_properties(cloze_sae_topk PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_include_directories(cloze_sae_topk PUBLIC ${SAE_DIR})
+endif()
+
+if(CLOZE_BUILD_CUDA)
     set(CS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../kernels/confidence_select)  # monorepo: engine/core -> kernels/
     add_library(cloze_confidence_select STATIC ${CS_DIR}/confidence_select.cu)
     set_target_properties(cloze_confidence_select PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -104,21 +124,30 @@ if(CLOZE_BUILD_CUDA)
     target_link_libraries(test_kernel_selector PRIVATE cloze_cuda)
     add_test(NAME kernel_selector COMMAND test_kernel_selector)
 
-    # --- SAE-sparsify top-k kernel (ROADMAP 3.3: the confidence-select top-k repointed at
-    # the FEATURE dim — the on-device primitive for SAE/transcoder inference). Built the same
-    # way as the confidence-select kernel above (vendored from kernels/ as ../../kernels/...),
-    # with a self-contained C++ parity test that gates it against an in-process CPU reference.
-    # Validated on sm_120: selected indices exact, values within f32-vs-f64 eps (also proven
-    # standalone by kernels/sae_topk/validate.py vs the numpy reference).
-    set(SAE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../kernels/sae_topk)  # monorepo: engine/core -> kernels/
-    add_library(cloze_sae_topk STATIC ${SAE_DIR}/sae_topk.cu)
-    set_target_properties(cloze_sae_topk PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_include_directories(cloze_sae_topk PUBLIC ${SAE_DIR})
-
+    # Self-contained C++ parity test gating the sae_topk kernel (built above, shared with
+    # CLOZE_BUILD_SAE) against an in-process CPU reference.
     add_executable(test_sae_topk tests/test_sae_topk.cu)
     set_target_properties(test_sae_topk PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(test_sae_topk PRIVATE cloze_sae_topk)
     add_test(NAME sae_topk COMMAND test_sae_topk)
+endif()
+
+if(CLOZE_BUILD_SAE)
+    find_package(CUDAToolkit REQUIRED)
+    # The SAE readout library: JumpReLU encoder GEMV + epilogue in front of the sae_topk kernel.
+    # CUDA_RESOLVE_DEVICE_SYMBOLS so plain-CXX consumers (cloze-server, test_sae_encoder) link it
+    # without a device-link step of their own; cudart_static rides the public interface for the same
+    # reason. See cloze/sae.hpp for the pipeline + numerics contract.
+    add_library(cloze_sae STATIC src/sae_encoder.cu)
+    set_target_properties(cloze_sae PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    target_include_directories(cloze_sae PUBLIC include)
+    target_link_libraries(cloze_sae PUBLIC cloze_sae_topk CUDA::cudart_static)
+
+    # Engine-vs-torch parity gate (SKIPs cleanly when the exported weights are absent, so CI boxes
+    # without the 0.94 GB export stay green — same convention as test_ggml_state_write).
+    add_executable(test_sae_encoder tests/test_sae_encoder.cpp)
+    target_link_libraries(test_sae_encoder PRIVATE cloze_sae)
+    add_test(NAME sae_encoder COMMAND test_sae_encoder)
 endif()
 
 # --- L0 ggml adapter (Phase 3, slice 3) ---
