@@ -516,6 +516,10 @@
   // One panel that says WHICH mechanism carries the cards and lets you swap it (POST /memory/mode).
   // Copy rule (from the swap spec): never oversell -- prompt = "applied as context, readable verbatim";
   // internalized = "trained into a soft prefix; slow to edit; the model can't reliably self-report it".
+  // The comparison line is MEASURED, not asserted: the gated A/B (test_prompt_vs_prefix_ab.py, seed 0,
+  // Qwen-7B = the studio config) found prompt-carried cards expressed all four tested traits at least
+  // as strongly as the trained prefix. Scale-scoped on purpose -- at 1.5B two traits inverted, so the
+  // line names the model and keeps the small-N caveat. Don't widen it without a new run.
   function drawMode(ctx) {
     var host = document.getElementById("mem-mode-host");
     if (!host) return;
@@ -547,6 +551,10 @@
           S.el("b", {}, ["internalized:"]),
           " cards are trained into a soft prefix — each change retrains for a few minutes, and the" +
           " model can't reliably self-report what the prefix does (check receipts, not its word).",
+        ]),
+        S.el("span", { class: "mline" }, [
+          "Measured (A/B on Qwen-7B, 4 traits, single seed): prompt-carried cards expressed every" +
+          " tested trait at least as strongly as the trained prefix.",
         ]),
         S.el("span", { class: "mline" }, [
           isPrompt
