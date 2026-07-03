@@ -32,6 +32,7 @@ htmlcov/
 
 # --- Generated demo outputs (inspector/research write HTML/png into runs/) ---
 runs/
+research/dream_runs/
 
 # --- Local run/scratch artifacts ---
 *.log
