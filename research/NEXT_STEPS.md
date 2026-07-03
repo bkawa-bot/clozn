@@ -70,9 +70,19 @@ Environment: CUDA python = C:\Users\brigi\src\cloze\.venv\Scripts\python.exe; en
    (correct, and exactly what every stateless turn already costs). The mechanism (offload → restore →
    byte-exact continue) is proven; the studio wiring to reuse it is the deferred seam.
 
-7. **Publish pass** — Opus (or remaining Fable), half day. `writeup_draft_receipts.md` + fold in:
-   the 7B A/B (prompt≥prefix at 7B, inverts at 1.5B), the half-life number, phantom-KV, OBEY.
-   `FINDINGS.md` is the skeleton. Post; let reality vote.
+7. **Publish pass** — DONE (2026-07-03). `writeup_draft_receipts.md` rewritten to its final publishable
+   form: folded in the 7B A/B (prompt≥prefix at 7B, INVERTS at 1.5B, single-seed caveats attached), the
+   half-life-of-a-thought (<1 turn), phantom-KV (ghost slots work + coherence tax), the OBEY case
+   (provenance beats plausibility), and the vector-telepathy closer (Procrustes rotation between
+   independently-trained models, nulls collapsed — the authors' own impossibility claim killed by their
+   own method). Every number traces to a findings file; single-family/single-seed qualifiers kept on
+   each; the 1.5B/7B inversions are told as features of the story. Publishing-notes block updated
+   (candidate titles, repro pointers, anticipated objections incl. "isn't this just gisting/LoRA/
+   introspection-lit"). `FINDINGS.md` given a consistency pass (telepathy → laws #2/#5; time-travel
+   SHIPPED → law #3; facts-tier wired + efficiency MEASURED → BUILT). Runs ~2.2k words prose (over the
+   1400–1800 target because five experiments were folded in with nulls+caveats intact — honesty over
+   the ceiling; a trim to hit 1800 exactly would drop a caveat or an experiment). Ready to post; let
+   reality vote.
 
 8. **LoRA voice at 7B** — Opus, 1 day. `pip install peft` (allowed for this). Re-run voice_middle's
    own-door with a LoRA instead of the 16-vector prefix, coherence-GATED early stopping (stop on

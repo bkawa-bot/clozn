@@ -21,12 +21,17 @@ experiment findings files are the territory.*
    is Nimbus") vs prompt 0.958 (`memory_scaling`); slot store flat 0.95 to N=200 (`slotmem_qwen`);
    phantom-KV over-expression/degeneration (`phantom_kv_findings.md`); voice-prefix coherence collapse
    at 1.5B (`voice_middle`). **The legible design keeps WINNING on capability — the interpretability
-   tax, inverted.**
+   tax, inverted.** Corollary now measured: the explicit store's KEYS even PORT between independently-
+   trained models through a fitted linear bridge — 65–85% of ceiling recall, nulls flat, and a
+   rotation-only Procrustes map matches the full affine one (`telepathy_findings.md`, law #5).
 
 3. **State is not storage.** A one-shot activation/KV edit's directional influence dies in <1 turn
-   (`kv_timetravel_findings.md` — the half-life measurement). Persistence requires re-injection at
-   read time, which is exactly what the slot store does. KV checkpoint/branch, by contrast, is
-   byte-exact and nearly free — state is perfectly *snapshottable*, just not *writable-once*.
+   (`kv_timetravel_findings.md` — the half-life measurement: warmth effect at noise by the next turn).
+   Persistence requires re-injection at read time, which is exactly what the slot store does. KV
+   checkpoint/branch, by contrast, is byte-exact and nearly free (const 27-tok prefill vs 883 at
+   depth 10) — state is perfectly *snapshottable*, just not *writable-once*. **Shipped** as the
+   studio's per-turn snapshot ring + rewind/branch affordance (NEXT_STEPS #6 done, determinism proven
+   on the real 1.5B); the one-shot *edit* stayed Lab-only on the strength of that half-life.
 
 4. **Fluency fabricates.** Diffusion dreams produced 0 genuine memories and 3 hallucinations fluent
    enough to pass plausibility gates — including a prompt-injection dreamed into "Prefers replies
@@ -42,7 +47,11 @@ experiment findings files are the territory.*
    `frontier_apply`'s 0.944-vs-0.000 (pre-session); the voice's texture that description provably
    missed (`voice_middle`: the "Kicker:" label). Portability: sources (text/recipes/corpora) port
    across models; compiled vectors are a cache (`profiles.py` + `profile_port_demo`: same bundle,
-   1.5B recall 1.0 / 7B 0.75).
+   1.5B recall 1.0 / 7B 0.75). And a prior "vectors can't port, geometries differ" claim is now
+   FALSIFIED for same-family/same-vocab: slot KEYS port 1.5B<->7B through a bridge fit on ~500
+   sentences (65-85% of ceiling, nulls flat), Procrustes rotation ~= full affine — two independently-
+   trained Qwens are rotation-similar at L18 (`telepathy_findings.md`; one family/layer/seed, values
+   shared vocab, cross-family untested).
 
 6. **Instrument findings that transfer:** key geometry is model-dependent (Qwen cross-sim 0.68,
    centering → 0.90 recall; p17's "decorrelation adds nothing" does NOT generalize); injection scale
@@ -55,10 +64,16 @@ experiment findings files are the territory.*
 
 Engine live end-to-end (Spine→snapshot→edit→restore exact; permanent gated test) + SAE features
 on-device (131k features, 1-ulp parity, ~9ms, 0.95GB, "dragon"→sae:dragon). Slot memory with
-surprise-gated writes, confidence-gate abstention, persistence. Memory-mode prompt default (instant
-edits, per-card ablation receipts; 269-test suite). Portable persona profiles + cross-model port.
-Receipts UI (greedy ablation + delta strips) in a redesigned studio. KV time-travel proven.
-White-box tax instruments built. See `clozn-honest-status` memory + NEXT_STEPS.md.
+surprise-gated writes, confidence-gate abstention, persistence — now WIRED into the studio as the
+`memory_facts` slots tier (per-profile stores, auto-writes, gate-refusals/abstentions visible, ~86 ms/
+turn; NEXT_STEPS #5 done; v1 emits a read RECEIPT, value-injection into the reply is the deferred rung).
+Memory-mode prompt default (instant edits, per-card ablation receipts; 269-test suite). Portable persona
+profiles + cross-model port. Receipts UI (greedy ablation + delta strips) in a redesigned studio.
+KV time-travel SHIPPED (per-turn snapshot ring + rewind/branch; determinism byte-exact on the real 1.5B;
+NEXT_STEPS #6 done). White-box tax now MEASURED not just instrumented (`local_efficiency_findings.md`):
+lens+confidence ~free (1.6–3.4%), legacy-SSE JSON a real wire tax (fixed by protocol mode), SAE encode
+~37 pts (the one big cost, since recovered ~half by the item-10 kernel work); batched receipts free at
+1.5B bf16, NOT at 7B nf4. See `clozn-honest-status` memory + NEXT_STEPS.md.
 
 ## The sentence
 
