@@ -197,6 +197,24 @@ int main(int argc, char** argv) {
     std::printf("  steady-state encode_topk(%d rows, k=%d): %.1f ms; device %.1f MB\n",
                 rows, k, ms, sae.device_bytes() / 1e6);
 
+    // --- perf-only receipt at 2x rows (NEXT_STEPS item 10's before/after target size) ---
+    // Tiles the same `x` rows to synthesize a 2*rows-row batch. Timing only -- no new expect()s,
+    // so this cannot change PASS/FAIL; it exists to track the GEMV vectorization's effect at a
+    // second row count without touching dump_sae_vectors.py or the oracle artifacts.
+    {
+        std::vector<float> x2(x.size() * 2);
+        std::copy(x.begin(), x.end(), x2.begin());
+        std::copy(x.begin(), x.end(), x2.begin() + static_cast<long>(x.size()));
+        std::vector<int32_t> idx2;
+        std::vector<float> val2;
+        sae.encode_topk(x2.data(), rows * 2, k, idx2, val2);  // warm the workspace at the new size
+        const auto t2 = std::chrono::steady_clock::now();
+        sae.encode_topk(x2.data(), rows * 2, k, idx2, val2);
+        const double ms2 = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t2).count();
+        std::printf("  steady-state encode_topk(%d rows, k=%d): %.1f ms; device %.1f MB\n",
+                    rows * 2, k, ms2, sae.device_bytes() / 1e6);
+    }
+
     if (failures == 0) { std::printf("ALL PASS\n"); return 0; }
     std::printf("%d check(s) FAILED\n", failures);
     return 1;
