@@ -208,6 +208,10 @@ def _launch_args(exe: str, model: str, port: int, flags: dict, gpu: bool) -> lis
         args += ["--mask-token", str(flags["mask"])]
     if "eos" in flags:
         args += ["--eos", str(flags["eos"])]
+    if "sae" in flags:                        # passthrough only: dims must match, server refuses politely
+        args += ["--sae", flags["sae"]]
+        if "sae_k" in flags:
+            args += ["--sae-k", str(flags["sae_k"])]
     return args
 
 
@@ -718,6 +722,10 @@ def cmd_serve(args):
         flags["mask"] = args.mask
     if args.eos is not None:
         flags["eos"] = args.eos
+    if args.sae is not None:
+        flags["sae"] = args.sae
+        if args.sae_k is not None:
+            flags["sae_k"] = args.sae_k
     port = args.port or 8080
     if _health(port):
         raise CloznError(f"port {port} already serving something. Pick another with --port.")
@@ -874,6 +882,9 @@ def main(argv=None):
     ps.add_argument("model"); ps.add_argument("--port", type=int, default=0)
     ps.add_argument("--cpu", action="store_true"); ps.add_argument("--mask", type=int, default=None)
     ps.add_argument("--eos", type=int, default=None)
+    ps.add_argument("--sae", default=None, help="on-device SAE readout dir (dims must match the model; "
+                    "server refuses politely on mismatch)")
+    ps.add_argument("--sae-k", type=int, default=None, help="SAE features kept per position (default 16)")
     ps.set_defaults(fn=cmd_serve)
 
     sub.add_parser("models", help="list local models + the engine backend").set_defaults(fn=cmd_models)
