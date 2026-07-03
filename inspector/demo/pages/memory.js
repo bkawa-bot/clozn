@@ -207,7 +207,60 @@
     ".mem-dial .dnote.err{color:#c0504a}" +
     ".mem-dial.dismissed{border-color:var(--line);background:rgba(120,140,190,.06)}" +
     ".mem-offline{margin:18px 0 0;padding:10px 13px;border-radius:11px;font-size:12.5px;color:var(--faint);" +
-    "background:rgba(120,140,190,.06);border:1px solid var(--line)}";
+    "background:rgba(120,140,190,.06);border:1px solid var(--line)}" +
+    // --- the FACTS tier (slot memory): a distinct teal family so it reads as a separate mechanism from
+    //     the trait cards (a fact is a verbatim cue->answer slot, not a disposition). ---
+    ".mem-facts{margin:26px 0 8px;padding:16px 18px}" +
+    ".mem-facts h2{padding:0 0 4px}" +
+    ".mem-facts .factstop{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:6px}" +
+    ".mem-facts .factchip{font-size:12px;font-weight:640;padding:5px 12px;border-radius:14px;" +
+    "border:1px solid rgba(79,195,214,.45);color:#2f8998;background:rgba(79,195,214,.12)}" +
+    ".mem-facts .factchip.off{border-color:var(--line);color:var(--faint);background:rgba(120,140,190,.08)}" +
+    ".mem-facts .facthint{color:var(--faint);font-size:12.5px;margin-top:10px;line-height:1.55}" +
+    ".mem-facts .facthint b{color:var(--soft);font-weight:600}" +
+    ".mem-facts .facthint .mline{display:block;margin:2px 0}" +
+    // the fact list: a compact cue -> answer row with a surgical delete.
+    ".mem-facts .factlist{margin-top:14px}" +
+    ".mem-facts .factrow{display:flex;align-items:center;gap:10px;padding:9px 12px;margin:6px 0;border-radius:11px;" +
+    "background:rgba(255,255,255,.72);border:1px solid var(--line);transition:opacity .3s}" +
+    ".mem-facts .factrow.busy{opacity:.5}" +
+    ".mem-facts .factcue{color:var(--soft);font-size:13px;flex:1;min-width:0;word-break:break-word}" +
+    ".mem-facts .factans{color:var(--ink);font-weight:640;font-size:13px;font-family:ui-monospace,Consolas,monospace;white-space:nowrap}" +
+    ".mem-facts .factarrow{color:var(--faint);flex:none}" +
+    ".mem-facts .factdel{flex:none;border:1px solid var(--line);background:rgba(255,255,255,.8);color:var(--soft);" +
+    "border-radius:50%;width:26px;height:26px;padding:0;font-size:13px;line-height:1;cursor:pointer;display:flex;" +
+    "align-items:center;justify-content:center;transition:background .16s,color .16s,border-color .16s}" +
+    ".mem-facts .factdel:hover:not(:disabled){background:rgba(231,120,120,.12);color:#c0504a;border-color:rgba(231,120,120,.4)}" +
+    ".mem-facts .factdel:disabled{opacity:.4;cursor:default}" +
+    ".mem-facts .factempty{padding:16px;text-align:center;color:var(--faint);font-size:13px}" +
+    // the add-a-fact row (cue + answer) + the gate-refusal / read receipts.
+    ".mem-facts .factadd{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}" +
+    ".mem-facts .factadd input{font:inherit;font-size:13.5px;border:1px solid var(--line);border-radius:18px;" +
+    "padding:9px 14px;background:rgba(255,255,255,.85);outline:none;color:var(--ink);min-width:0}" +
+    ".mem-facts .factadd input.cue{flex:2}" +
+    ".mem-facts .factadd input.ans{flex:1}" +
+    ".mem-facts .factadd input:focus{border-color:#4fc3d6;box-shadow:0 0 0 3px rgba(79,195,214,.14)}" +
+    ".mem-facts .factadd input:disabled{opacity:.55}" +
+    ".mem-facts .factgo{font-size:12.5px;font-weight:620;padding:9px 16px;border-radius:18px;cursor:pointer;line-height:1;" +
+    "border:1px solid rgba(79,195,214,.55);color:#2f8998;background:linear-gradient(180deg,#d7f0f4,#c7e9ee);" +
+    "transition:background .16s,transform .15s}" +
+    ".mem-facts .factgo:hover:not(:disabled){background:linear-gradient(180deg,#e0f4f7,#d3eef2);transform:translateY(-1px)}" +
+    ".mem-facts .factgo:disabled{opacity:.5;cursor:default}" +
+    // the read-probe (a small honest receipt: hit / abstained / gate value / slot_ms).
+    ".mem-facts .factread{margin-top:14px;padding-top:12px;border-top:1px dashed var(--line)}" +
+    ".mem-facts .factread .rrow{display:flex;gap:8px;flex-wrap:wrap}" +
+    ".mem-facts .factread input{flex:1;min-width:0;font:inherit;font-size:13.5px;border:1px solid var(--line);" +
+    "border-radius:18px;padding:9px 14px;background:rgba(255,255,255,.85);outline:none;color:var(--ink)}" +
+    ".mem-facts .factreceipt{margin-top:10px;padding:10px 13px;border-radius:11px;font-size:12.5px;line-height:1.5;" +
+    "background:rgba(120,140,190,.06);border:1px solid var(--line);display:none}" +
+    ".mem-facts .factreceipt.hit{background:rgba(79,195,214,.10);border-color:rgba(79,195,214,.34)}" +
+    ".mem-facts .factreceipt.abstain{background:rgba(230,196,120,.12);border-color:rgba(230,196,120,.42)}" +
+    ".mem-facts .factreceipt b{color:var(--ink);font-weight:640}" +
+    ".mem-facts .factreceipt .rmeta{color:var(--faint);font-size:11.5px;font-family:ui-monospace,Consolas,monospace;margin-top:4px}" +
+    ".mem-facts .factnote{margin-top:10px;font-size:12.5px;padding:8px 12px;border-radius:10px;display:none}" +
+    ".mem-facts .factnote.err{color:#c0504a;background:rgba(231,120,120,.10);border:1px solid rgba(231,120,120,.34)}" +
+    ".mem-facts .factnote.ok{color:#2b7a5e;background:rgba(91,191,154,.10);border:1px solid rgba(91,191,154,.34)}" +
+    ".mem-facts .factnote.warn{color:#a9762a;background:rgba(230,196,120,.14);border:1px solid rgba(230,196,120,.42)}";
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -478,11 +531,15 @@
         // "set the dial instead" suggestion host (populated only when /memory/add flags a style preference).
         S.el("div", { id: "mem-dial-host" }, []),
       ]),
+
+      // ---- FACTS tier (slot memory) -- populated by loadFacts(); off by default (the latency rule) ----
+      S.el("div", { id: "mem-facts-host" }, []),
     ]);
 
     view.appendChild(root);
     loadStrength(ctx);
     loadCards(ctx);
+    loadFacts(ctx);
   }
 
   // ---- strength --------------------------------------------------------------------------------
@@ -1243,6 +1300,261 @@
   function hideNote() {
     var n = document.getElementById("mem-note");
     if (n) { n.textContent = ""; n.style.display = "none"; }
+  }
+
+  // ============================================================================================
+  // FACTS TIER (slot memory) -- NEXT_STEPS #5. A verbatim (cue -> answer) store INSIDE the model,
+  // distinct from the trait cards above. OFF by default (the latency rule: a slot read is an extra
+  // forward, kept off the 7B hot path until you turn it on). All endpoints null-safe -- the panel
+  // renders (as "unavailable") on an older backend, and every action degrades to a friendly note.
+  //
+  // Endpoints (POST): /facts/mode {enabled?}  /facts/list  /facts/add {cue,answer}
+  //                   /facts/delete {cue}     /facts/read {query}
+  // Honesty is the point: a WRITE shows the surprise-gate refusal ("the model already knows this"),
+  // and a READ shows the receipt -- which entry fired, the key similarity vs the abstain floor,
+  // whether it ABSTAINED, and the measured slot_ms. No silent magic.
+  // ============================================================================================
+  var facts = { enabled: false, entries: [], count: 0, profile: null, layer: null,
+                loaded: false, available: true, busy: {}, adding: false, switching: false };
+
+  function loadFacts(ctx) {
+    facts.busy = {};
+    // /facts/list carries enabled + entries + the header (count/profile/layer) in one call.
+    ctx.postJSON("/facts/list", {}, null).then(function (d) {
+      if (d == null) { facts.available = false; facts.loaded = true; drawFacts(ctx); return; }
+      facts.available = true;
+      facts.enabled = !!d.enabled;
+      facts.entries = (d && d.entries) || [];
+      facts.count = (d && d.count != null) ? d.count : facts.entries.length;
+      facts.profile = (d && d.profile) || null;
+      facts.layer = (d && d.layer != null) ? d.layer : null;
+      facts.loaded = true;
+      drawFacts(ctx);
+    });
+  }
+
+  function drawFacts(ctx) {
+    var host = document.getElementById("mem-facts-host");
+    if (!host) return;
+    host.innerHTML = "";
+    // Older backend / offline: a single quiet line, no controls (the feature simply isn't there).
+    if (!facts.available) {
+      host.appendChild(S.el("div", { class: "mem-facts panel" }, [
+        S.el("h2", {}, ["Facts"]),
+        S.el("div", { class: "facthint" }, [
+          "The fact store (slot memory) isn't available on this backend.",
+        ]),
+      ]));
+      return;
+    }
+
+    var on = facts.enabled;
+    var toggle = S.el("button", { class: "mem-btn", id: "mem-facts-toggle" },
+                      [facts.switching ? "…" : (on ? "Turn off" : "Turn on")]);
+    if (facts.switching) toggle.disabled = true;
+    toggle.addEventListener("click", function () { toggleFacts(ctx); });
+
+    var kids = [
+      S.el("h2", {}, ["Facts"]),
+      S.el("div", { class: "factstop" }, [
+        S.el("span", { class: "factchip" + (on ? "" : " off") },
+             [on ? ("on — slot store" + (facts.profile ? " · " + facts.profile : "")) : "off"]),
+        toggle,
+      ]),
+      S.el("div", { class: "facthint" }, [
+        S.el("span", { class: "mline" }, [
+          S.el("b", {}, ["A fact is a verbatim cue → answer"]),
+          " stored inside the model (a slot you can print, edit, and delete) — separate from the" +
+          " trait cards above, which carry dispositions.",
+        ]),
+        S.el("span", { class: "mline" }, [
+          S.el("b", {}, ["Off by default:"]),
+          " a fact read is an extra pass over the model, so it stays off the chat path until you" +
+          " turn it on. When on, each turn logs its added cost (slot_ms) in the run record.",
+        ]),
+        on ? S.el("span", { class: "mline" }, [
+          "Writes are ",
+          S.el("b", {}, ["surprise-gated"]),
+          ": a fact the model already knows is refused, not stored. Reads ",
+          S.el("b", {}, ["abstain"]),
+          " rather than guess when nothing matches confidently.",
+        ]) : null,
+      ]),
+    ];
+
+    if (on) {
+      kids.push(factList(ctx));
+      kids.push(factAddRow(ctx));
+      kids.push(factReadRow(ctx));
+    }
+    kids.push(S.el("div", { class: "factnote", id: "mem-facts-note" }, []));
+    host.appendChild(S.el("div", { class: "mem-facts panel" }, kids));
+  }
+
+  function factList(ctx) {
+    if (!facts.entries.length) {
+      return S.el("div", { class: "factlist" }, [
+        S.el("div", { class: "factempty" }, [
+          "No facts yet. Add one below, or let a conversation teach one — clozn captures a clear" +
+          " statement (“My dog is named Biscuit”) when the model doesn't already know it.",
+        ]),
+      ]);
+    }
+    var rows = facts.entries.map(function (e, i) {
+      var key = "f:" + i + ":" + (e.cue || "");
+      var busy = !!facts.busy[key];
+      var del = S.el("button", { class: "factdel", title: "delete this fact" }, ["×"]);
+      if (busy) del.disabled = true;
+      del.addEventListener("click", function () { deleteFact(ctx, e.cue, key); });
+      var row = S.el("div", { class: "factrow" + (busy ? " busy" : "") }, [
+        S.el("span", { class: "factcue" }, [String(e.cue || "")]),
+        S.el("span", { class: "factarrow" }, ["→"]),
+        S.el("span", { class: "factans" }, [String(e.answer || "").trim() || "(empty)"]),
+        del,
+      ]);
+      return row;
+    });
+    return S.el("div", { class: "factlist" }, rows);
+  }
+
+  function factAddRow(ctx) {
+    var cue = S.el("input", { type: "text", class: "cue", id: "mem-fact-cue", autocomplete: "off",
+                              placeholder: "cue — e.g. My dog is named" }, []);
+    var ans = S.el("input", { type: "text", class: "ans", id: "mem-fact-ans", autocomplete: "off",
+                              placeholder: "answer — e.g. Biscuit" }, []);
+    var go = S.el("button", { class: "factgo", id: "mem-fact-add" }, ["Store"]);
+    if (facts.adding) { cue.disabled = ans.disabled = go.disabled = true; }
+    go.addEventListener("click", function () { addFact(ctx); });
+    var enter = function (e) { if (e.key === "Enter") addFact(ctx); };
+    cue.addEventListener("keydown", enter);
+    ans.addEventListener("keydown", enter);
+    return S.el("div", { class: "factadd" }, [cue, ans, go]);
+  }
+
+  function factReadRow(ctx) {
+    var q = S.el("input", { type: "text", id: "mem-fact-query", autocomplete: "off",
+                            placeholder: "test a read — type a cue and see what the store fires" }, []);
+    var go = S.el("button", { class: "factgo", id: "mem-fact-read" }, ["Read"]);
+    q.addEventListener("keydown", function (e) { if (e.key === "Enter") readFact(ctx); });
+    go.addEventListener("click", function () { readFact(ctx); });
+    return S.el("div", { class: "factread" }, [
+      S.el("div", { class: "rrow" }, [q, go]),
+      S.el("div", { class: "factreceipt", id: "mem-fact-receipt" }, []),
+    ]);
+  }
+
+  function showFactsNote(msg, kind) {
+    var n = document.getElementById("mem-facts-note");
+    if (!n) return;
+    n.textContent = msg;
+    n.className = "factnote " + (kind || "");
+    n.style.display = msg ? "" : "none";
+  }
+
+  function toggleFacts(ctx) {
+    if (facts.switching) return;
+    facts.switching = true;
+    drawFacts(ctx);
+    ctx.postJSON("/facts/mode", { enabled: !facts.enabled }, null).then(function (res) {
+      facts.switching = false;
+      if (res == null) { drawFacts(ctx); showFactsNote("Couldn't reach the facts endpoint — nothing changed.", "err"); return; }
+      loadFacts(ctx);   // reload (enabled flips; entries appear/vanish)
+    });
+  }
+
+  function addFact(ctx) {
+    var cueEl = document.getElementById("mem-fact-cue");
+    var ansEl = document.getElementById("mem-fact-ans");
+    if (!cueEl || !ansEl) return;
+    var cue = cueEl.value.trim();
+    var answer = ansEl.value;
+    if (!cue || !answer.trim()) { showFactsNote("Enter both a cue and an answer.", "warn"); return; }
+    // the store's value schedule expects the answer with a leading space (matches the research rig).
+    if (answer[0] !== " ") answer = " " + answer.trim();
+    facts.adding = true;
+    drawFacts(ctx);
+    ctx.postJSON("/facts/add", { cue: cue, answer: answer }, null).then(function (res) {
+      facts.adding = false;
+      if (res == null) { drawFacts(ctx); showFactsNote("Couldn't reach the facts endpoint — nothing stored.", "err"); return; }
+      if (res.ok && res.written) {
+        loadFacts(ctx);
+        showFactsNote("Stored. (surprise " + fmtNum(res.surprise) + " — the model didn't already know it.)", "ok");
+      } else if (res.ok && res.written === false) {
+        // the surprise-gate refusal -- the honest, load-bearing receipt.
+        drawFacts(ctx);
+        showFactsNote("Not stored: the model already knows this (surprise " + fmtNum(res.surprise) +
+                      ", below the write gate). The store only keeps what the model would otherwise get wrong.", "warn");
+      } else {
+        drawFacts(ctx);
+        showFactsNote(res.reason || "Could not store that fact.", "err");
+      }
+    });
+  }
+
+  function deleteFact(ctx, cue, key) {
+    if (facts.busy[key]) return;
+    facts.busy[key] = true;
+    drawFacts(ctx);
+    ctx.postJSON("/facts/delete", { cue: cue }, null).then(function (res) {
+      delete facts.busy[key];
+      if (res == null) { drawFacts(ctx); showFactsNote("Couldn't reach the facts endpoint — nothing deleted.", "err"); return; }
+      if (res.ok) {
+        loadFacts(ctx);
+        showFactsNote("Deleted “" + cue + "”. The other facts are untouched (" + res.remaining + " left).", "ok");
+      } else {
+        drawFacts(ctx);
+        showFactsNote(res.reason || "Could not delete that fact.", "err");
+      }
+    });
+  }
+
+  function readFact(ctx) {
+    var qEl = document.getElementById("mem-fact-query");
+    var box = document.getElementById("mem-fact-receipt");
+    if (!qEl || !box) return;
+    var query = qEl.value.trim();
+    if (!query) return;
+    box.style.display = "";
+    box.className = "factreceipt";
+    box.textContent = "reading…";
+    ctx.postJSON("/facts/read", { query: query }, null).then(function (r) {
+      if (r == null) { box.className = "factreceipt"; box.textContent = "Couldn't reach the facts endpoint."; return; }
+      renderReceipt(box, r);
+    });
+  }
+
+  // The honest read receipt: hit (with the answer it would inject) / abstained / empty, plus the
+  // measured similarity vs the abstain floor and slot_ms -- the "show the gate value + abstentions"
+  // the item spec asks for.
+  function renderReceipt(box, r) {
+    box.innerHTML = "";
+    if (r.enabled === false) { box.className = "factreceipt"; box.textContent = "The facts tier is off."; return; }
+    if (r.empty) {
+      box.className = "factreceipt";
+      box.appendChild(S.el("span", {}, ["The store is empty — nothing to retrieve yet."]));
+      return;
+    }
+    var meta = [];
+    if (r.sim != null) meta.push("sim " + fmtNum(r.sim));
+    if (r.gate_floor != null) meta.push("floor " + fmtNum(r.gate_floor));
+    if (r.slot_ms != null) meta.push(r.slot_ms + " ms");
+    if (r.count != null) meta.push(r.count + " stored");
+
+    if (r.abstained || r.hit == null) {
+      box.className = "factreceipt abstain";
+      box.appendChild(S.el("div", {}, [
+        S.el("b", {}, ["Abstained"]),
+        " — no stored fact matched confidently, so the store stays silent rather than guess.",
+      ]));
+    } else {
+      box.className = "factreceipt hit";
+      box.appendChild(S.el("div", {}, [
+        S.el("b", {}, ["Hit"]),
+        ": “" + String(r.cue || "") + "” → ",
+        S.el("b", {}, [String(r.answer || "").trim()]),
+      ]));
+    }
+    if (meta.length) box.appendChild(S.el("div", { class: "rmeta" }, [meta.join("  ·  ")]));
   }
 
   S.register("memory", { title: "Memory", render: render });

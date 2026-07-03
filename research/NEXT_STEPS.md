@@ -32,11 +32,17 @@ Environment: CUDA python = C:\Users\brigi\src\cloze\.venv\Scripts\python.exe; en
    export/import). Done: two personas with disjoint cards/dials/facts switch instantly in the UI;
    model-free tests. Spec fragments: profiles.py docstring + MEMORY_MODE_SWAP_SPEC.md.
 
-5. **Slot-store studio wiring (`memory_mode:"slots"` facts tier)** — Opus, 1-2 days. Persistence
-   exists (`SlotMem.save/load`); wire per-profile stores (`~/.clozn/profiles/<name>.slots.pt`),
-   surprise-gated auto-writes from conversation, a Facts panel (list/delete = surgical), and receipts
-   (read hits shown with gate value; abstentions visible). Keep OFF the 7B hot path until latency
-   checked. Why: `slotmem_qwen_findings.md` (0.95 flat to N=200).
+5. **Slot-store studio wiring (`memory_mode:"slots"` facts tier)** — DONE (2026-07-03). Per-profile
+   stores (`~/.clozn/profiles/<name>.slots.pt`), surprise-gated auto-writes, a Facts panel
+   (list/delete = surgical, gate-refusal + abstentions visible), and profile-switch fact compilation
+   (the `facts_note` seam is closed) are all wired; `SlotMem.from_shared` reuses the studio's 7B (no
+   second load). Gated behind `memory_facts` (default OFF — the latency rule); measured overhead
+   **~86 ms/turn** (a slot read ~171 ms vs ~85 ms baseline forward on the real nf4), logged as
+   `slot_ms`. `facts_mode.py` + `SlotBox`/`/facts/*` in clozn_server.py + memory.js; tests
+   `test_facts_mode.py` / `test_facts_server.py` / `test_slotmem_shared.py`. **Remaining rung:** v1's
+   slot read produces a RECEIPT only — it does NOT yet inject the retrieved value into the chat reply
+   (the read machinery + receipts are the foundation for that next step). See the "STUDIO WIRING"
+   section of `slotmem_qwen_findings.md`.
 
 6. **Time-travel debugger feature** — Opus, 1-2 days. The rig proved byte-exact checkpoint/branch
    (`kv_timetravel_findings.md`). Product: per-turn KV snapshots in the studio chat (CPU offload),

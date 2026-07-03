@@ -358,14 +358,40 @@ def _profiles_switch(sub, p) -> dict:
         except Exception:
             pass
 
-    # 4) FACTS: the item-5 seam -- named, not silently skipped.
-    facts_note = None
-    if p.get("facts"):
-        facts_note = (f"{len(p['facts'])} fact(s) travel in the bundle but are not yet applied -- "
-                      "slot-memory serving (memory_mode:\"slots\") isn't wired into the studio server.")
-
+    # 4) FACTS: the item-5 seam, now CLOSED. The bundle's fact pairs recompile into THIS profile's slot
+    #    store (profiles.compile_facts on the live SlotMem, sharing SUB.memory's Qwen-7B) and persist to
+    #    ~/.clozn/profiles/<name>.slots.pt -- but ONLY when the facts tier is enabled (memory_facts on).
+    #    Off (the default): facts still travel in the bundle, we just don't build the store or pay the
+    #    model cost, and facts_note says so. active_profile is set FIRST so SlotBox loads the right store.
     import memory_mode
     memory_mode.set_setting("active_profile", p["name"])
+
+    facts_note = None
+    if p.get("facts"):
+        import facts_mode
+        if not facts_mode.enabled():
+            facts_note = (f"{len(p['facts'])} fact(s) travel in the bundle but the facts tier is off -- "
+                          "enable it on the Memory page (Facts) to compile them into this profile's store.")
+        else:
+            box = _slots_box()
+            compiled = None
+            if box is not None:
+                try:
+                    box.on_profile_switch()                # point the resident store at THIS profile
+                    slots = box._build()                   # share SUB.memory's model; build if needed
+                    if slots is not None:
+                        with _TRAIN_LOCK:                  # writes run forwards on the shared model
+                            import profiles as _pf
+                            slots.entries = []             # persona isolation: this profile's facts only
+                            compiled = _pf.compile_facts(p, slots, gate=False)  # curated -> store them all
+                        box._save_active()
+                except Exception as e:
+                    facts_note = f"facts not compiled: {type(e).__name__}: {e}"
+            if compiled is not None:
+                facts_note = (f"{compiled['written']} fact(s) compiled into this profile's slot store"
+                              + (f" ({compiled['skipped']} skipped)" if compiled.get("skipped") else "") + ".")
+            elif facts_note is None:
+                facts_note = f"{len(p['facts'])} fact(s) in the bundle -- slot store unavailable (no model loaded)."
     return {"name": p["name"], "prompt_block": prompt_block_preview(p),
             "cards": {"removed": removed, "added": added}, "dials": dials,
             "resync": resync, "facts_note": facts_note}
@@ -376,6 +402,288 @@ def prompt_block_preview(p) -> str:
     receipt only; the live chat path still compiles fresh from the card store every gated-in turn."""
     import profiles
     return profiles.prompt_block(p)
+
+
+# ------- the FACTS tier: slot-memory store wired to the studio (NEXT_STEPS #5) ----------------------
+# slotmem_qwen.SlotMem is the explicit, editable, honest-about-ignorance fact store (centered-key
+# addressing, surprise-gated writes, confidence-gate abstention -- proven 0.95 flat to N=200). SlotBox
+# is the thin studio wiring: it lazily builds ONE SlotMem SHARING the substrate's Qwen-7B (SUB.memory
+# .model -- no second model, per the item spec), keeps a PER-PROFILE store (~/.clozn/profiles/<name>
+# .slots.pt), and gates every operation behind memory_facts (default OFF -- the latency rule: a slot
+# read is an extra forward, kept off the 7B hot path until measured; when on, we log slot_ms honestly).
+#
+# v1 CONTRACT (deliberately conservative -- protect the shipped chat path): a slot READ produces a
+# RECEIPT (hit / gate value / abstention / the answer the store would inject) that the Facts panel
+# shows and the runlog records; it does NOT alter the chat reply, so the 7B generation stays
+# byte-identical whether facts are on or off. Actually STEERING the reply with the injected value is
+# the next rung (documented seam). Auto-WRITE does mutate the store: it runs the surprise gate on a
+# candidate (cue -> answer) mined from the turn, so the gate visibly refuses what the model already
+# knows (the Titans write policy, the load-bearing provable part).
+
+class SlotBox:
+    """Owns the studio's live SlotMem + its per-profile persistence. Built lazily on first use so a
+    fresh install with facts OFF never pays for it. Every public method is a no-op / empty receipt when
+    `memory_facts` is off or no shareable model is loaded -- the caller stays oblivious to both."""
+
+    def __init__(self, mem_provider):
+        # mem_provider() -> the substrate memory object (SUB.memory) whose .model/.tok we SHARE, or None.
+        self._mem_provider = mem_provider
+        self._slots = None                 # the SlotMem (None until built)
+        self._profile = None               # the profile name whose store is currently resident
+        self._lock = threading.Lock()      # serialize build + store mutations (the model is shared)
+
+    # ---- lifecycle --------------------------------------------------------------------------------
+    def _shared_model(self):
+        try:
+            m = self._mem_provider()
+        except Exception:
+            m = None
+        model = getattr(m, "model", None)
+        tok = getattr(m, "tok", None)
+        return (model, tok) if (model is not None and tok is not None) else (None, None)
+
+    def _build(self):
+        """Build the SlotMem on the shared backbone + load the active profile's store. Returns the
+        SlotMem or None (no model yet, or slotmem import/HF unavailable). Holds _lock."""
+        if self._slots is not None:
+            return self._slots
+        model, tok = self._shared_model()
+        if model is None:
+            return None
+        try:
+            import facts_mode
+            import slotmem_qwen
+            self._slots = slotmem_qwen.SlotMem.from_shared(model, tok, facts_mode.LAYER)
+        except Exception as e:
+            print(f"[facts] could not build slot store: {type(e).__name__}: {e}", flush=True)
+            self._slots = None
+            return None
+        self._load_active()               # bring the current profile's saved facts in
+        return self._slots
+
+    def _active_profile(self):
+        try:
+            return _active_profile_name()
+        except Exception:
+            return None
+
+    def _load_active(self):
+        """(Re)load the store for the currently-active profile into self._slots. Silent on a missing
+        file (a profile with no facts yet is empty, not an error); a layer mismatch is logged + skipped."""
+        if self._slots is None:
+            return
+        import facts_mode
+        prof = self._active_profile()
+        path = facts_mode.store_path(prof)
+        self._slots.entries = []
+        self._profile = prof
+        if os.path.isfile(path):
+            try:
+                self._slots.load(path)
+            except Exception as e:
+                print(f"[facts] skipped loading {path}: {type(e).__name__}: {e}", flush=True)
+
+    def _save_active(self):
+        if self._slots is None:
+            return
+        import facts_mode
+        try:
+            self._slots.save(facts_mode.store_path(self._profile))
+        except Exception as e:
+            print(f"[facts] save failed: {type(e).__name__}: {e}", flush=True)
+
+    def _ensure_profile(self):
+        """If the active profile changed since we last loaded, swap the resident store to it (per-profile
+        isolation: one persona's facts must never read another's). Cheap string compare; loads only on a
+        real change."""
+        if self._slots is None:
+            return
+        if self._active_profile() != self._profile:
+            self._load_active()
+
+    def on_profile_switch(self):
+        """Called by a profile switch: reload the new profile's store if the box is already live. When
+        facts are off / not built yet, nothing to do (the store loads lazily on first use)."""
+        with self._lock:
+            if self._slots is not None:
+                self._load_active()
+
+    # ---- reads / writes (all gated by memory_facts) ----------------------------------------------
+    def status(self):
+        """{enabled, layer, profile, count} -- the Facts panel header. Never builds the model just to
+        answer (count is 0 until the store is actually resident)."""
+        import facts_mode
+        n = len(self._slots.entries) if self._slots is not None else 0
+        return {"enabled": facts_mode.enabled(), "layer": facts_mode.LAYER,
+                "profile": self._profile or self._active_profile() or "default", "count": n}
+
+    def list_entries(self):
+        """[{cue, answer, label}] for the resident store, [] when off / unbuilt. Read-only, no model
+        forward -- safe to call on every Facts-panel load."""
+        import facts_mode
+        if not facts_mode.enabled():
+            return []
+        with self._lock:
+            if self._build() is None:
+                return []
+            self._ensure_profile()
+            return [{"cue": e["cue"], "answer": e["answer"], "label": e["label"]}
+                    for e in self._slots.entries]
+
+    def add(self, cue: str, answer: str, gate: bool = True):
+        """Explicit fact write with the SURPRISE GATE on (the refusal is the receipt: a fact the model
+        already knows is SKIPPED, not stored). Persists on a real write. {ok, written, surprise, reason?}."""
+        import facts_mode
+        cue, answer = str(cue or "").strip(), str(answer or "")
+        if not cue or not answer.strip():
+            return {"ok": False, "reason": "need a cue and an answer"}
+        if not facts_mode.enabled():
+            return {"ok": False, "reason": "the facts tier is off (enable it first)"}
+        with self._lock:
+            if self._build() is None:
+                return {"ok": False, "reason": "no model loaded to hold the fact store"}
+            self._ensure_profile()
+            with _TRAIN_LOCK:              # the store write runs forwards on the shared model
+                r = self._slots.write(cue, answer, gate=gate)
+                if r.get("written"):
+                    self._slots.calibrate_gate()
+            if r.get("written"):
+                self._save_active()
+                return {"ok": True, "written": True, "surprise": r.get("surprise")}
+            return {"ok": True, "written": False, "surprise": r.get("surprise"),
+                    "reason": "the model already knows this (surprise below the write gate) -- not stored"}
+
+    def delete(self, cue: str | None = None, index=None):
+        """Surgical per-entry removal (the slotmem contract: the victim drops, every other entry stays
+        bit-identical). Match by exact cue, else by index. Persists. {ok, removed, remaining}."""
+        import facts_mode
+        if not facts_mode.enabled():
+            return {"ok": False, "reason": "the facts tier is off"}
+        with self._lock:
+            if self._build() is None:
+                return {"ok": False, "reason": "no fact store loaded"}
+            self._ensure_profile()
+            ents = self._slots.entries
+            victim = None
+            if cue is not None and str(cue).strip():
+                victim = next((k for k, e in enumerate(ents) if e["cue"] == str(cue)), None)
+            elif index is not None:
+                try:
+                    idx = int(index)
+                    victim = idx if 0 <= idx < len(ents) else None
+                except (TypeError, ValueError):
+                    victim = None
+            if victim is None:
+                return {"ok": False, "reason": "no matching fact"}
+            removed = ents.pop(victim)["cue"]
+            self._slots.calibrate_gate()  # the abstain floor is derived from the store -> recompute
+            self._save_active()
+            return {"ok": True, "removed": removed, "remaining": len(ents)}
+
+    def read_receipt(self, query: str):
+        """The honest read RECEIPT for a query: which entry the store WOULD fire (or that it abstains),
+        the key similarity, the abstain floor, the answer it would inject, and the measured slot_ms. Does
+        NOT alter any chat reply (v1). {enabled, hit, abstained, sim, gate_floor, cue, answer, slot_ms}."""
+        import facts_mode
+        if not facts_mode.enabled():
+            return {"enabled": False}
+        query = str(query or "").strip()
+        with self._lock:
+            if self._build() is None or not self._slots.entries:
+                return {"enabled": True, "hit": None, "abstained": True, "empty": True,
+                        "count": 0, "slot_ms": 0.0}
+            self._ensure_profile()
+            t0 = time.time()
+            with _TRAIN_LOCK:             # the read is a forward on the shared model
+                r = self._slots.read(query, gated=True)
+            slot_ms = round((time.time() - t0) * 1000.0, 1)
+            hit, abst = r.get("hit"), r.get("abstained", False)
+            out = {"enabled": True, "hit": hit, "abstained": bool(abst),
+                   "sim": (round(float(r["sim"]), 4) if r.get("sim") is not None else None),
+                   "gate_floor": (round(float(self._slots.gate_floor), 4)
+                                  if self._slots.gate_floor is not None else None),
+                   "count": len(self._slots.entries), "slot_ms": slot_ms}
+            if hit is not None and not abst:
+                e = self._slots.entries[hit]
+                out["cue"], out["answer"] = e["cue"], e["answer"]
+            return out
+
+    def auto_write(self, messages, reply):
+        """Surprise-gated auto-write FROM CONVERSATION: mine a single declarative (cue -> answer) from the
+        last user turn and write it under the gate, so the gate refuses what the model already knows. A
+        no-op (returns None) when off, when nothing mineable is found, or when the model isn't loaded.
+        Best-effort + defensive -- it must never break a chat turn. Returns the write receipt when it
+        actually attempted a write (for the runlog), else None."""
+        import facts_mode
+        if not facts_mode.enabled():
+            return None
+        cand = _mine_fact(_last_user(messages))
+        if cand is None:
+            return None
+        cue, answer = cand
+        try:
+            with self._lock:
+                if self._build() is None:
+                    return None
+                self._ensure_profile()
+                with _TRAIN_LOCK:
+                    r = self._slots.write(cue, answer, gate=True)
+                    if r.get("written"):
+                        self._slots.calibrate_gate()
+                if r.get("written"):
+                    self._save_active()
+                return {"cue": cue, "answer": answer, **r}
+        except Exception as e:
+            print(f"[facts] auto-write skipped: {type(e).__name__}: {e}", flush=True)
+            return None
+
+
+# One process-wide SlotBox, bound to whatever substrate is live (its _mem_provider reads SUB fresh, so a
+# substrate swap is picked up automatically). None until the first substrate boots.
+SLOTS = None
+
+
+def _slots_box():
+    """The live SlotBox (lazily created; shares SUB.memory as its backbone). None only before any
+    substrate exists."""
+    global SLOTS
+    if SLOTS is None and SUB is not None:
+        SLOTS = SlotBox(lambda: getattr(SUB, "memory", None))
+    return SLOTS
+
+
+# The conversation fact-miner: a deliberately CONSERVATIVE pull of one "<subject> is/are/was <value>"
+# statement from a user turn -> (cue, answer) for the surprise-gated store. High-precision-over-recall on
+# purpose: a noisy auto-writer would fill the store with junk the gate then has to sieve, so we only fire
+# on a clean, short, declarative fact of the personal-memory shape ("My dog's name is Biscuit"). Anything
+# ambiguous is left for the explicit "remember this" path. Pure + stdlib -> unit-testable with no model.
+import re as _re
+
+_FACT_RE = _re.compile(
+    r"\b((?:my|our|the|his|her|their)\b[\w '\-]{1,40}?)\s+(?:is|are|was|were)\s+(?:called\s+|named\s+)?"
+    r"([A-Za-z0-9][\w '\-]{0,40}?)\s*[.!?]?$",
+    _re.IGNORECASE)
+
+
+def _mine_fact(text: str):
+    """One (cue, answer) from a short declarative user turn, or None. cue is the statement's subject
+    rendered as a completion prompt ("My dog's name is" -> answer " Biscuit"); answer carries the leading
+    space the store's value schedule expects. None when the turn is a question, too long, or not a clean
+    "<subject> is <value>"."""
+    t = str(text or "").strip()
+    if not t or "?" in t or len(t) > 120 or len(t.split()) > 20:
+        return None
+    m = _FACT_RE.search(t)
+    if not m:
+        return None
+    subj, val = m.group(1).strip(), m.group(2).strip()
+    if not subj or not val or len(val) < 2:
+        return None
+    # rebuild the cue as the model would be prompted to COMPLETE it, preserving the copula the user used.
+    copula = _re.search(r"\b(is|are|was|were)\b", t[m.start():], _re.IGNORECASE)
+    verb = copula.group(1).lower() if copula else "is"
+    cue = f"{subj} {verb}"
+    return cue, " " + val
 
 
 ARGS = None
@@ -1146,6 +1454,29 @@ def make_handler():
                             pass
                 else:
                     memd = {"mode": mode}                        # runlog records the mode on EVERY run
+                # FACTS tier (NEXT_STEPS #5): only when memory_facts is on -- otherwise zero cost, the
+                # latency rule. A chat turn (not the pure /think etc.) gets a surprise-gated AUTO-WRITE
+                # (mine one declarative fact; the gate refuses what the model already knows) and a READ
+                # RECEIPT (what the store would fire + slot_ms), both folded into the run's memory record
+                # so the Run Inspector shows them. Fully guarded; never breaks logging or the reply.
+                try:
+                    import facts_mode
+                    if facts_mode.enabled() and source in ("studio_chat", "openai_api", "engine_chat"):
+                        box = _slots_box()
+                        if box is not None and not error:
+                            wrote = box.auto_write(messages, response)
+                            receipt = box.read_receipt(_last_user(messages))
+                            facts_rec = {}
+                            if isinstance(receipt, dict) and receipt.get("enabled"):
+                                facts_rec["read"] = {k: receipt.get(k) for k in
+                                                     ("hit", "abstained", "sim", "gate_floor", "cue",
+                                                      "answer", "count", "slot_ms")}
+                            if wrote is not None:
+                                facts_rec["auto_write"] = wrote
+                            if facts_rec:
+                                memd = {**(memd if isinstance(memd, dict) else {}), "facts": facts_rec}
+                except Exception:
+                    pass
                 # only meaningfully-nonzero dials (|v| >= 0.05); steer.active() drops exact-zeros but a
                 # slider nudged to a hair (e.g. 0.02) still slips through and would clutter the record.
                 dials = SUB.steer.active() if (SUB and hasattr(SUB, "steer")) else {}
@@ -1156,6 +1487,41 @@ def make_handler():
                               trace=trace)
             except Exception:
                 pass
+
+        def _facts(self, p, body):
+            """The FACTS tier (slot memory) endpoints. Every one degrades cleanly when the tier is off
+            (memory_facts) or no substrate/model is loaded -- the panel renders either way. The read/write
+            operations touch the shared 7B, so they run under the SlotBox's own lock (+ _TRAIN_LOCK inside
+            it) and are gated OFF the chat hot path by the setting -- the latency rule."""
+            import facts_mode
+            if p == "/facts/mode":            # read or set the on/off gate (the latency switch)
+                if "enabled" in body:
+                    on = bool(body.get("enabled"))
+                    if not facts_mode.set_enabled(on):
+                        return self._json(200, {"ok": False, "reason": "could not persist the setting"})
+                    return self._json(200, {"ok": True, "enabled": facts_mode.enabled(),
+                                            "layer": facts_mode.LAYER})
+                box = _slots_box()
+                st = box.status() if box is not None else {"enabled": facts_mode.enabled(),
+                                                            "layer": facts_mode.LAYER,
+                                                            "profile": _active_profile_name() or "default",
+                                                            "count": 0}
+                return self._json(200, st)
+            box = _slots_box()
+            if box is None:                   # no substrate at all yet -> honest empty
+                return self._json(200, {"enabled": facts_mode.enabled(), "entries": [], "count": 0,
+                                        "note": "no substrate loaded"})
+            if p == "/facts/list":            # the store's entries (cue/answer) -- read-only, no forward
+                return self._json(200, {"enabled": facts_mode.enabled(), "entries": box.list_entries(),
+                                        **box.status()})
+            if p == "/facts/add":             # explicit gated write (the gate refusal is the receipt)
+                return self._json(200, box.add(str(body.get("cue", "")), str(body.get("answer", "")),
+                                               gate=bool(body.get("gate", True))))
+            if p == "/facts/delete":          # surgical per-entry removal (bystanders bit-identical)
+                return self._json(200, box.delete(cue=body.get("cue"), index=body.get("index")))
+            if p == "/facts/read":            # the honest read receipt (hit / gate value / abstention + slot_ms)
+                return self._json(200, box.read_receipt(str(body.get("query", ""))))
+            return self._json(404, {"error": f"POST {p}"})
 
         def do_GET(self):
             p = self.path.split("?")[0]
@@ -1277,6 +1643,8 @@ def make_handler():
                 except (ValueError, KeyError, TypeError) as e:
                     return self._json(400, {"error": f"bad profile bundle: {e}"})
                 return self._json(200, {"ok": True, "path": path, "profile": p2})
+            if p.startswith("/facts/"):      # the FACTS tier (slot memory) -- gated behind memory_facts (default OFF)
+                return self._facts(p, body)
             if p.startswith("/runs/") and p.endswith("/replay"):   # F1: re-run a past run under changed state -> a child run
                 rid = p[len("/runs/"):-len("/replay")]
                 import runlog

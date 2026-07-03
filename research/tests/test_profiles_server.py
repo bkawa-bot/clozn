@@ -258,9 +258,11 @@ def test_switch_replaces_cards_and_dials_and_is_instant_in_prompt_mode(iso, monk
     assert out["resync"]["mode"] == "prompt"
     assert mem.consolidate_calls == []
 
-    # facts: the item-5 seam is NAMED, not silently dropped
+    # facts: the item-5 seam is NAMED, not silently dropped. With the facts tier OFF (the default in
+    # this fixture) the note explains the bundle's facts travel but aren't compiled until the tier is on
+    # (the seam is now CLOSED -- see test_facts_server for the on-path that actually compiles them).
     assert out["facts_note"] is not None
-    assert "slot-memory" in out["facts_note"] or "slots" in out["facts_note"]
+    assert "fact" in out["facts_note"] and ("tier is off" in out["facts_note"] or "store" in out["facts_note"])
 
     # the active-profile name is now readable back
     assert cs._active_profile_name() == "friend"

@@ -85,17 +85,34 @@ class SlotMem:
         path = path if os.path.isfile(os.path.join(path, "config.json")) else model_name
         four_bit = "7b" in model_name.lower() and DEV == "cuda"   # 7B needs nf4 on a 16GB card (the
         print(f"[load] {model_name} ({'4-bit nf4' if four_bit else 'bf16'}) layer={layer}", flush=True)
-        self.tok = AutoTokenizer.from_pretrained(path)
+        tok = AutoTokenizer.from_pretrained(path)
         if four_bit:                                              # studio's config -- voice_middle.Rig)
             from transformers import BitsAndBytesConfig
             bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                      bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
-            self.model = AutoModelForCausalLM.from_pretrained(   # never .to(DEV) a quantized model
+            model = AutoModelForCausalLM.from_pretrained(        # never .to(DEV) a quantized model
                 path, quantization_config=bnb, device_map={"": 0}).eval()
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16).to(DEV).eval()
-        for p in self.model.parameters():
+            model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16).to(DEV).eval()
+        for p in model.parameters():
             p.requires_grad_(False)
+        self._setup(model, tok, layer)
+
+    @classmethod
+    def from_shared(cls, model, tok, layer: int) -> "SlotMem":
+        """Build a SlotMem on an ALREADY-LOADED backbone (the studio's Qwen-7B nf4: SUB.memory.model /
+        .tok) -- one model behind the concept readout, the memory prefix AND the fact store, exactly the
+        SelfTeach(model=..., tok=...) share. No second 7B, no second HF download. The model must expose
+        `.model.layers[layer]` and `.lm_head.weight` (Qwen2.5 does; the slotmem findings validated L18 on
+        this exact nf4 config). The caller keeps ownership of the model; only close() removes OUR hook."""
+        self = cls.__new__(cls)                                  # skip __init__'s model load
+        self._setup(model, tok, layer)
+        return self
+
+    def _setup(self, model, tok, layer: int):
+        """Everything after the backbone exists: the tap hook, W_U, an empty store, and the eta measured
+        once on a neutral text. Shared by __init__ (fresh load) and from_shared (reuse)."""
+        self.tok, self.model = tok, model
         self.layer = layer
         self.W_U = self.model.lm_head.weight        # [V, H] -- values come from here (legible)
         self.entries: list[dict] = []               # the store: {key(unit), value(unit), label, ans_ids}

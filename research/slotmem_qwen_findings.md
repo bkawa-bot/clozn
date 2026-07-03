@@ -148,8 +148,35 @@ validated only against 4 known facts. Persistence is now built — `SlotMem.save
 of keys/values/ans_ids/labels/cues/answers + layer/eta/gate_floor; refuses cross-layer loads), with a
 model-free unit test (`tests/test_slotmem_store.py`, bit-exact round-trip) and a real-model receipt: a
 FRESH process loading the store reproduces all 12 reads exactly, keys/values bit-identical (~147 KB for
-12 entries). The studio surface (serving `memory_mode:"slots"`) remains unbuilt — mechanism proven,
-product not yet wired.
+12 entries).
+
+## STUDIO WIRING — built (2026-07-03, NEXT_STEPS #5 done): the facts tier is now in the product
+
+The studio surface is wired. `SlotMem.from_shared(model, tok, layer)` builds on the studio's ALREADY-
+loaded Qwen-7B (`SUB.memory.model` — one model behind the concept readout, the memory prefix AND the
+fact store; **no second load**, verified against the real nf4 config: hidden 3584 / 28 layers / L18,
+`eta≈128` = resid-norm 85 × 1.5). Server: a `SlotBox` (clozn_server.py) owns one live SlotMem +
+**per-profile** persistence (`~/.clozn/profiles/<name>.slots.pt` via save/load); endpoints `/facts/mode`
+(on/off + persist), `/facts/list`, `/facts/add` (gated write — the refusal is the receipt),
+`/facts/delete` (surgical), `/facts/read` (the honest receipt: hit / sim / gate-floor / abstained /
+slot_ms). A Facts panel (`inspector/demo/pages/memory.js`) lists cue→answer, deletes per-entry, shows
+the gate refusal on add, and shows read receipts incl. **abstentions**. Profile switch compiles a
+bundle's facts into that profile's store (`profiles.compile_facts`), closing the `facts_note` seam.
+Surprise-gated auto-writes from conversation: a conservative miner pulls one clean "<subj> is <val>"
+from a user turn and writes it under the gate (a known fact is refused, an unknown one kept).
+
+**THE LATENCY RULE (measured, not asserted).** A slot READ is a forward → address → inject → forward,
+so on the real 7B-nf4 it costs **~171 ms vs an ~85 ms baseline next-token forward — ~86 ms (one extra
+forward) of per-turn overhead.** That is why the whole tier is gated behind `memory_facts` (default
+**OFF**): off = zero cost, byte-identical replies. On = the server logs `slot_ms` into every chat run so
+the cost stays honest and visible. v1 is deliberately conservative: the slot read produces a RECEIPT
+(shown in the Facts panel + runlog) but does NOT yet steer the chat reply — actually injecting the
+retrieved value into generation is the next rung (the read machinery + receipts are the foundation).
+Real-model smoke (07-03) confirmed on the studio config: known facts refused (Paris 0.82, "four" 0.23
+nats), Zorbland→blue refused at 1.62 (the 7B can guess it — the documented smarter-gate behavior),
+genuine nonce stored (Wrenmoor→owl 11.39, dog→Biscuit 4.17), SELECT perfect (sim 1.000 on stored cues),
+persistence bit-exact. Model-free tests: `tests/test_facts_mode.py`, `test_facts_server.py`,
+`test_slotmem_shared.py` (the from_shared seam proven with a fake backbone — no HF, no GPU).
 
 ## Why it matters
 
