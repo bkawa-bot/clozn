@@ -122,6 +122,22 @@
       "border-radius:16px;padding:5px 11px;cursor:pointer;transition:background .14s,border-color .14s,color .14s}" +
       ".ri-qr-btn:hover{color:var(--ink,#1b1f2a);border-color:var(--halo,#7aa7ff)}" +
       ".ri-qr-btn.busy{opacity:.6;cursor:default}" +
+      // --- #6 time-travel: "rewind & branch from here" -- a turn picker + optional alt-user field. ---
+      ".ri-tt-h{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint,#9aa0b3);margin:2px 0 4px}" +
+      ".ri-tt-sub{font-size:11.5px;color:var(--soft,#5a6072);line-height:1.4;margin-bottom:7px}" +
+      ".ri-tt-turns{display:flex;flex-direction:column;gap:5px}" +
+      ".ri-tt-turn{display:flex;gap:7px;align-items:baseline;border:1px solid var(--line,#e3e6ef);border-radius:10px;padding:6px 9px;background:rgba(255,255,255,.7)}" +
+      ".ri-tt-turn .tn{font-size:10px;letter-spacing:.03em;color:var(--faint,#9aa0b3);text-transform:uppercase;flex:none}" +
+      ".ri-tt-turn .tu{flex:1;min-width:0;font-size:12.5px;color:var(--ink,#1b1f2a);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".ri-tt-turn .tgo{flex:none;font:inherit;font-size:11.5px;font-weight:600;border:1px solid rgba(122,167,255,.45);color:#2f4a7a;" +
+      "background:rgba(122,167,255,.10);border-radius:14px;padding:3px 10px;cursor:pointer}" +
+      ".ri-tt-turn .tgo:hover:not(:disabled){background:rgba(122,167,255,.18);border-color:var(--halo,#7aa7ff)}" +
+      ".ri-tt-turn .tgo.busy,.ri-tt-turn .tgo:disabled{opacity:.6;cursor:default}" +
+      ".ri-tt-alt{margin:8px 0 2px;display:flex;flex-direction:column;gap:5px}" +
+      ".ri-tt-alt label{font-size:11px;color:var(--soft,#5a6072)}" +
+      ".ri-tt-alt textarea{font:inherit;font-size:12.5px;border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:6px 8px;resize:vertical;min-height:34px;color:var(--ink,#1b1f2a)}" +
+      ".ri-tt-alt textarea:focus{outline:none;border-color:var(--halo,#7aa7ff)}" +
+      ".ri-tt-note{font-size:11px;color:var(--faint,#9aa0b3);line-height:1.4;margin-top:6px}" +
       // "propose a memory from this run" -- its own action + result block, kept distinct from replay.
       ".ri-sep{margin:12px 0 2px;border:0;border-top:1px dashed var(--line,#e3e6ef)}" +
       ".ri-prop{margin-top:8px;font-size:12.5px}" +
@@ -325,6 +341,31 @@
   // The dials that were live on the ORIGINAL run -- the baseline a quick-repair preset nudges from.
   function runDials(run) { return ((run.behavior || {}).active_dials) || {}; }
 
+  // --- #6 time-travel: fold a run's flat messages[] into conversational TURNS the UI can rewind to.
+  // Mirrors research/timetravel.message_turns EXACTLY (a turn = a user msg + the assistant reply that
+  // followed; a leading system message rides along; a final user with no reply is a dangling turn).
+  // The BACKEND is the authority (it re-folds server-side); this is only to render the branch buttons.
+  function messageTurns(run) {
+    var msgs = (run && run.messages) || [], turns = [], cur = null;
+    for (var i = 0; i < msgs.length; i++) {
+      var role = msgs[i] && msgs[i].role, content = (msgs[i] && msgs[i].content) || "";
+      if (role === "user") {
+        if (cur) turns.push(cur);
+        cur = { turn: turns.length, user: content, assistant: null };
+      } else if (role === "assistant" && cur && cur.assistant == null) {
+        cur.assistant = content;
+      }
+    }
+    if (cur) turns.push(cur);
+    return turns;
+  }
+
+  // A short, caret-safe preview of a turn's user text for the branch-button label.
+  function turnLabel(t) {
+    var u = String((t && t.user) || "").replace(/\s+/g, " ").trim();
+    return u.length > 46 ? u.slice(0, 44) + "…" : (u || "(empty)");
+  }
+
   function repairCol(run) {
     var h = "<h3>Repair / replay</h3>";
     // --- G2: quick-repair presets. One click maps a common complaint to a dial nudge + replay, then
@@ -344,6 +385,27 @@
     h += "<button class=\"ri-act\" data-rep='{\"nudge\":\"concise\"}'>Make it more concise + replay</button>";
     h += "<button class=\"ri-act\" data-rep='{\"plain\":true}'>Replay unchanged (re-roll)</button>";
     h += '<div class="ri-out" id="ri-out"></div>';
+    // --- #6: rewind & branch from here. Pick a turn to rewind to; the branch RE-GENERATES from the
+    //     truncated transcript (optionally with a different question at that turn) and is recorded as a
+    //     CHILD run. The KV cache makes this byte-exact + cheap (kv_timetravel_findings.md); state-surgery
+    //     is Lab-only (half-life < 1 turn). Uses the SAME compare renderer as replay. ---
+    var turns = messageTurns(run);
+    if (turns.length) {
+      h += '<hr class="ri-sep">';
+      h += '<div class="ri-tt-h">Rewind &amp; branch from here</div>';
+      h += '<div class="ri-tt-sub">Rewind to a turn and re-generate from there — as-is (re-roll) or with a different question. Recorded as a child run; the branched future is byte-exact for a fresh recompute.</div>';
+      h += '<div class="ri-tt-alt"><label for="ri-tt-alt-in">Optional: ask something different at the branch turn</label>' +
+        '<textarea id="ri-tt-alt-in" placeholder="leave blank to re-roll the turn unchanged"></textarea></div>';
+      h += '<div class="ri-tt-turns">';
+      for (var ti = 0; ti < turns.length; ti++) {
+        h += '<div class="ri-tt-turn"><span class="tn">turn ' + turns[ti].turn + '</span>' +
+          '<span class="tu" title="' + esc(turns[ti].user) + '">' + esc(turnLabel(turns[ti])) + '</span>' +
+          '<button class="tgo" data-branch="' + turns[ti].turn + '">Branch</button></div>';
+      }
+      h += "</div>";
+      h += '<div class="ri-out" id="ri-tt-out"></div>';
+      h += '<div class="ri-tt-note">A branch keeps the current memory &amp; dials; toggle those with the replay buttons above.</div>';
+    }
     // --- E2: propose a durable memory from this run (drops a PENDING card on the Memory page) ---
     h += '<hr class="ri-sep">';
     h += '<button class="ri-act" id="ri-propose">Propose a memory from this run</button>';
@@ -393,6 +455,38 @@
       // defensive: postJSON shouldn't reject, but never leave the trigger stuck if it somehow does.
       if (restore) restore();
       out.innerHTML = '<span class="sub">replay failed (unexpected error) — nothing was changed.</span>';
+    });
+  }
+
+  // --- #6 branch: POST /runs/<id>/branch {turn, alt_user}, render the compare via the SAME renderer. --
+  // The child's changes_applied carries {branch_turn, edited_user, alt_user?, kv_snapshot}; renderCompare
+  // + summarizeChanges below understand it. Original = the parent run's reply; Replayed = the branched
+  // reply. Never throws (postJSON resolves {ok,status,data} on every outcome).
+  function doBranch(out, run, turn, altUser, btn) {
+    if (!out) return Promise.resolve();
+    var restore = null;
+    if (btn) {
+      var label = btn.textContent;
+      btn.classList.add("busy"); btn.disabled = true;
+      restore = function () { btn.classList.remove("busy"); btn.disabled = false; btn.textContent = label; };
+    }
+    out.innerHTML = '<span class="sub">rewinding to turn ' + esc(turn) + ' &amp; branching&hellip;</span>';
+    var body = { turn: turn };
+    if (altUser != null && String(altUser).trim()) body.alt_user = String(altUser);
+    return postJSON("/runs/" + run.id + "/branch", body).then(function (r) {
+      if (restore) restore();
+      if (r.status === 404) { out.innerHTML = '<span class="sub">branch isn’t wired yet — this lights up once /runs/&lt;id&gt;/branch exists.</span>'; return; }
+      if (r.status === 503) { out.innerHTML = '<span class="sub">branching needs the qwen substrate running — start it (or switch to qwen) and try again.</span>'; return; }
+      if (r.status === 0) { out.innerHTML = '<span class="sub">couldn’t reach the studio (offline?) — nothing was changed.</span>'; return; }
+      if (!r.ok || !r.data || !r.data.id) {
+        var msg = r.data && r.data.error ? " — " + esc(r.data.error) : "";
+        out.innerHTML = '<span class="sub">branch failed (' + esc(r.status) + ")" + msg + "</span>";
+        return;
+      }
+      renderCompare(out, run, r.data);
+    }, function () {
+      if (restore) restore();
+      out.innerHTML = '<span class="sub">branch failed (unexpected error) — nothing was changed.</span>';
     });
   }
 
@@ -476,6 +570,13 @@
       var nv = eff[nk] != null ? " → " + (+eff[nk]).toFixed(2) : "";
       parts.push(esc(nk) + " up" + nv);
     }
+    // #6 branch: rewound to a turn, optionally with a different question there.
+    if (changes.branch_turn != null) {
+      var bp = "branched from turn " + changes.branch_turn;
+      if (changes.edited_user) bp += " (edited question)";
+      if (changes.kv_snapshot) bp += " · KV snapshot";
+      parts.push(bp);
+    }
     if (changes.plain) parts.push("nothing (re-roll, same settings)");
     if (!parts.length) parts.push("nothing (re-roll, same settings)");
     return parts.join(", ");
@@ -515,6 +616,7 @@
     }
 
     // changes that deliberately can't map to a "new default" endpoint -> report, don't offer a button.
+    if (changes.branch_turn != null) unpersistable.push("A branch is a conversation fork, saved as its own child run — there’s no default to set. Open it from the Runs list to keep exploring.");
     if (changes.memory_off) unpersistable.push("Memory OFF is a one-turn suppression; to make it permanent, disable specific cards on the Memory page.");
     if (changes.behavior_off) unpersistable.push("Dials OFF is a one-turn neutral; to make it permanent, zero the dials on the Behavior page.");
     if (changes.edited_memory) unpersistable.push("Memory-card editing isn’t wired to persist yet.");
@@ -619,6 +721,22 @@
         var preset = QR_BY_KEY[btn.dataset.qr];
         if (!preset || !out) return;
         doReplay(out, run, { behavior_overrides: presetOverrides(preset, run) }, btn);
+      };
+    });
+  }
+
+  // #6: wire the "Branch" buttons. Each carries data-branch=<turn>; the optional alt-user comes from the
+  // shared textarea. All funnel through doBranch -> renderCompare (the same compare + receipt strip as
+  // replay). Scoped by data-branch so nothing else here binds them.
+  function wireBranch(root, run) {
+    var out = root.querySelector("#ri-tt-out");
+    var altEl = root.querySelector("#ri-tt-alt-in");
+    root.querySelectorAll(".tgo[data-branch]").forEach(function (btn) {
+      btn.onclick = function () {
+        if (btn.disabled || !out) return;
+        var turn = parseInt(btn.dataset.branch, 10);
+        if (isNaN(turn)) return;
+        doBranch(out, run, turn, altEl ? altEl.value : "", btn);
       };
     });
   }
@@ -847,6 +965,7 @@
     wireRepair(root, run);
     wireReceipts(root, run);
     wireQuickRepair(root, run);
+    wireBranch(root, run);
     wirePropose(root, run, ctx);
   }
 

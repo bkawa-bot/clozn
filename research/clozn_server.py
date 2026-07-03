@@ -642,6 +642,27 @@ class SlotBox:
 # substrate swap is picked up automatically). None until the first substrate boots.
 SLOTS = None
 
+# One process-wide time-travel SnapshotStore (NEXT_STEPS #6): the bounded, CPU-offloaded ring of per-turn
+# KV snapshots. Built lazily from timetravel.get_config() (cap / byte-budget). Only ever holds real KV
+# payloads when the `timetravel_snapshots` gate is ON (the RAM rule); branch RECORDING (the transcript
+# transform -> child run) does not need it and works regardless. None until first requested.
+SNAPSHOTS = None
+
+
+def _snap_store():
+    """The process-wide time-travel SnapshotStore, built lazily with the persisted ring config. Never
+    raises -- a config hiccup falls back to the module defaults."""
+    global SNAPSHOTS
+    if SNAPSHOTS is None:
+        try:
+            import timetravel
+            cfg = timetravel.get_config()
+            SNAPSHOTS = timetravel.SnapshotStore(cap=cfg["cap"], budget_mb=cfg["budget_mb"])
+        except Exception:
+            import timetravel
+            SNAPSHOTS = timetravel.SnapshotStore()
+    return SNAPSHOTS
+
 
 def _slots_box():
     """The live SlotBox (lazily created; shares SUB.memory as its backbone). None only before any
@@ -1481,10 +1502,41 @@ def make_handler():
                 # slider nudged to a hair (e.g. 0.02) still slips through and would clutter the record.
                 dials = SUB.steer.active() if (SUB and hasattr(SUB, "steer")) else {}
                 dials = {k: v for k, v in dials.items() if abs(float(v)) >= 0.05}
-                runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
-                              model=str(model), substrate=SUBNAME, messages=messages, response=response,
-                              memory=memd, behavior={"active_dials": dials}, started=started, error=error,
-                              trace=trace)
+                rid = runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
+                                    model=str(model), substrate=SUBNAME, messages=messages, response=response,
+                                    memory=memd, behavior={"active_dials": dials}, started=started, error=error,
+                                    trace=trace)
+                self._maybe_snapshot_turn(rid, messages, trace, error)
+            except Exception:
+                pass
+
+        def _maybe_snapshot_turn(self, rid, messages, trace, error):
+            """TIME-TRAVEL (#6): when the snapshot gate is ON, register this turn in the bounded ring so the
+            Run Inspector's rewind/branch reflects real recorded turns and the ring's bounded eviction runs
+            in production. Fully guarded + gated OFF by default (the RAM rule). NOTE: the studio chat path is
+            STATELESS (SelfTeach._generate builds its own cache via generate() and discards it), so v1
+            records a DESCRIPTOR-only snapshot (turn index + token count, zero offloaded bytes) -- honest,
+            and enough for the branch bookkeeping. Capturing the live KV payload here (the re-prefill fast
+            path) needs the generation path to hand back its cache: the documented next rung."""
+            try:
+                if not rid or error:
+                    return
+                import timetravel
+                if not timetravel.enabled():
+                    return
+                store = _snap_store()
+                if store is None:
+                    return
+                turn = max(0, len(timetravel.message_turns(messages)) - 1)   # this reply's turn index
+                # `trace` is a raw per-token step LIST here (runlog normalizes it later) -> len == tokens;
+                # tolerate a pre-normalized {tokens:[...]} dict too. 0 when no trace was captured.
+                if isinstance(trace, list):
+                    n_tok = len(trace)
+                elif isinstance(trace, dict):
+                    n_tok = len(trace.get("tokens", []) or [])
+                else:
+                    n_tok = 0
+                store.snapshot_turn(rid, turn, n_tok=n_tok, meta={"stateless": True})
             except Exception:
                 pass
 
@@ -1523,6 +1575,36 @@ def make_handler():
                 return self._json(200, box.read_receipt(str(body.get("query", ""))))
             return self._json(404, {"error": f"POST {p}"})
 
+        def _timetravel(self, p, body):
+            """The time-travel debugger's gate + ring config + store stats (NEXT_STEPS #6). The snapshot
+            ring holds KV state in CPU RAM, so it is behind ONE persisted setting (`timetravel_snapshots`,
+            DEFAULT OFF -- the RAM rule); this endpoint reads/sets it, tunes the ring (cap / byte budget),
+            and reports the honest offloaded-bytes total. Branch RECORDING (POST /runs/<id>/branch) does
+            NOT depend on the gate; only holding live KV for the (future) re-prefill fast path does."""
+            import timetravel
+            if p == "/timetravel/mode":       # read or set the on/off gate + ring config
+                changed = False
+                if "enabled" in body:
+                    timetravel.set_enabled(bool(body.get("enabled")))
+                    changed = True
+                if "cap" in body or "budget_mb" in body:
+                    timetravel.set_config(cap=body.get("cap"), budget_mb=body.get("budget_mb"))
+                    changed = True
+                    cfg = timetravel.get_config()          # apply the (clamped) new ceilings to the LIVE store
+                    if _snap_store() is not None:
+                        _snap_store().reconfigure(cap=cfg["cap"], budget_mb=cfg["budget_mb"])
+                out = {"enabled": timetravel.enabled(), **timetravel.get_config()}
+                store = _snap_store()
+                if store is not None:
+                    out["store"] = store.stats()
+                out["changed"] = changed
+                return self._json(200, out)
+            if p == "/timetravel/stats":      # just the store's honest memory receipt
+                store = _snap_store()
+                return self._json(200, {"enabled": timetravel.enabled(),
+                                        **(store.stats() if store is not None else {})})
+            return self._json(404, {"error": f"POST {p}"})
+
         def do_GET(self):
             p = self.path.split("?")[0]
             if p in ("/", "/index.html", "/instrument.html"):
@@ -1543,6 +1625,13 @@ def make_handler():
             if p == "/memory/mode":          # which mechanism carries the cards (works on ANY substrate)
                 import memory_mode
                 return self._json(200, {"mode": _memory_mode(), "modes": list(memory_mode.MODES)})
+            if p == "/timetravel/mode":      # #6: is per-turn KV snapshotting on? + ring config + store stats
+                import timetravel
+                out = {"enabled": timetravel.enabled(), **timetravel.get_config()}
+                store = _snap_store()
+                if store is not None:
+                    out["store"] = store.stats()
+                return self._json(200, out)
             if p == "/profiles/list":         # every saved persona bundle + which one is active (masthead + Settings)
                 import profiles
                 return self._json(200, {"profiles": profiles.ProfileStore().list(),
@@ -1645,6 +1734,8 @@ def make_handler():
                 return self._json(200, {"ok": True, "path": path, "profile": p2})
             if p.startswith("/facts/"):      # the FACTS tier (slot memory) -- gated behind memory_facts (default OFF)
                 return self._facts(p, body)
+            if p.startswith("/timetravel/"):   # #6: the time-travel snapshot gate + ring config (default OFF)
+                return self._timetravel(p, body)
             if p.startswith("/runs/") and p.endswith("/replay"):   # F1: re-run a past run under changed state -> a child run
                 rid = p[len("/runs/"):-len("/replay")]
                 import runlog
@@ -1661,6 +1752,32 @@ def make_handler():
                     return self._json(500, {"error": f"replay failed: {type(e).__name__}: {e}"})
                 if child is None:
                     return self._json(500, {"error": "replay failed"})
+                return self._json(200, child)
+            if p.startswith("/runs/") and p.endswith("/branch"):   # #6: rewind & branch from a turn -> a child run
+                rid = p[len("/runs/"):-len("/branch")]
+                import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(404, {"error": "run not found"})
+                if not (SUB and getattr(SUB, "chat", None)):   # a branch re-generates -> needs the qwen substrate
+                    return self._json(503, {"error": "branch needs the qwen substrate"})
+                if "turn" not in body:
+                    return self._json(400, {"error": "need a branch turn"})
+                try:
+                    turn = int(body.get("turn"))
+                except (TypeError, ValueError):
+                    return self._json(400, {"error": "turn must be an integer"})
+                alt = body.get("alt_user")
+                # greedy by default (the receipt path: a branch's future is attributable, not sampling dice).
+                sample = bool(body.get("sample", False))
+                try:
+                    import timetravel
+                    child = timetravel.branch(run, turn, SUB, alt_user=alt, sample=sample,
+                                              store=_snap_store())
+                except Exception as e:
+                    return self._json(500, {"error": f"branch failed: {type(e).__name__}: {e}"})
+                if child is None:                          # None == bad turn index or a generation failure
+                    return self._json(400, {"error": "branch failed (turn out of range, or generation error)"})
                 return self._json(200, child)
             if p.startswith("/runs/") and p.endswith("/propose-memory"):   # E2: propose a pending card from a past run
                 rid = p[len("/runs/"):-len("/propose-memory")]

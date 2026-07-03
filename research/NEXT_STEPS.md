@@ -44,10 +44,31 @@ Environment: CUDA python = C:\Users\brigi\src\cloze\.venv\Scripts\python.exe; en
    (the read machinery + receipts are the foundation for that next step). See the "STUDIO WIRING"
    section of `slotmem_qwen_findings.md`.
 
-6. **Time-travel debugger feature** — Opus, 1-2 days. The rig proved byte-exact checkpoint/branch
-   (`kv_timetravel_findings.md`). Product: per-turn KV snapshots in the studio chat (CPU offload),
-   a "rewind & branch from here" affordance in the Run Inspector, branches recorded as child runs.
-   Skip state-surgery in v1 (half-life <1 turn = not a memory mechanism; Lab only).
+6. **Time-travel debugger feature** — DONE (2026-07-03). Product: a bounded, CPU-offloaded per-turn KV
+   snapshot ring (`timetravel.SnapshotStore`: per-run "last N turns" cap + a hard byte budget, evict-
+   oldest, payload freed on eviction; honest byte accounting), a "rewind & branch from here" affordance
+   in the Run Inspector (a turn picker + optional alt-user field → `POST /runs/<id>/branch` →
+   `renderCompare`, following the doReplay pattern), and branches recorded as CHILD runs via runlog
+   (`parent_run_id` + `changes_applied` = `{branch_turn, edited_user, alt_user?, kv_snapshot}`). State-
+   surgery SKIPPED per the findings (half-life <1 turn; Lab only). **Determinism receipt PROVEN**: the
+   gated `test_timetravel_determinism.py` (`-m model`, ran on the real 1.5B) shows a branch restored
+   from the STORE's CPU-offloaded KV snapshot byte-matches a fresh full recompute (identical=True, 33
+   tok), re-prefilling only the 27-tok alt-user turn vs the 147-tok shared prefix. **Memory measured**:
+   the snapshot ring is behind `timetravel_snapshots` (default OFF — the RAM rule) because a KV
+   snapshot costs CPU RAM: **~7 MB / 128 tok on Qwen2.5-7B nf4** (bf16 KV: 28 layers × 4 KV heads × 128
+   × 2 B), so last-8 at ~512 tok ≈ **224 MB** (1.5B is half: 4.02 MB measured for the 147-tok rewind
+   point). v1 registers a DESCRIPTOR-only snapshot per studio turn (turn idx + token count, zero bytes)
+   because the studio chat is STATELESS — `SelfTeach._generate` builds its own cache via `generate()`
+   and discards it. Branch RECORDING (transcript truncate → child run) does NOT depend on the gate and
+   works today; a branch keeps the live memory/dials (toggle via the replay buttons). Files:
+   `timetravel.py` + `SnapshotStore`/`_snap_store`/`_timetravel`/`_maybe_snapshot_turn` in
+   clozn_server.py (`/runs/<id>/branch`, `/timetravel/mode|stats`) + the branch UI in run.js; tests
+   `test_timetravel.py` (37) / `test_timetravel_server.py` (21) / `test_timetravel_determinism.py`
+   (gated). **Remaining rung:** the KV fast path — actually RESTORE a stored snapshot to skip the
+   shared-prefix re-prefill on a studio branch — needs the generation path (`SelfTeach._generate`) to
+   hand back its `past_key_values`; v1's studio branch re-generates from the truncated transcript
+   (correct, and exactly what every stateless turn already costs). The mechanism (offload → restore →
+   byte-exact continue) is proven; the studio wiring to reuse it is the deferred seam.
 
 7. **Publish pass** — Opus (or remaining Fable), half day. `writeup_draft_receipts.md` + fold in:
    the 7B A/B (prompt≥prefix at 7B, inverts at 1.5B), the half-life number, phantom-KV, OBEY.
