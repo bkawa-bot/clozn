@@ -141,3 +141,55 @@ Reran the gap on Qwen2.5-0.5B and -3B (3B at 60 steps). Verdicts by open-report 
 The clean process trait — `concise` — is behaviourally huge and self-report-**BLIND at every scale** (0.5B 67→29 tok, 1.5B 72→19, 3B 84→16). At 3B the self-report confabulated *"interest in environmental conservation and innovative AI solutions,"* never naming brevity — and it was *not* terse, so the prefix didn't gag the report; the model genuinely failed to identify the change. Concepts (baking, space) are faithfully self-reported at all three sizes. So the **content-legible / process-blind asymmetry reproduces across 6× parameters** — not a small-model artifact, and scale-to-3B does not break it.
 
 Caveats: one model family (Qwen2.5), one seed each, N=4, 6 probes, 7B untested; `question` is a confound (the 16-vector prefix underfits an *ending*-based rule, esp. at 60 steps). The scalar self-confidence probe is degenerate at every scale (0.5B ≈ all 0; 1.5B ≈ all 85–95) — kill it. Robustness fix applied: `self_audit_gap.py` now checkpoints the JSON after each trait (a kill/OOM leaves the completed traits on disk — this is how the first 3B run was recovered).
+
+---
+
+## Follow-up 4 — the studio A/B: card-in-PROMPT vs TRAINED-PREFIX (`test_prompt_vs_prefix_ab.py`) — 2026-07-02
+
+The memory-mode swap spec's owed gated test (notes/MEMORY_MODE_SWAP_SPEC.md): same four traits, same
+objective scorers, same 6 held-out probes as the gap runs; three arms differing ONLY in delivery, all
+greedy through one `SelfTeach._generate`. **PROMPT** = the studio's `compile_prompt_block([rule])` as the
+system message — byte-identical to `consolidate()`'s sys_rule, i.e. the prefix's own distillation target.
+**PREFIX** = `consolidate([rule], steps=80)`, then generate at gate 1.0 ungated. **BASELINE** = no memory.
+Metric = expressed-delta vs baseline (concepts: kw_rate Δ; concise: shortening fraction 1−tok-ratio;
+question: q_rate Δ). **Pre-registered before any run** (see the rig's header): PARITY iff
+|d_prompt − d_prefix| ≤ 0.15 (under one probe's worth, 1/6); expectation was PROMPT ≥ PREFIX everywhere.
+Seed 0. Permanent gated test: `pytest research/tests/test_prompt_vs_prefix_ab.py -m model`; artifacts
+`research/runs/prompt_vs_prefix_ab*.json`.
+
+| trait | class | 1.5B d_prompt | 1.5B d_prefix | 1.5B verdict | 7B d_prompt | 7B d_prefix | 7B verdict |
+|---|---|---|---|---|---|---|---|
+| baking | concept | +0.667 | +0.667 | PARITY | +1.000 | +0.833 | PROMPT-stronger\* |
+| space | concept | +0.166 | +0.500 | **PREFIX-stronger** | +0.833 | +0.666 | PROMPT-stronger\* |
+| concise | rule | +0.846 | +0.745 | PARITY | +0.848 | +0.836 | PARITY |
+| question | rule | +0.167 | +0.500 | **PREFIX-stronger** | +0.666 | +0.166 | **PROMPT-stronger** |
+
+\* hairline: gap 0.167 vs margin 0.15 — exactly one probe.
+
+**At the studio's 7B (nf4 — its real config) the spec's claim holds as measured: prompt-carried cards
+expressed every trait at least as strongly as the trained prefix.** Block 4/4 expressed, prefix 3/4
+(question missed at +0.17); two hairline PROMPT-stronger concepts; clean parity on concise (82→12 vs
+82→14 tok); a decisive gap on end-with-a-question (+0.666 vs +0.166 — the prefixed model *asks* questions
+mid-reply but doesn't *end* with them; the block does, 5/6). Every 7B reply in both arms eyeballed:
+coherent, on-trait, zero degeneration — the numbers aren't riding on broken text.
+
+**At 1.5B the picture inverts on the weak cells — a pre-registration violation worth keeping.** space and
+question came out PREFIX-stronger (+0.500 vs +0.166/+0.167). Two mechanisms: (1) the black-box run (whose
+"B ports fully" seeded the expectation) used the RAW rule as the system message; the studio block wraps
+rules in "…use it naturally to tailor how you respond", and a 1.5B under-complies with that soft framing
+on neutral probes (its space replies are simply generic). (2) TTT amplifies past its teacher — the prefix
+is trained on openings *generated with that very block*, yet out-expresses it. So block **wording is
+load-bearing at small scale**; prompt carriage winning assumes a strong instruction-follower. Extra
+caveat on 1.5B question: the prefix's q_rate 0.50 is partly degeneration-bought ("…plants?q.wat do the";
+a literal "\*\*Question:" label) — 6th sighting of a style stat riding on broken text at small scale.
+
+**Run-to-run prefix variance is LARGE — the single-seed caveat is load-bearing in BOTH directions.** This
+run's seed-0 7B prefix trained `concise` to d +0.836 (82→14 tok, clean); the unseeded 7B gap run's prefix
+managed 0.22 (82→64) with the same code and steps. Any per-trait prefix claim needs its own per-run
+receipt — the receipts thesis again, from a new angle.
+
+Caveats (loud): N=4 traits, 6 probes, 1 seed, greedy decode, crude scorers (keyword / token count /
+trailing-"?"), one family (Qwen2.5), steps=80 (the studio's consolidate default is 120). Scorecard vs
+pre-registration: 3/8 cell verdicts as expected (1.5B baking, 1.5B concise, 7B question); the headline
+(PROMPT ≥ PREFIX) **held at 7B, violated at 1.5B**. Product copy updated to match the 7B data only
+(inspector/demo/pages/memory.js mode panel; scale-scoped, seed caveat kept).
