@@ -197,6 +197,18 @@ int main(int argc, char** argv) {
     std::printf("  steady-state encode_topk(%d rows, k=%d): %.1f ms; device %.1f MB\n",
                 rows, k, ms, sae.device_bytes() / 1e6);
 
+    // --- GEMV-only split (encode_dense skips sae_topk entirely) -- isolates the vectorized
+    // encoder's own cost from the top-k reduction that follows it, since both are folded
+    // together in the encode_topk number above.
+    {
+        std::vector<float> gated_only;
+        const auto td0 = std::chrono::steady_clock::now();
+        sae.encode_dense(x.data(), rows, gated_only);
+        const double gemv_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - td0).count();
+        std::printf("  [split] GEMV-only encode_dense(%d rows): %.1f ms (encode_topk total above: %.1f ms)\n",
+                    rows, gemv_ms, ms);
+    }
+
     // --- perf-only receipt at 2x rows (NEXT_STEPS item 10's before/after target size) ---
     // Tiles the same `x` rows to synthesize a 2*rows-row batch. Timing only -- no new expect()s,
     // so this cannot change PASS/FAIL; it exists to track the GEMV vectorization's effect at a

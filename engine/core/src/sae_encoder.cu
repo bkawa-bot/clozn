@@ -176,6 +176,9 @@ struct SaeEncoder::Impl {
     float* d_gated = nullptr;       // [rows * d_sae]
     int32_t* d_idx = nullptr;       // [rows * k]
     float* d_val = nullptr;         // [rows * k]
+    char* d_picked = nullptr;       // [rows * d_sae] sae_topk's "already selected" scratch mask --
+                                    // hoisted here (NEXT_STEPS item 10b) so encode_topk's hot path
+                                    // never pays sae_topk()'s own cudaMalloc/cudaFree + forced sync.
     int ws_rows = 0, ws_k = 0;
 
     int d_in = 0, d_sae = 0, layer = -1;
@@ -212,13 +215,14 @@ struct SaeEncoder::Impl {
             !cuda_ok(cudaMalloc(&d_xh, rd * sizeof(__half)), "ws xh") ||
             !cuda_ok(cudaMalloc(&d_gated, rs * sizeof(float)), "ws gated") ||
             !cuda_ok(cudaMalloc(&d_idx, rk * sizeof(int32_t)), "ws idx") ||
-            !cuda_ok(cudaMalloc(&d_val, rk * sizeof(float)), "ws val")) {
+            !cuda_ok(cudaMalloc(&d_val, rk * sizeof(float)), "ws val") ||
+            !cuda_ok(cudaMalloc(&d_picked, rs * sizeof(char)), "ws picked")) {
             release_ws();
             return false;
         }
         ws_rows = nr; ws_k = nk;
         ws_bytes = rd * (sizeof(float) + sizeof(__half)) + rs * sizeof(float) +
-                   rk * (sizeof(int32_t) + sizeof(float));
+                   rk * (sizeof(int32_t) + sizeof(float)) + rs * sizeof(char);
         return true;
     }
 
@@ -239,7 +243,9 @@ struct SaeEncoder::Impl {
 
     void release_ws() {
         cudaFree(d_x); cudaFree(d_xh); cudaFree(d_gated); cudaFree(d_idx); cudaFree(d_val);
+        cudaFree(d_picked);
         d_x = nullptr; d_xh = nullptr; d_gated = nullptr; d_idx = nullptr; d_val = nullptr;
+        d_picked = nullptr;
         ws_rows = 0; ws_k = 0; ws_bytes = 0;
     }
 
@@ -339,7 +345,10 @@ bool SaeEncoder::encode_topk(const float* x, int rows, int k,
     p.k = k;
     p.relu = true;  // gated values are already >= 0; relu keeps the reference's rank/pad contract
     SaeTopKOutputs o{im.d_idx, im.d_val};
-    sae_topk(im.d_gated, p, o, im.stream);  // synchronizes im.stream internally
+    // Pass the workspace's persistent picked-mask buffer (item 10b): sae_topk no longer
+    // cudaMalloc/cudaFree/syncs on our behalf. The kernel launch is stream-ordered, so the
+    // blocking cudaMemcpy below (same stream) still correctly waits for it to finish.
+    sae_topk(im.d_gated, p, o, im.stream, im.d_picked);
 
     const size_t rk = static_cast<size_t>(rows) * k;
     out_indices.resize(rk);

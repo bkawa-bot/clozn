@@ -145,7 +145,8 @@ void sae_topk(
     const float*           pre_acts,
     const SaeTopKParams&   params,
     const SaeTopKOutputs&  outputs,
-    void*                  stream) {
+    void*                  stream,
+    char*                  picked_scratch) {
     cudaStream_t cu_stream = static_cast<cudaStream_t>(stream);
 
     const int threads = kThreadsPerRow;
@@ -155,20 +156,30 @@ void sae_topk(
         static_cast<size_t>(threads) * (sizeof(float) + sizeof(int)) +
         static_cast<size_t>(k_eff > 0 ? k_eff : 1) * sizeof(int);
 
-    // Per-row "already picked" mask scratch. Allocated here so the header stays a
-    // pure [rows, k] output contract (the caller never sees the scratch). A real
-    // integration would hoist this to a persistent workspace; for the kernel +
-    // its parity harness a per-call alloc is fine.
-    char* d_picked = nullptr;
-    cudaMalloc(&d_picked, static_cast<size_t>(params.rows) * params.n_features * sizeof(char));
+    // Per-row "already picked" mask scratch. If the caller didn't bring its own
+    // persistent buffer (picked_scratch == nullptr -- one-off callers: validate.cu,
+    // the parity test), fall back to the original per-call alloc/free so those
+    // callers are untouched. A caller with a workspace (cloze/sae.hpp) passes its
+    // own buffer and this path skips the cudaMalloc + forced sync + cudaFree
+    // entirely -- exactly the hoist NEXT_STEPS item 10b calls for.
+    char* d_picked = picked_scratch;
+    const bool owns_scratch = (d_picked == nullptr);
+    if (owns_scratch)
+        cudaMalloc(&d_picked, static_cast<size_t>(params.rows) * params.n_features * sizeof(char));
 
     sae_topk_kernel<<<params.rows, threads, shmem, cu_stream>>>(
         pre_acts, params.n_features, params.k, params.relu,
         outputs.out_indices, outputs.out_values, d_picked);
 
-    // The harness synchronizes on the stream before reading outputs; free after.
-    cudaStreamSynchronize(cu_stream);
-    cudaFree(d_picked);
+    // Only the self-allocated path needs an explicit sync here (it must outlive
+    // the kernel before cudaFree). A caller-owned buffer needs no sync: the
+    // kernel launch is stream-ordered, so any later work the caller issues on
+    // the SAME stream (e.g. sae_encoder.cu's blocking D2H cudaMemcpy) already
+    // waits for it -- this call can return without blocking the host.
+    if (owns_scratch) {
+        cudaStreamSynchronize(cu_stream);
+        cudaFree(d_picked);
+    }
 }
 
 #else  // !__CUDACC__
@@ -179,7 +190,8 @@ void sae_topk(
     const float*,
     const SaeTopKParams&,
     const SaeTopKOutputs&,
-    void*) {
+    void*,
+    char*) {
     // Intentionally empty: the CUDA path is unavailable on a host-only build.
 }
 

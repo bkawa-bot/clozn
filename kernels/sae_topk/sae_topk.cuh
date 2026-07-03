@@ -66,12 +66,22 @@ struct SaeTopKOutputs {
 // is device-resident [rows, n_features] row-major float32. Async; the caller
 // synchronizes before reading the outputs. Signature/behavior match
 // reference.sae_topk.
+//
+// `picked_scratch`: device buffer of >= rows*n_features bytes for the per-row
+// "already selected" mask (see sae_topk.cu). Pass nullptr (the default) to have
+// the call cudaMalloc/cudaFree its own scratch, as before -- fine for one-off
+// callers (validate.cu, the parity test). A caller with a persistent workspace
+// (cloze/sae.hpp's grow-only reserve()) should allocate picked_scratch itself
+// ONCE, sized to its own [rows, n_features] ceiling, and pass it here every call
+// to avoid paying a cudaMalloc + forced cudaStreamSynchronize + cudaFree on
+// every readout -- exactly the fix this parameter exists for.
 void sae_topk(
     const float*           pre_acts,  // device [rows, n_features]
     const SaeTopKParams&   params,
     const SaeTopKOutputs&  outputs,
-    void*                  stream);   // cudaStream_t (void* keeps the header
+    void*                  stream,    // cudaStream_t (void* keeps the header
                                       // CUDA-runtime-agnostic, as confidence_select.cuh)
+    char*                  picked_scratch = nullptr);
 
 // Bytes crossing GPU->host for the sparse code vs the dense pre-activations: the
 // kernel ships rows*k (int index + float value) instead of rows*n_features
