@@ -293,6 +293,91 @@ def _mem_sync_rules(m, reconsolidate=True, force=False):
     return {"changed": changed, "rules": list(new_rules), "consolidate": result}
 
 
+# ------- profiles: named persona bundles (NEXT_STEPS #4) -> cards + dials on the LIVE substrate -----
+# profiles.py is the model-free CRUD + compile layer (source bundles: card texts, dial settings, custom-
+# dial recipes, fact pairs -- see its docstring). This is the thin wiring that hands it the live objects
+# a switch needs (SUB._mem for cards/rules, SUB.steer for dials) and reports what actually happened.
+
+def _active_profile_name():
+    """The name of the last-switched-to profile, or None (nothing switched yet this install). Persisted
+    in studio_settings.json alongside memory_mode -- one small settings file, not a new one."""
+    import memory_mode
+    return memory_mode.get_setting("active_profile")
+
+
+def _profiles_switch(sub, p) -> dict:
+    """Apply profile bundle `p` to the live substrate `sub`: cards REPLACE the studio's active set (a
+    profile switch is a replacement, never a merge -- disjoint personas must not bleed into each other),
+    dials replace via profiles.apply_dials (steer.clear() then set()), and the prompt-mode/internalized
+    resync goes through the SAME _start_retrain machinery every other card mutation uses: instant in
+    prompt mode (the cards ARE the memory there), a backgrounded consolidate() in internalized mode.
+
+    Facts (profiles.compile_facts) are the item-5 seam: no live slot-memory store is wired into the
+    server yet (slotmem_qwen.py is a standalone research module), so a profile's facts are saved in the
+    bundle but NOT compiled anywhere yet -- reported honestly via `facts_note`, never silently dropped.
+    Returns {name, prompt_block, cards:{removed,added}, dials, resync, facts_note}."""
+    import memory_cards
+
+    # 1) CARDS: delete the current active set, then create the profile's cards fresh as active. Deleting
+    #    (not just disabling) is the isolation contract: a stale disabled card from persona A must never
+    #    reappear if the user later hand-edits persona B's set, and disjoint personas keep disjoint cards.
+    removed = 0
+    for c in memory_cards.list_cards():
+        if memory_cards.delete(c["id"]):
+            removed += 1
+    added = 0
+    for c in p.get("cards", []):
+        if c.get("status", "active") != "active":     # a disabled card in the bundle stays inert here too
+            continue
+        if memory_cards.create(c["text"], status="active", kind="preference",
+                               evidence=f"profile:{p['name']}") is not None:
+            added += 1
+
+    # 2) SYNC the memory mechanism from the new active set. force=True: the pre-check inside
+    #    _start_retrain compares m.rules to memory_cards.active_texts(), and since we just rewrote the
+    #    store out from under it, that comparison alone isn't trustworthy for a switch -- force skips it
+    #    and always resyncs, exactly as the mode-switch catch-up (POST /memory/mode) already does.
+    resync = {"retraining": False}
+    m = getattr(sub, "_mem", None)
+    if m is not None:
+        resync = _start_retrain(m, "profile-switch", None, force=True)
+
+    # 3) DIALS: replace via profiles.apply_dials (clear() then set(); custom-dial recipes recompute if
+    #    not already present) -- persist exactly like /steer/set and /steer/custom already do, so the
+    #    switched-to persona survives a restart the same way a manually-set dial would.
+    dials = {"applied": {}, "customs_added": []}
+    steer = getattr(sub, "steer", None)
+    if steer is not None:
+        import profiles
+        dials = profiles.apply_dials(p, steer)
+        try:
+            if hasattr(steer, "save_state"):
+                steer.save_state(_pers("studio_personality.json"))
+            if dials["customs_added"] and hasattr(steer, "save_custom"):
+                steer.save_custom(_pers(f"studio_custom_{getattr(sub, 'name', SUBNAME)}.json"))
+        except Exception:
+            pass
+
+    # 4) FACTS: the item-5 seam -- named, not silently skipped.
+    facts_note = None
+    if p.get("facts"):
+        facts_note = (f"{len(p['facts'])} fact(s) travel in the bundle but are not yet applied -- "
+                      "slot-memory serving (memory_mode:\"slots\") isn't wired into the studio server.")
+
+    import memory_mode
+    memory_mode.set_setting("active_profile", p["name"])
+    return {"name": p["name"], "prompt_block": prompt_block_preview(p),
+            "cards": {"removed": removed, "added": added}, "dials": dials,
+            "resync": resync, "facts_note": facts_note}
+
+
+def prompt_block_preview(p) -> str:
+    """The system block this profile WOULD inject (profiles.prompt_block) -- for the switch response's
+    receipt only; the live chat path still compiles fresh from the card store every gated-in turn."""
+    import profiles
+    return profiles.prompt_block(p)
+
+
 ARGS = None
 SUB = None         # the active substrate object
 SUBNAME = "qwen"
@@ -1092,6 +1177,10 @@ def make_handler():
             if p == "/memory/mode":          # which mechanism carries the cards (works on ANY substrate)
                 import memory_mode
                 return self._json(200, {"mode": _memory_mode(), "modes": list(memory_mode.MODES)})
+            if p == "/profiles/list":         # every saved persona bundle + which one is active (masthead + Settings)
+                import profiles
+                return self._json(200, {"profiles": profiles.ProfileStore().list(),
+                                        "active": _active_profile_name()})
             if p.startswith("/memory/") and p.endswith("/runs"):   # E1: which runs used this card
                 cid = p[len("/memory/"):-len("/runs")]
                 return self._json(200, {"card_id": cid, "runs": _runs_for_card(cid)})
@@ -1147,6 +1236,47 @@ def make_handler():
                     except Exception:
                         pass
                 return self._json(200, out)
+            if p == "/profiles/save":        # create/update a named persona bundle (does NOT apply it -- see switch)
+                import profiles
+                try:
+                    saved = profiles.ProfileStore().save(profiles.validate(dict(body)))
+                except (ValueError, KeyError, TypeError) as e:
+                    return self._json(400, {"error": f"bad profile: {e}"})
+                return self._json(200, {"ok": True, "path": saved, "profile": profiles.ProfileStore().load(body["name"])})
+            if p == "/profiles/switch":      # THE persona switch: cards replace, dials replace, instant in prompt mode
+                import profiles
+                name = str(body.get("name", "")).strip()
+                if not name:
+                    return self._json(400, {"error": "need a profile name"})
+                try:
+                    prof = profiles.ProfileStore().load(name)
+                except (OSError, ValueError) as e:
+                    return self._json(404, {"error": f"no such profile '{name}': {e}"})
+                if SUB is None:
+                    return self._json(503, {"error": "no substrate loaded"})
+                return self._json(200, {"ok": True, **_profiles_switch(SUB, prof)})
+            if p == "/profiles/export":       # -> the bundle's own JSON (client downloads/saves it -- the portable artifact)
+                import profiles
+                name = str(body.get("name", "")).strip()
+                if not name:
+                    return self._json(400, {"error": "need a profile name"})
+                try:
+                    return self._json(200, {"ok": True, "profile": profiles.ProfileStore().load(name)})
+                except (OSError, ValueError) as e:
+                    return self._json(404, {"error": f"no such profile '{name}': {e}"})
+            if p == "/profiles/import":       # body IS the bundle JSON (as exported); optional {rename}
+                import profiles
+                try:
+                    bundle = dict(body.get("profile", body))
+                    rename = body.get("rename") or None
+                    p2 = profiles.validate(bundle)
+                    if rename:
+                        p2["name"] = rename
+                        p2 = profiles.validate(p2)
+                    path = profiles.ProfileStore().save(p2)
+                except (ValueError, KeyError, TypeError) as e:
+                    return self._json(400, {"error": f"bad profile bundle: {e}"})
+                return self._json(200, {"ok": True, "path": path, "profile": p2})
             if p.startswith("/runs/") and p.endswith("/replay"):   # F1: re-run a past run under changed state -> a child run
                 rid = p[len("/runs/"):-len("/replay")]
                 import runlog

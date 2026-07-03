@@ -225,13 +225,15 @@
     });
 
     // Masthead as ONE ruled caps band (the NEW FORMS micro-line format): brand · nav tabs (tracked
-    // caps) on the left, the tag + live substrate chip on the right, a hairline above and below.
+    // caps) on the left, the tag + persona picker + live substrate chip on the right, a hairline
+    // above and below.
     var masthead = el("header", { id: "masthead" }, [
       el("span", { class: "logo" }, ["clozn"]),
       el("span", { class: "studioword" }, ["studio"]),
       el("nav", { id: "nav" }, navLinks),
       el("span", { class: "mh-right" }, [
         el("span", { class: "mh-tag", id: "mh-tag" }, ["local · openai-compatible"]),
+        buildPersonaPicker(),
         el("span", { class: "subchip", id: "subchip", title: "active substrate" }, ["·"]),
       ]),
     ]);
@@ -262,6 +264,7 @@
       });
     });
     refreshSpec();
+    refreshPersonas();
   }
 
   // Best-effort: fill the substrate chip + spec strip from whatever status endpoint answers.
@@ -277,6 +280,66 @@
       if (chip && sub) { chip.textContent = String(sub)[0]; chip.title = "substrate: " + sub; }
       var m = document.getElementById("spec-model");
       if (m && (model || sub)) m.textContent = "model " + (model || sub);
+    });
+  }
+
+  // ---- persona picker (masthead): which profile bundle (research/profiles.py) is applied ----------
+  // A profile chip (first letter of the active profile's name, "·" when none) + a plain <select> of
+  // every saved profile. Choosing a DIFFERENT one POSTs /profiles/switch -- cards replace, dials
+  // replace, instant in prompt mode (see notes/MEMORY_MODE_SWAP_SPEC.md + profiles.py). Creating/
+  // exporting/importing bundles lives on the Settings page; this widget only lists + switches.
+  var persona = { profiles: [], active: null, switching: false };
+
+  function buildPersonaPicker() {
+    // Built here but only POPULATED by refreshPersonas() once the masthead is attached to the document
+    // (called from buildShell(), same timing as refreshSpec()) -- these ids don't exist to look up before then.
+    var chip = el("span", { class: "subchip", id: "personachip", title: "active profile: none" }, ["·"]);
+    var sel = el("select", { class: "mh-personasel", id: "mh-personasel", title: "switch profile" }, [
+      el("option", { value: "" }, ["profile: none saved"]),
+    ]);
+    sel.disabled = true;
+    sel.addEventListener("change", function () { switchPersona(sel.value); });
+    return el("span", { class: "mh-persona" }, [sel, chip]);
+  }
+
+  function refreshPersonas() {
+    getJSON("/profiles/list", null).then(function (r) {
+      var sel = document.getElementById("mh-personasel");
+      var chip = document.getElementById("personachip");
+      persona.profiles = (r && r.profiles) || [];
+      persona.active = r ? r.active : null;
+      if (sel) {
+        sel.innerHTML = "";
+        if (!persona.profiles.length) {
+          sel.appendChild(el("option", { value: "" }, [r ? "profile: none saved" : "profile: unavailable"]));
+          sel.disabled = true;
+        } else {
+          sel.appendChild(el("option", { value: "" }, ["profile: none active"]));
+          persona.profiles.forEach(function (p) {
+            sel.appendChild(el("option", { value: p.name }, [
+              "profile: " + p.name + (p.name === persona.active ? " (active)" : ""),
+            ]));
+          });
+          sel.value = persona.active || "";
+          sel.disabled = persona.switching;
+        }
+      }
+      if (chip) {
+        var letter = persona.active ? String(persona.active)[0] : "·";
+        chip.textContent = letter;
+        chip.title = persona.active ? "active profile: " + persona.active : "active profile: none";
+      }
+    });
+  }
+
+  function switchPersona(name) {
+    if (!name || name === persona.active || persona.switching) return;
+    persona.switching = true;
+    var sel = document.getElementById("mh-personasel");
+    if (sel) sel.disabled = true;
+    postJSON("/profiles/switch", { name: name }, null).then(function () {
+      persona.switching = false;
+      refreshPersonas();
     });
   }
 
@@ -296,6 +359,9 @@
     // expose helpers so pages can reuse them without re-implementing
     esc: esc, el: el, pageHead: pageHead, getJSON: getJSON, postJSON: postJSON,
     fmtTime: fmtTime, fmtDate: fmtDate, fmtDuration: fmtDuration, isToday: isToday, copyText: copyText,
+    // so a page that saves/switches/imports a profile (Settings) can repaint the masthead chip + dropdown
+    // without a full reload -- the masthead is the one shared surface, owned here.
+    refreshPersonas: refreshPersonas,
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);

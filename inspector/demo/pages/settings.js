@@ -1,11 +1,11 @@
-/* settings.js -- the Settings page.  Issue I1.
+/* settings.js -- the Settings page.  Issue I1 + NEXT_STEPS #4 (profiles studio UI).
  *
  * Deliberately boring + safe local config, over ONLY endpoints that already exist (no invented calls):
  *   GET  /substrate        -> {active, available:[...]}      (SAFE read -- see the note below)
  *   POST /substrate {name}  -> {active, switched}            (the explicit switch; re-execs + reloads ~30s)
  *   GET  /runs             -> {runs:[...]}                   (count)
- *   POST /memory/cards {}  -> {cards:[...], has_prefix}      (count)
- *   POST /steer/axes  {}   -> {axes:[{name,value,...}]}      (active-dial count, |value|>=0.05)
+ *   POST /memory/cards {}  -> {cards:[...], has_prefix}      (count; also the source for "save current as...")
+ *   POST /steer/axes  {}   -> {axes:[{name,value,...}]}      (active-dial count, |value|>=0.05; ditto)
  *   POST /reset {keep_prefix:false}                          (clears learned memory -- guarded/confirmed)
  *
  * IMPORTANT (why reads use GET, not POST, on /substrate): the backend's POST /substrate defaults the
@@ -13,8 +13,21 @@
  * a Dream session would silently re-exec into Qwen. The read here is therefore GET /substrate (which safely
  * returns {active, available}); POST /substrate is used ONLY for a deliberate switch with an explicit name.
  *
- * Retention / export-import / privacy have NO backend yet -> rendered as a labelled "coming soon" section
- * (IA visible, no calls). Pure consumer of the backend; every fetch is guarded so the page renders offline.
+ * PROFILES (research/profiles.py, notes/MEMORY_MODE_SWAP_SPEC.md): named persona bundles -- card texts +
+ * dial settings + custom-dial recipes + fact pairs, portable JSON. This page covers list / create / export
+ * / import; the masthead (pages/app.js) covers the day-to-day SWITCH (a persona picker + chip), and each
+ * row here also offers Switch as a convenience (the masthead dropdown is easy to miss). "Create" saves a
+ * SNAPSHOT of the studio's current active cards + dial values under a new name (read from the same
+ * /memory/cards + /steer/axes calls the counts card already makes) -- the natural way a profile comes to
+ * exist is "I set the studio up the way I like it, now name it," not filling in a blank cards/dials form.
+ *   GET  /profiles/list          -> {profiles:[...], active}
+ *   POST /profiles/save   {...bundle}       -> {ok, profile}       (create OR update-by-name)
+ *   POST /profiles/switch {name}            -> {ok, name, prompt_block, cards, dials, resync, facts_note}
+ *   POST /profiles/export {name}            -> {ok, profile}       (client turns it into a file download)
+ *   POST /profiles/import {profile, rename?} -> {ok, path, profile} (client reads an uploaded file first)
+ *
+ * Retention / privacy have NO backend yet -> rendered as a labelled "coming soon" section (IA visible, no
+ * calls). Pure consumer of the backend; every fetch is guarded so the page renders offline.
  */
 (function () {
   "use strict";
@@ -56,6 +69,29 @@
     ".set-store li{display:flex;gap:9px;align-items:baseline;padding:5px 0;border-bottom:1px dashed var(--line);font-size:13px;color:var(--soft)}" +
     ".set-store li:last-child{border-bottom:none}" +
     ".set-store b{color:var(--ink);font-weight:600;min-width:96px;flex:none}" +
+    // profiles card: list + create-from-current + export/import
+    ".set-profiles{margin-top:20px;padding:0 0 16px}" +
+    ".set-plist{margin:2px 18px 2px;list-style:none;padding:0}" +
+    ".set-prow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px dashed var(--line);flex-wrap:wrap}" +
+    ".set-prow:last-child{border-bottom:none}" +
+    ".set-pname{color:var(--ink);font-size:13.5px;font-weight:620;min-width:0}" +
+    ".set-pdesc{color:var(--faint);font-size:12px;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+    ".set-pmeta{color:var(--faint);font-size:11px;white-space:nowrap}" +
+    ".set-pbadge{font-size:10px;letter-spacing:.1em;text-transform:uppercase;font-weight:640;color:var(--good);" +
+    "background:rgba(140,207,174,.14);border:1px solid rgba(140,207,174,.4);border-radius:3px;padding:2px 7px;white-space:nowrap}" +
+    ".set-pactions{display:flex;gap:6px;flex:none}" +
+    ".set-pactions button{font-size:12px;padding:5px 11px}" +
+    ".set-pempty{margin:2px 18px 8px;color:var(--faint);font-size:13px;line-height:1.5}" +
+    ".set-pnew{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:14px 18px 2px;padding-top:12px;border-top:1px solid var(--line)}" +
+    ".set-pnew input[type=text]{font:inherit;font-size:13px;border:1px solid var(--line);border-radius:20px;" +
+    "background:rgba(255,255,255,.7);color:var(--ink);padding:8px 13px;outline:none;transition:border-color .2s,box-shadow .2s}" +
+    ".set-pnew input[type=text]:focus{border-color:var(--halo);box-shadow:0 0 0 3px rgba(122,167,255,.14)}" +
+    ".set-pnew input.pname-in{flex:1;min-width:110px;max-width:180px}" +
+    ".set-pnew input.pdesc-in{flex:2;min-width:140px}" +
+    ".set-pmsg{margin:8px 18px 0;font-size:12.5px;color:var(--soft)}" +
+    ".set-pmsg.ok{color:var(--good)}" +
+    ".set-pmsg.err{color:#c0504a}" +
+    ".set-pimport{display:none}" +
     // reset (danger) zone
     ".set-danger{margin-top:20px;padding:0 0 16px;border-color:rgba(231,120,120,.32)}" +
     ".set-danger h2{color:#b06a6a}" +
@@ -91,10 +127,14 @@
 
   // page-local state (kept tiny; the page is mostly read-only)
   var state = { active: null, available: [], switching: false, resetArmed: false };
+  // profiles sub-state: the list + which one is applied + a busy flag (create/switch/export/import
+  // share one "don't double-fire" guard, since they all touch the same store).
+  var pstate = { profiles: [], active: null, busy: false };
 
   function render(view, ctx) {
     ensureStyle();
     state = { active: null, available: [], switching: false, resetArmed: false };
+    pstate = { profiles: [], active: null, busy: false };
 
     var endpoint = ctx.endpoint;
 
@@ -120,12 +160,14 @@
         ]),
 
         countsCard(),
+        profilesCard(ctx),
         dangerCard(ctx),
         comingSoonCard(),
       ])
     );
 
     loadAll(ctx);
+    loadProfiles(ctx);
   }
 
   // ---- Runtime card: active substrate + model + endpoint + switch --------------------------------
@@ -301,6 +343,227 @@
     if (!el) return;
     if (n == null) { el.textContent = "—"; el.className = "n faint"; }
     else { el.textContent = String(n); el.className = "n"; }
+  }
+
+  // ---- Profiles card: list / create-from-current / switch / export / import (NEXT_STEPS #4) --------
+  // A profile (research/profiles.py) is a named, portable bundle: the active card texts + dial values
+  // at the moment it was saved. This card lists what's saved, lets you snapshot the studio's CURRENT
+  // cards+dials under a new name, switch to a saved one (cards replace, dials replace -- see
+  // notes/MEMORY_MODE_SWAP_SPEC.md), and export/import bundles as plain JSON files.
+  function profilesCard(ctx) {
+    var list = S.el("ul", { class: "set-plist", id: "set-plist" }, []);
+    var msg = S.el("div", { class: "set-pmsg", id: "set-pmsg" }, []);
+
+    var nameIn = S.el("input", { type: "text", class: "pname-in", id: "set-pname-in",
+                                 placeholder: "profile name (e.g. work)", maxlength: "32" }, []);
+    var descIn = S.el("input", { type: "text", class: "pdesc-in", id: "set-pdesc-in",
+                                 placeholder: "description (optional)", maxlength: "120" }, []);
+    var createBtn = S.el("button", { id: "set-pcreate" }, ["Save current as…"]);
+    createBtn.addEventListener("click", function () { createFromCurrent(ctx, nameIn.value, descIn.value); });
+
+    var importIn = S.el("input", { type: "file", accept: "application/json,.json", class: "set-pimport",
+                                   id: "set-pimport-file" }, []);
+    importIn.addEventListener("change", function () {
+      var f = importIn.files && importIn.files[0];
+      if (f) importProfileFile(ctx, f);
+      importIn.value = "";                                  // allow re-picking the same file later
+    });
+    var importBtn = S.el("button", {}, ["Import…"]);
+    importBtn.addEventListener("click", function () { importIn.click(); });
+
+    return S.el("section", { class: "panel set-profiles", id: "set-profiles-card" }, [
+      S.el("h2", {}, ["profiles"]),
+      S.el("p", { class: "set-hint", style: "margin-top:6px" }, [
+        "Named persona bundles — card texts + dial values, saved together. Switching REPLACES the ",
+        "studio's active cards and dials with the profile's (never blends two personas); the masthead ",
+        "picker switches too, this is the same action plus create/export/import.",
+      ]),
+      list,
+      S.el("div", { class: "set-pnew" }, [nameIn, descIn, createBtn, importBtn, importIn]),
+      msg,
+    ]);
+  }
+
+  function profileRow(ctx, p) {
+    var isActive = p.name === pstate.active;
+    var switchBtn = S.el("button", {}, [isActive ? "Active" : "Switch"]);
+    if (isActive) switchBtn.disabled = true;
+    switchBtn.addEventListener("click", function () { switchProfile(ctx, p.name); });
+    var exportBtn = S.el("button", {}, ["Export"]);
+    exportBtn.addEventListener("click", function () { exportProfile(ctx, p.name); });
+
+    var nDials = Object.keys(p.dials || {}).length + (p.custom_dials || []).length;
+    return S.el("li", { class: "set-prow" }, [
+      S.el("span", { class: "set-pname" }, [p.name]),
+      S.el("span", { class: "set-pdesc" }, [p.description || "—"]),
+      S.el("span", { class: "set-pmeta" },
+           [(p.cards || []).length + " card" + ((p.cards || []).length === 1 ? "" : "s") +
+            " · " + nDials + " dial" + (nDials === 1 ? "" : "s")]),
+      isActive ? S.el("span", { class: "set-pbadge" }, ["active"]) : null,
+      S.el("span", { class: "set-pactions" }, [switchBtn, exportBtn]),
+    ]);
+  }
+
+  function drawProfiles(ctx) {
+    var list = document.getElementById("set-plist");
+    if (!list) return;
+    list.innerHTML = "";
+    if (!pstate.profiles.length) {
+      list.replaceWith(S.el("p", { class: "set-pempty", id: "set-plist" }, [
+        "No profiles saved yet. Set the studio up the way you like it (Memory + Behavior), then ",
+        "“Save current as…” below to name it.",
+      ]));
+      return;
+    }
+    pstate.profiles.forEach(function (p) { list.appendChild(profileRow(ctx, p)); });
+  }
+
+  function showProfileMsg(text, kind) {
+    var m = document.getElementById("set-pmsg");
+    if (!m) return;
+    m.textContent = text;
+    m.className = "set-pmsg" + (kind ? " " + kind : "");
+  }
+
+  function setProfilesBusy(ctx, busy) {
+    pstate.busy = busy;
+    ["set-pcreate"].forEach(function (id) {
+      var b = document.getElementById(id);
+      if (b) b.disabled = busy;
+    });
+    drawProfiles(ctx);                                       // repaint row buttons' disabled state too
+  }
+
+  function loadProfiles(ctx) {
+    ctx.getJSON("/profiles/list", null).then(function (r) {
+      pstate.profiles = (r && r.profiles) || [];
+      pstate.active = r ? r.active : null;
+      drawProfiles(ctx);
+      if (r == null) showProfileMsg("Couldn't reach the studio server — profiles are unavailable.", "err");
+    });
+  }
+
+  // "Save current as <name>": snapshot the studio's ACTIVE cards + dial values into a new bundle. Reuses
+  // the same /memory/cards + /steer/axes reads the counts card already makes -- no new read endpoint.
+  function createFromCurrent(ctx, name, description) {
+    name = (name || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
+    if (!name) {
+      showProfileMsg("Give the profile a name (letters, numbers, - or _).", "err");
+      return;
+    }
+    if (pstate.busy) return;
+    setProfilesBusy(ctx, true);
+    showProfileMsg("Reading the current cards + dials…");
+    Promise.all([
+      ctx.postJSON("/memory/cards", {}, null),
+      ctx.postJSON("/steer/axes", {}, null),
+    ]).then(function (r) {
+      var cardsResp = r[0], axesResp = r[1];
+      if (cardsResp == null || axesResp == null) {
+        setProfilesBusy(ctx, false);
+        showProfileMsg("Couldn't read the current cards/dials — is the studio server up?", "err");
+        return;
+      }
+      var cards = (cardsResp.cards || [])
+        .filter(function (c) { return (typeof c === "string" ? c : c.status) !== "rejected"; })
+        .map(function (c) {
+          return typeof c === "string" ? { text: c, status: "active" }
+            : { text: c.text, status: c.status === "active" ? "active" : "disabled" };
+        });
+      var dials = {}, customDials = [];
+      (axesResp.axes || []).forEach(function (a) {
+        if (Math.abs(+a.value || 0) < 0.05) return;           // only meaningfully-nonzero dials, like the counts tile
+        dials[a.name] = +a.value;
+        if (a.custom) customDials.push({ name: a.name, pos: (a.poles || [])[0] || a.name,
+                                         neg: (a.poles || [])[1] || "neutral", max: a.max || 0.5 });
+      });
+      var bundle = { name: name, description: description || "", cards: cards, dials: dials,
+                    custom_dials: customDials, facts: [] };
+      ctx.postJSON("/profiles/save", bundle, null).then(function (res) {
+        setProfilesBusy(ctx, false);
+        if (res == null || res.ok === false) {
+          showProfileMsg((res && res.error) || "Couldn't save the profile.", "err");
+          return;
+        }
+        document.getElementById("set-pname-in").value = "";
+        document.getElementById("set-pdesc-in").value = "";
+        showProfileMsg("Saved “" + name + "” (" + cards.length + " card" +
+                       (cards.length === 1 ? "" : "s") + ", " + Object.keys(dials).length + " dial" +
+                       (Object.keys(dials).length === 1 ? "" : "s") + ").", "ok");
+        loadProfiles(ctx);
+      });
+    });
+  }
+
+  function switchProfile(ctx, name) {
+    if (pstate.busy) return;
+    setProfilesBusy(ctx, true);
+    showProfileMsg("Switching to “" + name + "”…");
+    ctx.postJSON("/profiles/switch", { name: name }, null).then(function (res) {
+      setProfilesBusy(ctx, false);
+      if (res == null || res.ok === false) {
+        showProfileMsg((res && res.error) || "Couldn't switch profiles — is the studio server up?", "err");
+        return;
+      }
+      var bits = [res.cards ? res.cards.added + " card" + (res.cards.added === 1 ? "" : "s") : null,
+                 res.dials && res.dials.applied ? Object.keys(res.dials.applied).length + " dial" +
+                   (Object.keys(res.dials.applied).length === 1 ? "" : "s") : null]
+        .filter(Boolean).join(", ");
+      var slow = res.resync && res.resync.retraining === true;
+      showProfileMsg("Switched to “" + name + "”" + (bits ? " (" + bits + ")" : "") +
+                     (slow ? " — internalized mode is retraining the prefix in the background." : " — instant.") +
+                     (res.facts_note ? " " + res.facts_note : ""), "ok");
+      loadProfiles(ctx);
+      refreshCounts(ctx);
+      if (window.CloznStudio && window.CloznStudio.refreshPersonas) window.CloznStudio.refreshPersonas();
+    });
+  }
+
+  // Export downloads the bundle as plain JSON (the portable artifact IS the file -- no server-side zip).
+  function exportProfile(ctx, name) {
+    ctx.postJSON("/profiles/export", { name: name }, null).then(function (res) {
+      if (res == null || res.ok === false || !res.profile) {
+        showProfileMsg("Couldn't export “" + name + "”.", "err");
+        return;
+      }
+      var blob = new Blob([JSON.stringify(res.profile, null, 2)], { type: "application/json" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url; a.download = name + ".clozn-profile.json";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      showProfileMsg("Exported “" + name + "”.", "ok");
+    });
+  }
+
+  // Import reads an uploaded file client-side (FileReader), then POSTs the parsed bundle. A name
+  // collision is NOT auto-renamed -- /profiles/save updates in place, matching "save current as" on an
+  // existing name; the user can re-export/rename manually if that's not what they wanted.
+  function importProfileFile(ctx, file) {
+    if (pstate.busy) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed;
+      try {
+        parsed = JSON.parse(String(reader.result));
+      } catch (e) {
+        showProfileMsg("That file isn't valid JSON.", "err");
+        return;
+      }
+      setProfilesBusy(ctx, true);
+      showProfileMsg("Importing…");
+      ctx.postJSON("/profiles/import", { profile: parsed }, null).then(function (res) {
+        setProfilesBusy(ctx, false);
+        if (res == null || res.ok === false) {
+          showProfileMsg((res && res.error) || "Couldn't import that profile.", "err");
+          return;
+        }
+        showProfileMsg("Imported “" + res.profile.name + "”.", "ok");
+        loadProfiles(ctx);
+      });
+    };
+    reader.onerror = function () { showProfileMsg("Couldn't read that file.", "err"); };
+    reader.readAsText(file);
   }
 
   // ---- Danger zone: reset memory (guarded -- confirm before it fires) -----------------------------

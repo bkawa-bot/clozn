@@ -40,6 +40,17 @@
     font-family:var(--display);font-size:11px;color:var(--cyan);letter-spacing:0;text-transform:lowercase;
     background:rgba(255,255,255,.5);box-shadow:0 0 10px rgba(47,163,146,.14)}
 
+  /* ---- persona picker: a plain <select> of saved profiles + its own chip (halo, not cyan -- a
+     DIFFERENT signal from the substrate chip beside it: which profile, not which model/runtime) ---- */
+  .mh-persona{flex:none;display:flex;align-items:center;gap:7px}
+  .mh-personasel{font:11px/1 ui-monospace,Consolas,monospace;letter-spacing:.03em;color:var(--soft);
+    border:1px solid var(--line);border-radius:3px;background:rgba(255,255,255,.5);
+    padding:4px 8px;outline:none;cursor:pointer;max-width:150px}
+  .mh-personasel:disabled{opacity:.55;cursor:default}
+  .mh-personasel:focus{border-color:var(--halo)}
+  @media(max-width:800px){.mh-personasel{display:none}}
+  .mh-persona .subchip{border-color:rgba(79,136,184,.5);color:var(--halo);box-shadow:0 0 10px rgba(79,136,184,.14)}
+
   /* ---- main scroll view ---- */
   #view{flex:1;min-width:0;overflow:auto}
   #view .wrap{max-width:1060px;margin:0 auto;padding:34px 34px 70px}
