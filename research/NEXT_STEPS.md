@@ -84,9 +84,30 @@ Environment: CUDA python = C:\Users\brigi\src\cloze\.venv\Scripts\python.exe; en
    as system message) selected by model size or a setting; re-run the gated A/B at 1.5B. Files:
    `memory_mode.py`, `test_prompt_vs_prefix_ab.py`.
 
-10. **SAE encoder polish** — Sonnet, hours. The two pre-located optimizations (vectorized GEMV loads
-    ~9ms→~2ms; hoist sae_topk's per-call cudaMalloc into the workspace), parity test must stay green
-    (`ctest -R sae_encoder`). Then `--sae-every N` throttle if wanted.
+10. **SAE encoder polish** — DONE, partial (2026-07-03). Both pre-located optimizations landed and
+    torch-parity stayed green throughout (`ctest -R sae_encoder`: max|d|=0.0078, max rel=0.00242, 0
+    gate flips, top-k overlap 1.000 — identical to pre-change numbers at every step; full
+    `ctest --test-dir build-cuda`: 12/12). (a) `encode_jumprelu_kernel`'s GEMV loads vectorized from
+    scalar `__half` to 8-wide (`float4`-shaped, 16 B/lane) loads unpacked via `__half22float2`
+    (`engine/core/src/sae_encoder.cu`) — the GEMV-ONLY cost (isolated via `encode_dense`, which skips
+    `sae_topk`) dropped to **~1.3ms**, squarely hitting the ~2ms target and right at the ~1.0-1.3ms
+    bandwidth-floor estimate. (b) `sae_topk`'s per-call `cudaMalloc`+forced-sync+`cudaFree` scratch
+    hoisted into `SaeEncoder::Impl`'s existing grow-only workspace (`kernels/sae_topk/sae_topk.cuh`/
+    `.cu` gained an optional `picked_scratch` param, default nullptr so `validate.cu` and
+    `test_sae_topk.cu` are untouched). **Honest gap**: the alloc hoist alone barely moved the
+    steady-state `encode_topk` TOTAL (8 rows: 9.1-9.6ms → 6.1-6.5ms after (a)+(b) combined, not the
+    ~2ms hoped for) — the GEMV/topk split reveals why: with (a)'s ~1.3ms GEMV, the remaining ~4.9ms is
+    `sae_topk_kernel`'s OWN compute (32 rounds of an O(131072)-wide masked-argmax reduction per row +
+    an O(k²) insertion sort), a real cost the alloc hoist can't touch — a genuinely separate, larger
+    redesign (block radix-select, per the kernel's own comment) than item 10b scoped. End-to-end on a
+    rebuilt `--sae` server (`:8081`, isolated `build-sae-server/` — NEVER `build-gpu`/`:8080`):
+    `feat-protocol` vs `plain` on the SAME process held at **75-77%** across repeated runs (up from
+    the pre-optimization measured **61.2%** in `local_efficiency_findings.md`) — a real ~14-16 point
+    recovery of the 37-point tax, though this comparison ran under heavier ambient GPU contention
+    (multiple resident models) than the original isolated measurement, so treat it as suggestive
+    corroboration alongside the cleaner unit-level numbers above, not a like-for-like replication.
+    **Not done**: the optional `--sae-every N` throttle (out of scope for this pass; the two scoped
+    optimizations plus honest measurement took the full session).
 
 Parked ideas with rigs/specs: `WILD_EXPERIMENTS.md` (10 pre-designed experiments), phantom-KV
 coherence problem (Lab), diffusion dreaming (killed — provenance extraction instead). The findings
