@@ -6,6 +6,14 @@ soft-prefix (see active_texts); 'pending' cards await review, 'disabled' are kep
 are tombstoned. The latent prefix / soft-state itself lives elsewhere (self_teach_server) -- this module
 owns only the card metadata + CRUD.
 
+Provenance (NEXT_STEPS #1, the OBEY defense -- dream_consolidation_findings.md law #4: a fluent,
+plausible card can still be a hallucination or an injected instruction; plausibility gates don't catch
+it, only a checkable link to what the user actually said does): a card proposed from a run carries
+`source_turn` (index into that run's messages) + `quoted_span` (the verbatim cited text) alongside
+`source_run_id`. has_provenance() / is_provenance_claim_unbacked() are the single source of truth for
+whether a card's claim to come from a run is actually backed up -- the server's approve-gate and the
+Memory page's "you said this" / "no provenance" rendering both read them, so they can't disagree.
+
 Mirrors research/runlog.py exactly: stdlib only, a single flat JSON file, and IO that NEVER raises --
 persistence must not break a request, so every op degrades to None/[]/False on failure. The store path is
 a module-level global so tests can point it at a temp file (as runlog.py does with RUNS_DIR).
@@ -52,14 +60,25 @@ def _save(cards: list[dict]) -> bool:
 
 def create(text: str, status: str = "pending", source_run_id: str | None = None,
            kind: str = "preference", risk: str = "low", evidence: str = "",
-           strength: float = 1.0) -> dict | None:
-    """Create + persist a card; return it (or None on IO failure)."""
+           strength: float = 1.0, source_turn: int | None = None,
+           quoted_span: str = "") -> dict | None:
+    """Create + persist a card; return it (or None on IO failure).
+
+    `source_turn` + `quoted_span` are the PROVENANCE pair (roadmap: the OBEY defense, see
+    dream_consolidation_findings.md law #4 -- a fluent, plausible card can still be a hallucination or an
+    injected instruction; the only real defense is a checkable link to what the user actually said).
+    `source_turn` is the index of the cited message within its run's `messages` list; `quoted_span` is the
+    verbatim (possibly truncated) text of that message. Both default empty/None for cards that don't claim
+    a run at all (e.g. a manually-typed /memory/add) -- that's a different, self-authored category, not a
+    provenance failure. See has_provenance()."""
     try:
         card = {
             "id": "mem_" + uuid.uuid4().hex[:12],
             "text": (text or "").strip(),
             "status": status if status in STATUSES else "pending",
             "source_run_id": source_run_id,
+            "source_turn": source_turn,
+            "quoted_span": quoted_span or "",
             "created_at": _now(),
             "last_used_at": None,
             "usage_count": 0,
@@ -75,6 +94,29 @@ def create(text: str, status: str = "pending", source_run_id: str | None = None,
         return card
     except Exception:
         return None
+
+
+def has_provenance(card: dict) -> bool:
+    """Does this card back up its claim to come from a run with a checkable quote?
+
+    True iff it cites a run (source_run_id) AND carries a non-empty verbatim quoted_span -- the pair the
+    Memory page renders as "you said this". A card that names no run at all (source_run_id is None, e.g. a
+    manually-typed /memory/add) is a different, self-authored category and is NOT considered a provenance
+    failure by this check -- see create()'s docstring. This is the single source of truth both the server
+    (the approve-gate) and the UI read, so they can never disagree about what counts as provenance."""
+    if not isinstance(card, dict):
+        return False
+    return bool(card.get("source_run_id")) and bool((card.get("quoted_span") or "").strip())
+
+
+def is_provenance_claim_unbacked(card: dict) -> bool:
+    """True for the specific failure this defense targets: the card CLAIMS a run (source_run_id is set --
+    it says "I came from a real conversation") but has no quoted_span to prove it. This is what must be
+    flagged and blocked from approval; it is distinct from a card that never claimed a run in the first
+    place (has_provenance() is False for that too, but it isn't an unbacked CLAIM)."""
+    if not isinstance(card, dict):
+        return False
+    return bool(card.get("source_run_id")) and not bool((card.get("quoted_span") or "").strip())
 
 
 def list_cards(status: str | None = None) -> list[dict]:

@@ -125,6 +125,28 @@ def _dial_suggestion(text: str):
         return None
 
 
+QUOTE_SPAN_MAX = 240   # a "you said this" quote is for recognizing your own words, not re-reading the essay
+
+
+def _provenance_of(messages):
+    """The (source_turn, quoted_span) pair for a card proposed from `messages` (roadmap NEXT_STEPS #1, the
+    OBEY defense -- see memory_cards.has_provenance). source_turn is the index of the LAST user message in
+    the list (mirrors _last_user's "most recent user turn" convention, and matches dream_consolidation.py's
+    `"turn": i` = index into a run's messages); quoted_span is that message's own verbatim text, truncated
+    to QUOTE_SPAN_MAX chars -- never paraphrased, never the model's synthesized third-person card text.
+    (None, "") when there's no user message to cite at all (defensive: propose_memory needs user content to
+    work from, so this should be rare) -- that is exactly the "claimed a run but can't back it up" case the
+    approve-gate refuses on, and the Memory page flags."""
+    for i in range(len(messages or []) - 1, -1, -1):
+        m = messages[i]
+        if isinstance(m, dict) and m.get("role") == "user":
+            content = str(m.get("content") or "").strip()
+            if content:
+                span = content if len(content) <= QUOTE_SPAN_MAX else content[:QUOTE_SPAN_MAX].rstrip() + "…"
+                return i, span
+    return None, ""
+
+
 # ------- memory MODE: prompt-carried cards vs the internalized prefix (MEMORY_MODE_SWAP_SPEC) ------
 # mode "prompt" (the fresh-install default): the ACTIVE card texts are compiled into ONE system block
 # (memory_mode.compile_prompt_block -- verbatim the sys_rule wording the prefix trains toward) and
@@ -468,10 +490,21 @@ class Substrate:
         """approve->active, reject->rejected, disable->disabled, enable->active. The STATUS flip (fast) is
         synchronous; the RETRAIN it may trigger (rebuild the prefix from active_texts) is backgrounded so
         the response returns immediately. The card keeps its FINAL status; a separate _RETRAIN flag carries
-        the in-flight signal. _start_retrain no-ops when the active set didn't actually move (prefix safe)."""
+        the in-flight signal. _start_retrain no-ops when the active set didn't actually move (prefix safe).
+
+        PROVENANCE GATE (NEXT_STEPS #1): 'approve' is refused for a card that CLAIMS a run (source_run_id
+        set) but carries no quoted_span to back that claim up -- memory_cards.is_provenance_claim_unbacked.
+        This is never auto-approvable; the reviewer sees why via the reason string (the Memory page also
+        flags it so this should rarely even be attempted). reject/disable/enable are NOT gated -- you must
+        always be able to discard or de-activate a card regardless of its provenance."""
         import memory_cards
         if not cid:
             return {"ok": False, "reason": "need a card id"}
+        if action == "approve":
+            existing = memory_cards.get(cid)
+            if existing is not None and memory_cards.is_provenance_claim_unbacked(existing):
+                return {"ok": False, "reason": "no provenance -- this card cites a run but has no quoted "
+                                                "span backing it up, so it can't be approved"}
         target = {"approve": "active", "reject": "rejected",
                   "disable": "disabled", "enable": "active"}[action]
         card = memory_cards.set_status(cid, target)
@@ -1165,8 +1198,15 @@ def make_handler():
                 if text is None:
                     return self._json(200, {"proposed": False,
                                             "reason": "no durable preference found in this run"})
+                # PROVENANCE (NEXT_STEPS #1, the OBEY defense): the model just synthesized `text` as a
+                # third-person summary of the conversation -- it can be a plausible-sounding hallucination
+                # (dream_consolidation_findings.md law #4) or a faithfully-mined injected instruction. Cite
+                # the actual user words it was drawn from so a reviewer (and has_provenance()) can check the
+                # claim, not just read the model's word for it.
+                turn, span = _provenance_of(run["messages"])
                 card = memory_cards.create(text, status="pending", kind="preference",
                                            risk=_risk_of(text), source_run_id=rid,
+                                           source_turn=turn, quoted_span=span,
                                            evidence=f"proposed from run {rid}")
                 if not card:
                     return self._json(200, {"proposed": False, "reason": "could not create card"})

@@ -13,7 +13,9 @@
  *   POST /memory/strength {value}       -> set (0=off; in prompt mode any >0 just means "on when relevant")
  *   POST /memory/add      {text}        -> creates a PENDING card
  *   POST /memory/approve  {id}          -> pending -> active   (internalized: rebuilds the prefix, SLOW;
- *                                          prompt: instant -- the card simply joins the context block)
+ *                                          prompt: instant -- the card simply joins the context block).
+ *                                          Refused ({ok:false}) for a card that claims a run but has no
+ *                                          quoted_span backing it up -- see PROVENANCE below.
  *   POST /memory/reject   {id}          -> -> rejected (kept, inert)
  *   POST /memory/disable  {id}          -> toggles active <-> disabled
  *   POST /memory/edit     {id, text}    -> updated card / {ok:true}
@@ -24,8 +26,21 @@
  * (the backend's retraining flag is a constant idle) and the copy stops promising a slow prefix fold;
  * the strength slider relabels to an honest on/off (its value doesn't scale anything there).
  *
+ * PROVENANCE (NEXT_STEPS #1, the OBEY defense -- dream_consolidation_findings.md law #4: a fluent,
+ * plausible card can still be a hallucination or an injected instruction; a reviewer needs a checkable
+ * link to what the user actually said, not just the model's cleaned-up gloss). A card proposed from a
+ * run carries source_turn (index into that run's messages) + quoted_span (the verbatim cited text)
+ * alongside source_run_id. hasProvenance()/isProvenanceClaimUnbacked() mirror research/memory_cards.py's
+ * has_provenance()/is_provenance_claim_unbacked() exactly. provenanceBlock() renders "you said this" (the
+ * quote + a link to the run) when backed, or a flagged warning when a card cites a run but the quote
+ * never landed -- that case's Approve button is disabled client-side, and the server refuses it too
+ * (defense in depth; the server is the real authority). A card that names no run at all (a manually-typed
+ * /memory/add) makes no provenance claim and renders neither block -- that's a different, self-authored
+ * category, not a failure.
+ *
  * Card shape: a card is a *string* on the legacy path, or an object after D2:
- *   {id,text,status,source_run_id,created_at,last_used_at,usage_count,kind,risk,evidence,strength}.
+ *   {id,text,status,source_run_id,source_turn,quoted_span,created_at,last_used_at,usage_count,kind,
+ *    risk,evidence,strength}.
  * cardText()/cardMeta()/cardStatus() normalize both shapes so a bare string degrades to text-only
  * (rendered as an active trait with a Delete button) and unknown scalar fields become labelled chips.
  *
@@ -107,6 +122,20 @@
     "font-size:12px;line-height:1.4;color:#a33;background:rgba(231,120,120,.12);border:1px solid rgba(231,120,120,.4)}" +
     ".mem-risk-flag .warn{flex:none;font-size:13px;line-height:1.3}" +
     ".mem-risk-flag b{color:#8f2f2f}" +
+    // provenance: "you said this" (a quiet, trustworthy quote block + link) vs "no provenance" (a
+    // warning banner, same family as .mem-risk-flag -- both are trust/safety signals on a card).
+    ".mem-provenance{margin-top:9px;padding:9px 12px;border-radius:11px;font-size:12px;line-height:1.45}" +
+    ".mem-provenance:not(.unbacked){color:var(--soft);background:rgba(120,140,190,.07);border:1px solid var(--line)}" +
+    ".mem-provenance .ptitle{color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}" +
+    ".mem-provenance .ptitle b{color:var(--soft);font-weight:640}" +
+    ".mem-provenance .pquote{color:var(--ink);font-style:italic;white-space:pre-wrap;word-break:break-word}" +
+    ".mem-provenance .plink{margin-top:6px}" +
+    ".mem-provenance .plink a{color:var(--halo);text-decoration:none;font-weight:600;font-size:11.5px}" +
+    ".mem-provenance .plink a:hover{text-decoration:underline}" +
+    ".mem-provenance.unbacked{display:flex;gap:8px;align-items:flex-start;color:#a33;" +
+    "background:rgba(231,120,120,.12);border:1px solid rgba(231,120,120,.4)}" +
+    ".mem-provenance.unbacked .warn{flex:none;font-size:13px;line-height:1.3}" +
+    ".mem-provenance.unbacked b{color:#8f2f2f}" +
     // the per-card action buttons (approve / reject / edit / disable / enable / delete).
     ".mem-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}" +
     ".mem-btn{font-size:12px;padding:6px 12px;border-radius:16px;border:1px solid var(--line);" +
@@ -209,11 +238,29 @@
     return (s === "low" || s === "none" || s === "false") ? "" : s || (r === true ? "flagged" : "");
   }
 
+  // ---- provenance (NEXT_STEPS #1, the OBEY defense) ---------------------------------------------
+  // Mirrors research/memory_cards.py's has_provenance()/is_provenance_claim_unbacked() EXACTLY -- a
+  // card is provenance-backed iff it cites a run AND carries a non-empty verbatim quote. A card that
+  // cites no run at all (a manually-typed /memory/add) is a different, self-authored category: neither
+  // "backed" nor an unbacked CLAIM. Keep these two functions in lockstep with the Python pair -- they
+  // are the single source of truth the "you said this" / "no provenance" rendering below reads.
+  function hasProvenance(c) {
+    if (!isObj(c)) return false;
+    return !!c.source_run_id && !!String(c.quoted_span || "").trim();
+  }
+  function isProvenanceClaimUnbacked(c) {
+    if (!isObj(c)) return false;
+    return !!c.source_run_id && !String(c.quoted_span || "").trim();
+  }
+
   // metadata fields to surface as chips, in display order. status/risk are handled explicitly by the
-  // card frame (recolor + banner), so they're excluded here to avoid doubling up.  Anything else
-  // scalar on the object is shown generically so a future card can add fields without a code change.
-  var META_ORDER = ["kind", "source_run_id", "usage_count", "last_used_at", "created_at", "strength"];
-  var META_SKIP = { id: 1, text: 1, status: 1, risk: 1, evidence: 1 };
+  // card frame (recolor + banner), so they're excluded here to avoid doubling up. source_run_id /
+  // source_turn / quoted_span get their own dedicated provenance block (see provenanceBlock) instead of
+  // a generic chip. Anything else scalar on the object is shown generically so a future card can add
+  // fields without a code change.
+  var META_ORDER = ["kind", "usage_count", "last_used_at", "created_at", "strength"];
+  var META_SKIP = { id: 1, text: 1, status: 1, risk: 1, evidence: 1,
+                    source_run_id: 1, source_turn: 1, quoted_span: 1 };
   function cardMeta(c, ctx) {
     if (!isObj(c)) return [];
     var out = [];
@@ -228,8 +275,6 @@
       var v = c[key];
       if (key === "kind") {
         push("kind", chip(String(v)));
-      } else if (key === "source_run_id") {
-        push("source_run_id", chip([S.el("b", {}, ["from"]), " " + shortId(String(v))]));
       } else if (key === "usage_count") {
         push("usage_count", chip([String(v), " use" + (Number(v) === 1 ? "" : "s")]));
       } else if (key === "last_used_at") {
@@ -252,7 +297,6 @@
   function chip(kids) {
     return S.el("span", { class: "mem-meta-chip" }, Array.isArray(kids) ? kids : [kids]);
   }
-  function shortId(s) { return s.length > 12 ? s.slice(0, 10) + "…" : s; }
   function fmtNum(v) { var n = Number(v); return isNaN(n) ? String(v) : (n === Math.round(n) ? String(n) : n.toFixed(1)); }
   function fmtWhen(v, ctx) {
     // reuse the shell's time formatting when it looks like a timestamp; else print as-is.
@@ -262,6 +306,56 @@
       return d ? d + " " + t : t;
     }
     return String(v);
+  }
+
+  // A hash link to the Run Inspector for a source run, wired the same way run.js's inline nav-to-memory
+  // link is: a real href (works as a plain link / open-in-new-tab) plus a JS navigate() on click so the
+  // SPA router mounts the Run page without a full reload.
+  function runLink(rid, label, ctx) {
+    var a = S.el("a", { href: "#/run/" + encodeURIComponent(rid) }, [label]);
+    a.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (ctx && typeof ctx.navigate === "function") ctx.navigate("run/" + rid);
+      else if (S && typeof S.navigate === "function") S.navigate("run/" + rid);
+      else location.hash = "#/run/" + encodeURIComponent(rid);
+    });
+    return a;
+  }
+
+  // ---- provenance block: "you said this" (quote + link) or "no provenance" (flagged) --------------
+  // The card-review answer to dream_consolidation_findings.md law #4 -- a fluent, plausible card can
+  // still be a hallucination or an injected instruction; the only thing that catches it is a checkable
+  // link back to what the user actually said, not another plausibility read. null when the card makes
+  // no provenance claim at all (a manually-typed /memory/add -- self-authored, not a failure to flag).
+  function provenanceBlock(c) {
+    if (!isObj(c) || !c.source_run_id) return null;          // no run claimed -> nothing to render here
+    if (hasProvenance(c)) {
+      var turn = c.source_turn;
+      var turnNote = (turn != null) ? " (turn " + (Number(turn) + 1) + ")" : "";
+      return S.el("div", { class: "mem-provenance" }, [
+        S.el("div", { class: "ptitle" }, [
+          S.el("b", {}, ["You said this"]), turnNote + ":",
+        ]),
+        S.el("div", { class: "pquote" }, ["“" + String(c.quoted_span) + "”"]),
+      ]);
+    }
+    if (isProvenanceClaimUnbacked(c)) {
+      return S.el("div", { class: "mem-provenance unbacked" }, [
+        S.el("span", { class: "warn" }, ["⚠"]),
+        S.el("span", {}, [
+          S.el("b", {}, ["No provenance"]),
+          " — this cites a run but has no quoted span backing it up. It can't be approved until that's" +
+          " resolved.",
+        ]),
+      ]);
+    }
+    return null;
+  }
+  // The visible link line under a provenance block, when we have a run to point at (kept separate from
+  // provenanceBlock so it can be appended AFTER the DOM node exists -- runLink needs `ctx` for navigate).
+  function provenanceLink(c, host, ctx) {
+    if (!isObj(c) || !c.source_run_id || !hasProvenance(c)) return;
+    host.appendChild(S.el("div", { class: "plink" }, [runLink(c.source_run_id, "Open the run →", ctx)]));
   }
 
   // ---- page state ------------------------------------------------------------------------------
@@ -781,6 +875,15 @@
         ]));
       }
 
+      // provenance: "you said this" (quote + link to the run) when backed, or a flag when a card claims
+      // a run but can't back the claim up (NEXT_STEPS #1 -- see provenanceBlock). Shown in every zone --
+      // it's a durable fact about the card, not just a pending-review concern.
+      var pblock = provenanceBlock(c);
+      if (pblock) {
+        body.push(pblock);
+        provenanceLink(c, pblock, ctx);
+      }
+
       // metadata chips (status/risk excluded — carried by the frame + banner).
       var metas = cardMeta(c, ctx);
       if (metas.length) {
@@ -810,12 +913,25 @@
       if (busy) b.disabled = true;
       return b;
     }
+    // Approve, guarded client-side to match the server's refusal (NEXT_STEPS #1): a card that claims a
+    // run but has no quoted_span is never auto-approvable. Disabling here is defense in depth -- the
+    // server (_card_status) is the real authority and refuses it too either way.
+    function approveBtn() {
+      var blocked = isProvenanceClaimUnbacked(c);
+      var b = btn("Approve", "approve", function () {
+        if (blocked) return;
+        actOnCard(ctx, "/memory/approve", c, i, key, "Approving…");
+      });
+      if (blocked) {
+        b.disabled = true;
+        b.title = "No provenance: this card cites a run but has no quoted span backing it up.";
+      }
+      return b;
+    }
 
     if (zone === "pending") {
       // Approve / Edit / Reject. Approve+Reject require a real id (they only exist post-E1).
-      out.push(btn("Approve", "approve", function () {
-        actOnCard(ctx, "/memory/approve", c, i, key, "Approving…");
-      }));
+      out.push(approveBtn());
       out.push(btn("Edit", "", function () { startEdit(key, ctx); }));
       out.push(btn("Reject", "reject", function () {
         actOnCard(ctx, "/memory/reject", c, i, key, "Rejecting…");
@@ -823,9 +939,7 @@
     } else if (zone === "rejected") {
       // let a rejected card be re-approved (undo) or deleted for good.
       if (id != null) {
-        out.push(btn("Approve", "approve", function () {
-          actOnCard(ctx, "/memory/approve", c, i, key, "Approving…");
-        }));
+        out.push(approveBtn());
       }
       out.push(btn("Delete", "delete", function () { removeCard(c, i, key, ctx); }));
     } else {
