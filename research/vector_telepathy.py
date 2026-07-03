@@ -614,7 +614,7 @@ def stage_B(cfg, sa: dict) -> dict:
     bridges = fit_all_bridges(sa["resid"], resid_B, cfg["primary_fit"], cfg["held_n"])
     for n, b in bridges.items():
         print(f"  [bridge A->B {n}] heldout {b['heldout']} meta={b['meta']}", flush=True)
-    arms = run_port_arms(mem, bridges, keys_A, keys_B_native, bank, paras, "ab", ceiling)
+    arms = run_port_arms(mem, bridges, keys_A, keys_B_native, bank, paras, cfg, "ab", ceiling)
     out_pt = {"resid": resid_B, "keys_native": keys_B_native,
               "store": pack_store(mem.entries, LAYER, mem.eta, None), "eta": mem.eta}
     torch.save(out_pt, pt)
@@ -642,7 +642,7 @@ def stage_C(cfg, sa: dict, sb: dict) -> dict:
     for n, b in bridges.items():
         print(f"  [bridge B->A {n}] heldout {b['heldout']} meta={b['meta']}", flush=True)
     ceiling = dict(sa["ceiling"], arm="ba_ceiling_text_recompile_on_A")
-    arms = run_port_arms(mem, bridges, keys_B, keys_A_native, bank, paras, "ba", ceiling)
+    arms = run_port_arms(mem, bridges, keys_B, keys_A_native, bank, paras, cfg, "ba", ceiling)
     arms_serializable = {k: {kk: vv for kk, vv in v.items() if kk != "map"} for k, v in arms.items()}
     _save_json(marker, arms_serializable)
     free_model(mem)
