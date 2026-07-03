@@ -45,10 +45,24 @@ __global__ void prep_input_kernel(const float* __restrict__ x, const __half* __r
         xh[i] = __hsub(__float2half(x[i]), b_dec[i % d_in]);
 }
 
+// Vector width for the W_enc / xh streaming loads: 8 contiguous __half lanes (16 bytes) per
+// thread per step, moved as one float4-shaped transaction and unpacked via 4x __half2 ->
+// __half22float2. This is the bandwidth fix: the scalar version below issued one 2-byte load
+// per lane per element (measured ~100 GB/s effective on this card, far under its ~900 GB/s
+// peak); a 16-byte-per-lane load lets the memory system coalesce a whole warp's request into
+// full cache-line-sized transactions instead of 32 scattered halfword fetches. d_in is always a
+// clean multiple of 8 for every SAE this loads (128/256/... dictionaries over 3584/4096/...-wide
+// residuals), but the loop still tails off scalar for safety if it ever isn't.
+constexpr int kVecHalfs = 8;  // 8 * sizeof(__half) == sizeof(float4) == 16 bytes
+
 // One warp per FEATURE: lane-strided fp32 dot of the feature's contiguous W_enc_t row against up
 // to kRowsTile activation rows at once (register accumulators; W_enc streams through once per
 // tile), warp-shuffle tree reduce, then the JumpReLU epilogue with torch's fp16 roundings:
 //   hp = fp16(acc) + b_enc[f] (fp16 add) -> float;  gated = hp > threshold[f] ? max(hp, 0) : 0.
+// Accumulation is unordered vs the scalar reference (SIMD-width lanes summed in a different
+// sequence) but stays fp32 throughout with the SAME two fp16 rounding points as before -- the
+// parity contract only ever claimed accumulation-ORDER independence (sae.hpp's numerics note),
+// so this is exactly the noise budget the existing tolerance already covers.
 __global__ void encode_jumprelu_kernel(
     const __half* __restrict__ w_enc_t,    // [d_sae, d_in] fp16, feature-major
     const __half* __restrict__ b_enc,      // [d_sae] fp16
@@ -62,15 +76,48 @@ __global__ void encode_jumprelu_kernel(
     if (f >= d_sae) return;
     const __half* w = w_enc_t + static_cast<size_t>(f) * d_in;
 
+    const int d_in_vec = d_in / kVecHalfs;         // whole 8-wide chunks
+    const int vec_tail = d_in_vec * kVecHalfs;     // first index NOT covered by the vector loop
+    const float4* w4 = reinterpret_cast<const float4*>(w);
+
     for (int r0 = 0; r0 < rows; r0 += kRowsTile) {
         const int rn = rows - r0 < kRowsTile ? rows - r0 : kRowsTile;
         float acc[kRowsTile];
         for (int j = 0; j < kRowsTile; ++j) acc[j] = 0.0f;
-        for (int i = lane; i < d_in; i += 32) {
-            const float wv = __half2float(w[i]);  // one W load feeds the whole row tile
+
+        // Vector body: each lane pulls one float4 (8 halfs) of W and, per row, one float4 of xh,
+        // then unpacks both as 4x half2 -> float2 and accumulates all 8 products.
+        const float4* xh4_row[kRowsTile];
+        for (int j = 0; j < rn; ++j)
+            xh4_row[j] = reinterpret_cast<const float4*>(xh + static_cast<size_t>(r0 + j) * d_in);
+        for (int iv = lane; iv < d_in_vec; iv += 32) {
+            const float4 wraw = w4[iv];
+            const __half2 w01 = *reinterpret_cast<const __half2*>(&wraw.x);
+            const __half2 w23 = *reinterpret_cast<const __half2*>(&wraw.y);
+            const __half2 w45 = *reinterpret_cast<const __half2*>(&wraw.z);
+            const __half2 w67 = *reinterpret_cast<const __half2*>(&wraw.w);
+            const float2 wf01 = __half22float2(w01), wf23 = __half22float2(w23);
+            const float2 wf45 = __half22float2(w45), wf67 = __half22float2(w67);
+            for (int j = 0; j < rn; ++j) {
+                const float4 xraw = xh4_row[j][iv];
+                const __half2 x01 = *reinterpret_cast<const __half2*>(&xraw.x);
+                const __half2 x23 = *reinterpret_cast<const __half2*>(&xraw.y);
+                const __half2 x45 = *reinterpret_cast<const __half2*>(&xraw.z);
+                const __half2 x67 = *reinterpret_cast<const __half2*>(&xraw.w);
+                const float2 xf01 = __half22float2(x01), xf23 = __half22float2(x23);
+                const float2 xf45 = __half22float2(x45), xf67 = __half22float2(x67);
+                acc[j] += wf01.x * xf01.x + wf01.y * xf01.y + wf23.x * xf23.x + wf23.y * xf23.y +
+                          wf45.x * xf45.x + wf45.y * xf45.y + wf67.x * xf67.x + wf67.y * xf67.y;
+            }
+        }
+        // Scalar tail (only when d_in isn't a multiple of 8 -- never true for a real SAE export,
+        // kept for correctness rather than as a perf-relevant path).
+        for (int i = vec_tail + lane; i < d_in; i += 32) {
+            const float wv = __half2float(w[i]);
             for (int j = 0; j < rn; ++j)
                 acc[j] += wv * __half2float(xh[static_cast<size_t>(r0 + j) * d_in + i]);
         }
+
         for (int off = 16; off > 0; off >>= 1)
             for (int j = 0; j < rn; ++j)
                 acc[j] += __shfl_down_sync(0xffffffffu, acc[j], off);
