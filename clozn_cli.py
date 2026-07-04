@@ -865,6 +865,207 @@ def cmd_branch(args):
     print(f"  {BOLD}branch:{RST}   {(kept + alt['piece'] + cont).strip()[:160]}")
 
 
+# ----------------------------------------------------------------------------- explain (M5 display; M1 assembles)
+# `clozn explain <run_id>` (EXPLAIN_THIS_ANSWER_SPEC.md) renders the Studio's already-shipped, zero-generation
+# /runs/<id>/explain (research/explain.py) as a terminal view: the confidence hesitations, the influences that
+# were active, and the concepts note. DISPLAY ONLY -- this command generates nothing; it POSTs to the endpoint
+# (the same "any client" bridge the Run Inspector's own Explain tab uses) and renders whatever comes back.
+#
+# format_explain() is factored out as a pure function (JSON in, text out) specifically so it's testable with a
+# canned /explain dict -- no server, no model, no GPU -- mirroring cmd_trace's confidence-bar language.
+
+_SPARK = "▁▂▃▄▅▆▇█"      # 8 heights for a compact per-token confidence shape (never a synthesized aggregate)
+_SPARK_MAX = 400          # a defensive cap so a pathologically long run can't blow up one decorative line
+
+
+def _as_list(x) -> list:
+    return x if isinstance(x, list) else []
+
+
+def _as_dict(x) -> dict:
+    return x if isinstance(x, dict) else {}
+
+
+def _num(x, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def _spark_char(c: float) -> str:
+    c = max(0.0, min(1.0, c))
+    return _SPARK[min(len(_SPARK) - 1, int(c * len(_SPARK)))]
+
+
+def _sparkline(n_tokens, moments) -> str:
+    """One glyph per token position -- height-scaled at the recorded confidence for a hesitation; full
+    height elsewhere (all that's known there is 'not flagged as a hesitation', i.e. it either cleared the
+    threshold or had no confidence recorded at all -- a uniform glyph reports exactly that, not a fabricated
+    precise value). A shape of where the model wavered across the reply, never a synthesized score."""
+    by_idx = {}
+    for m in _as_list(moments):
+        if not isinstance(m, dict):
+            continue
+        i = m.get("index")
+        if isinstance(i, int):
+            by_idx[i] = _num(m.get("confidence"))
+    n = int(n_tokens) if isinstance(n_tokens, (int, float)) else (max(by_idx) + 1 if by_idx else 0)
+    n = max(0, min(n, _SPARK_MAX))
+    return "".join(_spark_char(by_idx[i]) if i in by_idx else _SPARK[-1] for i in range(n))
+
+
+def _verified_tag(v) -> str:
+    """causal_verified -> a label that never overclaims. M1 (this command's only data source) tags every
+    influence None ("active, not proven" -- the spec's own wording); True/False can only ever come from
+    M2's on-demand ablation receipt, once it exists -- handled here so the CLI needs no change that day."""
+    return "proven" if v is True else "ruled out" if v is False else "was active"
+
+
+def _format_confidence(conf: dict) -> list[str]:
+    out = [f"{BOLD}confidence{RST}  {DIM}measured per token -- never an overall score{RST}"]
+    if not conf.get("available"):
+        out.append(f"  {DIM}not available -- {conf.get('note', 'no trace on this run')}{RST}")
+        return out
+    moments = [m for m in _as_list(conf.get("uncertain_moments")) if isinstance(m, dict)]
+    spark = _sparkline(conf.get("n_tokens"), moments)
+    if spark:
+        out.append(f"  {spark}")
+    out.append(f"  {DIM}{conf.get('summary', '')} of {conf.get('n_tokens', 0)} tokens"
+               f" (threshold {conf.get('threshold')}){RST}")
+    for m in moments:
+        piece = str(m.get("token") or "").replace("\n", "\\n").replace("\t", "\\t")
+        c = _num(m.get("confidence"))
+        line = f"   ? {piece[:16]:<16} {_confbar(c)} {c:.2f}"
+        alts = [a for a in _as_list(m.get("alternatives")) if isinstance(a, dict)]
+        if alts:
+            altxt = "  ".join(f"{(a.get('piece') or '').strip() or '_'} {_num(a.get('prob')):.2f}" for a in alts[:3])
+            line += f"   {DIM}almost: {altxt}{RST}"
+        out.append(line)
+    return out
+
+
+def _format_influences(inf: dict) -> list[str]:
+    out = [f"{BOLD}influences active{RST}  {DIM}active this turn -- not yet proven causal{RST}"]
+    gate, mode = inf.get("gate"), inf.get("mode")
+    if gate is not None or mode:
+        gate_s = f"{gate:.2f}" if isinstance(gate, (int, float)) else str(gate)
+        out.append(f"  {DIM}gate {gate_s}{(' · ' + str(mode)) if mode else ''}{RST}")
+    cards = [c for c in _as_list(inf.get("cards")) if isinstance(c, dict)]
+    dials = [d for d in _as_list(inf.get("dials")) if isinstance(d, dict)]
+    if cards:
+        for c in cards:
+            out.append(f"  [{_verified_tag(c.get('causal_verified'))}] {c.get('text', '')}")
+            quote = c.get("quoted_span")
+            if quote:
+                out.append(f"      {DIM}“{quote}”{RST}")
+            elif c.get("note"):
+                out.append(f"      {DIM}{c['note']}{RST}")
+    else:
+        out.append(f"  {DIM}{inf.get('note', 'no memory applied')}{RST}")
+    if dials:
+        for d in dials:
+            val = d.get("value")
+            val_s = f"{val:.2f}" if isinstance(val, (int, float)) else str(val)
+            out.append(f"  [{_verified_tag(d.get('causal_verified'))}] dial {d.get('name')} = {val_s}")
+    else:
+        out.append(f"  {DIM}no dials active{RST}")
+    return out
+
+
+def _format_concepts(conc: dict) -> list[str]:
+    out = [f"{BOLD}concepts{RST}"]
+    if not conc.get("available"):
+        out.append(f"  {DIM}not available -- {conc.get('note', 'concept readout needs the engine')}{RST}")
+        return out
+    spans = [s for s in _as_list(conc.get("spans")) if isinstance(s, dict)]
+    if not spans:
+        out.append(f"  {DIM}(no spans recorded){RST}")
+        return out
+    for span in spans:
+        piece = span.get("piece")
+        head = f"  {piece!r} " if piece is not None else "  "
+        feats = [f for f in _as_list(span.get("features")) if isinstance(f, dict)]
+        feat_s = ", ".join(f"{f.get('label') or f.get('id') or '?'} {_num(f.get('score')):.2f}" for f in feats)
+        out.append(f"{head}{feat_s}")
+    return out
+
+
+def format_explain(expl: dict) -> str:
+    """The M1 explanation object (POST /runs/<id>/explain's JSON body) -> the terminal render. Pure: no
+    I/O, no server, no model -- a canned fixture dict renders identically to a live response, which is
+    exactly what makes this testable without either. Mirrors cmd_trace's confidence-bar language.
+
+    Honesty is enforced HERE too, not just trusted from the server: never synthesizes an aggregate
+    confidence number (only the per-hesitation values/bars explain.py already measured, or plain counts);
+    an {"available": false, "note": ...} panel always prints its note (never silently skipped); every
+    influence is labeled "was active", never "caused" (see _verified_tag). Never raises: a malformed panel
+    degrades to a one-line notice instead of losing the ones that DID render, same discipline as
+    research/explain.py's own explain()."""
+    expl = expl if isinstance(expl, dict) else {}
+    lines = [f"{BOLD}explain{RST}  run {expl.get('run_id') or '?'}", "-" * 62]
+    try:
+        lines += _format_confidence(_as_dict(expl.get("confidence")))
+    except Exception:
+        lines += [f"{BOLD}confidence{RST}", f"  {DIM}couldn't render this panel{RST}"]
+    lines.append("")
+    try:
+        lines += _format_influences(_as_dict(expl.get("influences_active")))
+    except Exception:
+        lines += [f"{BOLD}influences active{RST}", f"  {DIM}couldn't render this panel{RST}"]
+    lines.append("")
+    try:
+        lines += _format_concepts(_as_dict(expl.get("concepts")))
+    except Exception:
+        lines += [f"{BOLD}concepts{RST}", f"  {DIM}couldn't render this panel{RST}"]
+    lines.append("-" * 62)
+    return "\n".join(lines)
+
+
+def _last_run_id():
+    """The most recent run in the shared Studio run log (~/.clozn/runs), read directly -- mirrors
+    _log_run_cli's own direct `import runlog` (research/ is a stdlib-only sibling). `clozn run`/`serve`
+    write every turn straight into this log whether or not the Studio HTTP server is up, so --last
+    resolves even while it's down; only the actual /explain fetch below needs the server."""
+    try:
+        sys.path.insert(0, os.path.join(REPO, "research"))
+        import runlog
+        runs = runlog.list_runs(limit=1)
+        return runs[0]["id"] if runs else None
+    except Exception:
+        return None
+
+
+def _fetch_explain(port: int, run_id: str) -> dict:
+    """POST /runs/<id>/explain on the Studio backend -- M1's assembly (research/explain.py), zero
+    generation. A clean CloznError (one line, no traceback) when the Studio isn't up or the run doesn't
+    resolve, matching the rest of this CLI's error style."""
+    url = f"http://127.0.0.1:{port}/runs/{run_id}/explain"
+    req = urllib.request.Request(url, data=b"{}", method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error", str(e))
+        except Exception:
+            msg = str(e)
+        raise CloznError(f"explain failed ({e.code}): {msg}")
+    except urllib.error.URLError as e:
+        raise CloznError(f"couldn't reach the Studio on port {port} ({e.reason}). Start it first:  clozn studio")
+    except Exception as e:
+        raise CloznError(f"explain failed: {e}")
+
+
+def cmd_explain(args):
+    rid = _last_run_id() if args.last else args.run_id
+    if not rid:
+        raise CloznError("give a run id, or pass --last for the most recent one "
+                         "(see ids in the Studio's Runs list, or run something first:  clozn run qwen \"...\")")
+    port = args.port or 8090
+    print(format_explain(_fetch_explain(port, rid)))
+
+
 def main(argv=None):
     _setup_console()
     p = argparse.ArgumentParser(prog="clozn", description="a reliable front door to the local model engine")
@@ -905,6 +1106,12 @@ def main(argv=None):
     pb.add_argument("--pick", type=int, default=0, help="which alternative to take (0 = the runner-up)")
     pb.add_argument("--max", type=int, default=80); pb.add_argument("--cpu", action="store_true")
     pb.set_defaults(fn=cmd_branch)
+    pe = sub.add_parser("explain", help="explain a run: hesitations, active influences, concepts "
+                        "(needs `clozn studio` running)")
+    pe.add_argument("run_id", nargs="?", default=None, help="run id, as shown in the Studio's Runs list")
+    pe.add_argument("--last", action="store_true", help="use the most recently recorded run")
+    pe.add_argument("--port", type=int, default=0, help="Studio port (default 8090)")
+    pe.set_defaults(fn=cmd_explain)
 
     args = p.parse_args(argv)
     if not getattr(args, "fn", None):

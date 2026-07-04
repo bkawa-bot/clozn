@@ -180,7 +180,32 @@
       ".ri-rcpt .m.down b{color:#c0603a}" +
       ".ri-rcpt-note{font-size:11px;color:var(--faint,#9aa0b3);margin:0 0 8px;line-height:1.4}" +
       ".ri-prove-h{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint,#9aa0b3);margin:14px 0 6px}" +
-      ".ri-prove-sub{font-size:11.5px;color:var(--soft,#5a6072);line-height:1.45;margin-bottom:6px}";
+      ".ri-prove-sub{font-size:11.5px;color:var(--soft,#5a6072);line-height:1.45;margin-bottom:6px}" +
+      // --- M5 Explain tab: a read-only, pre-assembled summary of M1's /runs/<id>/explain -- confidence
+      //     hesitations, active influences (tagged "was active", never "caused" -- causal_verified is only
+      //     ever null from this endpoint; M2's on-demand ablation is what could someday flip it), and the
+      //     concepts note. Additive to (never replacing) the Detail tab's per-influence "prove it" receipts
+      //     above. Detail stays the default tab, so nothing about the existing view changes unasked. ---
+      ".ri-tabs{display:flex;gap:8px;margin:2px 0 16px}" +
+      ".ri-tab{font:inherit;font-size:12.5px;font-weight:640;border:1px solid var(--line,#e3e6ef);background:rgba(255,255,255,.7);color:var(--soft,#5a6072);border-radius:16px;padding:6px 14px;cursor:pointer;transition:background .14s,border-color .14s,color .14s}" +
+      ".ri-tab:hover{color:var(--ink,#1b1f2a);border-color:var(--halo,#7aa7ff)}" +
+      ".ri-tab.active{color:#2f4a7a;border-color:var(--halo,#7aa7ff);background:rgba(122,167,255,.14)}" +
+      ".ri-xpl-wrap h3{margin-bottom:4px}" +
+      ".ri-xpl-tagline{font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.4;margin-bottom:14px}" +
+      ".ri-xpl-sec{margin:16px 0}" +
+      ".ri-xpl-sec h4{margin:0 0 4px;font-size:12.5px;letter-spacing:.02em;color:var(--ink,#1b1f2a);font-weight:640}" +
+      ".ri-xpl-sec h4 .sub{font-weight:400;margin-left:2px}" +
+      ".ri-xpl-sub{font-size:12px;color:var(--soft,#5a6072);margin-bottom:8px}" +
+      ".ri-xpl-mo{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12.5px}" +
+      ".ri-xpl-mo .tok{min-width:60px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Consolas,monospace;color:var(--ink,#1b1f2a)}" +
+      ".ri-xpl-mo .track{letter-spacing:-1px;color:var(--halo,#7aa7ff)}" +
+      ".ri-xpl-mo .val{color:var(--faint,#9aa0b3);min-width:32px}" +
+      ".ri-xpl-alts{font-size:11.5px;color:var(--faint,#9aa0b3);margin:0 0 7px 4px}" +
+      ".ri-xpl-tag{display:inline-block;font-size:10px;letter-spacing:.03em;text-transform:uppercase;color:#2f4a7a;background:rgba(122,167,255,.14);border:1px solid rgba(122,167,255,.4);border-radius:7px;padding:1px 6px;margin-right:6px;vertical-align:1px}" +
+      ".ri-xpl-quote{margin-top:3px;font-size:12px;color:var(--soft,#5a6072);font-style:italic}" +
+      ".ri-xpl-quote.sub{font-style:normal}" +
+      ".ri-xpl-span{margin:4px 0;font-size:12.5px}" +
+      ".ri-xpl-feat{display:inline-block;font-size:11px;border:1px solid var(--line,#e3e6ef);border-radius:8px;padding:1px 7px;margin:2px 4px 0 0;color:var(--soft,#5a6072)}";
     document.head.appendChild(s);
   }
 
@@ -336,6 +361,115 @@
       h += '<div class="ri-out" id="ri-receipt-out"></div>';
     }
     return h;
+  }
+
+  // ---------------------------------------------------------------------------------------------------
+  // M5 (EXPLAIN_THIS_ANSWER_SPEC.md): a read-only "Explain" tab that pre-assembles M1's already-shipped
+  // /runs/<id>/explain into one summary -- confidence hesitations, active influences, concepts -- so a
+  // non-power-user gets the story without clicking every receipt button. explainSummaryHTML (+ its three
+  // panel helpers) is a pure function -- the parsed /explain object in, an HTML string out -- kept
+  // separate from the fetch/DOM plumbing below it, mirroring the CLI's own format_explain(). Distinct
+  // from (and additive to) the Detail tab's per-influence "prove it" receipts in influenceCol above.
+  // ---------------------------------------------------------------------------------------------------
+
+  // A confidence/score/dial value -> "0.42", tolerating anything non-numeric without throwing.
+  function fmt2(v) { var n = +v; return isNaN(n) ? String(v == null ? "?" : v) : n.toFixed(2); }
+
+  function xplConfidenceHTML(conf) {
+    conf = conf || {};
+    var h = '<div class="ri-xpl-sec"><h4>Confidence <span class="sub">measured per token — never an overall score</span></h4>';
+    if (!conf.available) {
+      return h + '<div class="sub">not available — ' + esc(conf.note || "no trace on this run") + "</div></div>";
+    }
+    var moments = Array.isArray(conf.uncertain_moments) ? conf.uncertain_moments : [];
+    h += '<div class="ri-xpl-sub">' + esc(conf.summary || "") + " of " + (conf.n_tokens || 0) +
+      " tokens (threshold " + esc(conf.threshold) + ")</div>";
+    if (!moments.length) return h + '<div class="sub">no hesitations below threshold.</div></div>';
+    moments.forEach(function (m) {
+      var c = (m && m.confidence == null) ? 0 : +(m && m.confidence);
+      h += '<div class="ri-xpl-mo"><span class="tok">' + esc(labelTok(m && m.token)) + "</span>" +
+        '<span class="track">' + bar(c) + '</span><span class="val">' + fmt2(c) + "</span></div>";
+      var alts = (m && Array.isArray(m.alternatives)) ? m.alternatives : [];
+      if (alts.length) {
+        h += '<div class="ri-xpl-alts">almost: ' + alts.slice(0, 3).map(function (a) {
+          return esc(labelTok(a && a.piece)) + " " + fmt2(a && a.prob);
+        }).join("  ") + "</div>";
+      }
+    });
+    return h + "</div>";
+  }
+
+  function xplInfluencesHTML(inf) {
+    inf = inf || {};
+    var h = '<div class="ri-xpl-sec"><h4>Influences active <span class="sub">active this turn — not yet proven causal</span></h4>';
+    if (inf.gate != null || inf.mode) {
+      h += '<div class="ri-xpl-sub">gate ' + (inf.gate == null ? "?" : fmt2(inf.gate)) + (inf.mode ? " · " + esc(inf.mode) : "") + "</div>";
+    }
+    var cards = Array.isArray(inf.cards) ? inf.cards : [];
+    var dials = Array.isArray(inf.dials) ? inf.dials : [];
+    // causal_verified travels with each claim, per the spec -- M1 only ever sets it null ("was active");
+    // true/false can only ever come from a future M2 ablation receipt. Never render "caused" from this data.
+    var tagOf = function (v) { return v === true ? "proven" : v === false ? "ruled out" : "was active"; };
+    if (cards.length) {
+      cards.forEach(function (c) {
+        c = c || {};
+        h += '<div class="ri-card"><span class="ri-xpl-tag">' + esc(tagOf(c.causal_verified)) + "</span>" + esc(c.text || "");
+        if (c.quoted_span) h += '<div class="ri-xpl-quote">“' + esc(c.quoted_span) + '”</div>';
+        else if (c.note) h += '<div class="ri-xpl-quote sub">' + esc(c.note) + "</div>";
+        h += "</div>";
+      });
+    } else {
+      h += '<div class="sub">' + esc(inf.note || "no memory applied") + "</div>";
+    }
+    if (dials.length) {
+      h += '<div style="margin-top:8px">' + dials.map(function (d) {
+        d = d || {};
+        return '<span class="ri-dial">' + esc(d.name) + " " + fmt2(d.value) + " · " + esc(tagOf(d.causal_verified)) + "</span>";
+      }).join("") + "</div>";
+    } else {
+      h += '<div class="sub">no dials active</div>';
+    }
+    return h + "</div>";
+  }
+
+  function xplConceptsHTML(conc) {
+    conc = conc || {};
+    var h = '<div class="ri-xpl-sec"><h4>Concepts</h4>';
+    if (!conc.available) {
+      return h + '<div class="sub">not available — ' + esc(conc.note || "concept readout needs the engine") + "</div></div>";
+    }
+    var spans = Array.isArray(conc.spans) ? conc.spans : [];
+    if (!spans.length) return h + '<div class="sub">(no spans recorded)</div></div>';
+    spans.forEach(function (span) {
+      span = span || {};
+      var feats = Array.isArray(span.features) ? span.features : [];
+      h += '<div class="ri-xpl-span">' + (span.piece != null ? "<b>" + esc(labelTok(span.piece)) + "</b> " : "") +
+        feats.map(function (f) {
+          f = f || {};
+          return '<span class="ri-xpl-feat">' + esc(f.label || f.id || "?") + " " + fmt2(f.score) + "</span>";
+        }).join(" ") + "</div>";
+    });
+    return h + "</div>";
+  }
+
+  // The pure assembler: the parsed /explain object -> the whole summary body (all three panels).
+  function explainSummaryHTML(expl) {
+    expl = expl || {};
+    return xplConfidenceHTML(expl.confidence) + xplInfluencesHTML(expl.influences_active) + xplConceptsHTML(expl.concepts);
+  }
+
+  // Wraps the local postJSON envelope ({ok,status,data}) around explainSummaryHTML with the same honest
+  // 404/503/offline degradation language used throughout this file (doReplay et al.) -- never a raw error.
+  function explainPanelHTML(r) {
+    if (!r) return '<div class="sub">couldn’t load the explanation.</div>';
+    if (r.status === 404) return '<div class="sub">explain isn’t available on this build yet — this lights up once /runs/&lt;id&gt;/explain exists.</div>';
+    if (r.status === 503) return '<div class="sub">explain needs the studio substrate running — start it and reload.</div>';
+    if (r.status === 0) return '<div class="sub">couldn’t reach the studio (offline?) — reload once it’s up.</div>';
+    if (!r.ok || !r.data || r.data.error) {
+      var msg = r.data && r.data.error ? " — " + esc(r.data.error) : "";
+      return '<div class="sub">explain failed (' + esc(r.status) + ")" + msg + "</div>";
+    }
+    return explainSummaryHTML(r.data);
   }
 
   // The dials that were live on the ORIGINAL run -- the baseline a quick-repair preset nudges from.
@@ -767,6 +901,20 @@
     });
   }
 
+  // M5: the Detail/Explain tab switch -- toggle .active + show/hide the two view containers. Detail stays
+  // the default (matches querySelectorAll(...).forEach usage elsewhere in this file, e.g. wireQuickRepair).
+  function wireTabs(root) {
+    var tabs = root.querySelectorAll(".ri-tab[data-tab]");
+    var views = { detail: root.querySelector("#ri-view-detail"), explain: root.querySelector("#ri-view-explain") };
+    tabs.forEach(function (t) {
+      t.onclick = function () {
+        tabs.forEach(function (o) { o.classList.remove("active"); });
+        t.classList.add("active");
+        Object.keys(views).forEach(function (k) { if (views[k]) views[k].style.display = (k === t.dataset.tab) ? "" : "none"; });
+      };
+    });
+  }
+
   // E2: "Propose a memory from this run". Asks the backend to distill a durable preference out of this
   // conversation and drop it into the PENDING memory queue (reviewed on the Memory page). Uses
   // ctx.postJSON(path, body, fallback) which NEVER throws -- on any failure (offline, 404, 500) it
@@ -953,20 +1101,37 @@
     ristyle();
     view.innerHTML = '<div class="wrap"><div class="nav" style="margin-bottom:14px"><a href="#/runs">← Runs</a></div><div id="ri-root"><div class="sub">loading run…</div></div></div>';
     var root = view.querySelector("#ri-root"), run;
+    // M1 is free (zero generation -- a read + reshape of the run already being fetched): fire it alongside
+    // the run fetch, not lazily after an Explain-tab click, so opening the tab is instant.
+    var explainP = postJSON("/runs/" + runId + "/explain");
     try { run = await getJSON("/runs/" + runId); }
     catch (e) { root.innerHTML = '<div class="sub">run not found (' + esc(e.message) + ")</div>"; return; }
+    var explainR = await explainP;
     var flags = run.flags || [];
     root.innerHTML =
       '<div class="ri-head"><b>' + esc(run.prompt_summary || "(run)") + "</b>" +
       '<span class="sub">' + esc(run.created_at) + " · " + esc(run.source) + "/" + esc(run.client) + " · " + esc(run.model) + " · " + ((run.timing || {}).duration_ms != null ? run.timing.duration_ms : "?") + "ms</span>" +
       '<span class="ri-flags">' + flags.map(function (f) { return '<span class="ri-flag ' + (["error", "pending-memory", "low-confidence"].indexOf(f) >= 0 ? "warn" : "") + '">' + esc(f) + "</span>"; }).join("") + "</span></div>" +
-      '<div class="ri-cols"><section class="ri-col">' + transcriptCol(run) + '</section><section class="ri-col">' + influenceCol(run) + '</section><section class="ri-col">' + repairCol(run) + "</section></div>";
+      '<div class="ri-tabs">' +
+        '<button class="ri-tab active" data-tab="detail">Detail</button>' +
+        '<button class="ri-tab" data-tab="explain">Explain</button>' +
+      "</div>" +
+      '<div id="ri-view-detail">' +
+        '<div class="ri-cols"><section class="ri-col">' + transcriptCol(run) + '</section><section class="ri-col">' + influenceCol(run) + '</section><section class="ri-col">' + repairCol(run) + "</section></div>" +
+      "</div>" +
+      '<div id="ri-view-explain" style="display:none">' +
+        '<section class="ri-col ri-xpl-wrap"><h3>Explain</h3>' +
+        '<div class="ri-xpl-tagline">A read-only summary, assembled from the same measured signals as the Detail tab — never a self-report. Per-influence “prove it” receipts still live over in Detail.</div>' +
+        explainPanelHTML(explainR) +
+        "</section>" +
+      "</div>";
     wireTimeline(root, run);
     wireRepair(root, run);
     wireReceipts(root, run);
     wireQuickRepair(root, run);
     wireBranch(root, run);
     wirePropose(root, run, ctx);
+    wireTabs(root);
   }
 
   S.register("run", { title: "Run Inspector", render: render });
