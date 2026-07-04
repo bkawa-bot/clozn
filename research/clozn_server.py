@@ -1891,6 +1891,30 @@ def make_handler():
                     return self._json(500, {"error": "counterfactual failed (bad overrides, or the replay "
                                                       "could not be generated)"})
                 return self._json(200, out)
+            if p.startswith("/runs/") and p.endswith("/narrate"):   # M4: accountable-self narration + confabulation-diff
+                rid = p[len("/runs/"):-len("/narrate")]
+                import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(404, {"error": "run not found"})
+                if not (SUB and getattr(SUB, "chat", None)):   # constrained + unconstrained BOTH generate -> needs qwen
+                    return self._json(503, {"error": "narration needs the qwen substrate"})
+                import narrate
+                matcher = narrate.lexical_default            # the weak keyword proxy -- the LABELED fallback judge
+                try:
+                    import semantic_matcher                  # the real, INDEPENDENT cross-encoder judge, if present
+                    if semantic_matcher.available():
+                        matcher = semantic_matcher.nli_support_matcher
+                except Exception:
+                    pass
+                try:
+                    # returns the receipt-constrained narration + confabulation flags; the raw unconstrained
+                    # "why" is NEVER a field in the result (narrate.py's structural trap guard). narrate()'s
+                    # own `note` states which matcher ran, so the response is self-describing about its honesty.
+                    out = narrate.narrate(run, SUB, support_matcher=matcher)
+                except Exception as e:
+                    return self._json(500, {"error": f"narrate failed: {type(e).__name__}: {e}"})
+                return self._json(200, out)
             if p == "/engine/harvest":   # READ the real C++ runtime's activations (any substrate; the engine is separate)
                 try:
                     h = ENGINE.harvest(str(body.get("text", ""))[:300])
