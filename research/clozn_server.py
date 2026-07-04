@@ -1871,6 +1871,26 @@ def make_handler():
                     return self._json(500, {"error": "receipt failed (bad influence spec, or the replay "
                                                       "could not be generated)"})
                 return self._json(200, out)
+            if p.startswith("/runs/") and p.endswith("/counterfactual"):   # M3: one counterfactual dial re-gen
+                rid = p[len("/runs/"):-len("/counterfactual")]
+                import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(404, {"error": "run not found"})
+                if not (SUB and getattr(SUB, "chat", None)):   # both arms regenerate -> needs the qwen substrate
+                    return self._json(503, {"error": "counterfactual needs the qwen substrate"})
+                overrides = body.get("behavior_overrides")
+                if not isinstance(overrides, dict) or not overrides:
+                    return self._json(400, {"error": "need a behavior_overrides dict: {dial_name: value, ...}"})
+                import counterfactual
+                try:
+                    out = counterfactual.counterfactual(run, overrides, SUB)
+                except Exception as e:
+                    return self._json(500, {"error": f"counterfactual failed: {type(e).__name__}: {e}"})
+                if out is None:
+                    return self._json(500, {"error": "counterfactual failed (bad overrides, or the replay "
+                                                      "could not be generated)"})
+                return self._json(200, out)
             if p == "/engine/harvest":   # READ the real C++ runtime's activations (any substrate; the engine is separate)
                 try:
                     h = ENGINE.harvest(str(body.get("text", ""))[:300])
