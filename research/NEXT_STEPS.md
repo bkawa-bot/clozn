@@ -159,8 +159,8 @@ Parked ideas with rigs/specs: `WILD_EXPERIMENTS.md` (10 pre-designed experiments
 coherence problem (Lab), diffusion dreaming (killed — provenance extraction instead). The findings
 map: `FINDINGS.md`. The state of everything: the three memory files.
 
-11. **"Explain this answer" — the inspect-a-reply core surface** — **M1 + M2 DONE (2026-07-04), M3-M5
-    remaining.** Spec at `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost
+11. **"Explain this answer" — the inspect-a-reply core surface** — **M1, M2, M3, M5-display + M4 scaffolding DONE (2026-07-04);
+    remaining: M4 on-model gated validation, M5 any-client run_id bridge.** Spec at `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost
     model). The mainstream front door: measured confidence/influence/concepts/counterfactuals on any
     reply, never self-reported. Mostly assembly of existing parts (runlog manifest + trace, replay.py
     ablation, run.js receipts, SAE readouts). Order: M1 free-signal `/runs/<id>/explain` (Sonnet) → M2
@@ -232,6 +232,76 @@ map: `FINDINGS.md`. The state of everything: the three memory files.
     unapplied-ablation honesty guard, a constructed card_a+card_b redundant pair, never-raises) +
     `test_receipts_server.py` (10, the no-socket HTTP dispatch incl. the 503-no-substrate path on both
     endpoints and a full prove-all-over-HTTP redundancy check). Suite: 474 passed / 3 skipped (was 439/3
-    before this session). `run.js` untouched (M5's job). **Remaining:** M3 (live counterfactual dial
-    sliders) → M4 (Opus: receipt-constrained narration + confabulation-diff) → M5 (TUI / any-client
-    bridge / a web Explain tab). None of M3-M5 built; no live dial re-roll, no narration, no UI yet.
+    before this session). `run.js` untouched (M5's job).
+
+    **M3 shipped** (`6442947`): a new stdlib-only `research/counterfactual.py` (receipts/replay imports
+    only) turns the ablation machinery into an interactive what-if. `counterfactual(run,
+    behavior_overrides, sub)` regenerates BOTH arms greedy -- baseline = the run's ACTUAL live dials
+    (`replay.replay(run,{"greedy":true},sub)`), arm = the same with `behavior_overrides` merged -- and
+    diffs only those two (the stored sampled reply never enters the subtraction, same seam M2 fixes).
+    Coherence and causation are kept **orthogonal**: a dial that genuinely took hold but derailed the
+    model reports `causal_verified:true` AND `coherence.degenerate:true` -- never laundered into "big
+    delta = big effect" (law #6). Unapplied-override guard reads the `active_dials` replay.py already
+    recorded on the child run (no new model probe) and flips `causal_verified:false` naming exactly which
+    axis failed; a 0.0 override is never flagged. `dose_sweep(run, dial, values, sub)` runs
+    `counterfactual()` independently per value (2 greedy re-gens each, no shared baseline) and returns the
+    per-model dose-response curve with `derailed_at` naming which values crater -- the honest answer to
+    "how warm is warm on THIS model" instead of trusting a 7B-calibrated number on a 1.5B. Wired as `POST
+    /runs/<id>/counterfactual {behavior_overrides:{...}}` after `/receipt` (404 unknown run, 503 no SUB,
+    400 non-dict/empty overrides, 500 on a failed result). Tests: `test_counterfactual.py` (23, model-free
+    FakeSub/FakeSteer whose chat() is a deterministic function of live dial values) +
+    `test_counterfactual_server.py` (5, no-socket dispatch). `run.js` untouched (the slider UI is a later
+    display pass, deferred to avoid colliding with M5-display's run.js edit).
+
+    **M5-display shipped** (`6dec79e`): the surfaces over M1's endpoint (no generation, endpoint
+    unchanged). TUI -- `clozn explain <run_id>` / `clozn explain --last` in `clozn_cli.py`; `--last`
+    resolves via a direct `runlog.list_runs(limit=1)` read so it works with the Studio HTTP server DOWN
+    (only the explanation fetch needs the server), and a pure `format_explain(dict)->str` renders a
+    per-token confidence sparkline + hesitation bars with "almost said" alternatives (never an aggregate
+    %), the influence list with provenance quotes + gate/mode, and every not-available panel's note
+    verbatim; every influence is tagged `[was active]`, never `[caused]` (only a real M2 receipt may print
+    `[proven]`/`[ruled out]`). Web -- a new "Explain" tab beside "Detail" in `run.js` (Detail stays
+    default; receipt buttons unchanged), prefetched in parallel with the run (M1 is free per the cost
+    model, so it opens instantly), rendered by a pure `explainSummaryHTML()` under the same honesty rules,
+    styled through run.js's own self-injected `ristyle()` (no `app.html`/`app.js`/`clozn.css` edits).
+    Tests: `test_explain_cli.py` (21, canned-dict + one in-process real-server wire-format check).
+
+    **M4 scaffolding shipped** (`bf98a7c`): the MODEL-FREE harness for the accountable-self narration --
+    `research/narrate.py`, with the honesty-critical judgment deliberately RESERVED, not faked.
+    `constrained_narration(explanation, sub)` is never handed the run (structurally cannot crib the
+    transcript), flattens the M1 manifest to id-tagged facts, asks the model to cite `[id]` after every
+    clause, and drops any citation that doesn't resolve. `unconstrained_why(run, sub)` is never handed the
+    explanation (cannot see a receipt), asks "why did you answer that way?" with zero facts in context,
+    and returns its text labeled `do_not_surface_as_answer`/`role:confabulation_sample` three redundant
+    ways. `confabulation_diff(text, explanation, support_matcher=lexical_default)` splits sentence-level
+    claims, tags each supported/unsupported (a throwing matcher fails CLOSED to unsupported), and renders
+    unsupported ones as `WARNING: credits "<claim>"; no receipt for that.` `narrate()` returns exactly
+    `{constrained_narration, flags, unsupported_claims, note}` -- four keys, no answer/why field, so the
+    fabrication cannot reach an answer slot. The **trap-guard is structural** (the two arms are physically
+    denied each other's inputs), tested directly. Honesty boundary: `lexical_default` is a loudly-
+    documented weak proxy (over- and under-flags); the real `semantic_support_matcher` RAISES
+    `NotImplementedError` rather than ship a fake verdict. Tests: `test_narrate.py` (34, model-free
+    FakeSub). NO server endpoint (deferred to avoid the concurrent `clozn_server.py` edit). Known gap it
+    flagged for the gated pass: claim-splitting is sentence-level, so a compound "concise because you
+    asked, AND warm because I like you" is one claim and a half-confabulation can hide behind the true
+    clause.
+
+    **Sibling experiment landed same batch** (`388b895`, WILD_EXPERIMENTS #6, not part of the milestone
+    chain): `research/memory_disorders.py` broke SlotMem four ways (interference / confabulation / amnesia
+    / intrusion) via instance monkeypatch and asked whether the RECEIPT SIGNALS alone diagnose each
+    disorder blind. A pre-registered rule-classifier that never sees the label got **3/5 across every
+    seed, including the two safety-critical ones (confabulation, amnesia)** -- receipts are a diagnostic
+    instrument, not just a display. Honest miss: interference under a LIVE gate presents as pathological
+    over-abstention (gate floor computed from broken uncentered sims), not the predicted cross-talk, so it
+    misfiled as healthy (10/15 blind, not 15/15). Confabulation stayed fluent-while-wrong ("capital of
+    France" -> "Beatrix") -- the dangerous failure is the one that doesn't look like one. Full report:
+    `research/memory_disorders_findings.md`.
+
+    **Remaining (the honesty-critical tail):** **M4 on-model gated validation** -- build the real
+    `semantic_support_matcher` (NLI / LLM-judge entailment) and run the full `narrate()` pipeline on a
+    real model with a SEEDED known divergence (Opus, GPU; the spec's M4 "Done" bar is that the diff
+    catches a confabulated influence a `-m model` test planted); **M5 any-client run_id bridge** -- return
+    the `run_id` from `/v1/chat/completions` (response field or header) so a companion `clozn inspect`
+    shows the explanation for a reply the user got in their OWN OpenAI client; optional clause-level claim
+    extraction to close the compound-sentence gap M4-scaffold flagged. Suite: **557 passed / 3 skipped**
+    on the clean committed tree (was 439/3 at the start of this session).
