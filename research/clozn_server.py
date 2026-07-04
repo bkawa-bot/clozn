@@ -1837,6 +1837,40 @@ def make_handler():
                     return self._json(404, {"error": "run not found"})
                 import explain
                 return self._json(200, explain.explain(run))
+            if p.startswith("/runs/") and p.endswith("/receipts"):   # M2: prove-all -- leave-one-out + redundancy guard
+                rid = p[len("/runs/"):-len("/receipts")]
+                import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(404, {"error": "run not found"})
+                if not (SUB and getattr(SUB, "chat", None)):   # both arms regenerate -> needs the qwen substrate
+                    return self._json(503, {"error": "receipts need the qwen substrate"})
+                import receipts
+                try:
+                    return self._json(200, receipts.prove_all(run, SUB))
+                except Exception as e:
+                    return self._json(500, {"error": f"receipts failed: {type(e).__name__}: {e}"})
+            if p.startswith("/runs/") and p.endswith("/receipt"):   # M2: one rigorous both-arms-greedy causal receipt
+                rid = p[len("/runs/"):-len("/receipt")]
+                import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(404, {"error": "run not found"})
+                if not (SUB and getattr(SUB, "chat", None)):   # both arms regenerate -> needs the qwen substrate
+                    return self._json(503, {"error": "receipt needs the qwen substrate"})
+                influence = body.get("influence")
+                if not isinstance(influence, dict) or not influence:
+                    return self._json(400, {"error": "need an influence spec: one of "
+                                            "{card_id|dial|memory_off|behavior_off}"})
+                import receipts
+                try:
+                    out = receipts.receipt(run, influence, SUB)
+                except Exception as e:
+                    return self._json(500, {"error": f"receipt failed: {type(e).__name__}: {e}"})
+                if out is None:
+                    return self._json(500, {"error": "receipt failed (bad influence spec, or the replay "
+                                                      "could not be generated)"})
+                return self._json(200, out)
             if p == "/engine/harvest":   # READ the real C++ runtime's activations (any substrate; the engine is separate)
                 try:
                     h = ENGINE.harvest(str(body.get("text", ""))[:300])

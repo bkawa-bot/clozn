@@ -159,7 +159,7 @@ Parked ideas with rigs/specs: `WILD_EXPERIMENTS.md` (10 pre-designed experiments
 coherence problem (Lab), diffusion dreaming (killed — provenance extraction instead). The findings
 map: `FINDINGS.md`. The state of everything: the three memory files.
 
-11. **"Explain this answer" — the inspect-a-reply core surface** — **M1 DONE (2026-07-04), M2-M5
+11. **"Explain this answer" — the inspect-a-reply core surface** — **M1 + M2 DONE (2026-07-04), M3-M5
     remaining.** Spec at `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost
     model). The mainstream front door: measured confidence/influence/concepts/counterfactuals on any
     reply, never self-reported. Mostly assembly of existing parts (runlog manifest + trace, replay.py
@@ -195,6 +195,43 @@ map: `FINDINGS.md`. The state of everything: the three memory files.
     non-dict/garbage input, a maximally-malformed-but-dict run) + `test_explain_server.py` (3, the
     no-socket HTTP dispatch proving the thin endpoint wiring and that it needs no substrate). Suite: 439
     passed / 3 skipped (was 409/3 before this session). `run.js` untouched (display is M5's job).
-    **Remaining:** M2 (rigorous greedy-both-arms ablation + redundancy guard) → M3 (live counterfactual
-    dial sliders) → M4 (Opus: receipt-constrained narration + confabulation-diff) → M5 (TUI / any-client
-    bridge / a web Explain tab). None of M2-M5 built; no generation, no ablation, no narration, no UI yet.
+
+    **M2 shipped:** a new stdlib-only `research/receipts.py` (same separation as explain.py/replay.py --
+    no model, no GPU, duck-typed against the live substrate, unit-testable against a fake `.chat()`)
+    fixes the seam the spec calls out: the pre-M2 receipt (still what run.js's per-card/per-dial buttons
+    drive today, via a single `/replay` call) diffs the ORIGINAL SAMPLED reply against a greedy replay
+    with one influence off -- mixing influence-on/off with sampled/greedy in one delta.
+    `receipts.receipt(run, influence, sub)` regenerates BOTH arms greedy
+    (`replay.replay(run, {"greedy":true}, sub)` for the WITH baseline, `{**changes,"greedy":true}` for
+    WITHOUT) from the run's own stored messages -- the stored sampled reply never enters the diff, and
+    every receipt says so via a `note` field. `influence` is one of
+    `{card_id}`/`{dial}`/`{memory_off:true}`/`{behavior_off:true}`; a card ablates through the SAME
+    replay.py `_apply_changes` prompt-mode path M1 already relies on for provenance (in "internalized"
+    mode replay.py's own "not applied" note is relayed here as `ablation_note` and `causal_verified` is
+    correctly **False** -- never a silently-laundered "no effect"); a dial ablates via
+    `behavior_overrides:{name:0.0}`, leaving every OTHER active dial untouched (true leave-one-out). Delta
+    math (`receipt_metrics`) mirrors run.js's `receiptMetrics()` EXACTLY, including the JS-vs-Python
+    rounding tie (`Math.round` rounds a trailing .5 UP; Python's builtin `round()` bankers'-rounds it down
+    -- e.g. 62.5 -> 63 here/in JS, 62 under naive Python `round()`) -- caught by two dedicated tie-case
+    tests. `prove_all(run, sub)` runs leave-one-out over every card+dial the M1 manifest
+    (`explain.explain(run)`) says FIRED, sharing ONE greedy baseline across every check (safe -- the same
+    deterministic call every time -- and NOT the batched-forward-pass optimization the spec's cost model
+    names next: documented as `perf_note`, not implemented here), plus the spec-mandated **REDUNDANCY
+    GUARD**: among influences whose own leave-one-out showed no effect (exact reply-string equality --
+    greedy is deterministic), every PAIR is re-ablated jointly; a pair whose joint drop DOES change the
+    reply is reported `{redundant:[...], note:"together they drive this; individually neither is
+    load-bearing"}` instead of "neither mattered". Documented as a PAIRWISE approximation only
+    (`approximation_note`), not the full power set -- a 3-way-or-higher redundancy would be missed, said
+    so explicitly. Cost asymmetry surfaced per-receipt via `cost_note` (a card/memory ablation re-prefills
+    the whole context; a dial is decode-time, KV-reusable, cheap). Wired as `POST /runs/<id>/receipt
+    {influence:{...}}` (one) and `POST /runs/<id>/receipts {}` (prove-all) in `clozn_server.py`, right
+    after `/explain`; both 404 on an unknown run and 503 when `SUB` is None (both arms regenerate, unlike
+    `/explain`), and `/receipt` 400s on a missing/malformed `influence` body. Tests: `test_receipts.py`
+    (25, model-free against a FakeSub whose `.chat()` is a deterministic function of which influence is
+    live -- metric math incl. both rounding ties, the both-arms-greedy call count/shape, the
+    unapplied-ablation honesty guard, a constructed card_a+card_b redundant pair, never-raises) +
+    `test_receipts_server.py` (10, the no-socket HTTP dispatch incl. the 503-no-substrate path on both
+    endpoints and a full prove-all-over-HTTP redundancy check). Suite: 474 passed / 3 skipped (was 439/3
+    before this session). `run.js` untouched (M5's job). **Remaining:** M3 (live counterfactual dial
+    sliders) → M4 (Opus: receipt-constrained narration + confabulation-diff) → M5 (TUI / any-client
+    bridge / a web Explain tab). None of M3-M5 built; no live dial re-roll, no narration, no UI yet.
