@@ -41,11 +41,25 @@ PRE-REGISTERED (2026-07-02, written BEFORE any run of this rig):
   self_audit_gap (the studio's consolidate default is 120) -- this measures the research config, not a
   tuned-best prefix.
 
+RESULT (2026-07-02, run at both scales): headline held at 7B (PROMPT >= PREFIX every cell), VIOLATED at
+1.5B -- space and question came out PREFIX-STRONGER instead (soft-block d_prompt +0.166/+0.167 vs
+d_prefix +0.500 each). Full table + analysis: self_audit_gap_findings.md Follow-up 4.
+
+BLOCK STYLE (NEXT_STEPS #9, added 2026-07-03): run_ab(..., block_style=...) forwards to memory_mode.
+compile_prompt_block's new `style` param for the PROMPT arm (None/default = "soft", the exact rig above,
+unchanged). "strict" swaps in the direct-imperative block wording (memory_mode.py) to test whether the
+1.5B space/question inversion was a soft-wording under-compliance artifact rather than a hard capacity
+ceiling -- pre-registration for THAT re-run is above test_strict_block_runs_end_to_end_on_the_traits_
+that_inverted (the gated cell there checks machinery only; the directional pre-registration is settled
+by the STANDALONE run + the findings table). Re-run result (1.5B, strict, space+question):
+self_audit_gap_findings.md Follow-up 4's "strict block variant" table.
+
 Run as the gated test (skips cleanly without -m model / CUDA; ~5 min at 1.5B):
     C:/Users/brigi/src/cloze/.venv/Scripts/python.exe -m pytest research/tests/test_prompt_vs_prefix_ab.py -m model -q
 Run as the full standalone A/B (writes research/runs/prompt_vs_prefix_ab.json):
     C:/Users/brigi/src/cloze/.venv/Scripts/python.exe research/tests/test_prompt_vs_prefix_ab.py \
-        [--model Qwen/Qwen2.5-7B-Instruct] [--steps 80] [--traits baking,concise] [--out ...] [--seed 0]
+        [--model Qwen/Qwen2.5-7B-Instruct] [--steps 80] [--traits baking,concise] [--out ...] [--seed 0] \
+        [--block-style strict]
 """
 from __future__ import annotations
 
@@ -104,9 +118,15 @@ def verdict(d_prompt, d_prefix, margin=PARITY_MARGIN):
 
 
 def run_ab(model_name, steps=80, trait_names=None, out_path="research/runs/prompt_vs_prefix_ab.json",
-           seed=0):
+           seed=0, block_style=None):
     """The A/B: for each trait, BASELINE vs PROMPT-carried vs TRAINED-PREFIX on the 6 held-out probes.
-    Checkpoints the JSON after every trait (a kill/OOM leaves completed traits on disk). Returns res."""
+    Checkpoints the JSON after every trait (a kill/OOM leaves completed traits on disk). Returns res.
+
+    block_style (NEXT_STEPS #9): forwarded verbatim to memory_mode.compile_prompt_block for the PROMPT
+    arm. None (default) = that function's own default ("soft", byte-identical to every prior run of this
+    rig -- no behaviour change for the original A/B). "strict" re-runs the SAME rig with the direct-
+    imperative block wording, to test whether it closes the 1.5B space/question inversion (see the
+    module docstring's PRE-REGISTRATION for the soft-wording numbers this is compared against)."""
     gap, memory_mode, SelfTeach = _lazy()
     import torch
 
@@ -115,12 +135,13 @@ def run_ab(model_name, steps=80, trait_names=None, out_path="research/runs/promp
     app = SelfTeach(model_name, m=16, four_bit=four_bit, persist_path=None)
     traits = [t for t in gap.TRAITS if not trait_names or t["name"] in trait_names]
     res = {"model": model_name, "steps": steps, "seed": seed, "margin": PARITY_MARGIN,
+           "block_style": block_style or "soft",
            "metric": {"baking": "kw_rate delta", "space": "kw_rate delta",
                       "concise": "shortening fraction (1 - tok ratio)", "question": "q_rate delta"},
            "heldout": gap.HELDOUT, "baseline_shared": True,
-           "note": ("arms differ ONLY in delivery: PROMPT = compile_prompt_block([rule]) as system "
-                    "message, no prefix; PREFIX = consolidate([rule]) then gate-1.0 ungated; both "
-                    "greedy max_new=90 through SelfTeach._generate"),
+           "note": ("arms differ ONLY in delivery: PROMPT = compile_prompt_block([rule], style="
+                    f"{block_style!r}) as system message, no prefix; PREFIX = consolidate([rule]) then "
+                    "gate-1.0 ungated; both greedy max_new=90 through SelfTeach._generate"),
            "conditions": {}}
 
     app.reset()
@@ -130,7 +151,7 @@ def run_ab(model_name, steps=80, trait_names=None, out_path="research/runs/promp
     for t in traits:
         print(f"\n=== TRAIT: {t['name']} ({t['cls']}) ===", flush=True)
         app.reset()
-        block = memory_mode.compile_prompt_block([t["rule"]])
+        block = memory_mode.compile_prompt_block([t["rule"]], style=block_style)
 
         prompt_reps = [gen_prompt(app, block, p) for p in gap.HELDOUT]
 
@@ -198,6 +219,38 @@ def test_card_in_prompt_and_trained_prefix_both_express_the_trait(tmp_path):
     assert out.is_file() and json.loads(out.read_text(encoding="utf-8"))["margin"] == PARITY_MARGIN
 
 
+# ---- the gated test: NEXT_STEPS #9's strict-block re-run, 1.5B ONLY, the two traits that inverted -----
+# PRE-REGISTERED (2026-07-03, written BEFORE any run of this cell): the soft-wording A/B found space and
+# question PREFIX-STRONGER at 1.5B (space +0.166 vs +0.500; question +0.167 vs +0.500 -- see
+# self_audit_gap_findings.md's Follow-up 4). Expectation: if block_style="strict" (a direct imperative, no
+# "use it naturally to tailor" hedge) fixes a wording-compliance gap rather than a hard capacity ceiling,
+# d_prompt on these two traits should move up toward/past d_prefix, closing or reversing PREFIX-STRONGER.
+# That directional claim is what the STANDALONE run + the findings table settle (self_audit_gap_findings.md
+# Follow-up 4's "strict block variant" table) -- like the sibling test above, THIS gated cell only checks
+# the machinery runs end-to-end and emits one of its valid labels; it deliberately does NOT hard-assert the
+# pre-registered direction, so a genuine negative/mixed result (strict doesn't fully close the gap, or
+# closes it on one trait but not the other) reports honestly in the findings without turning permanent CI
+# red over a real scientific outcome.
+@pytest.mark.model
+def test_strict_block_runs_end_to_end_on_the_traits_that_inverted(tmp_path):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA: the A/B TTT-trains a real soft prefix")
+    out = tmp_path / "prompt_vs_prefix_ab_strict.json"
+    res = run_ab("Qwen/Qwen2.5-1.5B-Instruct", steps=80, trait_names=["space", "question"],
+                 out_path=str(out), seed=0, block_style="strict")
+    assert res["block_style"] == "strict"
+    for name in ("space", "question"):
+        c = res["conditions"][name]
+        # both delivery mechanisms ran the full pipeline and produced a real expressed/not-expressed
+        # verdict (machinery check -- not a directional claim, see header) plus 6 replies each
+        assert isinstance(c["expressed"]["prompt"], bool), c["expressed_note"]
+        assert isinstance(c["expressed"]["prefix"], bool), c["expressed_note"]
+        assert len(c["replies"]["prompt"]) == 6 and len(c["replies"]["prefix"]) == 6
+        assert c["verdict"] in ("PROMPT-STRONGER", "PREFIX-STRONGER", "PARITY")
+    assert out.is_file() and json.loads(out.read_text(encoding="utf-8"))["block_style"] == "strict"
+
+
 # ---- standalone runner ------------------------------------------------------------------------------
 
 def main():
@@ -207,9 +260,11 @@ def main():
     ap.add_argument("--traits", default="", help="comma-separated subset (default: all four)")
     ap.add_argument("--out", default="research/runs/prompt_vs_prefix_ab.json")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--block-style", default=None, choices=[None, "soft", "strict"],
+                    help="NEXT_STEPS #9: prompt-arm block wording (default: memory_mode's own default, 'soft')")
     a = ap.parse_args()
     names = [s.strip() for s in a.traits.split(",") if s.strip()] or None
-    run_ab(a.model, steps=a.steps, trait_names=names, out_path=a.out, seed=a.seed)
+    run_ab(a.model, steps=a.steps, trait_names=names, out_path=a.out, seed=a.seed, block_style=a.block_style)
 
 
 if __name__ == "__main__":

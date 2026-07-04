@@ -106,10 +106,29 @@ Environment: CUDA python = C:\Users\brigi\src\cloze\.venv\Scripts\python.exe; en
    the "50–200 examples" half of the constructive path (kept the same 12-reply corpus to isolate the
    container as the single variable); a second seed/voice/family; the out-of-voice self-report probe.
 
-9. **Prompt-block strict variant for small models** — Sonnet, hours. The A/B found the studio block's
-   soft wording under-fires at 1.5B (inverts the 7B verdict). Add a "strict" block variant (raw rule
-   as system message) selected by model size or a setting; re-run the gated A/B at 1.5B. Files:
-   `memory_mode.py`, `test_prompt_vs_prefix_ab.py`.
+9. **Prompt-block strict variant for small models** — DONE (2026-07-03). The A/B found the studio
+   block's soft wording under-fires at 1.5B (space/question inverted vs the trained prefix; the 7B
+   verdict held). Added a `"strict"` block variant — the same cards as a direct imperative (*"Follow
+   these facts and rules about the user exactly, in every reply, without exception:"*, no
+   "naturally"/"tailor" hedge) — selected by a persisted `block_style` setting (default `soft`, so no
+   behaviour change for anyone who hasn't opted in), wired through `memory_mode.get/set_block_style` +
+   `compile_prompt_block(texts, style=None)` (signature back-compatible: `None` reads the setting, every
+   existing call site is untouched and now honors it). **RE-RAN the gated 1.5B A/B with strict on the two
+   inverted cells** (seed 0, steps 80, same probes; artifact
+   `research/runs/prompt_vs_prefix_ab_1p5b_strict.json`): **strict CLOSES the inversion on both** —
+   space +0.166→**+0.500 d_prompt** (PREFIX-stronger → **PARITY**, now = prefix), question
+   +0.167→**+0.667** (PREFIX-stronger → **PROMPT-stronger**, now beats prefix). Clean controlled A/B:
+   baseline + prefix arm reproduced byte-identically across soft/strict (prefix doesn't see the block),
+   so the block wording is the only moving part; coherence-eyeballed (the question win is short, clean,
+   natural questions — NOT the soft-run prefix's degeneration). The 1.5B inversion was a soft-wording
+   under-compliance artifact, not a capacity ceiling. Files: `memory_mode.py` (+ `BLOCK_STYLES`,
+   getters), `test_memory_mode.py` (14 new model-free tests), `test_prompt_vs_prefix_ab.py` (`block_style`
+   param + gated strict re-run), `self_audit_gap_findings.md` (Follow-up 4b table + verdict), a one-line
+   honest note in `inspector/demo/pages/memory.js` (block_style exists, not yet a UI toggle). **Not done
+   (deliberate):** strict left OFF at 7B (soft holds there; a direct imperative risks over-firing on a
+   strong instruction-follower — strict is the *small-model* wording); no UI toggle exposed (server/config
+   only per the task's scope); strict's off-topic over-bleed not stress-tested (the topic gate should omit
+   the block, untested interaction).
 
 10. **SAE encoder polish** — DONE, partial (2026-07-03). Both pre-located optimizations landed and
     torch-parity stayed green throughout (`ctest -R sae_encoder`: max|d|=0.0078, max rel=0.00242, 0

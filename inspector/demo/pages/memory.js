@@ -671,6 +671,10 @@
   // Qwen-7B = the studio config) found prompt-carried cards expressed all four tested traits at least
   // as strongly as the trained prefix. Scale-scoped on purpose -- at 1.5B two traits inverted, so the
   // line names the model and keeps the small-N caveat. Don't widen it without a new run.
+  // NEXT_STEPS #9 note: prompt mode's block wording has a second variant now (memory_mode.compile_
+  // prompt_block's "soft"/"strict" style, picked by the block_style setting) -- there is NO toggle for
+  // it here yet (server-side/config only), so the honest one-liner below says so rather than implying a
+  // switch exists.
   function drawMode(ctx) {
     var host = document.getElementById("mem-mode-host");
     if (!host) return;
@@ -706,6 +710,11 @@
         S.el("span", { class: "mline" }, [
           "Measured (A/B on Qwen-7B, 4 traits, single seed): prompt-carried cards expressed every" +
           " tested trait at least as strongly as the trained prefix.",
+        ]),
+        S.el("span", { class: "mline" }, [
+          "At 1.5B two of those four traits inverted instead (the soft block's wording under-fires on" +
+          " a smaller model); a stricter block wording exists to test that (block_style, not yet" +
+          " exposed as a toggle here) — see self_audit_gap_findings.md before assuming it transfers.",
         ]),
         S.el("span", { class: "mline" }, [
           isPrompt

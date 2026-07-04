@@ -193,3 +193,58 @@ trailing-"?"), one family (Qwen2.5), steps=80 (the studio's consolidate default 
 pre-registration: 3/8 cell verdicts as expected (1.5B baking, 1.5B concise, 7B question); the headline
 (PROMPT ≥ PREFIX) **held at 7B, violated at 1.5B**. Product copy updated to match the 7B data only
 (inspector/demo/pages/memory.js mode panel; scale-scoped, seed caveat kept).
+
+### Follow-up 4b — the STRICT block variant closes the 1.5B inversion (`memory_mode.compile_prompt_block(style="strict")`) — 2026-07-03
+
+NEXT_STEPS #9. Follow-up 4 diagnosed the 1.5B inversion as **soft-wording under-compliance**: the block
+wraps rules in *"…use it naturally to tailor how you respond"*, and a 1.5B under-fires on that hedge on
+neutral probes (space/question came out PREFIX-stronger). Pre-registered test of that diagnosis: add a
+`"strict"` block style (the SAME rules as a direct imperative — *"Follow these facts and rules about the
+user exactly, in every reply, without exception:"* — no "naturally"/"tailor") and **re-run the 1.5B A/B
+on exactly the two cells that inverted**, everything else byte-identical (seed 0, steps 80, same 6
+probes, same scorers, greedy). Pre-registered expectation (written before the run, in
+`test_prompt_vs_prefix_ab.py`): if it's a wording gap and not a capacity ceiling, strict lifts d_prompt
+toward/past d_prefix and closes/reverses PREFIX-stronger. Artifact:
+`research/runs/prompt_vs_prefix_ab_1p5b_strict.json`.
+
+| trait | class | soft d_prompt | **strict d_prompt** | d_prefix | soft verdict | **strict verdict** |
+|---|---|---|---|---|---|---|
+| space | concept | +0.166 | **+0.500** | +0.500 | PREFIX-stronger | **PARITY** |
+| question | rule | +0.167 | **+0.667** | +0.500 | PREFIX-stronger | **PROMPT-stronger** |
+
+**Verdict: strict closes the inversion on BOTH cells — the pre-registration is confirmed.** space goes
+PREFIX-stronger → **PARITY** (d_prompt +0.166 → +0.500, now exactly equal to the prefix); question goes
+PREFIX-stronger → **PROMPT-stronger** (d_prompt +0.167 → +0.667, now *beats* the prefix by more than one
+probe). The 1.5B inversion was a soft-wording artifact, not a hard small-model ceiling: stating the same
+card as an instruction, rather than as context to use "naturally", is all it took for prompt carriage to
+match-or-beat the trained prefix at 1.5B — the same place the soft block lost.
+
+**Clean controlled comparison (the reason to believe it).** Across the soft run and this strict run the
+**baseline is byte-identical** (mean_tok 71.5, kw_rate 0.167, q_rate 0.0 — greedy is deterministic) and
+**the prefix arm reproduced exactly** (+0.500 / +0.500 in both), because the prefix trains on
+consolidate()'s own internal `sys_rule` and never sees the prompt-arm's block wording. So the *only*
+moving part between soft and strict is the PROMPT block's phrasing — and it moved space's prompt-arm
++0.334 and question's +0.500. (The large run-to-run prefix variance flagged above is a cross-*seed*
+phenomenon; same seed 0 here gave the same prefix, as it should — that's why this is a fair A/B, not luck.)
+
+**Coherence axis (mandatory — every reply eyeballed).** The strict wins are NOT degeneration-bought. The
+strict-prompt `question` replies are short (mean 37 vs baseline 71 tok) and clean natural questions —
+*"It was a bit chilly, but I managed to get some work done. How about you?"*, *"That sounds like a good
+start! What kind of activities do you enjoy?"* — the opposite of the soft-run prefix's partly-degenerate
+q_rate (*"…plants?q.wat do the"*, a literal "\*\*Question:" label; Follow-up 4). The strict-prompt `space`
+replies are on-trait and factual (the Andromeda-collision one is correct). One honest blemish: one space
+reply drifts into a *"1 comment:/2 comments:"* forum-formatting tail after a coherent on-topic answer —
+mild instruction-echo/format-drift, not token salad, and it still scored a genuine keyword hit.
+
+Caveats (louder than the win): **N=2 traits** (only the cells that inverted — this is not a fresh 4-trait
+sweep), 1 seed, 6 probes, crude scorers, one family, steps=80. Not run at 7B **on purpose**: soft already
+held there, and a direct-imperative block on a strong instruction-follower risks *over*-firing (sounding
+preachy / injecting the rule off-topic) — strict is the **small-model** wording, not a global upgrade.
+Untested here: strict's over-bleed on genuinely off-topic turns (the PROMPT_GATE_MIN topic gate should
+omit the block then, but that interaction wasn't stress-tested). Product guidance: **keep `soft` the
+default** (it's the prefix's distillation target and holds at the studio's 7B), and expose `block_style`
+so a small-serving-config deployment can opt into `strict` — where, as measured, it turns two losses into
+a tie and a win. Wiring: `block_style` setting (default `soft`) through `memory_mode.get/set_block_style`
++ `compile_prompt_block(texts, style=...)`; model-free tests in `test_memory_mode.py`; the gated re-run in
+`test_prompt_vs_prefix_ab.py` (`test_strict_block_runs_end_to_end_on_the_traits_that_inverted`, machinery
+only — the directional claim lives here, not in a permanent CI assertion).

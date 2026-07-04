@@ -152,6 +152,50 @@ def test_settings_merge_preserves_other_keys(iso):
     assert memory_mode.get_setting("memory_strength") == 0.7
 
 
+# ---- memory_mode: block_style setting (NEXT_STEPS #9) ------------------------------------------------
+
+def test_block_style_defaults_to_soft(iso):
+    assert memory_mode.get_block_style() == "soft"
+    assert memory_mode.DEFAULT_BLOCK_STYLE == "soft"
+
+
+def test_block_style_round_trips_through_the_settings_file(iso):
+    assert memory_mode.set_block_style("strict")
+    assert memory_mode.get_block_style() == "strict"
+    assert memory_mode.set_block_style("soft")
+    assert memory_mode.get_block_style() == "soft"
+    with open(memory_mode.SETTINGS_PATH, encoding="utf-8") as f:
+        assert json.load(f)["block_style"] == "soft"
+
+
+def test_invalid_block_style_is_refused_and_leaves_the_default(iso):
+    assert memory_mode.set_block_style("loud") is False
+    assert memory_mode.set_block_style("") is False
+    assert memory_mode.get_block_style() == "soft"           # refused write never landed
+
+
+def test_garbage_in_settings_file_degrades_to_default_block_style(iso, monkeypatch):
+    # IO/parsing never raises (module ethos): a corrupt or unexpected value degrades, not crashes.
+    monkeypatch.setattr(memory_mode, "_load_settings", lambda: {"block_style": "shout"})
+    assert memory_mode.get_block_style() == "soft"
+
+
+def test_block_style_setting_is_independent_of_memory_mode(iso):
+    assert memory_mode.set_mode("internalized")
+    assert memory_mode.set_block_style("strict")
+    assert memory_mode.get_mode() == "internalized"
+    assert memory_mode.get_block_style() == "strict"
+    assert memory_mode.set_mode("prompt")
+    assert memory_mode.get_block_style() == "strict"          # switching mode doesn't touch block_style
+
+
+def test_block_style_setting_survives_alongside_other_settings(iso):
+    assert memory_mode.set_setting("memory_strength", 0.7)
+    assert memory_mode.set_block_style("strict")
+    assert memory_mode.get_setting("memory_strength") == 0.7
+    assert memory_mode.get_block_style() == "strict"
+
+
 # ---- memory_mode: block compilation ------------------------------------------------------------------
 
 def test_block_wording_is_exactly_consolidates_sys_rule(iso):
@@ -180,6 +224,66 @@ def test_block_preserves_order_and_skips_blanks(iso):
 def test_empty_texts_compile_to_no_block(iso):
     assert memory_mode.compile_prompt_block([]) == ""
     assert memory_mode.compile_prompt_block(["", "  "]) == ""
+
+
+# ---- memory_mode: strict block variant (NEXT_STEPS #9) -------------------------------------------------
+
+def test_no_style_arg_defaults_to_soft_and_is_unchanged(iso):
+    # every EXISTING call site (clozn_server.py, phantom_kv.py) calls compile_prompt_block(texts) with no
+    # second arg -- this is the back-compat contract: omitting style must behave exactly as before.
+    expected_soft = ("You are a helpful assistant talking with a returning user. Here is what you know "
+                     "about them; use it naturally to tailor how you respond:\n- likes tea")
+    assert memory_mode.compile_prompt_block(["likes tea"]) == expected_soft
+    assert memory_mode.compile_prompt_block(["likes tea"], style=None) == expected_soft
+
+
+def test_explicit_soft_style_matches_the_default(iso):
+    assert (memory_mode.compile_prompt_block(["likes tea"], style="soft")
+            == memory_mode.compile_prompt_block(["likes tea"]))
+
+
+def test_strict_style_is_a_direct_imperative_not_the_soft_hedge(iso):
+    block = memory_mode.compile_prompt_block(["likes tea", "prefers bullet points"], style="strict")
+    assert "use it naturally to tailor" not in block          # the soft hedge must be gone
+    assert "- likes tea" in block and "- prefers bullet points" in block
+    assert block != memory_mode.compile_prompt_block(["likes tea", "prefers bullet points"], style="soft")
+
+
+def test_strict_style_preserves_order_and_skips_blanks_like_soft(iso):
+    block = memory_mode.compile_prompt_block(["b", "", "a", "   "], style="strict")
+    assert block.endswith("- b\n- a")
+
+
+def test_strict_style_empty_texts_still_compile_to_no_block(iso):
+    assert memory_mode.compile_prompt_block([], style="strict") == ""
+    assert memory_mode.compile_prompt_block(["", "  "], style="strict") == ""
+
+
+def test_explicit_style_overrides_the_persisted_setting(iso):
+    memory_mode.set_block_style("strict")
+    # even with "strict" persisted, an explicit style="soft" call (e.g. the A/B rig) gets soft wording
+    soft = memory_mode.compile_prompt_block(["likes tea"], style="soft")
+    assert "use it naturally to tailor" in soft
+    memory_mode.set_block_style("soft")
+    # and with "soft" persisted, an explicit style="strict" call still gets strict wording
+    strict = memory_mode.compile_prompt_block(["likes tea"], style="strict")
+    assert "use it naturally to tailor" not in strict
+
+
+def test_no_style_arg_honors_the_persisted_setting(iso):
+    # this is the part that makes existing call sites configurable WITHOUT editing them: they pass no
+    # style, so compile_prompt_block falls through to get_block_style() and picks up whatever a user
+    # (or the toggle in memory.js) has set.
+    memory_mode.set_block_style("strict")
+    assert "use it naturally to tailor" not in memory_mode.compile_prompt_block(["likes tea"])
+    memory_mode.set_block_style("soft")
+    assert "use it naturally to tailor" in memory_mode.compile_prompt_block(["likes tea"])
+
+
+def test_unknown_style_string_falls_back_to_soft_wording(iso):
+    # never raise on a garbage explicit style either (module ethos) -- degrade to the safe default.
+    assert (memory_mode.compile_prompt_block(["likes tea"], style="shout")
+            == memory_mode.compile_prompt_block(["likes tea"], style="soft"))
 
 
 def test_active_cards_reads_only_active_and_honors_exclusions(iso):
