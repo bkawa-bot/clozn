@@ -319,13 +319,21 @@ map: `FINDINGS.md`. The state of everything: the three memory files.
     France" -> "Beatrix") -- the dangerous failure is the one that doesn't look like one. Full report:
     `research/memory_disorders_findings.md`.
 
-    **Remaining:** **M5 any-client run_id bridge** -- return the `run_id` from `/v1/chat/completions`
-    (response field or header) so a companion `clozn inspect` shows the explanation for a reply the user got
-    in their OWN OpenAI client (the last "not in the studio" surface; touches `clozn_server.py`); optional
+    **M4 reachable in the product** (`29189e2`): `POST /runs/<id>/narrate` wires `narrate.narrate` into
+    `clozn_server.py` (right after `/counterfactual`) so the studio/TUI can invoke the accountable-self
+    narration on any run -- the real independent NLI judge when its checkpoint is present, else the LABELED
+    lexical fallback, and narrate()'s own `note` states which ran (self-describing honesty level). 404/503/500
+    per the sibling endpoints' precedent; model-free server test `test_narrate_server.py` (3) forces the
+    lexical branch (no checkpoint load) and pins the trap guard over HTTP (the confabulation appears ONLY
+    wrapped in a WARNING flag, never as the narration surface).
+
+    **Remaining (display + one bridge):** **render the narration** -- surface `/narrate`'s constrained
+    narration + inline flags in the Run Inspector "Explain" tab and `clozn explain` (the backend is live; this
+    is the last display step to put the accountable self in front of a user); **M5 any-client run_id bridge**
+    -- return the `run_id` from `/v1/chat/completions` (response field or header) so a companion `clozn
+    inspect` shows the explanation for a reply the user got in their OWN OpenAI client; optional
     **clause-level claim extraction** to close the compound-sentence gap the sentence-level split leaves (the
-    natural next rigor step for the confabulation-diff, now that the matcher itself is real); optional wiring
-    of `nli_support_matcher` into the studio's own Explain/narration path with a lexical fallback when the
-    NLI checkpoint is absent. M1-M4 (measured signals + rigorous receipts + counterfactual dials + the
-    accountable-self narration with a real, independent confabulation judge) are DONE. Suite: **557 passed /
-    6 skipped** on the clean committed tree (was 439/3 at the start of this session; +3 skips are the M4
-    gated tests).
+    natural next rigor step now that the matcher itself is real). M1-M4 (measured signals + rigorous receipts
+    + counterfactual dials + the accountable-self narration with a real, independent confabulation judge,
+    wired end-to-end) are DONE. Suite: **560 passed / 6 skipped** on the clean committed tree (was 439/3 at
+    the start of this session; the +6 skips are the M4 gated tests + the model-gated timetravel/AB tests).
