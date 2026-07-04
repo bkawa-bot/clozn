@@ -344,8 +344,12 @@ def _chat_wrap(prompt: str, family: str = "qwen") -> str:
     return _chat_session([], prompt, family)
 
 
-def stream_ar(port: int, prompt: str, max_tokens: int):
+def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
     """POST /v1/completions (stream); print each committed token. -> (count, trace steps w/ conf + alts).
+
+    heat=True paints each token as it lands by its confidence (the denoise heatmap, live); False (default)
+    is the plain, byte-for-byte-unchanged stream. Painting also no-ops when color is off (piped/NO_COLOR),
+    so `--heat | cat` is still clean text.
 
     The engine emits, per token, a `tokens_committed` frame (the chosen piece + its confidence) and a
     `step_lens` frame (the top-k it weighed). We pair them by position into a replayable trace -- the raw
@@ -368,9 +372,10 @@ def stream_ar(port: int, prompt: str, max_tokens: int):
             except Exception:
                 continue
             frames.append(obj)
-            if obj.get("type") == "tokens_committed":       # print live as tokens land (unchanged UX)
+            if obj.get("type") == "tokens_committed":       # print live as tokens land
                 for it in obj.get("items", []):
-                    sys.stdout.write(it.get("piece", "")); sys.stdout.flush()
+                    sys.stdout.write(_stream_token(it.get("piece", ""), it.get("conf"), heat))
+                    sys.stdout.flush()
                     n += 1
     # Accumulation (pair tokens_committed with step_lens by position) lives in runlog so the CLI and the
     # engine-chat capture share ONE tested implementation. Fall back to a local pairing if the import fails
@@ -469,6 +474,13 @@ def _paint(text: str, c: float) -> str:
         return text
     r, g, b = _conf_rgb(c)
     return f"\033[38;2;{r};{g};{b}m{text}{RST}"
+
+
+def _stream_token(piece: str, conf, heat: bool) -> str:
+    """The exact string written for one streamed token in `clozn run --heat`: painted by its confidence when
+    heat is on (and color is available), the raw piece otherwise. Factored out so the live paint is
+    unit-testable without a running engine -- heat off is byte-identical to the plain stream."""
+    return _paint(piece, _num(conf)) if heat else piece
 
 
 def _term_width(default=76) -> int:
@@ -678,13 +690,16 @@ def cmd_studio(args):
         logf.close()
 
 
-def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace):
+def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, heat=False):
     """One generation: stream (AR, auto-saving the trace) or denoise (diffusion). Prints stats. -> response."""
     g0 = time.time()
     steps = []
     if mode == "autoregressive":
-        n, steps = stream_ar(port, text, max_tokens)
+        n, steps = stream_ar(port, text, max_tokens, heat=heat)
         sys.stdout.write("\n")
+        if heat and COLOR:                                 # a legend + how many tokens wavered, after the reply
+            lows = sum(1 for s in steps if _num(s.get("conf")) < 0.5)
+            print(f"{_conf_legend()}   {DIM}{lows} wavered{RST}", file=sys.stderr)
         _save_trace({"id": _runid(), "model": model_name, "prompt": prompt_for_trace,
                      "backend": "GPU" if gpu else "CPU", "mode": mode, "n": n, "t": time.time()}, steps)
         resp = "".join(s["piece"] for s in steps).strip()
@@ -715,7 +730,7 @@ def _log_run_cli(model_name, prompt, resp, steps, started):
         pass
 
 
-def _repl(port, mode, flags, fam, gpu, model, max_tokens):
+def _repl(port, mode, flags, fam, gpu, model, max_tokens, heat=False):
     """Interactive chat loop on a warm engine (Ollama-style). /reset clears, /bye quits."""
     name = _friendly(model)
     is_chat = flags.get("chat") and mode == "autoregressive"
@@ -742,7 +757,7 @@ def _repl(port, mode, flags, fam, gpu, model, max_tokens):
         text = (_chat_session(history, msg, fam) if is_chat
                 else "".join(f"{u}\n{a}\n" for u, a in history) + msg)
         sys.stdout.write(f"{BOLD}{name}>{RST} ")
-        resp = _run_turn(port, mode, text, max_tokens, gpu, name, msg)
+        resp = _run_turn(port, mode, text, max_tokens, gpu, name, msg, heat=heat)
         history.append((msg, resp))
     print(f"{DIM}bye{RST}", file=sys.stderr)
 
@@ -775,12 +790,12 @@ def cmd_run(args):
         if args.prompt is not None:                            # one-shot
             is_chat = flags.get("chat") and mode == "autoregressive"
             text = _chat_wrap(args.prompt, fam) if is_chat else args.prompt
-            _run_turn(port, mode, text, args.max, gpu, _friendly(model), args.prompt)
+            _run_turn(port, mode, text, args.max, gpu, _friendly(model), args.prompt, heat=args.heat)
             if mode == "autoregressive":
                 print(f"{DIM}  clozn trace   inspect where it was uncertain + what it almost said{RST}",
                       file=sys.stderr)
         else:                                                  # interactive REPL (Ollama-style)
-            _repl(port, mode, flags, fam, gpu, model, args.max)
+            _repl(port, mode, flags, fam, gpu, model, args.max, heat=args.heat)
     finally:
         if proc:                                       # only tear down an engine WE spawned; leave warm ones up
             proc.terminate()
@@ -1172,8 +1187,8 @@ def cmd_explain(args):
     print(format_explain(_fetch_explain(port, rid)))
 
 
-def main(argv=None):
-    _setup_console()
+def build_parser():
+    """The full argparse tree, factored out of main() so tests can introspect flags without dispatching."""
     p = argparse.ArgumentParser(prog="clozn", description="a reliable front door to the local model engine")
     sub = p.add_subparsers(dest="cmd")
 
@@ -1183,6 +1198,8 @@ def main(argv=None):
     pr.add_argument("--cpu", action="store_true", help="force the CPU build")
     pr.add_argument("--port", type=int, default=0); pr.add_argument("--mask", type=int, default=None)
     pr.add_argument("--eos", type=int, default=None)
+    pr.add_argument("--heat", action="store_true", help="paint each token as it streams by the model's "
+                    "confidence (warm = wavered, cool = sure) -- the denoise heatmap, live (AR models)")
     pr.set_defaults(fn=cmd_run)
 
     ps = sub.add_parser("serve", help="bring up the OpenAI-compatible endpoint")
@@ -1218,7 +1235,12 @@ def main(argv=None):
     pe.add_argument("--last", action="store_true", help="use the most recently recorded run")
     pe.add_argument("--port", type=int, default=0, help="Studio port (default 8090)")
     pe.set_defaults(fn=cmd_explain)
+    return p
 
+
+def main(argv=None):
+    _setup_console()
+    p = build_parser()
     args = p.parse_args(argv)
     if not getattr(args, "fn", None):
         p.print_help(); return 2

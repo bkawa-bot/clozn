@@ -164,3 +164,35 @@ def test_format_explain_paints_the_panel_when_on(color_on):
     out = cli.format_explain(expl)
     assert "\033[38;2;" in out                 # the sparkline + hesitation token get painted
     assert "1 hesitation" in _visible(out)     # content intact under the escapes
+
+
+# --- _stream_token: the live `clozn run --heat` paint, unit-testable without an engine -----------------
+
+def test_stream_token_heat_off_is_the_raw_piece(color_on):
+    # even with color available, heat=False must be byte-identical to the plain stream
+    assert cli._stream_token(" hello", 0.2, heat=False) == " hello"
+    assert cli._stream_token(" hello", 0.99, heat=False) == " hello"
+
+
+def test_stream_token_paints_when_heat_and_color(color_on):
+    out = cli._stream_token(" name", 0.98, heat=True)
+    assert out.startswith("\033[38;2;")
+    assert _visible(out) == " name"
+
+
+def test_stream_token_heat_but_no_color_is_plain(color_off):
+    # --heat while piped (COLOR off) still emits clean text -- the _paint no-op carries the guarantee
+    assert cli._stream_token(" name", 0.98, heat=True) == " name"
+
+
+def test_stream_token_reconstructs_a_reply_under_heat(color_on):
+    stream = [(" I", 0.45), (" am", 0.7), (" sure", 0.99)]
+    written = "".join(cli._stream_token(p, c, heat=True) for p, c in stream)
+    assert "\033[38;2;" in written
+    assert _visible(written) == " I am sure"
+
+
+def test_run_parser_has_heat_flag_defaulting_off():
+    p = cli.build_parser()
+    assert p.parse_args(["run", "qwen", "hello"]).heat is False          # default: unchanged, plain stream
+    assert p.parse_args(["run", "qwen", "hello", "--heat"]).heat is True  # opt in to the live heatmap
