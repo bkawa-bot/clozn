@@ -159,11 +159,42 @@ Parked ideas with rigs/specs: `WILD_EXPERIMENTS.md` (10 pre-designed experiments
 coherence problem (Lab), diffusion dreaming (killed — provenance extraction instead). The findings
 map: `FINDINGS.md`. The state of everything: the three memory files.
 
-11. **"Explain this answer" — the inspect-a-reply core surface** — spec at
-    `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost model). The
-    mainstream front door: measured confidence/influence/concepts/counterfactuals on any reply, never
-    self-reported. Mostly assembly of existing parts (runlog manifest + trace, replay.py ablation,
-    run.js receipts, SAE readouts). Order: M1 free-signal `/runs/<id>/explain` (Sonnet) → M2 rigorous
-    greedy-both-arms ablation + redundancy guard (Sonnet) → M3 counterfactual dials → M4 accountable-self
-    narration + confabulation-diff (Opus, honesty-critical) → M5 TUI + any-client bridge. The trap
-    (do-not-build): a plain "explain" that asks the model to explain itself = the confabulation machine.
+11. **"Explain this answer" — the inspect-a-reply core surface** — **M1 DONE (2026-07-04), M2-M5
+    remaining.** Spec at `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost
+    model). The mainstream front door: measured confidence/influence/concepts/counterfactuals on any
+    reply, never self-reported. Mostly assembly of existing parts (runlog manifest + trace, replay.py
+    ablation, run.js receipts, SAE readouts). Order: M1 free-signal `/runs/<id>/explain` (Sonnet) → M2
+    rigorous greedy-both-arms ablation + redundancy guard (Sonnet) → M3 counterfactual dials → M4
+    accountable-self narration + confabulation-diff (Opus, honesty-critical) → M5 TUI + any-client
+    bridge. The trap (do-not-build): a plain "explain" that asks the model to explain itself = the
+    confabulation machine.
+
+    **M1 shipped:** a new stdlib-only `research/explain.py` (mirrors replay.py/memory_mode.py's
+    separation -- no model, no GPU, unit-testable on plain dicts) assembles a run's already-logged
+    signals into one `explanation` object; `clozn_server.py` wires it as a thin `POST
+    /runs/<id>/explain` (404 on an unknown run, else `runlog.get_run` -> `explain.explain` -> `_json` --
+    no substrate needed, unlike `/replay`/`/branch`). Shape: `{run_id, confidence, influences_active,
+    concepts}`. **confidence** -- the trace's "uncertain moments" (tokens < `LOW_CONF` 0.5, matching
+    run.js's convention), each with its recorded alternatives, plus a one-line "N hesitations" summary;
+    `{available:false, note:"token trace captured on the engine path"}` when the run carries no
+    per-token trace (the HF chat path). **NEVER a single aggregate confidence number** -- enforced by a
+    recursive scan in the tests, not just a top-level shape check. **influences_active** -- every fired
+    memory card resolved to its provenance (`source_run_id`/`source_turn`/`quoted_span`) by looking it up
+    in `memory_cards` by id, plus the topic-relevance gate value and the active tone dials; a card whose
+    id no longer resolves (edited/deleted) or never had a quote gets an explicit "no receipt" note
+    instead of silently looking backed. **Every card and dial entry carries `causal_verified:null`**
+    (active is not proof -- only M2's on-demand ablation may ever flip it). **concepts** -- honestly
+    `{available:false, note:"concept readout needs the engine — not available on this run."}` on every
+    run today (no logging path threads the engine's `sae:<id>` StepFeatures onto the stored record yet --
+    `runlog.TRACE_KEYS` only keeps tokens/confidence/alternatives), but reads `trace["concepts"]` /
+    `run["concepts"]` first so the day that capture wiring lands, assembly needs no changes (tested by
+    hand-mutating a fetched run to prove the forward-compatible contract). Tests: `test_explain.py` (27,
+    pure-assembly against fixture runs built through the real `runlog.record()`/`get_run()` round trip +
+    an isolated `memory_cards` store -- with-trace, without-trace, with-cards+provenance, an unresolvable
+    card id, internalized-mode's missing `applied_ids`, with-dials, concepts present/absent, empty run,
+    non-dict/garbage input, a maximally-malformed-but-dict run) + `test_explain_server.py` (3, the
+    no-socket HTTP dispatch proving the thin endpoint wiring and that it needs no substrate). Suite: 439
+    passed / 3 skipped (was 409/3 before this session). `run.js` untouched (display is M5's job).
+    **Remaining:** M2 (rigorous greedy-both-arms ablation + redundancy guard) → M3 (live counterfactual
+    dial sliders) → M4 (Opus: receipt-constrained narration + confabulation-diff) → M5 (TUI / any-client
+    bridge / a web Explain tab). None of M2-M5 built; no generation, no ablation, no narration, no UI yet.

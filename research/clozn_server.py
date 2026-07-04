@@ -1829,6 +1829,14 @@ def make_handler():
                 # is still created + pending; dial_suggestion is null for a topical/non-style proposal.
                 return self._json(200, {"proposed": True, "card": card,
                                         "dial_suggestion": _dial_suggestion(text)})
+            if p.startswith("/runs/") and p.endswith("/explain"):   # M1: assemble the FREE signals -- zero generation
+                rid = p[len("/runs/"):-len("/explain")]
+                import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(404, {"error": "run not found"})
+                import explain
+                return self._json(200, explain.explain(run))
             if p == "/engine/harvest":   # READ the real C++ runtime's activations (any substrate; the engine is separate)
                 try:
                     h = ENGINE.harvest(str(body.get("text", ""))[:300])
