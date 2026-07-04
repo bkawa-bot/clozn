@@ -18,6 +18,7 @@ import argparse
 import glob
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -59,18 +60,19 @@ PULLABLE = {
 }
 
 DIM = BOLD = RST = ""           # set by _setup_console() when the terminal supports ANSI
+COLOR = False                   # truecolor confidence painting (denoise-style heatmap); set by _setup_console()
 
 
 def _setup_console():
     """UTF-8 stdout (so model tokens print right on Windows), ANSI enabled where supported, plain otherwise."""
-    global DIM, BOLD, RST
+    global DIM, BOLD, RST, COLOR
     for s in (sys.stdout, sys.stderr):
         try:
             s.reconfigure(encoding="utf-8")
         except Exception:
             pass
-    use = sys.stderr.isatty()
-    if os.name == "nt" and use:
+    use = sys.stderr.isatty() or bool(os.environ.get("CLICOLOR_FORCE"))   # CLICOLOR_FORCE: color even when piped
+    if os.name == "nt" and sys.stderr.isatty():                          # only a real console needs VT enabling
         try:
             import ctypes
             k = ctypes.windll.kernel32
@@ -79,9 +81,10 @@ def _setup_console():
                 if k.GetConsoleMode(hd, ctypes.byref(m)):
                     k.SetConsoleMode(hd, m.value | 0x0004)     # ENABLE_VIRTUAL_TERMINAL_PROCESSING
         except Exception:
-            use = False
+            use = bool(os.environ.get("CLICOLOR_FORCE"))
     if use:
         DIM, BOLD, RST = "\033[2m", "\033[1m", "\033[0m"
+        COLOR = not os.environ.get("NO_COLOR")   # truecolor heatmaps unless the user opts out (NO_COLOR is a std)
 
 
 class CloznError(Exception):
@@ -430,6 +433,80 @@ def _save_trace(meta: dict, steps: list) -> str:
 def _confbar(c: float, width=8) -> str:
     full = int(round(max(0.0, min(1.0, c)) * width))
     return "█" * full + "░" * (width - full)
+
+
+# --- confidence as color: a terminal heatmap over the tokens, echoing the denoise UI (brightness = --------
+#     confidence). A warm pink flags where the model wavered; a cool blue where it was sure. The endpoints
+#     are denoise.html's exact palette (#e07a96 / #c3cde0 / #7aa7ff), so the terminal reads like the web
+#     "watch it denoise" board. Painting is a no-op when color is off (non-tty, NO_COLOR, or no ANSI), so
+#     pipes/tests/plain terminals see clean text.
+_C_HOT = (231, 90, 110)     # conf 0.0  -- most uncertain: a hot rose (denoise's "changed its mind" red-flash)
+_C_PINK = (224, 122, 150)   # conf ~0.5 -- the hesitation line: warm pink  (#e07a96, denoise's uncertainty flag)
+_C_PALE = (195, 205, 224)   # conf 0.5+ -- just cleared the bar: pale blue-gray (#c3cde0, denoise low end)
+_C_BLUE = (122, 167, 255)   # conf 1.0  -- fully sure: vivid blue          (#7aa7ff, denoise high end)
+
+
+def _lerp_rgb(a, b, t):
+    t = 0.0 if t < 0 else (1.0 if t > 1 else t)
+    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+
+
+def _conf_rgb(c: float):
+    """Confidence in [0,1] -> (r,g,b) on the denoise ramp: hot-rose(0) -> pink(0.5) | pale(0.5) -> blue(1).
+    The step at the 0.5 hesitation threshold is deliberate -- it's the same line cmd_trace marks with '?', so
+    'flagged uncertain' (warm) reads as a different family from 'confident' (cool), not a smooth blur."""
+    c = _num(c)
+    c = 0.0 if c < 0 else (1.0 if c > 1 else c)
+    if c < 0.5:
+        return _lerp_rgb(_C_HOT, _C_PINK, c / 0.5)
+    return _lerp_rgb(_C_PALE, _C_BLUE, (c - 0.5) / 0.5)
+
+
+def _paint(text: str, c: float) -> str:
+    """Wrap `text` in a truecolor SGR for confidence `c`. No-op when COLOR is off, so every existing
+    (color-off) test keeps passing byte-for-byte and piped output stays clean."""
+    if not COLOR or not text:
+        return text
+    r, g, b = _conf_rgb(c)
+    return f"\033[38;2;{r};{g};{b}m{text}{RST}"
+
+
+def _term_width(default=76) -> int:
+    try:
+        return max(30, min(shutil.get_terminal_size().columns - 2, 118))
+    except Exception:
+        return default
+
+
+def _heatmap_lines(pieces_confs, width=None) -> list:
+    """Reconstruct a reply from (piece, conf) pairs, each token painted by its confidence, wrapped to the
+    terminal width. A newline inside a piece breaks the line (the model's own line breaks); wrapping counts
+    VISIBLE characters only (SGR escapes are zero-width). Plain text when color is off."""
+    width = width or _term_width()
+    lines, line, col = [], "", 0
+    for piece, conf in pieces_confs:
+        for j, part in enumerate(str(piece if piece is not None else "").split("\n")):
+            if j > 0:
+                lines.append(line); line, col = "", 0
+            if not part:
+                continue
+            if col > 0 and col + len(part) > width:
+                lines.append(line); line, col = "", 0
+                part = part.lstrip() or part
+            line += _paint(part, conf)
+            col += len(part)
+    if line:
+        lines.append(line)
+    return lines
+
+
+def _conf_legend() -> str:
+    """One line explaining color = confidence, itself painted in the colors it names (echoes the denoise
+    legend). Plain sentence when color is off."""
+    if not COLOR:
+        return f"{DIM}color = per-token confidence: low -> high; a warm flag marks where it wavered{RST}"
+    ramp = _paint("low", 0.15) + _paint(" ->", 0.5) + _paint(" ->", 0.72) + _paint(" high", 0.98)
+    return f"{DIM}color = per-token confidence{RST}  {ramp}   {_paint('wavered', 0.18)}"
 
 
 # ----------------------------------------------------------------------------- commands
@@ -801,12 +878,22 @@ def cmd_trace(args):
     print(f"{BOLD}{m.get('model', '?')}{RST}  \"{m.get('prompt', '')[:64]}\"")
     print(f"{DIM}{m.get('n', 0)} tokens - {m.get('backend', '?')} - short bar = less sure; "
           f"'almost' = what it nearly said{RST}")
+    # the reply reconstructed from the trace, each token painted by its confidence -- the denoise board, in
+    # the terminal. Then the per-token detail below (piece also painted, so the two views share one palette).
+    hm = _heatmap_lines([(s.get("piece", ""), _num(s.get("conf"))) for s in steps])
+    if hm:
+        print("-" * 62)
+        for ln in hm:
+            print(ln)
+        print(_conf_legend())
     print("-" * 62)
     for s in steps:
         piece = (s.get("piece", "") or "").replace("\n", "\\n").replace("\t", "\\t")
-        conf = s.get("conf", 0.0)
+        conf = _num(s.get("conf"))
         mark = " " if conf >= 0.5 else "?"
-        line = f" {mark} {piece[:16]:<16} {_confbar(conf)} {conf:.2f}"
+        shown = piece[:16]
+        cell = _paint(shown, conf) + " " * max(0, 16 - len(shown))
+        line = f" {mark} {cell} {_confbar(conf)} {conf:.2f}"
         if conf < 0.5 and s.get("alts"):
             alts = "  ".join(f"{(a['piece'] or '').strip() or '_'} {a['prob']:.2f}" for a in s["alts"][:3])
             line += f"   {DIM}almost: {alts}{RST}"
@@ -915,6 +1002,21 @@ def _sparkline(n_tokens, moments) -> str:
     return "".join(_spark_char(by_idx[i]) if i in by_idx else _SPARK[-1] for i in range(n))
 
 
+def _paint_sparkline(n_tokens, moments) -> str:
+    """`_sparkline`, but each glyph painted by its confidence (denoise-style) -- a mostly-cool bar with warm
+    dips exactly where the model wavered. Byte-identical to `_sparkline` when color is off (tests unaffected)."""
+    if not COLOR:
+        return _sparkline(n_tokens, moments)
+    by_idx = {}
+    for m in _as_list(moments):
+        if isinstance(m, dict) and isinstance(m.get("index"), int):
+            by_idx[m["index"]] = _num(m.get("confidence"))
+    n = int(n_tokens) if isinstance(n_tokens, (int, float)) else (max(by_idx) + 1 if by_idx else 0)
+    n = max(0, min(n, _SPARK_MAX))
+    return "".join(_paint(_spark_char(by_idx[i]), by_idx[i]) if i in by_idx else _paint(_SPARK[-1], 1.0)
+                   for i in range(n))
+
+
 def _verified_tag(v) -> str:
     """causal_verified -> a label that never overclaims. M1 (this command's only data source) tags every
     influence None ("active, not proven" -- the spec's own wording); True/False can only ever come from
@@ -928,15 +1030,19 @@ def _format_confidence(conf: dict) -> list[str]:
         out.append(f"  {DIM}not available -- {conf.get('note', 'no trace on this run')}{RST}")
         return out
     moments = [m for m in _as_list(conf.get("uncertain_moments")) if isinstance(m, dict)]
-    spark = _sparkline(conf.get("n_tokens"), moments)
+    spark = _paint_sparkline(conf.get("n_tokens"), moments)
     if spark:
         out.append(f"  {spark}")
+        if COLOR:
+            out.append(f"  {_conf_legend()}")
     out.append(f"  {DIM}{conf.get('summary', '')} of {conf.get('n_tokens', 0)} tokens"
                f" (threshold {conf.get('threshold')}){RST}")
     for m in moments:
         piece = str(m.get("token") or "").replace("\n", "\\n").replace("\t", "\\t")
         c = _num(m.get("confidence"))
-        line = f"   ? {piece[:16]:<16} {_confbar(c)} {c:.2f}"
+        shown = piece[:16]
+        cell = _paint(shown, c) + " " * max(0, 16 - len(shown))
+        line = f"   ? {cell} {_confbar(c)} {c:.2f}"
         alts = [a for a in _as_list(m.get("alternatives")) if isinstance(a, dict)]
         if alts:
             altxt = "  ".join(f"{(a.get('piece') or '').strip() or '_'} {_num(a.get('prob')):.2f}" for a in alts[:3])
