@@ -158,3 +158,12 @@ Environment: CUDA python = C:\Users\brigi\src\cloze\.venv\Scripts\python.exe; en
 Parked ideas with rigs/specs: `WILD_EXPERIMENTS.md` (10 pre-designed experiments), phantom-KV
 coherence problem (Lab), diffusion dreaming (killed — provenance extraction instead). The findings
 map: `FINDINGS.md`. The state of everything: the three memory files.
+
+11. **"Explain this answer" — the inspect-a-reply core surface** — spec at
+    `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost model). The
+    mainstream front door: measured confidence/influence/concepts/counterfactuals on any reply, never
+    self-reported. Mostly assembly of existing parts (runlog manifest + trace, replay.py ablation,
+    run.js receipts, SAE readouts). Order: M1 free-signal `/runs/<id>/explain` (Sonnet) → M2 rigorous
+    greedy-both-arms ablation + redundancy guard (Sonnet) → M3 counterfactual dials → M4 accountable-self
+    narration + confabulation-diff (Opus, honesty-critical) → M5 TUI + any-client bridge. The trap
+    (do-not-build): a plain "explain" that asks the model to explain itself = the confabulation machine.
