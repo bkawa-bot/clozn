@@ -84,10 +84,27 @@ Environment: CUDA python = C:\Users\brigi\src\cloze\.venv\Scripts\python.exe; en
    the ceiling; a trim to hit 1800 exactly would drop a caveat or an experiment). Ready to post; let
    reality vote.
 
-8. **LoRA voice at 7B** — Opus, 1 day. `pip install peft` (allowed for this). Re-run voice_middle's
-   own-door with a LoRA instead of the 16-vector prefix, coherence-GATED early stopping (stop on
-   base-model perplexity of outputs, not train loss), receipts incl. coherence axis. Why:
-   `voice_middle_findings.md` constructive path; boundary glitches should vanish.
+8. **LoRA voice at 7B** — DONE (2026-07-03). `peft` 0.19.1 installed into cloze/.venv. Rig
+   `research/voice_lora.py` (QLoRA: nf4 base = studio's exact SelfTeach config + r=8 LoRA on attn+mlp,
+   20.2M/0.462% trainable), coherence-GATED early stop keyed on FROZEN-BASE perplexity of 2 held-out
+   generations (NOT train loss; train loss hit ~0 by step 50 and was useless), all scoring imported
+   verbatim from voice_middle (zero drift), prior 4 arms CITED from `runs/voice_middle_qwen7b.json` (not
+   rerun) and re-scored on the new coherence axis. **VERDICT: the LoRA captures the voice WITHOUT the
+   coherence tax** — voice-dist **0.087** (BEST arm, beats cited few-shot 0.142 and prefix 0.158),
+   **glitch=0 / role-leak=0** vs the prefix's **12 glitches + 1 leaked `assistant`**, lowest base-ppl of
+   any voice arm (28.1 vs prefix 76.1). The `.orningside`-class boundary glitches VANISHED, exactly as
+   predicted — they were a 16-vec-in-embedding-space artifact, not a "training a voice" artifact. The
+   gate proved load-bearing (H5): held-out base-ppl climbs 16.2→27.5 past the step-50 optimum while train
+   loss stays 0. **Two pre-registrations FLIPPED (reported loud):** (H3) the LoRA BEAT few-shot on
+   fidelity — own-door advantage isn't just economics; (H4) the LoRA self-reported its terse voice
+   ACCURATELY ("I'm slow... shorter answers"), the first process-artifact to do so across 4 scales — but
+   this is almost certainly ENACTMENT (the self-report is itself in-voice, i.e. terse) not a break in
+   process-blindness; wants an out-of-voice probe test. **The one real cost: bleed=10** (worst arm) —
+   corpus imagery (coffee/beans/stones) leaks into unrelated topics; the LoRA paid down the COHERENCE tax
+   fully but NOT the BLEED tax (few-shot stays cleanest on content). Findings + full caveats:
+   `research/voice_lora_findings.md`; run `research/runs/voice_lora_qwen7b.json`. **Untested next arms:**
+   the "50–200 examples" half of the constructive path (kept the same 12-reply corpus to isolate the
+   container as the single variable); a second seed/voice/family; the out-of-voice self-report probe.
 
 9. **Prompt-block strict variant for small models** — Sonnet, hours. The A/B found the studio block's
    soft wording under-fires at 1.5B (inverts the 7B verdict). Add a "strict" block variant (raw rule
