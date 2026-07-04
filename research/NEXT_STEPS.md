@@ -159,8 +159,8 @@ Parked ideas with rigs/specs: `WILD_EXPERIMENTS.md` (10 pre-designed experiments
 coherence problem (Lab), diffusion dreaming (killed — provenance extraction instead). The findings
 map: `FINDINGS.md`. The state of everything: the three memory files.
 
-11. **"Explain this answer" — the inspect-a-reply core surface** — **M1, M2, M3, M5-display + M4 scaffolding DONE (2026-07-04);
-    remaining: M4 on-model gated validation, M5 any-client run_id bridge.** Spec at `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost
+11. **"Explain this answer" — the inspect-a-reply core surface** — **M1-M4 + M5-display DONE (2026-07-04);
+    remaining: M5 any-client run_id bridge (+ optional clause-level claim extraction).** Spec at `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost
     model). The mainstream front door: measured confidence/influence/concepts/counterfactuals on any
     reply, never self-reported. Mostly assembly of existing parts (runlog manifest + trace, replay.py
     ablation, run.js receipts, SAE readouts). Order: M1 free-signal `/runs/<id>/explain` (Sonnet) → M2
@@ -286,6 +286,28 @@ map: `FINDINGS.md`. The state of everything: the three memory files.
     asked, AND warm because I like you" is one claim and a half-confabulation can hide behind the true
     clause.
 
+    **M4 on-model shipped** (`724b40d`): the honesty-critical half -- a REAL `support_matcher` that replaces
+    narrate.py's raising hook. `research/semantic_matcher.py`'s `nli_support_matcher` judges whether a
+    self-narration claim is entailed by the measured receipts using an INDEPENDENT model -- a cross-encoder
+    NLI (`nli-deberta-v3-base`), deliberately NOT the audited Qwen, so it cannot rubber-stamp the audited
+    model's own confabulations (the self-consistency trap law #1 warns about). Passed via narrate's pluggable
+    `support_matcher` param; narrate.py itself stays frozen + model-free (its 34 tests untouched). The
+    embedding-vs-NLI choice was MEASURED, not asserted: the on-disk MiniLM bi-encoder separated true claims
+    from confabulations by only ~0.02 on the seed cases (cosine = topical overlap, not entailment), the
+    cross-encoder by ~0.84 (true 0.83-0.98 entailment, confab <=0.002) -- and it does per-influence
+    ATTRIBUTION (a "concise" claim entails from the concise card, not the warm dial). Honest ceiling loud in
+    the docstring: one (receipt,claim) pair at a time (the compound-sentence gap remains), "unsupported"
+    conflates no-receipt with contradicted (raw contradiction prob returned alongside), one model/threshold/
+    English, lazy-load + LABELED degrade (`nli-unavailable`) so a caller can fall back to lexical_default.
+    Gated test `research/tests/test_semantic_matcher_gated.py` (`-m model`, 3 tests) is the spec's M4 "Done"
+    bar: a SEEDED KNOWN divergence (concise card + warm dial, nothing about chess, vs an unconstrained why
+    mixing paraphrased-true claims with a chess confabulation) proves the matcher passes the true ones,
+    flags the confab, and rescues a paraphrase lexical_default wrongly flags; the trap-guard holds with the
+    real matcher; and a real-Qwen end-to-end demo caught the model confabulating live (asked "why did you
+    answer that way?", the 1.5B APOLOGIZED and RE-ANSWERED the question instead of introspecting -- law #1 in
+    the wild). Suite 557 passed / 6 skipped (the 3 gated tests skip in the plain run; semantic_matcher
+    imports torch-free at collection).
+
     **Sibling experiment landed same batch** (`388b895`, WILD_EXPERIMENTS #6, not part of the milestone
     chain): `research/memory_disorders.py` broke SlotMem four ways (interference / confabulation / amnesia
     / intrusion) via instance monkeypatch and asked whether the RECEIPT SIGNALS alone diagnose each
@@ -297,11 +319,13 @@ map: `FINDINGS.md`. The state of everything: the three memory files.
     France" -> "Beatrix") -- the dangerous failure is the one that doesn't look like one. Full report:
     `research/memory_disorders_findings.md`.
 
-    **Remaining (the honesty-critical tail):** **M4 on-model gated validation** -- build the real
-    `semantic_support_matcher` (NLI / LLM-judge entailment) and run the full `narrate()` pipeline on a
-    real model with a SEEDED known divergence (Opus, GPU; the spec's M4 "Done" bar is that the diff
-    catches a confabulated influence a `-m model` test planted); **M5 any-client run_id bridge** -- return
-    the `run_id` from `/v1/chat/completions` (response field or header) so a companion `clozn inspect`
-    shows the explanation for a reply the user got in their OWN OpenAI client; optional clause-level claim
-    extraction to close the compound-sentence gap M4-scaffold flagged. Suite: **557 passed / 3 skipped**
-    on the clean committed tree (was 439/3 at the start of this session).
+    **Remaining:** **M5 any-client run_id bridge** -- return the `run_id` from `/v1/chat/completions`
+    (response field or header) so a companion `clozn inspect` shows the explanation for a reply the user got
+    in their OWN OpenAI client (the last "not in the studio" surface; touches `clozn_server.py`); optional
+    **clause-level claim extraction** to close the compound-sentence gap the sentence-level split leaves (the
+    natural next rigor step for the confabulation-diff, now that the matcher itself is real); optional wiring
+    of `nli_support_matcher` into the studio's own Explain/narration path with a lexical fallback when the
+    NLI checkpoint is absent. M1-M4 (measured signals + rigorous receipts + counterfactual dials + the
+    accountable-self narration with a real, independent confabulation judge) are DONE. Suite: **557 passed /
+    6 skipped** on the clean committed tree (was 439/3 at the start of this session; +3 skips are the M4
+    gated tests).
