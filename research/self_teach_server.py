@@ -230,7 +230,45 @@ class SelfTeach:
             print(f"  restored {len(self.rules)} memory card(s) from {self.persist}", flush=True)
 
     # ---- low-level: chat ids, embed, generate with optional prefix ----------------------------
+    def _supports_system(self) -> bool:
+        """Cache whether this tokenizer's chat template accepts a system role. Qwen's does; Gemma-2's does
+        NOT (its jinja raises 'System role not supported'). Detected once by a trial render so the fix costs
+        nothing per call and NEVER changes the path for a system-capable model."""
+        ok = getattr(self, "_sys_ok", None)
+        if ok is None:
+            try:
+                self.tok.apply_chat_template([{"role": "system", "content": "x"},
+                                              {"role": "user", "content": "y"}], tokenize=False)
+                ok = True
+            except Exception:
+                ok = False
+            self._sys_ok = ok
+        return ok
+
+    @staticmethod
+    def _fold_system(messages: list[dict]) -> list[dict]:
+        """Fold system message(s) into the FIRST user turn, for templates that reject a system role. The
+        model still sees the instruction as leading context (semantics preserved for consolidate's teacher
+        pass); non-system turns pass through untouched; a system with no following user leads as a user turn."""
+        sys_txt = " ".join(m.get("content", "") for m in messages if m.get("role") == "system").strip()
+        if not sys_txt:
+            return messages
+        out, injected = [], False
+        for m in messages:
+            if m.get("role") == "system":
+                continue
+            if m.get("role") == "user" and not injected:
+                out.append({"role": "user", "content": f"{sys_txt}\n\n{m.get('content', '')}"})
+                injected = True
+            else:
+                out.append(m)
+        return out if injected else [{"role": "user", "content": sys_txt}] + out
+
     def _chat_ids(self, messages: list[dict]) -> list[int]:
+        # Gemma-2 and other system-less templates: fold any system role into the first user turn. No-op
+        # (byte-identical) for Qwen, whose template accepts system -- the condition short-circuits.
+        if not self._supports_system() and any(m.get("role") == "system" for m in messages):
+            messages = self._fold_system(messages)
         return self.tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
 
     def _embed(self, ids: list[int]) -> torch.Tensor:

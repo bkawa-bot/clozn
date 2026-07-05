@@ -128,8 +128,14 @@ def test_coherence_proxy_flags_empty_repeat_char_runaway_and_script_switch():
     assert counterfactual._coherence("wow!!!!!")["degenerate"] is True
     assert counterfactual._coherence("wow!!!!!")["reason"] == "char-runaway"
     assert counterfactual._coherence("privet there")["degenerate"] is False   # ASCII -- not a script switch
-    assert counterfactual._coherence("привет there")["degenerate"] is True
+    assert counterfactual._coherence("привет there")["degenerate"] is True     # Cyrillic letters -- real switch
+    assert counterfactual._coherence("这是中文回复")["degenerate"] is True        # CJK letters -- real switch
     assert counterfactual._coherence("a perfectly normal reply, thanks!")["degenerate"] is False
+    # emoji / curly quotes / em-dash are non-ASCII SYMBOLS+PUNCTUATION, NOT a script switch -- Gemma-2 is
+    # emoji-heavy and coherent, and the old catch-all false-flagged it (found in mirror_bench cross-family).
+    assert counterfactual._coherence("Sure! I'd love to help \U0001f60a✨")["degenerate"] is False
+    assert counterfactual._coherence("It’s a great idea — truly.")["degenerate"] is False
+    assert counterfactual._coherence("Enjoy your café visit!")["degenerate"] is False   # lone accent, below threshold
 
 
 # ================================================================================ both-arms-greedy shape

@@ -45,6 +45,7 @@ a fake substrate with a canned, deterministic `.chat()`.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 import receipts
 import replay
@@ -78,7 +79,16 @@ _DOSE_NOTE = (
 # script switch -- the failure modes voice_middle_findings.md and steer_vs_prompt_findings.md actually
 # eyeballed at small-model dial extremes). Duplicated rather than imported: this module's build spec
 # restricts it to importing receipts/replay only (memory_disorders.py is explicitly out of scope here).
-_NON_LATIN = re.compile(r"[^\x00-\x7F]")
+_FOREIGN_MIN = 3
+
+
+def _foreign_letters(t: str) -> int:
+    """Count non-ASCII LETTER characters. A real language/script switch (the failure this flags -- steering
+    derailing into Cyrillic/CJK word-salad) is many non-ASCII *letters*; emoji, curly quotes, and em-dashes
+    are non-ASCII SYMBOLS/PUNCTUATION and must NOT count -- Gemma-2 is emoji-heavy and perfectly coherent, so
+    the old `[^\\x00-\\x7F]` catch-all false-flagged it 100% degenerate. A stray accent ('cafe') is one
+    letter, below the threshold, so ordinary loanwords pass."""
+    return sum(1 for ch in t if ord(ch) > 127 and unicodedata.category(ch).startswith("L"))
 
 
 def _coherence(text: str) -> dict:
@@ -95,7 +105,7 @@ def _coherence(text: str) -> dict:
             return {"degenerate": True, "reason": "repeat-3gram"}
     if re.search(r"(.)\1{4,}", t):
         return {"degenerate": True, "reason": "char-runaway"}
-    if _NON_LATIN.search(t):
+    if _foreign_letters(t) >= _FOREIGN_MIN:
         return {"degenerate": True, "reason": "script-switch"}
     return {"degenerate": False, "reason": ""}
 
