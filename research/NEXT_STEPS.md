@@ -159,8 +159,8 @@ Parked ideas with rigs/specs: `WILD_EXPERIMENTS.md` (10 pre-designed experiments
 coherence problem (Lab), diffusion dreaming (killed — provenance extraction instead). The findings
 map: `FINDINGS.md`. The state of everything: the three memory files.
 
-11. **"Explain this answer" — the inspect-a-reply core surface** — **M1-M4 + M5-display DONE (2026-07-04);
-    remaining: M5 any-client run_id bridge (+ optional clause-level claim extraction).** Spec at `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost
+11. **"Explain this answer" — the inspect-a-reply core surface** — **M1-M5 COMPLETE (2026-07-04) — the whole
+    feature, reachable from the studio, the terminal, and any OpenAI client; optional follow-ups only.** Spec at `research/EXPLAIN_THIS_ANSWER_SPEC.md` (5 milestones, honesty invariants, cost
     model). The mainstream front door: measured confidence/influence/concepts/counterfactuals on any
     reply, never self-reported. Mostly assembly of existing parts (runlog manifest + trace, replay.py
     ablation, run.js receipts, SAE readouts). Order: M1 free-signal `/runs/<id>/explain` (Sonnet) → M2
@@ -327,13 +327,30 @@ map: `FINDINGS.md`. The state of everything: the three memory files.
     lexical branch (no checkpoint load) and pins the trap guard over HTTP (the confabulation appears ONLY
     wrapped in a WARNING flag, never as the narration surface).
 
-    **Remaining (display + one bridge):** **render the narration** -- surface `/narrate`'s constrained
-    narration + inline flags in the Run Inspector "Explain" tab and `clozn explain` (the backend is live; this
-    is the last display step to put the accountable self in front of a user); **M5 any-client run_id bridge**
-    -- return the `run_id` from `/v1/chat/completions` (response field or header) so a companion `clozn
-    inspect` shows the explanation for a reply the user got in their OWN OpenAI client; optional
-    **clause-level claim extraction** to close the compound-sentence gap the sentence-level split leaves (the
-    natural next rigor step now that the matcher itself is real). M1-M4 (measured signals + rigorous receipts
-    + counterfactual dials + the accountable-self narration with a real, independent confabulation judge,
-    wired end-to-end) are DONE. Suite: **560 passed / 6 skipped** on the clean committed tree (was 439/3 at
-    the start of this session; the +6 skips are the M4 gated tests + the model-gated timetravel/AB tests).
+    **M4 narration RENDERED** (`113b589`): the accountable self is now in front of a user, not just in the
+    API. The Run Inspector "Explain" tab gets a lazy "Why did it say this?" button (`/narrate` generates, so
+    on-demand) rendering `narrateHTML` -- the receipt-bound narration, the confabulation `flags` as distinct
+    WARNING rows, the matcher `note` as a muted caption; `clozn explain <run> --why` renders the same via a
+    pure `format_narrate` (flags in the warm/hot-rose truecolor, a nod to "a flag is a low-confidence token";
+    no-op when color is off). Only the safe 4-key object is ever rendered -- the raw confabulation has no field
+    to leak through (a Node smoke asserts even a stray 5th field can't). Tests: `test_narrate_cli.py` (22,
+    canned-dict honesty invariants + an in-process `/narrate` wire check + the `--why` opt-in contract).
+
+    **M5 any-client run_id bridge SHIPPED** (`549630c`): `POST /v1/chat/completions` now returns its run id
+    two ways -- an additive `clozn_run_id` JSON field (OpenAI clients ignore unknown fields) and an
+    `X-Clozn-Run-Id` header -- so a user chatting through ANY OpenAI client can then `clozn explain <that id>`.
+    `_log_run` returns the rid (None on any failure -- logging still never breaks a request); `_json` gained a
+    backward-compatible `extra_headers` param (all 108 existing call sites emit byte-identical output); the id
+    is omitted cleanly when logging fails. The STREAMING path was deferred with a real reason (SSE headers
+    flush before generation, and a trailing frame after `data: [DONE]` is silently dropped by clients like
+    openai-python) -- left byte-identical, documented inline. Tests: `test_bridge_server.py` (5, model-free).
+
+    **M1-M5 COMPLETE.** Measured confidence + rigorous both-arms-greedy receipts + counterfactual dials + the
+    accountable-self narration (real, independent NLI confabulation judge) -- reachable from the studio Run
+    Inspector, the terminal (`clozn explain [--why]`, `clozn trace`), and any OpenAI client (the run_id
+    bridge). Suite: **609 passed / 6 skipped** on the clean committed tree (was 439/3 at the session start).
+    **Optional follow-ups only:** clause-level claim extraction (close the compound-sentence gap the
+    sentence-level split leaves, now that the matcher is real); a streaming-path run_id (needs a client-safe
+    carrier); making `nli_support_matcher` the studio's live narrate default (the endpoint already prefers it
+    when present). Also shipped this session: the CLI confidence heatmap -- `clozn trace`/`explain` painted by
+    per-token confidence, `clozn run --heat` live, denoise's palette (#e07a96/#c3cde0/#7aa7ff) in the terminal.
