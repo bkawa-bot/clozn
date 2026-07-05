@@ -1363,17 +1363,20 @@ def make_handler():
         def log_message(self, *a):
             pass
 
-        def _send(self, code, body, ctype):
+        def _send(self, code, body, ctype, extra_headers=None):
             b = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Access-Control-Allow-Origin", "*")
+            if extra_headers:                            # additive + optional: no caller passed this before,
+                for k, v in extra_headers.items():        # so today's callers get byte-identical output
+                    self.send_header(str(k), str(v))
             self.send_header("Content-Length", str(len(b)))
             self.end_headers()
             self.wfile.write(b)
 
-        def _json(self, code, o):
-            self._send(code, json.dumps(o), "application/json")
+        def _json(self, code, o, extra_headers=None):
+            self._send(code, json.dumps(o), "application/json", extra_headers=extra_headers)
 
         def _html(self, name):
             self._send(200, open(os.path.join(DEMO, name), encoding="utf-8").read(), "text/html; charset=utf-8")
@@ -1396,6 +1399,16 @@ def make_handler():
             # Run Inspector timeline while the streamed chunks stay byte-identical (B3). runlog.record
             # normalizes the raw step list; on any hiccup last_stream_trace() is [] -> a clean empty trace.
             # memout: prompt mode fills what memory ACTUALLY rode this turn (block gated in/out) for the log.
+            #
+            # M5 any-client run_id bridge (EXPLAIN_THIS_ANSWER_SPEC.md): DEFERRED here, deliberately. Headers
+            # are already flushed above (self.end_headers(), before a single token is generated), so
+            # X-Clozn-Run-Id can never ride a header on this path -- the id only exists after _log_run runs,
+            # which is after the stream ends. A trailing SSE frame isn't clean either: a frame AFTER
+            # "data: [DONE]" is silently dropped by clients (incl. openai-python) that stop reading at the
+            # [DONE] sentinel, and a frame BEFORE [DONE] would need a full spec-shaped chat.completion.chunk
+            # (id/object/created/model/choices) just to smuggle one field, plus a stray chunk after the real
+            # finish_reason:"stop" chunk -- exactly the shape drift the honesty/compat contract rules out.
+            # Left unchanged; non-streaming (the required deliverable) carries clozn_run_id both ways.
             t0 = time.time(); acc = []; memout = {}
             try:
                 chunk({"role": "assistant"})
@@ -1427,7 +1440,10 @@ def make_handler():
                      mem_out=None):
             """Persist this interaction as an inspectable run (never let logging break the request).
             mem_out (prompt mode): the {applied, gate, strength?} record the generation path filled --
-            what memory ACTUALLY rode this turn (the topic gate may have omitted the block)."""
+            what memory ACTUALLY rode this turn (the topic gate may have omitted the block).
+            Returns the new run's id (str) on success, else None -- any failure along the way is swallowed,
+            never raised. The M5 any-client bridge surfaces this id to the caller; None means "nothing to
+            surface", not an error the request should see."""
             try:
                 import runlog
                 mem = getattr(SUB, "_mem", None) if SUB else None
@@ -1507,8 +1523,9 @@ def make_handler():
                                     memory=memd, behavior={"active_dials": dials}, started=started, error=error,
                                     trace=trace)
                 self._maybe_snapshot_turn(rid, messages, trace, error)
+                return rid                        # M5 bridge: the run id, for callers that want to surface it
             except Exception:
-                pass
+                return None                        # logging must never break the request -- no id to surface
 
         def _maybe_snapshot_turn(self, rid, messages, trace, error):
             """TIME-TRAVEL (#6): when the snapshot gate is ON, register this turn in the bounded ring so the
@@ -2049,13 +2066,22 @@ def make_handler():
                 reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0, trace_out=trace_steps,
                                  mem_out=memout)
                 # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}.
-                self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0,
-                              trace=trace_steps, mem_out=memout)
-                return self._json(200, {"id": "chatcmpl-clozn", "object": "chat.completion",
-                                        "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
-                                        "choices": [{"index": 0, "finish_reason": "stop",
-                                                     "message": {"role": "assistant", "content": reply}}],
-                                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}})
+                rid = self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0,
+                                    trace=trace_steps, mem_out=memout)
+                resp = {"id": "chatcmpl-clozn", "object": "chat.completion",
+                       "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
+                       "choices": [{"index": 0, "finish_reason": "stop",
+                                    "message": {"role": "assistant", "content": reply}}],
+                       "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+                # M5 any-client run_id bridge (EXPLAIN_THIS_ANSWER_SPEC.md): surface the id two ways so a
+                # companion `clozn explain <run_id>` can inspect THIS reply from any OpenAI-compatible client
+                # -- an additive top-level field (spec-compliant clients ignore unknown fields) and a response
+                # header (for clients that only expose headers). Clean omission when logging failed (rid is
+                # None) -- never emit a literal "null"/"None".
+                extra_headers = {"X-Clozn-Run-Id": rid} if rid else None
+                if rid:
+                    resp["clozn_run_id"] = rid
+                return self._json(200, resp, extra_headers=extra_headers)
             if p == "/say":   # studio chat (qwen memory model) -> capture it as a run
                 if not (SUB and getattr(SUB, "handle", None)):
                     return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate"})
