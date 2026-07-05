@@ -970,8 +970,10 @@ def cmd_branch(args):
 # ----------------------------------------------------------------------------- explain (M5 display; M1 assembles)
 # `clozn explain <run_id>` (EXPLAIN_THIS_ANSWER_SPEC.md) renders the Studio's already-shipped, zero-generation
 # /runs/<id>/explain (research/explain.py) as a terminal view: the confidence hesitations, the influences that
-# were active, and the concepts note. DISPLAY ONLY -- this command generates nothing; it POSTs to the endpoint
-# (the same "any client" bridge the Run Inspector's own Explain tab uses) and renders whatever comes back.
+# were active, and the concepts note. DISPLAY ONLY by default -- this command generates nothing; it POSTs to
+# the endpoint (the same "any client" bridge the Run Inspector's own Explain tab uses) and renders whatever
+# comes back. The one opt-in exception is `--why` (below): it additionally POSTs to /runs/<id>/narrate, which
+# DOES generate (M4's accountable-self narration, two model calls) -- opt-in for exactly that reason.
 #
 # format_explain() is factored out as a pure function (JSON in, text out) specifically so it's testable with a
 # canned /explain dict -- no server, no model, no GPU -- mirroring cmd_trace's confidence-bar language.
@@ -1178,6 +1180,100 @@ def _fetch_explain(port: int, run_id: str) -> dict:
         raise CloznError(f"explain failed: {e}")
 
 
+# --------------------------------------------------------------------- narrate (M4 display; narrate.py assembles)
+# `clozn explain --why` additionally renders the Studio's POST /runs/<id>/narrate (research/narrate.py): the
+# accountable-self narration -- a receipt-CONSTRAINED "why" diffed against an independent judge, with every
+# unsupported claim it catches shown as a warning. Opt-in (--why), unlike the rest of `explain`, because this
+# one GENERATES: two model calls (the constrained narration, and the unconstrained confabulation sample it is
+# diffed against -- the latter is never returned by the endpoint at all, per narrate.py's trap guard, so there
+# is nothing here that could render it even by accident).
+#
+# format_narrate() is factored out as a pure function (JSON in, text out), exactly like format_explain(), so
+# it is testable with a canned /narrate dict -- no server, no model, no GPU.
+
+def _fetch_narrate(port: int, run_id: str) -> dict:
+    """POST /runs/<id>/narrate on the Studio backend -- M4's accountable-self narration (research/narrate.py).
+    Unlike _fetch_explain (M1, free), this generates -- two model calls -- so it gets a longer timeout. A
+    clean CloznError (one line, no traceback) when the Studio isn't up, the run doesn't resolve, or the qwen
+    substrate isn't loaded (503), matching _fetch_explain's error style exactly."""
+    url = f"http://127.0.0.1:{port}/runs/{run_id}/narrate"
+    req = urllib.request.Request(url, data=b"{}", method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error", str(e))
+        except Exception:
+            msg = str(e)
+        raise CloznError(f"narrate failed ({e.code}): {msg}")
+    except urllib.error.URLError as e:
+        raise CloznError(f"couldn't reach the Studio on port {port} ({e.reason}). Start it first:  clozn studio")
+    except Exception as e:
+        raise CloznError(f"narrate failed: {e}")
+
+
+def _format_narration(cn: dict) -> list[str]:
+    out = [f"{BOLD}why did it say this?{RST}  {DIM}receipt-constrained -- never the raw self-report (M4){RST}"]
+    narration = cn.get("narration")
+    narration = narration.strip() if isinstance(narration, str) else ""
+    if narration:
+        out.append(f"  {narration}")
+    else:
+        out.append(f"  {DIM}no receipt-backed narration was produced for this reply -- with a thin or empty "
+                   f"record, that's a complete and honest answer, not a failure.{RST}")
+    return out
+
+
+def _format_flags(flags: list) -> list[str]:
+    flags = [f for f in flags if isinstance(f, str) and f]
+    out = [f"{BOLD}caught in the diff{RST}  {DIM}claimed with no receipt to back it{RST}"]
+    if not flags:
+        out.append(f"  {DIM}no unsupported claims flagged this time.{RST}")
+        return out
+    for f in flags:
+        # reuse the file's own warm/confidence palette (the "wavered" end of the denoise ramp) for each
+        # flag -- a flagged claim IS the same kind of thing a low-confidence token is: a place the honest
+        # record does not back up. No-op (plain text) when COLOR is off, exactly like every other _paint call.
+        out.append(f"  {_paint('⚠ ' + f, 0.0)}")
+    return out
+
+
+def format_narrate(obj: dict) -> str:
+    """The M4 /narrate response object (POST /runs/<id>/narrate's JSON body -- exactly narrate.narrate()'s
+    four keys: constrained_narration, flags, unsupported_claims, note) -> the terminal render. Pure: no I/O,
+    no server, no model -- mirrors format_explain()'s contract exactly, so a canned dict renders identically
+    to a live response and is testable without either.
+
+    Renders ONLY what the endpoint can return: the constrained narration prose (the "why"), each flag as a
+    visible warning line (the caught confabulations -- a claim the model was about to make that no receipt
+    backs), and the note (which matcher ran + its honesty caveat), always shown so the reader knows the
+    honesty level. `unsupported_claims` is not re-rendered separately -- every one of its entries is already
+    represented, verbatim, inside `flags`. An empty/thin narration is rendered as an honest first-class
+    result ("no receipt-backed narration..."), never as an error. Never raises: a malformed section degrades
+    to a one-line notice instead of losing the rest, same discipline as format_explain."""
+    obj = obj if isinstance(obj, dict) else {}
+    lines = [f"{BOLD}narrate{RST}  {DIM}the accountable-self narration -- opt-in, generates (--why){RST}", "-" * 62]
+    try:
+        lines += _format_narration(_as_dict(obj.get("constrained_narration")))
+    except Exception:
+        lines += [f"{BOLD}why did it say this?{RST}", f"  {DIM}couldn't render the narration{RST}"]
+    lines.append("")
+    try:
+        lines += _format_flags(_as_list(obj.get("flags")))
+    except Exception:
+        lines += [f"{BOLD}caught in the diff{RST}", f"  {DIM}couldn't render the flags{RST}"]
+    lines.append("")
+    try:
+        note = obj.get("note")
+        if isinstance(note, str) and note:
+            lines.append(f"{DIM}{note}{RST}")
+    except Exception:
+        pass
+    lines.append("-" * 62)
+    return "\n".join(lines)
+
+
 def cmd_explain(args):
     rid = _last_run_id() if args.last else args.run_id
     if not rid:
@@ -1185,6 +1281,9 @@ def cmd_explain(args):
                          "(see ids in the Studio's Runs list, or run something first:  clozn run qwen \"...\")")
     port = args.port or 8090
     print(format_explain(_fetch_explain(port, rid)))
+    if args.why:
+        print()
+        print(format_narrate(_fetch_narrate(port, rid)))
 
 
 def build_parser():
@@ -1234,6 +1333,10 @@ def build_parser():
     pe.add_argument("run_id", nargs="?", default=None, help="run id, as shown in the Studio's Runs list")
     pe.add_argument("--last", action="store_true", help="use the most recently recorded run")
     pe.add_argument("--port", type=int, default=0, help="Studio port (default 8090)")
+    pe.add_argument("--why", action="store_true", help="also generate the accountable-self narration (M4): "
+                    "a receipt-constrained \"why\", diffed against an independent judge and flagged wherever "
+                    "it overclaims. Opt-in -- unlike the rest of `explain`, this GENERATES (two model calls; "
+                    "needs the qwen substrate loaded in `clozn studio`)")
     pe.set_defaults(fn=cmd_explain)
     return p
 

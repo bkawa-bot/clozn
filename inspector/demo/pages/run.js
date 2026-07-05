@@ -205,7 +205,17 @@
       ".ri-xpl-quote{margin-top:3px;font-size:12px;color:var(--soft,#5a6072);font-style:italic}" +
       ".ri-xpl-quote.sub{font-style:normal}" +
       ".ri-xpl-span{margin:4px 0;font-size:12.5px}" +
-      ".ri-xpl-feat{display:inline-block;font-size:11px;border:1px solid var(--line,#e3e6ef);border-radius:8px;padding:1px 7px;margin:2px 4px 0 0;color:var(--soft,#5a6072)}";
+      ".ri-xpl-feat{display:inline-block;font-size:11px;border:1px solid var(--line,#e3e6ef);border-radius:8px;padding:1px 7px;margin:2px 4px 0 0;color:var(--soft,#5a6072)}" +
+      // --- M4 narrate: "why did it say this?" -- the accountable-self narration, lazy/on-demand (a button,
+      //     since /narrate generates two model calls, unlike the free M1 panels above). Flags are rendered
+      //     as visually distinct warning rows -- the caught confabulations -- never folded into the "why". ---
+      ".ri-nrt{margin-top:14px}" +
+      ".ri-nrt-why{font-size:13.5px;line-height:1.55;color:var(--ink,#1b1f2a);white-space:pre-wrap}" +
+      ".ri-nrt-flags-h{margin-top:12px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint,#9aa0b3)}" +
+      ".ri-nrt-flags{margin-top:5px}" +
+      ".ri-nrt-flag{display:flex;gap:7px;align-items:flex-start;margin:5px 0;padding:7px 10px;border-radius:9px;font-size:12.5px;line-height:1.45;color:#8f2f2f;background:rgba(231,120,120,.12);border:1px solid rgba(231,120,120,.4)}" +
+      ".ri-nrt-flags-none{margin-top:10px}" +
+      ".ri-nrt-note{margin-top:12px;font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45;font-style:italic}";
     document.head.appendChild(s);
   }
 
@@ -470,6 +480,45 @@
       return '<div class="sub">explain failed (' + esc(r.status) + ")" + msg + "</div>";
     }
     return explainSummaryHTML(r.data);
+  }
+
+  // ---------------------------------------------------------------------------------------------------
+  // M4 (EXPLAIN_THIS_ANSWER_SPEC.md): the accountable-self narration -- a receipt-CONSTRAINED "why",
+  // diffed against an independent judge and flagged wherever it overclaims. Unlike M1's /explain above
+  // (free, fetched eagerly), POST /runs/<id>/narrate GENERATES: two model calls (the constrained narration
+  // + the unconstrained confabulation sample it is diffed against -- the latter is never itself returned;
+  // narrate.py's structural trap guard). So this is lazy: a button (wireNarrate below), never auto-fetched.
+  //
+  // narrateHTML is a pure assembler -- the /narrate response object in, an HTML string out (mirrors
+  // explainSummaryHTML above) -- and renders ONLY the four keys narrate() returns: the constrained
+  // narration prose (the "why"), `flags` as visually distinct WARNING rows (the caught confabulations --
+  // each names a claim the model was about to make that no receipt backs), and `note` (which matcher ran +
+  // its honesty caveat) as a muted caption. `unsupported_claims` is not re-rendered separately: every one
+  // of its entries is already represented, verbatim, as a string in `flags`. There is no raw/unconstrained
+  // "why" to accidentally render -- that text is never a key in this object at all, by construction.
+  // ---------------------------------------------------------------------------------------------------
+
+  function narrateHTML(obj) {
+    obj = (obj && typeof obj === "object") ? obj : {};
+    var cn = (obj.constrained_narration && typeof obj.constrained_narration === "object") ? obj.constrained_narration : {};
+    var narration = typeof cn.narration === "string" ? cn.narration.trim() : "";
+    var flags = Array.isArray(obj.flags) ? obj.flags : [];
+    var note = typeof obj.note === "string" ? obj.note : "";
+
+    var h = '<div class="ri-nrt">';
+    h += '<div class="ri-nrt-why">' + (narration
+      ? esc(narration)
+      : '<span class="sub">no receipt-backed narration was produced for this reply — with a thin or empty record, that’s a complete and honest answer, not a failure.</span>') + "</div>";
+    if (flags.length) {
+      h += '<div class="ri-nrt-flags-h">Caught in the diff — claimed with no receipt to back it</div><div class="ri-nrt-flags">';
+      flags.forEach(function (f) { h += '<div class="ri-nrt-flag">⚠ ' + esc(String(f)) + "</div>"; });
+      h += "</div>";
+    } else {
+      h += '<div class="ri-nrt-flags-none sub">no unsupported claims flagged this time.</div>';
+    }
+    if (note) h += '<div class="ri-nrt-note">' + esc(note) + "</div>";
+    h += "</div>";
+    return h;
   }
 
   // The dials that were live on the ORIGINAL run -- the baseline a quick-repair preset nudges from.
@@ -915,6 +964,37 @@
     });
   }
 
+  // M4: wire the "Why did it say this?" button. Lazy on purpose (see the narrateHTML block above) -- fires
+  // only on click, shows a "thinking…" state while the two generations run, and renders via the pure
+  // narrateHTML() assembler on success. Every failure path (404/503/offline/other) gets one honest line,
+  // same discipline as doReplay/wirePropose elsewhere in this file -- nothing here ever throws.
+  function wireNarrate(root, run) {
+    var btn = root.querySelector("#ri-narrate-btn"), out = root.querySelector("#ri-narrate-out");
+    if (!btn || !out) return;
+    btn.onclick = function () {
+      if (btn.disabled) return;
+      var label = btn.textContent;
+      btn.disabled = true; btn.classList.add("busy"); btn.textContent = "thinking…";
+      out.innerHTML = '<span class="sub">thinking… composing a receipt-bound narration (two model calls) — this can take a little while.</span>';
+      postJSON("/runs/" + run.id + "/narrate", {}).then(function (r) {
+        btn.disabled = false; btn.classList.remove("busy"); btn.textContent = label;
+        if (r.status === 404) { out.innerHTML = '<span class="sub">run not found.</span>'; return; }
+        if (r.status === 503) { out.innerHTML = '<span class="sub">narration needs the Studio’s qwen substrate running — start it and try again.</span>'; return; }
+        if (r.status === 0) { out.innerHTML = '<span class="sub">couldn’t reach the studio (offline?) — nothing was generated.</span>'; return; }
+        if (!r.ok || !r.data || r.data.error) {
+          var msg = r.data && r.data.error ? " — " + esc(r.data.error) : "";
+          out.innerHTML = '<span class="sub">narration failed (' + esc(r.status) + ")" + msg + "</span>";
+          return;
+        }
+        out.innerHTML = narrateHTML(r.data);
+      }, function () {
+        // defensive: postJSON shouldn't reject, but never leave the button stuck if it somehow does.
+        btn.disabled = false; btn.classList.remove("busy"); btn.textContent = label;
+        out.innerHTML = '<span class="sub">narration failed (unexpected error) — nothing was generated.</span>';
+      });
+    };
+  }
+
   // E2: "Propose a memory from this run". Asks the backend to distill a durable preference out of this
   // conversation and drop it into the PENDING memory queue (reviewed on the Memory page). Uses
   // ctx.postJSON(path, body, fallback) which NEVER throws -- on any failure (offline, 404, 500) it
@@ -1123,6 +1203,11 @@
         '<section class="ri-col ri-xpl-wrap"><h3>Explain</h3>' +
         '<div class="ri-xpl-tagline">A read-only summary, assembled from the same measured signals as the Detail tab — never a self-report. Per-influence “prove it” receipts still live over in Detail.</div>' +
         explainPanelHTML(explainR) +
+        '<hr class="ri-sep">' +
+        '<div class="ri-prove-h">Why did it say this? <span class="sub">(generates — two model calls)</span></div>' +
+        '<div class="ri-prove-sub">A receipt-constrained “why”, checked against a separate, unconstrained guess and flagged wherever that guess doesn’t hold up — never the raw self-report itself.</div>' +
+        '<button class="ri-act" id="ri-narrate-btn">Why did it say this?</button>' +
+        '<div class="ri-out" id="ri-narrate-out"></div>' +
         "</section>" +
       "</div>";
     wireTimeline(root, run);
@@ -1132,6 +1217,7 @@
     wireBranch(root, run);
     wirePropose(root, run, ctx);
     wireTabs(root);
+    wireNarrate(root, run);
   }
 
   S.register("run", { title: "Run Inspector", render: render });
