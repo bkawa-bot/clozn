@@ -167,3 +167,22 @@ def test_end_to_end_on_real_qwen_confabulation_demo():
     assert diff.get("matcher") == "nli_support_matcher"
     flagged = [e["claim"] for e in diff["unsupported_claims"]]
     print(f"\n[real-why] {why!r}\n[flagged {len(flagged)}/{len(diff['claims'])}] {flagged}", flush=True)
+
+
+@pytest.mark.model
+def test_clause_split_catches_a_confab_hidden_in_a_compound_with_the_real_matcher():
+    """The compound-sentence gap, closed on the REAL judge: a single sentence crediting one BACKED influence
+    and one CONFABULATION. `clause_split` (the default claim_splitter) breaks it into two clauses; the NLI
+    matcher passes the concise clause and flags the chess clause. Sentence-level splitting would have judged
+    the whole sentence at once, letting the backed half mask the confabulation."""
+    if not sm.available():
+        pytest.skip("cross-encoder NLI unavailable")
+    expl = _explanation()                                  # concise card + warm dial; NOTHING about chess
+    text = "I answered concisely, and I drew on my deep knowledge of medieval chess."
+    diff = narrate.confabulation_diff(text, expl, support_matcher=sm.nli_support_matcher)  # default clause_split
+    claims = [c["claim"] for c in diff["claims"]]
+    assert len(claims) == 2, f"clause_split should split the compound into two clauses: {claims}"
+    unsupported = [e["claim"] for e in diff["unsupported_claims"]]
+    assert any("chess" in c for c in unsupported), f"the confabulated clause must be flagged: {diff}"
+    assert not any("concisely" in c for c in unsupported), f"the backed clause must NOT be flagged: {diff}"
+    print(f"\n[clause-split+nli] claims={claims} | flagged={unsupported}", flush=True)

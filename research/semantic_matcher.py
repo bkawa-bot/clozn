@@ -30,9 +30,11 @@ THE HONEST CEILING (do not oversell this). A cross-encoder entailment score is a
 failure this module targets -- a fluent claim crediting an influence that was never on record -- and it does
 model per-influence ATTRIBUTION (a "concise" claim entails from the concise card, not the warm dial:
 measured, asserted in the gated test). It is still NOT a complete honesty oracle:
-  * it judges one (receipt, claim) pair at a time, so a COMPOUND claim ("concise because you asked, and warm
-    because I like you") is only as good as narrate._split_claims' sentence-level cut -- a half-confabulation
-    can ride inside one sentence (narrate._DIFF_NOTE flags this; clause-level extraction is future work);
+  * it judges one (receipt, claim) pair at a time; a COMPOUND claim ("concise because you asked, and warm
+    because I like you") is now split by narrate.clause_split (the default claim_splitter) into separately
+    judged clauses, so a half-confabulation no longer hides behind a supported partner clause -- but that
+    splitter is a documented heuristic (narrate._DIFF_NOTE), not a parser, so nested/implicit coordination
+    can still under-split;
   * "unsupported" conflates "no receipt entails this" with "a receipt CONTRADICTS this" -- the raw
     contradiction probability is returned alongside (`contradiction`) so a caller CAN tell them apart, but the
     boolean does not;
@@ -151,6 +153,18 @@ def _entail_scores(premises: list[tuple[str, str]], claim: str) -> list[tuple[st
     return [(fid, float(row[_ent_idx]), float(row[_contra_idx])) for (fid, _), row in zip(premises, probs)]
 
 
+def _normalize_claim(claim: str) -> str:
+    """Make a claim look like a well-formed SENTENCE to the cross-encoder. MEASURED fragility: the NLI model
+    is punctuation-sensitive on bare clause fragments -- "I answered concisely." entails the concise card at
+    0.842, but the period-less fragment "I answered concisely" (exactly what `narrate.clause_split` hands over
+    from the middle of a compound sentence) scores only 0.234, while "I kept my answer concise" scores 0.958
+    -- so it is the fragment SHAPE, not the meaning. Appending a terminal period recovers the entailment. Any
+    claim not already ending in .!? gets one before scoring; the claim TEXT returned to the caller is
+    unchanged (this only affects what the model sees)."""
+    c = (claim or "").strip()
+    return c if (c and c[-1] in ".!?") else c + "."
+
+
 def nli_support_matcher(claim: str, explanation: dict, threshold: float = NLI_THRESHOLD) -> dict:
     """THE real support_matcher: is `claim` (one atomic self-narration claim from the unconstrained "why")
     entailed by any measured influence in `explanation`? Drop-in for narrate.confabulation_diff's
@@ -185,7 +199,7 @@ def nli_support_matcher(claim: str, explanation: dict, threshold: float = NLI_TH
     if not _ensure_model():
         return _degrade("nli-unavailable", "cross-encoder unavailable; caller should fall back to lexical_default")
     try:
-        scores = _entail_scores(premises, claim)
+        scores = _entail_scores(premises, _normalize_claim(claim))   # normalize fragments -> well-formed sentence
     except Exception:
         return _degrade("nli-error", "prediction failed")
 

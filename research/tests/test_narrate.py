@@ -209,6 +209,68 @@ def test_confabulation_diff_never_raises_when_support_matcher_returns_a_non_dict
     assert out["claims"][0]["supported"] is False
 
 
+# ================================================================================ clause_split (compound gap)
+
+def test_clause_split_breaks_a_compound_into_two_clauses():
+    parts = narrate.clause_split("I was concise because you asked, and warm because I like you.")
+    assert parts == ["I was concise because you asked", "warm because I like you."]
+
+
+def test_clause_split_leaves_a_simple_sentence_whole():
+    assert narrate.clause_split("I answered concisely.") == ["I answered concisely."]
+
+
+def test_clause_split_keeps_a_serial_list_whole():
+    # "concise, clear, and direct" is a LIST, not two claims -- the short trailing piece guards the split off
+    assert narrate.clause_split("I was concise, clear, and direct.") == ["I was concise, clear, and direct."]
+
+
+def test_clause_split_does_not_split_on_because():
+    # a subordinate reason rides WITH its clause, so an NLI matcher judges "warm because ..." as a unit
+    assert narrate.clause_split("I was warm because I like you.") == ["I was warm because I like you."]
+
+
+def test_clause_split_splits_on_a_semicolon():
+    assert narrate.clause_split("I kept it short; I also added a warm closing line.") == \
+        ["I kept it short", "I also added a warm closing line."]
+
+
+def test_clause_split_still_separates_sentences_like_the_base():
+    assert narrate.clause_split("First claim here. Second claim here!") == \
+        ["First claim here.", "Second claim here!"]
+
+
+@pytest.mark.parametrize("garbage", [None, 42, "", "   ", ["not", "a", "string"]])
+def test_clause_split_never_raises_on_garbage(garbage):
+    assert narrate.clause_split(garbage) == []
+
+
+def test_confabulation_diff_catches_a_confab_hidden_in_a_compound_sentence():
+    """THE gap clause_split closes: a compound sentence with one BACKED clause and one CONFABULATION. Under
+    the old sentence-level split it was one claim (the backed half could mask the confab); clause_split judges
+    each clause, so the confab is flagged and the backed clause passes."""
+    def matcher(claim, explanation):                       # backs anything about being concise; nothing else
+        c = claim.lower()
+        return {"supported": ("concise" in c or "brief" in c or "short" in c)}
+
+    text = "I was concise because you asked, and I drew on my deep chess expertise."
+    out = narrate.confabulation_diff(text, {"influences_active": {"cards": [], "dials": []}},
+                                     support_matcher=matcher)
+    assert len(out["claims"]) == 2                          # the compound was split into two claims
+    by_claim = {c["claim"]: c["supported"] for c in out["claims"]}
+    assert by_claim["I was concise because you asked"] is True
+    assert len(out["unsupported_claims"]) == 1
+    assert "chess" in out["unsupported_claims"][0]["claim"] and out["unsupported_claims"][0]["supported"] is False
+
+
+def test_confabulation_diff_claim_splitter_is_pluggable():
+    """The splitter is a parameter: clause_split (default) breaks a compound; passing _split_claims restores
+    the pure sentence-level behavior."""
+    text = "I was concise, and I love chess."
+    assert len(narrate.confabulation_diff(text, {}, claim_splitter=narrate.clause_split)["claims"]) == 2
+    assert len(narrate.confabulation_diff(text, {}, claim_splitter=narrate._split_claims)["claims"]) == 1
+
+
 # ==================================================================================== constrained_narration
 
 def test_constrained_narration_only_returns_receipt_ids_that_actually_exist_in_the_manifest():

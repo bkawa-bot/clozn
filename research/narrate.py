@@ -378,33 +378,69 @@ def semantic_support_matcher(claim: str, explanation: dict) -> dict:
 # --------------------------------------------------------------------------------------------------------
 
 _CLAIM_SPLIT_RE = re.compile(r"[^.!?]+[.!?]*")
+# A further split, WITHIN a sentence, on coordinating boundaries that separate distinct CLAIMS: semicolons
+# and ", and/but/so/yet " joins. We deliberately do NOT split on subordinating "because"/"since" -- those
+# attach a REASON to their clause, and the reason is exactly the confabulation site we want judged AS PART
+# OF the clause ("warm because I like you": a warm dial entails "warm" but not the whole clause, so it
+# breaks entailment and is flagged as a unit -- which reads better than an orphaned "because I like you").
+_CLAUSE_SPLIT_RE = re.compile(r"\s*;\s*|,\s+(?:and|but|so|yet)\s+", re.IGNORECASE)
+_MIN_CLAUSE_WORDS = 3   # both sides of a split must be this substantial, else it's a serial list / fragment
 
 _WARNING_TEMPLATE = 'WARNING: credits "{claim}"; no receipt for that.'
 
 _DIFF_NOTE = (
-    "Claims are split at the SENTENCE level -- a crude, model-free stand-in for 'atomic claim' (a compound "
-    "sentence crediting two different things, e.g. 'I was concise because you asked, and warm because I "
-    "like you', is judged as ONE claim here, so a partial confabulation can hide behind a partner clause "
-    "that IS supported; real clause-level claim extraction is later, on-model work). Support is judged by "
-    "the pluggable `support_matcher` (default: lexical_default, a WEAK keyword-overlap proxy documented on "
-    "its own docstring to both over- and under-flag -- see this module's docstring, 'THE HONESTY BOUNDARY'). "
-    "A matcher that raises on a given claim is treated as UNSUPPORTED for that claim (fail closed, never "
-    "silently trust an errored judgment)."
+    "Claims are split by `clause_split` (the default `claim_splitter`): sentence-level, then a further split "
+    "of each sentence on coordinating boundaries (';' and ', and/but/so/yet ') so a COMPOUND sentence "
+    "crediting two different things -- 'I was concise because you asked, and warm because I like you' -- is "
+    "judged as TWO claims, closing the gap where a partial confabulation could hide behind a supported "
+    "partner clause. Still a heuristic, not a parser: serial lists and bare fragments are kept WHOLE (a "
+    "multi-way split is taken only when every piece is a substantial clause), subordinate 'because'/'since' "
+    "reasons ride WITH their clause (an NLI matcher then flags 'warm because I like you' as a unit), and "
+    "non-comma 'and' joins are not split -- pass a different `claim_splitter` (`_split_claims` for pure "
+    "sentence-level, or a model-based extractor) to change this. Support is judged by the pluggable "
+    "`support_matcher` (default: lexical_default, a WEAK keyword-overlap proxy -- see the module docstring's "
+    "'HONESTY BOUNDARY'; the real judge is semantic_matcher.nli_support_matcher). A matcher that raises on a "
+    "claim is treated as UNSUPPORTED for it (fail closed, never silently trust an errored judgment)."
 )
 
 
 def _split_claims(text: str) -> list[str]:
-    """Sentence-level split (see `_DIFF_NOTE` for why this is a crude, documented stand-in for real claim
-    extraction). Empty/whitespace-only/non-string input yields an empty list -- never raises."""
+    """Sentence-level split -- the BASE the default `clause_split` builds on, and a valid `claim_splitter`
+    in its own right for pure sentence-level behavior. Empty/whitespace-only/non-string input yields an
+    empty list -- never raises."""
     if not text or not isinstance(text, str):
         return []
     return [p.strip() for p in _CLAIM_SPLIT_RE.findall(text) if p.strip()]
 
 
-def confabulation_diff(unconstrained_text: str, explanation: dict, support_matcher=lexical_default) -> dict:
+def clause_split(text: str) -> list[str]:
+    """The DEFAULT claim splitter: sentence-level first (`_split_claims`), then a further split of each
+    sentence on coordinating boundaries (`_CLAUSE_SPLIT_RE`) so a COMPOUND sentence crediting two different
+    things -- "I was concise because you asked, and warm because I like you" -- becomes two independently
+    judged claims, closing the gap where a confabulation could hide behind a supported partner clause.
+
+    Conservative on purpose: a multi-way split is accepted ONLY when every piece is a substantial clause
+    (>= `_MIN_CLAUSE_WORDS` words); otherwise (a serial list like "concise, clear, and direct", or a bare
+    fragment) the sentence is kept WHOLE rather than mangled. This is a heuristic, not a parser -- nested /
+    implicit coordination and non-comma "and" joins are not split (documented in `_DIFF_NOTE`, not hidden).
+    Never raises; empty/garbage input -> []."""
+    out: list[str] = []
+    for sentence in _split_claims(text):
+        parts = [p.strip() for p in _CLAUSE_SPLIT_RE.split(sentence) if p and p.strip()]
+        if len(parts) > 1 and all(len(p.split()) >= _MIN_CLAUSE_WORDS for p in parts):
+            out.extend(parts)
+        else:
+            out.append(sentence.strip())
+    return out
+
+
+def confabulation_diff(unconstrained_text: str, explanation: dict, support_matcher=lexical_default,
+                       claim_splitter=clause_split) -> dict:
     """THE HONESTY CORE. Split `unconstrained_text` (the confabulation sample -- pass
-    `unconstrained_why(...)["unconstrained_text_context_only"]`, never the whole dict) into atomic claims,
-    and tag EACH ONE supported/unsupported by calling `support_matcher(claim, explanation)` -- a callable
+    `unconstrained_why(...)["unconstrained_text_context_only"]`, never the whole dict) into atomic claims via
+    `claim_splitter` (default `clause_split`: sentence- then clause-level, so a compound sentence's parts are
+    judged separately -- see `_DIFF_NOTE`), and tag EACH ONE supported/unsupported by calling
+    `support_matcher(claim, explanation)` -- a callable
     that must return at least `{"supported": bool}` (`lexical_default`'s extra `matched_ids`/`matched_terms`
     keys are passed through onto the claim's entry when present, for transparency; a future semantic
     matcher's own extra keys, e.g. a confidence score, would flow through the same way).
@@ -425,7 +461,7 @@ def confabulation_diff(unconstrained_text: str, explanation: dict, support_match
     unsupported: list[dict] = []
     rendered: list[str] = []
 
-    for claim in _split_claims(unconstrained_text):
+    for claim in claim_splitter(unconstrained_text):
         try:
             result = support_matcher(claim, explanation)
         except Exception:
@@ -460,7 +496,7 @@ def confabulation_diff(unconstrained_text: str, explanation: dict, support_match
 # narrate -- the top-level assembly. Returns the CONSTRAINED narration with flags. Never the raw "why".
 # --------------------------------------------------------------------------------------------------------
 
-def narrate(run: dict, sub, support_matcher=lexical_default) -> dict:
+def narrate(run: dict, sub, support_matcher=lexical_default, claim_splitter=clause_split) -> dict:
     """The top-level M4 assembly: `explain.explain(run)` for the M1 facts, `constrained_narration` for the
     receipt-bound "why", `unconstrained_why` for the confabulation sample, `confabulation_diff` to tag and
     flag it -- then return ONLY the constrained narration plus the flags, per THE TRAP guard in this
@@ -494,7 +530,8 @@ def narrate(run: dict, sub, support_matcher=lexical_default) -> dict:
         why_text = ""
 
     try:
-        diff = confabulation_diff(why_text, explanation, support_matcher=support_matcher)
+        diff = confabulation_diff(why_text, explanation, support_matcher=support_matcher,
+                                  claim_splitter=claim_splitter)
     except Exception:
         diff = {"unsupported_claims": [], "matcher": getattr(support_matcher, "__name__", repr(support_matcher))}
 
