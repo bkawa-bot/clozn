@@ -1,4 +1,4 @@
-# FINDINGS — the capstone ledger (2026-07-01 → 07-03)
+# FINDINGS — the capstone ledger (2026-07-01 → 07-05)
 
 *Two days, ~30 commits, six-plus agent instances, one law discovered from five directions. Every claim
 below carries its receipt (file + number). Caveats: mostly one model family (Qwen2.5), single seeds,
@@ -15,6 +15,11 @@ experiment findings files are the territory.*
    **Consequence: model self-narration about its own memory is structurally untrustworthy; receipts
    (ablation + measurement) are the only honest readout.** Transcript-receipts don't cure it;
    measured-fact receipts route around it (`self_audit_cure`, `self_audit_blackbox`).
+   **Now CONFIRMED cross-family** (Wave 1, `mirror_bench_findings.md`): on Gemma-2-9B as on Qwen,
+   baking→FAITHFUL and concise→BLIND — the gap is a property of instruction-tuned transformers, not of
+   one family. Failure MODES diverge (Gemma confabulates a rule Qwen stays silent on). And the quine
+   test (`quine_findings.md`) shows the inverse also holds: handing the model a *measured* readout of
+   its own state (even its SAE features) does NOT lift the blindness — no self-specific self-prediction gain.
 
 2. **Don't fuse — five independent confirmations.** Explicit/addressable representations beat fused
    ones: fastweight list vs fused ΔW (pre-session, 3×); fused prefix interference at N=64 ("whose dog
@@ -59,6 +64,44 @@ experiment findings files are the territory.*
    scalar self-confidence probes are dead at every scale; lexical metrics get gamed by degeneration
    (5 instances) — **every receipt needs a coherence/sanity axis**; scale flips small-model verdicts
    (dials, few-shot redeemed at 7B) — never publish a 1.5B verdict unqualified.
+
+## Wave 1 — cross-family validation (Qwen-7B × Gemma-2-9B, 2026-07-05)
+
+Four "wild experiments" (`WILD_EXPERIMENTS.md`) run on a SECOND family (google/gemma-2-9b-it nf4) beside
+Qwen2.5-7B — turning single-family findings into claims about transformers, or finding where Qwen was
+load-bearing. Pre-reg: `WILD_WAVE1_PREREG.md`. The pattern: the **feature-flavored** experiments both came
+back *don't-ship*; the **mechanism/instrument** ones yielded the usable findings.
+
+- **#7 mirror bench — Law #1 reproduces cross-family** (the win). baking→FAITHFUL, concise→BLIND on BOTH
+  families. Divergent failure modes: Gemma CONFABULATES a rule (claims a question-habit it doesn't
+  perform) where Qwen stays honestly silent; Gemma's faked concision claim is caught by the behavioural
+  receipt where Qwen's leaks into real behaviour. `mirror_bench_findings.md`.
+- **#4 parliament of stances — NO robust effect, don't ship.** Merge-ensemble of steered decodes vs
+  nulls: the families CONTRADICT (Qwen beats single/ties shuffled-null; Gemma ties single/beats
+  shuffled-null), coverage can't separate arms on either, judge SUSPECT both. Directedness unsupported;
+  only generic ensembling shows, judge-preference-only. `parliament_findings.md`.
+- **#9 quine test — NO self-specific benefit, don't ship.** SAE white-box self-view gives ZERO lift
+  (Qwen); the dial-label's weak effect is NOT self-specific (Gemma: a wrong label helps as much). Ground
+  truth = the model's own logprobs (no judge). `quine_findings.md`.
+- **#2 persistent injection — DEFERRED.** Rig + 49 tests built, but the nf4 KV-edit doesn't reach
+  generation (byte-identical output at 4× the natural V-norm — a wiring bug, not calibration); the
+  honesty gate correctly refused a fake curve. Confirmatory of Law #3, so deferred not debugged.
+  `persistent_injection_findings.md`.
+
+**Instrument bug this wave shook out (fixed, had been affecting every experiment):** `_coherence`'s
+script-switch check flagged ALL non-ASCII as degeneration, so Gemma's emoji-heavy coherent replies scored
+up to 100% "degenerate." Fixed to count foreign-SCRIPT letters (Cyrillic/CJK) only — after which real
+degeneration is 0% everywhere. The **6th** instance of law #6 ("a lexical metric with no sanity axis
+lies"), and the first where the sanity axis ITSELF was lying. Also: diff-of-means steering registers on
+Gemma-2 (2/5 stances live; softcapping didn't break it); TTT is nondeterministic (mirror-bench
+space/question flip run-to-run — multi-seed caveat, not chased).
+
+**Research close-out (2026-07-05):** SAE causal leg CLOSED (mechanistically explained by
+`function_vector_sweep` — no query-independent rule vector to clamp). Multi-seed replication SKIPPED
+(qualitative findings suffice for product decisions). Cross-family telepathy + Wave-2 #3 (KV handshake) /
+#5 (cross-substrate transfer) DEFERRED (research encores, not product-gating). Wave-2 **#8
+(receipts-as-reward)** and **#10 (idle self-play)** PROMOTED to active work — they lean on the measured/
+receipt channel that survived this wave, not the diversity/introspection intuitions that didn't.
 
 ## What got BUILT and proven (the receipts for the receipts)
 
