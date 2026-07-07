@@ -1432,6 +1432,11 @@ class EngineSubstrate(Substrate):
             raise RuntimeError("engine substrate needs a running GGUF engine (set CLOZN_ENGINE_QWEN_PORT)")
         self.engine = ENGINE_QWEN
         self.steer = _engine_steer()            # an EngineSteer on the GGUF (tone dials via steer_vec)
+        if self.steer is not None:               # metadata-only: the shipped library's names/poles/max, so
+            try:                                  # they show up in /steer/axes immediately (their direction
+                self.steer.load_library(_pers("studio_library.json"))   # vectors are computed lazily by compute())
+            except Exception:
+                pass
         self._mem = _EngineMemory()
         self.memory = self._mem                 # the studio reads SUB.memory in a few places
         self._pers_steer = _pers("studio_personality.json")

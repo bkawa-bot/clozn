@@ -483,9 +483,34 @@ class EngineSteer:
         self.ec = engine_client
         self.layer = layer
         self.vecs = {}                  # axis -> unit np.ndarray [n_embd]
+        self.custom = {}                # library/user dials: name -> {pos, neg, max, poles} (metadata only;
+        #                                  compute() derives their direction the same way it does for AXES)
         self.strength = {}              # axis -> slider value
         self.base, self.resid_norm = 1.0, 0.0
         self.ready = False
+
+    def load_library(self, path):
+        """Load the shipped dial LIBRARY's metadata (research/deploy_dial_library.py's studio_library.json,
+        {name: {pos, neg, max, source, category}}) into self.custom -- name -> {pos, neg, max, poles}, the
+        SAME shape SteeringControl.custom uses, so clozn_server's /steer/axes (which reads
+        getattr(self.steer, "custom", {})) lists these dials on the engine substrate too, tagged "library"
+        by _library_dial_names(). METADATA ONLY: unlike SteeringControl.load_custom (which calls add_custom
+        and harvests a direction immediately off a resident model), this makes NO harvest call -- harvesting
+        here means a live HTTP round-trip to the engine, so doing it eagerly at studio boot would be slow
+        and could fail before the engine is even up. Cheap and safe to call at boot; the direction vectors
+        are computed lazily by compute() (same recipe as the built-in AXES), the first time any dial is
+        actually used. Missing/broken file -> no-op, never raise. Idempotent (just re-populates the dict
+        from the file's current contents -- re-callable any time, e.g. after a library redeploy)."""
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            for name, v in data.items():
+                self.custom[name] = {"pos": v["pos"], "neg": v["neg"], "max": float(v.get("max", 0.5)),
+                                      "poles": [name, "neutral"]}
+        except Exception:
+            pass
 
     def compute(self, seeds=SEED_PROMPTS) -> dict:
         norms = []
@@ -497,13 +522,30 @@ class EngineSteer:
             norms += [float(np.linalg.norm(pos)), float(np.linalg.norm(neg))]
             d = pos - neg
             self.vecs[name] = d / (float(np.linalg.norm(d)) + 1e-8)
+        # LIBRARY/custom dials: the SAME diff-of-means recipe, over their own (pos, neg) poles -- so a
+        # shipped dial becomes steerable exactly like a built-in AXES entry. Not folded into the AXES-
+        # derived resid_norm/base above (the library poles run at a similar scale, so the simple AXES
+        # estimate stays the base for everything). Skip a name already in self.vecs so a repeat compute()
+        # call (or one after load_library() re-runs) never re-harvests a dial unnecessarily.
+        for name, entry in self.custom.items():
+            if name in self.vecs:
+                continue
+            pos = np.mean([self.ec.harvest(entry["pos"] + "\n\n" + s, layer=self.layer).activations.mean(0)
+                           for s in seeds], axis=0)
+            neg = np.mean([self.ec.harvest(entry["neg"] + "\n\n" + s, layer=self.layer).activations.mean(0)
+                           for s in seeds], axis=0)
+            d = pos - neg
+            self.vecs[name] = d / (float(np.linalg.norm(d)) + 1e-8)
         self.resid_norm = sum(norms) / len(norms)
         self.base = 0.08 * self.resid_norm
         self.ready = True
         return {"resid_norm": round(self.resid_norm, 1), "base": round(self.base, 1), "axes": list(self.vecs)}
 
     def set(self, name, value):
-        mx = AXES.get(name, {}).get("max", 1.5)      # cap per-axis (cognitive axes degenerate past their sweet spot)
+        # cap per-dial: a built-in AXES max, falling back to a library/custom dial's own calibrated max
+        # (finickier shipped dials -- e.g. "detailed" at 0.25 -- degenerate past their sweet spot too),
+        # else the generic 1.5.
+        mx = (AXES.get(name) or self.custom.get(name) or {}).get("max", 1.5)
         self.strength[name] = max(-mx, min(mx, float(value)))
 
     @staticmethod
