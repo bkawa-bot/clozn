@@ -149,10 +149,20 @@ def replay(run: dict, changes: dict, sub) -> dict | None:
         t0 = time.time()
         notes = _apply_changes(changes, sub, mode)
         eff_dials = _effective_dials(sub)
+        trace_steps: list = []          # per-token trace of the replay reply (B3) -- the baseline-vs-replay
+        #                                 token diff needs it; replay previously never passed trace_out.
         try:
             # greedy:true (the receipts path) decodes deterministically, so the original-vs-replayed
             # difference is attributable to the CHANGE, not to sampling dice. Default stays sampled.
-            reply = chat(messages, max_new=256, sample=not bool(changes.get("greedy")))
+            # Capture the per-token trace when chat supports it (the real substrates do); fall back for a
+            # chat that predates trace_out -- replay's sub contract is just (messages, max_new=, sample=).
+            sampled = not bool(changes.get("greedy"))
+            try:
+                reply = chat(messages, max_new=256, sample=sampled, trace_out=trace_steps)
+            except TypeError as e:
+                if "trace_out" not in str(e):
+                    raise                                    # a real TypeError from inside chat, not the kwarg
+                reply = chat(messages, max_new=256, sample=sampled)
         finally:
             # restore EXACTLY -- and never persist the temporary dials (no save_state here).
             if steer is not None:
@@ -175,6 +185,17 @@ def replay(run: dict, changes: dict, sub) -> dict | None:
                     pass
 
         reply = reply if isinstance(reply, str) else str(reply)
+
+        # the replay's own stop cause + repro metadata (engine substrate) -- the SAME fields a live run
+        # carries, read after generation (the finally above doesn't touch these stashes). Per-substrate
+        # best-effort: a substrate without them (e.g. an HF stub) simply records None / {}.
+        finish = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
+        meta = None
+        try:
+            if hasattr(sub, "run_meta"):
+                meta = sub.run_meta() or None
+        except Exception:
+            meta = None
 
         # child memory summary: what memory looked like *for this replay* (strength reflects memory_off).
         # In prompt mode the summary is card-store-based and honors the per-card ablation: cards_applied
@@ -217,6 +238,9 @@ def replay(run: dict, changes: dict, sub) -> dict | None:
             response=reply,
             memory=memd,
             behavior={"active_dials": eff_dials},
+            trace=trace_steps,
+            finish_reason=finish,
+            meta=meta,
             parent_run_id=run.get("id"),
             changes_applied=changes,
             started=t0,

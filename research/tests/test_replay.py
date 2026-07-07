@@ -65,10 +65,13 @@ class FakeSub:
         self.seen = {}                                     # snapshot of what chat observed
         self.calls = 0
 
-    def chat(self, messages, max_new=256, sample=True):
+    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
         self.calls += 1
         self.seen = {"memory_strength": self.memory.memory_strength,
                      "dials": dict(self.steer.strength), "max_new": max_new, "sample": sample}
+        if trace_out is not None:                          # mirror the real chat: fill the per-token trace
+            trace_out.extend([{"piece": "re", "conf": 0.9, "alts": []},
+                              {"piece": "ply", "conf": 0.7, "alts": []}])
         return (f"reply mem={self.memory.memory_strength} "
                 f"dials={sorted(self.steer.strength.items())}")
 
@@ -194,6 +197,40 @@ def test_reply_differs_when_memory_toggled(store):
     assert plain["response"] != off["response"]
 
 
+# --- per-token trace + repro fields on the child run (the data a baseline-vs-replay diff needs) -----------
+
+def test_replay_captures_the_per_token_trace(store):
+    """The gap this closes: replay now passes trace_out to chat and records it, so the child run carries a
+    token timeline. Previously replays stored an empty trace and the token diff had nothing to compare."""
+    child = replay.replay(RUN, {}, FakeSub())
+    assert child["trace"]["tokens"] == ["re", "ply"]
+    assert child["trace"]["confidence"] == [0.9, 0.7]
+
+
+class _MetaSub(FakeSub):
+    """A substrate exposing the engine's post-generation stashes (last_finish_reason / run_meta)."""
+
+    def last_finish_reason(self):
+        return "length"
+
+    def run_meta(self):
+        return {"quant": "Q4_K_M", "sampling": "greedy"}
+
+
+def test_replay_records_finish_reason_and_meta_when_available(store):
+    child = replay.replay(RUN, {}, _MetaSub())
+    assert child["finish_reason"] == "length"
+    assert child["meta"] == {"quant": "Q4_K_M", "sampling": "greedy"}
+    assert "truncated" in child["flags"]                   # length -> truncated, exactly like a live run
+
+
+def test_replay_without_engine_stashes_records_none(store):
+    """The HF stub has no last_finish_reason / run_meta -> those fields degrade to None / {}, never faked."""
+    child = replay.replay(RUN, {}, FakeSub())
+    assert child["finish_reason"] is None
+    assert child["meta"] == {}
+
+
 # --- never raises; returns None on a broken substrate -----------------------------------------------------
 
 def test_returns_none_when_no_chat(store):
@@ -205,7 +242,7 @@ def test_returns_none_when_no_chat(store):
 
 def test_returns_none_on_chat_exception_and_restores(store):
     class Boom(FakeSub):
-        def chat(self, messages, max_new=256, sample=True):
+        def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
             raise RuntimeError("model exploded")
     sub = Boom(mem=FakeMem(strength=1.3), steer=FakeSteer({"concise": 0.5}))
     assert replay.replay(RUN, {"memory_off": True, "behavior_off": True}, sub) is None
