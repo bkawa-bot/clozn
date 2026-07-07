@@ -1480,6 +1480,82 @@ class EngineSubstrate(Substrate):
             trace_out.extend(steps)
         return reply_raw.strip()
 
+    def last_stream_trace(self):
+        """The per-token trace captured during the most recent chat_stream (raw step list, or []) --
+        same contract as QwenSubstrate.last_stream_trace: the SSE handler reads this AFTER the generator
+        is exhausted, to log the run's Run Inspector timeline."""
+        return list(getattr(self, "_last_stream_trace", []) or [])
+
+    def chat_stream(self, messages, max_new=256, mem_out=None):
+        """Streaming twin of chat(): the SAME memory-block + tone-dial construction (kept in lockstep --
+        see chat()'s comments; do not let this drift from that logic), but opens the engine's
+        /v1/completions with stream:True (mirrors _engine_complete_traced's request) and yields text as
+        the engine commits it, instead of waiting on one blocking call. This is what makes /v1/chat/
+        completions's SSE branch (_sse_chat, gated on `getattr(SUB, "chat_stream", None)`) fire on the
+        pure-engine substrate too -- before this existed, a streaming request here silently fell through
+        to one non-streamed chat() reply. mem_out: as in chat() -- prompt mode records what memory
+        actually rode this turn.
+
+        Per-token trace (mirrors QwenSubstrate.chat_stream's B3 contract): every parsed SSE frame is
+        collected, then folded into self._last_stream_trace via runlog.accumulate_ar_events once the
+        stream ends -- normal completion OR an early GeneratorExit (the consumer stopped early) -- so a
+        partial stream still logs whatever trace it managed. Wrapped so any parse hiccup just leaves it
+        [], same as the non-streaming path's fallback."""
+        import urllib.request
+        import runlog
+        # MEMORY + TONE: built EXACTLY as chat() builds them.
+        block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
+        if mem_out is not None:
+            mem_out.update(mode="prompt", applied=applied, gate=gate)
+        prompt = _qwen_tmpl(_inject_block(messages, block))
+        kw = {}
+        st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or _disk_dials()
+        if self.steer is not None and st and any(st.values()):
+            sv = self.steer.steer_vector(st)
+            if sv:
+                kw["steer_vec"] = sv
+                kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
+        body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_new)
+        body["temperature"] = 0.0; body["stream"] = True
+        req = urllib.request.Request(self.engine.base + "/v1/completions",
+                                     data=json.dumps(body).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"})
+        self._last_stream_trace = []        # reset; reassembled in `finally` below (empty on any hiccup)
+        frames = []
+        resp = urllib.request.urlopen(req, timeout=getattr(self.engine, "timeout", 600))
+        try:
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(payload)
+                except Exception:
+                    continue
+                frames.append(obj)
+                if obj.get("type") == "tokens_committed":
+                    for it in obj.get("items") or []:
+                        piece = it.get("piece", "")
+                        if piece:
+                            yield piece
+        finally:
+            # ALWAYS release the engine connection -- whether the stream ran to [DONE] or the consumer
+            # stopped early (this `finally` also runs when the caller .close()s us mid-stream, via a
+            # GeneratorExit at the `yield` above); guarded so a close() hiccup can never mask a
+            # propagating GeneratorExit -- it must reach the caller, never be swallowed here. (The
+            # engine-side crash-on-disconnect is a separate C++-side task; this just closes cleanly.)
+            try:
+                resp.close()
+            except Exception:
+                pass
+            try:
+                self._last_stream_trace = runlog.accumulate_ar_events(frames)
+            except Exception:
+                self._last_stream_trace = []
+
     def handle(self, path, body):
         r = self._memory(path, body)
         if r is not None:

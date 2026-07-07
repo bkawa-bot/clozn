@@ -1423,21 +1423,34 @@ int main(int argc, char** argv) {
             res.set_chunked_content_provider(
                 "text/event-stream",
                 [run, id, model, board, mask_token](size_t, httplib::DataSink& sink) {
+                    auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    try {                                 // a generator throw here would otherwise escape into
+                                                          // httplib's worker thread -> abort(); catch it below.
                     auto on_event = [&](const Event& e) {
-                        const std::string frame =
-                            "data: " + sse_data_revise(e, *model, board, mask_token) + "\n\n";
-                        sink.write(frame.data(), frame.size());
+                        write("data: " + sse_data_revise(e, *model, board, mask_token) + "\n\n");
                     };
                     GenerateResult r = run(on_event);
                     json final_frame = {{"id", id}, {"object", "revise"},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
                                                      {"finish_reason", finish_reason(r.reason)}}})}};
-                    const std::string fl = "data: " + final_frame.dump() + "\n\n";
-                    sink.write(fl.data(), fl.size());
-                    const std::string done = "data: [DONE]\n\n";
-                    sink.write(done.data(), done.size());
+                    write("data: " + final_frame.dump() + "\n\n");
+                    write("data: [DONE]\n\n");
                     sink.done();
                     return true;
+                    } catch (const std::exception& e) {
+                        // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
+                        // and close the stream gracefully, mirroring /v1/completions' streaming guard.
+                        json err = {{"error", std::string("generation failed: ") + e.what()}};
+                        write("data: " + err.dump() + "\n\n");
+                        write("data: [DONE]\n\n");
+                        sink.done();
+                        return true;
+                    } catch (...) {
+                        write("data: {\"error\":\"generation failed\"}\n\n");
+                        write("data: [DONE]\n\n");
+                        sink.done();
+                        return true;
+                    }
                 });
             return;
         }
@@ -1531,22 +1544,35 @@ int main(int argc, char** argv) {
             res.set_chunked_content_provider(
                 "text/event-stream",
                 [run, id, model, board, mask_token](size_t, httplib::DataSink& sink) {
+                    auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    try {                                 // a generator throw here would otherwise escape into
+                                                          // httplib's worker thread -> abort(); catch it below.
                     auto on_event = [&](const Event& e) {
-                        const std::string frame =
-                            "data: " + sse_data_revise(e, *model, board, mask_token) + "\n\n";
-                        sink.write(frame.data(), frame.size());
+                        write("data: " + sse_data_revise(e, *model, board, mask_token) + "\n\n");
                     };
                     GenerateResult r = run(on_event);
                     json final_frame = {{"id", id}, {"object", "board"}, {"board", r.board},
                                         {"layout", board_layout_json(*model, r.board, mask_token)},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
                                                      {"finish_reason", finish_reason(r.reason)}}})}};
-                    const std::string fl = "data: " + final_frame.dump() + "\n\n";
-                    sink.write(fl.data(), fl.size());
-                    const std::string done = "data: [DONE]\n\n";
-                    sink.write(done.data(), done.size());
+                    write("data: " + final_frame.dump() + "\n\n");
+                    write("data: [DONE]\n\n");
                     sink.done();
                     return true;
+                    } catch (const std::exception& e) {
+                        // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
+                        // and close the stream gracefully, mirroring /v1/completions' streaming guard.
+                        json err = {{"error", std::string("generation failed: ") + e.what()}};
+                        write("data: " + err.dump() + "\n\n");
+                        write("data: [DONE]\n\n");
+                        sink.done();
+                        return true;
+                    } catch (...) {
+                        write("data: {\"error\":\"generation failed\"}\n\n");
+                        write("data: [DONE]\n\n");
+                        sink.done();
+                        return true;
+                    }
                 });
             return;
         }
@@ -1643,9 +1669,14 @@ int main(int argc, char** argv) {
         // The runner: acquire a context, BUILD + SET the control vector (the wrapped set_steer path),
         // generate, then clear. The layer window matches the per-request steer path (mid-depth, where
         // steer_probes is calibrated) unless target.layer pins one.
-        json applied_layers = json::array();
-        auto run = [&pool, &steer_probes, &concept_probes, &sae_serve, &raw_vec, concept, coef, req_layer, prompt_ids,
-                    cfg, revise, sample, features, ar_mode, &applied_layers](
+        // Written inside run() below, read by the streaming content-provider AFTER this handler returns
+        // (set_chunked_content_provider only registers the callback; it fires later, from httplib's worker
+        // thread, once this handler's stack frame is long gone). A plain handler-local `json` captured by
+        // reference here would dangle the moment the handler returns -- shared_ptr keeps it alive for both
+        // lambdas (same fix shape as raw_vec below, which only needs to be read, so a by-value copy suffices).
+        auto applied_layers = std::make_shared<json>(json::array());
+        auto run = [&pool, &steer_probes, &concept_probes, &sae_serve, raw_vec, concept, coef, req_layer, prompt_ids,
+                    cfg, revise, sample, features, ar_mode, applied_layers](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);
@@ -1674,7 +1705,7 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < m; ++i) slice[i] = static_cast<float>(coef * raw_vec[i]);
                 }
             }
-            applied_layers = json::array({lo, hi});
+            *applied_layers = json::array({lo, hi});
             (*lease).set_steer(cvec, lo, hi);
             auto r = ar_mode ? generate_ar(*lease, prompt_ids, cfg, ev, sample, probes)
                              : generate(*lease, prompt_ids, cfg, CacheConfig{}, nullptr, ev, revise, sample, probes);
@@ -1689,9 +1720,11 @@ int main(int argc, char** argv) {
         if (stream) {
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [run, id, model, protocol, state_full, substrate, mask_token, &applied_layers, kind, concept, coef]
+                [run, id, model, protocol, state_full, substrate, mask_token, applied_layers, kind, concept, coef]
                 (size_t, httplib::DataSink& sink) {
                     auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    try {                                 // a generator throw here would otherwise escape into
+                                                          // httplib's worker thread -> abort(); catch it below.
                     GenerateResult r;
                     if (protocol) {
                         StateStepBuilder builder(*model, substrate, state_full, write);
@@ -1705,7 +1738,7 @@ int main(int argc, char** argv) {
                     json final_frame = {{"kind", "final"}, {"id", id}, {"object", "intervene"},
                                         {"applied", true},
                                         {"intervention", {{"kind", kind}, {"concept", concept}, {"coef", coef},
-                                                          {"layers", applied_layers}}},
+                                                          {"layers", *applied_layers}}},
                                         {"text", r.text}, {"finish_reason", finish_reason(r.reason)},
                                         {"board", r.board},
                                         {"layout", board_layout_json(*model, r.board, mask_token)}};
@@ -1713,6 +1746,20 @@ int main(int argc, char** argv) {
                     write("data: [DONE]\n\n");
                     sink.done();
                     return true;
+                    } catch (const std::exception& e) {
+                        // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
+                        // and close the stream gracefully, mirroring /v1/completions' streaming guard.
+                        json err = {{"error", std::string("generation failed: ") + e.what()}};
+                        write("data: " + err.dump() + "\n\n");
+                        write("data: [DONE]\n\n");
+                        sink.done();
+                        return true;
+                    } catch (...) {
+                        write("data: {\"error\":\"generation failed\"}\n\n");
+                        write("data: [DONE]\n\n");
+                        sink.done();
+                        return true;
+                    }
                 });
             return;
         }
@@ -1720,7 +1767,7 @@ int main(int argc, char** argv) {
         GenerateResult r = run({});
         json resp = {
             {"id", id}, {"object", "intervene"}, {"applied", true},
-            {"intervention", {{"kind", kind}, {"concept", concept}, {"coef", coef}, {"layers", applied_layers}}},
+            {"intervention", {{"kind", kind}, {"concept", concept}, {"coef", coef}, {"layers", *applied_layers}}},
             {"choices", json::array({{{"text", r.text}, {"index", 0},
                          {"finish_reason", finish_reason(r.reason)}}})},
             {"board", r.board},
