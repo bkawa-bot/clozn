@@ -50,7 +50,12 @@ guard. See `RUNTIME_SPLIT.md` hard-part #6.
    session found **calibration is SUBSTRATE-specific** (the engine's steer scale ≠ PyTorch's — a dial value
    means different things per substrate), so a per-substrate calibrate-on-the-engine flow is genuinely
    needed (`RUNTIME_SPLIT.md` Phase 5). Where: refactor the calibration core to run against the live
-   substrate; give `EngineSteer` an `add_custom`. Model: Sonnet.
+   substrate; give `EngineSteer` an `add_custom`. Model: Sonnet. **STATUS 2026-07-07:** `add_custom`
+   SHIPPED — make-your-own-dial works on the engine. The engine calibration *metric* attempt
+   (`dial_autocalibrate_engine.py`) is **PARKED**: the ported raw-dot projection doesn't transfer to the
+   engine's scale (an obviously-steering dial reads below threshold; per-dial scale varies ~20×) — needs a
+   scale-invariant / per-dial-normalized redesign before any sweep is trustworthy. Full diagnosis +
+   fix-path: `research/dial_calibration_engine_findings.md`.
 
 3. **📋 Profiles studio UI** — unchanged; contained ~1-day product win (backend `research/profiles.py`
    tested, no front-end). Persona picker in the masthead, `/profiles/*` endpoints. Model: Sonnet/Opus.
