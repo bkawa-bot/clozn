@@ -220,15 +220,28 @@ class _MetaSub(FakeSub):
 def test_replay_records_finish_reason_and_meta_when_available(store):
     child = replay.replay(RUN, {}, _MetaSub())
     assert child["finish_reason"] == "length"
-    assert child["meta"] == {"quant": "Q4_K_M", "sampling": "greedy"}
+    assert child["meta"]["quant"] == "Q4_K_M" and child["meta"]["sampling"] == "greedy"
+    assert child["meta"]["capture_tier"] == "standard"     # the tier rides every run's meta
     assert "truncated" in child["flags"]                   # length -> truncated, exactly like a live run
 
 
+def test_replay_at_light_tier_drops_the_trace(store, monkeypatch):
+    """Light tier stores text-only -> the child run's trace is empty even though chat produced one, and the
+    tier is recorded. (End-to-end proof of the capture policy through a real runlog.record, no model.)"""
+    import capture_mode
+    monkeypatch.setattr(capture_mode, "tier", lambda: "light")
+    child = replay.replay(RUN, {}, FakeSub())
+    assert child["trace"] == {}
+    assert child["meta"]["capture_tier"] == "light"
+
+
 def test_replay_without_engine_stashes_records_none(store):
-    """The HF stub has no last_finish_reason / run_meta -> those fields degrade to None / {}, never faked."""
+    """The HF stub has no last_finish_reason / run_meta -> finish_reason None and no model_file/quant; the
+    capture tier is still recorded (it applies to every run, engine or not)."""
     child = replay.replay(RUN, {}, FakeSub())
     assert child["finish_reason"] is None
-    assert child["meta"] == {}
+    assert "model_file" not in child["meta"] and "quant" not in child["meta"]
+    assert child["meta"]["capture_tier"] == "standard"
 
 
 # --- never raises; returns None on a broken substrate -----------------------------------------------------

@@ -196,6 +196,15 @@ def replay(run: dict, changes: dict, sub) -> dict | None:
                 meta = sub.run_meta() or None
         except Exception:
             meta = None
+        # capture tier: record it, and drop the trace at light -- the same record policy as the live path.
+        try:
+            import capture_mode
+            _tier = capture_mode.tier()
+            meta = {**(meta or {}), "capture_tier": _tier}
+            if not capture_mode.captures_trace(_tier):
+                trace_steps = []
+        except Exception:
+            pass
 
         # child memory summary: what memory looked like *for this replay* (strength reflects memory_off).
         # In prompt mode the summary is card-store-based and honors the per-card ablation: cards_applied

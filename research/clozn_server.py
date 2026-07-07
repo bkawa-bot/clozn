@@ -1924,6 +1924,14 @@ def make_handler():
                         meta = SUB.run_meta() or None
                 except Exception:
                     meta = None
+                try:                                          # CAPTURE TIER: record it, and drop the trace at light
+                    import capture_mode
+                    tier = capture_mode.tier()
+                    meta = {**(meta or {}), "capture_tier": tier}
+                    if not capture_mode.captures_trace(tier):
+                        trace = None                          # light: text + finish_reason + metadata only
+                except Exception:
+                    pass
                 rid = runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
                                     model=str(model), substrate=SUBNAME, messages=messages, response=response,
                                     memory=memd, behavior={"active_dials": dials}, started=started, error=error,
@@ -2048,6 +2056,9 @@ def make_handler():
             if p == "/memory/mode":          # which mechanism carries the cards (works on ANY substrate)
                 import memory_mode
                 return self._json(200, {"mode": _memory_mode(), "modes": list(memory_mode.MODES)})
+            if p == "/capture/tier":         # how much white-box data each run stores (light/standard/deep/lab)
+                import capture_mode
+                return self._json(200, {"tier": capture_mode.tier(), "tiers": list(capture_mode.TIERS)})
             if p == "/timetravel/mode":      # #6: is per-turn KV snapshotting on? + ring config + store stats
                 import timetravel
                 out = {"enabled": timetravel.enabled(), **timetravel.get_config()}
@@ -2148,6 +2159,14 @@ def make_handler():
                     except Exception as e:
                         applied = {"error": f"{type(e).__name__}: {e}"}
                 return self._json(200, {"ok": True, "proposal": pr, "applied": applied})
+            if p == "/capture/tier":  # set the capture tier (persisted; applies to subsequent runs)
+                import capture_mode
+                name = str(body.get("tier", "")).strip().lower()
+                if name not in capture_mode.TIERS:
+                    return self._json(400, {"error": f"unknown tier (want one of {list(capture_mode.TIERS)})"})
+                if not capture_mode.set_tier(name):
+                    return self._json(200, {"ok": False, "reason": "could not persist the tier setting"})
+                return self._json(200, {"ok": True, "tier": name})
             if p == "/memory/mode":   # swap the memory mechanism (persisted; takes effect immediately)
                 import memory_mode
                 mode = str(body.get("mode", "")).strip().lower()
