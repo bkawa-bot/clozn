@@ -7,6 +7,60 @@ at seams with the session trailer convention, never set explicit timeouts on lon
 Environment: CUDA python = C:\Users\brigi\src\cloze\.venv\Scripts\python.exe; engine boot
 `python clozn_cli.py serve llama-1b --port 8080`; studio `clozn studio` (needs CLOZN_STUDIO_PYTHON).*
 
+---
+
+## 2026-07-06 — decision-updated production list (READ THIS FIRST; supersedes items 1–11 below where they conflict)
+
+*Session 2026-07-05→06 closed all six wild experiments, made the product-scope calls below, and built the
+dial auto-calibration feature. Items 1–11 (dated 2026-07-03) are mostly DONE or superseded — this section
+is the current truth. Research is fully pinned in `FINDINGS.md`.*
+
+**🔨 ACTIVE — dial auto-calibration → a validated dial library.** The calibration engine
+(`research/dial_autocalibrate.py`) is built + validated: DIRECTION-AWARE effect (projects each reply onto
+the dial's own diff-of-means axis — NOT mere change-magnitude, which falsely passed reformatting dials),
+coherence-gated, shuffled-direction null. A ~71-dial candidate library
+(`research/dial_library_candidates.json`, 15 categories, hypothesis-tagged) is being swept to find which
+dials genuinely steer on the model. Studio wiring DONE: `/steer/axes` serves each dial's calibrated range,
+`behavior.js` caps sliders + greys dead dials with "no measurable effect on this model." REMAINING: run
+`--report` to curate → drop `dial_library_curated.json` at `~/.clozn/dial_calibration.json` → ship.
+Emerging finding: **rich positive-signature dials steer** (distinctive voices, social-directness, affect);
+**absence/default dials go dead** (plainspoken, prose, punchy — can't steer toward an absence); **epistemic
+stances are fragile** (skeptical flips live↔dead between runs). Ship a *measured* library, not a guessed one.
+
+**➕ NEXT BUILDS (natural extensions):**
+- **Auto-calibrate custom dials on creation** — the "make your own dial" UI calls the calibration engine and
+  tells the user "works (range X)" or "doesn't steer well on your model — try different poles." Turns the
+  engine into a live feature. Needs the calibration core refactored to run against the LIVE substrate.
+- **Expand the winning dial categories** to fill the shipped library (map-then-expand).
+
+**⭐ NORTH STAR — substrate-agnostic studio server (the real engine convergence; biggest structural lever).**
+Features (memory/dials/receipts) only drive the PyTorch substrate today; implement the full `Substrate`
+interface for the C++ engine so the same feature code runs on the fast runtime. Roadmap Phases 1–2,
+ENGINEERING not research — the primitives exist (engine seam mapped this session). This is what collapses
+the PyTorch/engine dual system. Clean split: **engine = online runtime, PyTorch = offline lab/trainer**
+(gradients, calibration). Engine-frontier-AS-SLOT-MEMORY is **SHELVED** (thin payoff + ~86ms/turn latency
+tax even ported) — convergence is the receipt/legibility surface + existing features, not a new kernel.
+
+**🔑 KEY ENABLER — preference-signal plumbing (thumbs / regenerate / edits).** Blocks dial auto-*select*
+(pick the value, not just calibrate the range) AND voice/LoRA learning ("learn how you want me to act").
+Highest-leverage single input to build.
+
+**📋 QUEUED product gaps:** Profiles studio UI (backend tested, no front-end); engine restart + `--sae` CLI
+passthrough (+ restart the engine/`:8097` studio stopped this session for GPU headroom); KV fast-path for
+time-travel branches (snapshot restore, mechanism proven).
+
+**🕗 DEFERRED / de-prioritized (with reason):** Memory hardening (provenance/ownership/durability/adversarial
+gates) — de-prioritized per the local single-user threat model; REVISIT if the assistant ingests external
+content. Slot value-injection into reply — lower priority (slot memory de-emphasized). Persistent-injection
+nf4 KV-edit bug — deferred (`persistent_injection_findings.md`). Receipt-tuned wording (#8) — RAG-tier win.
+
+**❌ KILLED (research said don't build):** Parliament (panel of stances), Quine (show-the-model-its-state).
+
+**📚 RESEARCH pinned in `FINDINGS.md`:** all 6 wild experiments (Wave 1 cross-family Qwen×Gemma + Wave 2).
+Encores DEFERRED: cross-family telepathy, SAE causal leg (mechanistically closed), multi-seed replication.
+
+---
+
 1. **Provenance on memory candidates** (the OBEY defense) — Sonnet, ~half day. Every proposed card
    gets `source_run_id` + `source_turn` + the quoted span; the Memory page shows "you said this" with
    a link; candidates WITHOUT provenance are flagged, never auto-approvable. Files:

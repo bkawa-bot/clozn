@@ -124,24 +124,30 @@
   function mkSlider(a, ctx) {
     var mx = a.max || 1.5;
     var v = +a.value || 0;
+    // Calibration fields (a.calibrated/a.works/a.usable_range/a.derail_point) are ALL additive -- absent
+    // for any dial the server hasn't calibrated (or when /steer/axes is offline, via the postJSON
+    // fallback), so `dead` is false and every branch below renders exactly as it did before this existed.
+    var dead = a.calibrated === true && a.works === false;   // calibrated on THIS model, but no usable range
 
     var valEl = S.el("span", { class: "bx-val" }, [v.toFixed(2)]);
     var leanEl = S.el("span", { class: "bx-lean" }, [leaning(a, v)]);
 
     var range = S.el("input", {
       type: "range", min: String(-mx), max: String(mx), step: "0.05", value: String(v),
-      "data-name": a.name, class: "bx-range",
+      "data-name": a.name, class: "bx-range", disabled: dead ? "disabled" : null,
     }, []);
-    range.addEventListener("input", function () {
-      var nv = parseFloat(range.value);
-      state.values[a.name] = nv;
-      valEl.textContent = nv.toFixed(2);
-      leanEl.textContent = leaning(a, nv);
-      clearTimeout(setTimer);
-      setTimer = setTimeout(function () {
-        ctx.postJSON("/steer/set", { name: a.name, value: nv }, null);
-      }, 160);
-    });
+    if (!dead) {
+      range.addEventListener("input", function () {
+        var nv = parseFloat(range.value);
+        state.values[a.name] = nv;
+        valEl.textContent = nv.toFixed(2);
+        leanEl.textContent = leaning(a, nv);
+        clearTimeout(setTimer);
+        setTimer = setTimeout(function () {
+          ctx.postJSON("/steer/set", { name: a.name, value: nv }, null);
+        }, 160);
+      });
+    }
 
     // label line: plain-language poles, a "yours" tag + delete for custom dials, and the value.
     var labelKids = [S.el("b", {}, [axisLabel(a)])];
@@ -153,7 +159,7 @@
       }, ["✕"]));
     }
 
-    return S.el("div", { class: "bx-slider" }, [
+    var kids = [
       S.el("div", { class: "bx-lab" }, [
         S.el("span", {}, labelKids),
         S.el("span", { class: "bx-meta" }, [leanEl, valEl]),
@@ -163,8 +169,30 @@
         S.el("span", {}, [poleLo(a) || "–"]),
         S.el("span", {}, [poleHi(a)]),
       ]),
-    ]);
+    ];
+    // calibration readout -- a disabled-dial note, or a working-dial hint, never both, never for an
+    // uncalibrated dial (a.calibrated falsy skips this whole block, unchanged from today).
+    if (dead) {
+      kids.push(S.el("p", { class: "bx-calnote bx-calnote-dead" }, ["no measurable effect on this model"]));
+    } else if (a.calibrated === true && a.works === true) {
+      kids.push(S.el("p", { class: "bx-calnote" }, [calibrationHint(a)]));
+    }
+
+    return S.el("div", { class: "bx-slider" + (dead ? " bx-slider-dead" : "") }, kids);
   }
+
+  // "works 0.25–1.0[ · derails past 1.5]" -- a.usable_range is [dead_below, usable_max] (server-side
+  // naming; either end may in principle be null, though the server only ever sends works:true alongside a
+  // complete range). a.derail_point uses `!= null` (not a truthy check) since 0 is itself a valid derail
+  // point (an already-degenerate baseline) per research/dial_autocalibrate.py's own docs.
+  function calibrationHint(a) {
+    var r = a.usable_range || [];
+    var lo = r[0], hi = r[1];
+    var txt = "works " + (lo != null ? fmtDial(lo) : "?") + "–" + (hi != null ? fmtDial(hi) : "?");
+    if (a.derail_point != null) txt += " · derails past " + fmtDial(a.derail_point);
+    return txt;
+  }
+  function fmtDial(n) { return String(Math.round(+n * 100) / 100); }
 
   function deleteDial(name, ctx) {
     ctx.postJSON("/steer/custom_delete", { name: name }, null).then(function () {
@@ -383,6 +411,10 @@
       ".bx-val{color:var(--soft);font-size:12px;min-width:38px;text-align:right;font-variant-numeric:tabular-nums}" +
       ".bx-range{width:100%;accent-color:var(--halo);margin:5px 0 2px}" +
       ".bx-poles{display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint)}" +
+      ".bx-calnote{color:var(--faint);font-size:11px;margin:6px 0 0;line-height:1.4}" +
+      ".bx-calnote-dead{font-style:italic}" +
+      ".bx-slider-dead{opacity:.55}" +
+      ".bx-slider-dead .bx-range{cursor:not-allowed}" +
       ".bx-tag{font-size:9.5px;color:var(--cyan);border:1px solid var(--line);border-radius:7px;padding:0 4px;margin-left:6px;vertical-align:middle}" +
       ".bx-del{cursor:pointer;color:var(--faint);margin-left:7px;font-size:11px;vertical-align:middle}" +
       ".bx-del:hover{color:#e0607a}" +

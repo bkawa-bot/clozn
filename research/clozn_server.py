@@ -95,6 +95,61 @@ def _disk_dials():
         return {}
 
 
+def _dial_calibration():
+    """The curated per-model dial calibration (research/dial_autocalibrate.py's sweep -- see that module's
+    docstring), read from ~/.clozn -- NEVER research/runs/dial_autocalibrate.json directly (that raw
+    research file carries full curves + sample_replies per dial, meant for a human to eyeball, not to be
+    re-parsed on every /steer/axes call; a curator step distills it down to just what a slider needs and
+    persists THAT here). Missing/broken file -> {} (never raise): calibration is optional enrichment, so
+    every caller must behave EXACTLY as it did before this existed when the file isn't there yet.
+
+    Returns {dial_name: {"usable_max", "usable_range", "derail_point", "works"}, ...}. Tolerant of either a
+    flat {dial_name: {...}} file, or one shaped like the raw research JSON ({"dials": {dial_name: {...}}},
+    with "range_valid" instead of "works") -- whichever shape the curated file ends up in, this keeps
+    working. A per-entry parse problem drops just that one dial (skipped, not crashed on)."""
+    path = _pers("dial_calibration.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        table = raw.get("dials", raw) if isinstance(raw, dict) else {}
+        out = {}
+        for name, c in table.items():
+            if not isinstance(c, dict):
+                continue
+            works = c.get("works", c.get("range_valid"))
+            out[name] = {
+                "usable_max": c.get("usable_max"),
+                "usable_range": c.get("usable_range"),
+                "derail_point": c.get("derail_point"),
+                "works": bool(works),
+            }
+        return out
+    except Exception:
+        return {}
+
+
+def _with_calibration(axis, c):
+    """Merge one _dial_calibration() entry into one /steer/axes axis dict, IN PLACE (also returned, so this
+    reads as an expression in a list comprehension) -- the one spot that decides what a calibrated slider
+    looks like to the studio UI. No entry for this dial (c falsy/missing) -> the axis is untouched except
+    for "calibrated": False added: NO behavior change for a dial nobody has calibrated on this model (Law
+    #6 -- the uncalibrated case must render exactly as it always has). An entry -> "max" becomes the
+    CALIBRATED usable_max, falling back to the axis's own already-declared max when usable_max itself is
+    None (a dial swept but never found usable), plus "usable_range"/"derail_point"/"works" for the UI to
+    grey out a dead dial or show its working range."""
+    if not c:
+        axis["calibrated"] = False
+        return axis
+    axis["max"] = c["usable_max"] if c.get("usable_max") is not None else axis["max"]
+    axis["usable_range"] = c.get("usable_range")
+    axis["derail_point"] = c.get("derail_point")
+    axis["works"] = bool(c.get("works"))
+    axis["calibrated"] = True
+    return axis
+
+
 # ------- memory cards <-> the working prefix (D2 + E1) --------------------------------------------
 # The cards (research/memory_cards.py) are the metadata + review layer; the trained soft-prefix is
 # UNCHANGED. The contract that keeps the prefix safe: m.rules is ALWAYS the texts of the ACTIVE cards,
@@ -946,11 +1001,15 @@ class Substrate:
     def _steer(self, path, body):
         from steering import AXES
         if path == "/steer/axes":
-            axes = [{"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0),
-                     "max": AXES[k].get("max", 1.5)} for k in AXES]
+            calib = _dial_calibration()   # {} when uncalibrated/offline -- _with_calibration no-ops per axis
+            axes = [_with_calibration(
+                        {"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0),
+                         "max": AXES[k].get("max", 1.5)}, calib.get(k))
+                    for k in AXES]
             for k, v in getattr(self.steer, "custom", {}).items():   # user-defined dials alongside the built-ins
-                axes.append({"name": k, "poles": v["poles"], "value": self.steer.strength.get(k, 0.0),
-                             "max": v["max"], "custom": True})
+                axes.append(_with_calibration(
+                    {"name": k, "poles": v["poles"], "value": self.steer.strength.get(k, 0.0),
+                     "max": v["max"], "custom": True}, calib.get(k)))
             return {"axes": axes, "ready": self._steer_ready, "substrate": self.name}
         self._ensure_steer()                    # compute the axis vectors once on first real use (race-safe)
         if path == "/steer/compute":
