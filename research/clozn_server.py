@@ -1476,7 +1476,8 @@ class EngineSubstrate(Substrate):
             if sv:
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
-        reply_raw, steps = _engine_complete_traced(self.engine, prompt, max_new, kw)
+        reply_raw, steps, finish = _engine_complete_traced(self.engine, prompt, max_new, kw)
+        self._last_finish_reason = finish                   # stash for last_finish_reason() (the log path)
         if trace_out is not None:
             trace_out.extend(steps)
         return reply_raw.strip()
@@ -1486,6 +1487,36 @@ class EngineSubstrate(Substrate):
         same contract as QwenSubstrate.last_stream_trace: the SSE handler reads this AFTER the generator
         is exhausted, to log the run's Run Inspector timeline."""
         return list(getattr(self, "_last_stream_trace", []) or [])
+
+    def last_finish_reason(self):
+        """The stop cause ("stop"|"length"|...) from the most recent chat()/chat_stream, or None. Same
+        stash-and-read contract as last_stream_trace: the handler reads it AFTER generation, so the run
+        logs WHY the engine stopped instead of a hard-coded 'stop'."""
+        return getattr(self, "_last_finish_reason", None)
+
+    def run_meta(self):
+        """Reproducibility metadata -- WHAT produced a run -- for the run record. Fetched once from
+        /health (model file -> quant, engine mode) and cached; the sampling regime is greedy (chat and
+        chat_stream both force temperature 0). n_ctx and device aren't exposed by /health yet -- a small
+        C++ follow-up -- so we OMIT them rather than fabricate. Never raises: metadata never breaks a run."""
+        m = getattr(self, "_run_meta", None)
+        if m is not None:
+            return dict(m)
+        m = {"sampling": "greedy"}
+        try:
+            h = self.engine.health() if (self.engine and hasattr(self.engine, "health")) else {}
+            mp = str((h or {}).get("model", ""))
+            if mp:
+                m["model_file"] = mp.replace("\\", "/").rsplit("/", 1)[-1]
+                q = _quant_from_name(m["model_file"])
+                if q:
+                    m["quant"] = q
+            if (h or {}).get("mode"):
+                m["mode"] = h["mode"]
+        except Exception:
+            pass
+        self._run_meta = m
+        return dict(m)
 
     def chat_stream(self, messages, max_new=256, mem_out=None):
         """Streaming twin of chat(): the SAME memory-block + tone-dial construction (kept in lockstep --
@@ -1556,6 +1587,10 @@ class EngineSubstrate(Substrate):
                 self._last_stream_trace = runlog.accumulate_ar_events(frames)
             except Exception:
                 self._last_stream_trace = []
+            try:
+                self._last_finish_reason = runlog.finish_reason_from_frames(frames)
+            except Exception:
+                self._last_finish_reason = None
 
     def handle(self, path, body):
         r = self._memory(path, body)
@@ -1586,8 +1621,17 @@ def switch_substrate(name):
                   "--host", ARGS.host])
 
 
+def _quant_from_name(name):
+    """Pull the GGUF quant tag (Q4_K_M, Q8_0, IQ4_XS, F16, ...) out of a model filename, or None. GGUF
+    files name their quantization in the basename, so this is the one bit of repro metadata we can read
+    for free (no engine change) off /health's model path."""
+    import re
+    m = re.search(r"(IQ\d+[A-Z0-9_]*|Q\d+(?:_[A-Z0-9]+)+|Q\d+|BF16|F16|F32)", str(name), re.IGNORECASE)
+    return m.group(1).upper() if m else None
+
+
 def _engine_complete_traced(engine, prompt, max_tokens, kw):
-    """Generate on the engine and ALSO capture a per-token trace (issue B3), returning (reply, steps).
+    """Generate on the engine and ALSO capture a per-token trace (issue B3), returning (reply, steps, finish).
 
     The engine's non-streaming /v1/completions carries only the final text -- no per-token confidence. To
     populate the Run Inspector timeline we ask the SAME request with stream:True and fold its per-token
@@ -1623,16 +1667,18 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw):
                     text = ch[0]["text"]
         import runlog
         steps = runlog.accumulate_ar_events(frames)
+        finish = runlog.finish_reason_from_frames(frames)   # the engine's real stop cause (else None)
         if not text:                                        # no final frame text -> reassemble from the pieces
             text = "".join(s.get("piece", "") for s in steps)
         if steps or text:
-            return text, steps
+            return text, steps, finish
     except Exception:
         pass
     # Fallback: the original blocking path, reply preserved, trace simply empty.
     r = engine.complete(prompt, max_tokens=max_tokens, temperature=0.0, **kw)
     ch = r.get("choices") if isinstance(r, dict) else None
-    return (ch[0].get("text", "") if ch else str(r)), []
+    finish = ch[0].get("finish_reason") if (ch and isinstance(ch[0], dict)) else None
+    return (ch[0].get("text", "") if ch else str(r)), [], finish
 
 
 def make_handler():
@@ -1691,11 +1737,13 @@ def make_handler():
                 chunk({"role": "assistant"})
                 for piece in SUB.chat_stream(messages, max_new, mem_out=memout):
                     acc.append(piece); chunk({"content": piece})
-                chunk({}, finish="stop")
+                fr = SUB.last_finish_reason() if hasattr(SUB, "last_finish_reason") else None
+                chunk({}, finish=fr or "stop")              # the engine's real stop cause, not a hard-coded "stop"
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
                 trace = SUB.last_stream_trace() if hasattr(SUB, "last_stream_trace") else None
-                self._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace, mem_out=memout)
+                self._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace, mem_out=memout,
+                              finish_reason=fr)
             except Exception as e:
                 self._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e), mem_out=memout)
                 try:
@@ -1714,7 +1762,7 @@ def make_handler():
             return ua[:24] or "unknown"
 
         def _log_run(self, source, messages, response, model, started, error=None, trace=None,
-                     mem_out=None):
+                     mem_out=None, finish_reason=None):
             """Persist this interaction as an inspectable run (never let logging break the request).
             mem_out (prompt mode): the {applied, gate, strength?} record the generation path filled --
             what memory ACTUALLY rode this turn (the topic gate may have omitted the block).
@@ -1795,10 +1843,16 @@ def make_handler():
                 # slider nudged to a hair (e.g. 0.02) still slips through and would clutter the record.
                 dials = SUB.steer.active() if (SUB and hasattr(SUB, "steer")) else {}
                 dials = {k: v for k, v in dials.items() if abs(float(v)) >= 0.05}
+                meta = None
+                try:                                          # engine: {model_file, quant, mode, sampling}
+                    if SUB is not None and hasattr(SUB, "run_meta"):
+                        meta = SUB.run_meta() or None
+                except Exception:
+                    meta = None
                 rid = runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
                                     model=str(model), substrate=SUBNAME, messages=messages, response=response,
                                     memory=memd, behavior={"active_dials": dials}, started=started, error=error,
-                                    trace=trace)
+                                    trace=trace, finish_reason=finish_reason, meta=meta)
                 self._maybe_snapshot_turn(rid, messages, trace, error)
                 return rid                        # M5 bridge: the run id, for callers that want to surface it
             except Exception:
@@ -2358,11 +2412,11 @@ def make_handler():
                     # Generate + capture a per-token trace alongside (B3). Reply is byte-identical to the
                     # plain complete(); the trace feeds the Run Inspector timeline. steps=[] (diffusion, or a
                     # stream hiccup) -> runlog stores a clean empty trace.
-                    reply_raw, steps = _engine_complete_traced(ENGINE_QWEN, prompt, mx, kw)
+                    reply_raw, steps, finish = _engine_complete_traced(ENGINE_QWEN, prompt, mx, kw)
                     reply = reply_raw.strip()
                     # Pass the raw step list; runlog.record normalizes it -> {tokens, confidence, alternatives}.
                     self._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0, trace=steps,
-                                  mem_out=memout)
+                                  mem_out=memout, finish_reason=finish)
                     # "memory" == did memory actually ride this reply (block in prompt mode, prefix otherwise)
                     return self._json(200, {"reply": reply,
                                             "memory": bool(memout.get("applied")) or bool(kw.get("prefix_embd")),
@@ -2382,12 +2436,13 @@ def make_handler():
                 memout = {}                                 # prompt mode: what memory actually rode this turn
                 reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0, trace_out=trace_steps,
                                  mem_out=memout)
+                fr = SUB.last_finish_reason() if hasattr(SUB, "last_finish_reason") else None
                 # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}.
                 rid = self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0,
-                                    trace=trace_steps, mem_out=memout)
+                                    trace=trace_steps, mem_out=memout, finish_reason=fr)
                 resp = {"id": "chatcmpl-clozn", "object": "chat.completion",
                        "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
-                       "choices": [{"index": 0, "finish_reason": "stop",
+                       "choices": [{"index": 0, "finish_reason": fr or "stop",
                                     "message": {"role": "assistant", "content": reply}}],
                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
                 # M5 any-client run_id bridge (EXPLAIN_THIS_ANSWER_SPEC.md): surface the id two ways so a

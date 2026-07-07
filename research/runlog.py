@@ -20,7 +20,7 @@ KEEP = 1000                                              # prune to the most rec
 # the slim fields returned by list_runs() (the Runs page doesn't need full messages/trace)
 SUMMARY_FIELDS = ("id", "created_at", "source", "client", "model", "substrate",
                   "prompt_summary", "response_summary", "memory", "behavior", "timing",
-                  "parent_run_id", "flags")
+                  "finish_reason", "parent_run_id", "flags")
 
 
 def _ensure():
@@ -50,6 +50,8 @@ def _flags(rec: dict) -> list[str]:
         f.append("replayed")
     if rec.get("error"):
         f.append("error")
+    if rec.get("finish_reason") == "length":
+        f.append("truncated")            # hit the token cap -- the reply was cut off, not a natural stop
     conf = (rec.get("trace") or {}).get("confidence") or []
     if conf and min(conf) < 0.3:
         f.append("low-confidence")
@@ -145,6 +147,26 @@ def accumulate_ar_events(events) -> list[dict]:
     return [by_pos[p] for p in sorted(order, key=lambda x: (x is None, x))]
 
 
+def finish_reason_from_frames(frames) -> str | None:
+    """Pluck the generation's stop cause from the engine's SSE frames -- WHY it stopped, which the engine
+    already computes (eos -> "stop", length | steps_exhausted -> "length"; cloze_server.cpp) and drops on
+    the floor here. It rides the FINAL frame two ways: as choices[0].finish_reason on the OpenAI-style AR
+    frame, or as a top-level finish_reason on the state-stream 'final' frame -- accept either. Returns the
+    last one seen ("stop"|"length"|...) or None when no frame carried it (a stream that errored before it
+    finished). Pure (no network): the same fold is unit-tested here and reused by both engine paths."""
+    reason = None
+    for obj in frames or []:
+        if not isinstance(obj, dict):
+            continue
+        if isinstance(obj.get("finish_reason"), str):          # state-stream 'final' frame (top-level)
+            reason = obj["finish_reason"]
+        ch = obj.get("choices")                                # OpenAI-style final frame: choices[0]
+        if isinstance(ch, list) and ch and isinstance(ch[0], dict) \
+                and isinstance(ch[0].get("finish_reason"), str):
+            reason = ch[0]["finish_reason"]
+    return reason
+
+
 def _norm_trace(trace) -> dict:
     """Coerce whatever a caller passes for `trace` into the stored shape. A ready trace dict is kept as-is
     (only the known keys); a raw list of steps is run through steps_to_trace; anything else -> {}."""
@@ -159,7 +181,8 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
            messages=None, response: str = "", memory: dict | None = None, behavior: dict | None = None,
            trace: dict | None = None, started: float | None = None, ended: float | None = None,
            parent_run_id: str | None = None, changes_applied: dict | None = None,
-           error: str | None = None) -> str | None:
+           error: str | None = None, finish_reason: str | None = None,
+           meta: dict | None = None) -> str | None:
     """Persist a completed run; return its id (or None on failure -- logging must never break a request)."""
     try:
         _ensure()
@@ -178,6 +201,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
             "memory": memory or {}, "behavior": behavior or {}, "trace": _norm_trace(trace),
             "timing": {"started_at": started, "ended_at": ended, "duration_ms": int((ended - started) * 1000)},
             "parent_run_id": parent_run_id, "changes_applied": changes_applied, "error": error,
+            "finish_reason": finish_reason, "meta": meta or {},
         }
         rec["flags"] = _flags(rec)
         with open(os.path.join(RUNS_DIR, rid + ".json"), "w", encoding="utf-8") as f:

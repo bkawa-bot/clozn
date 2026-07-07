@@ -348,3 +348,64 @@ def test_engine_steer_generate_explicit_strength_is_unaffected_by_engage():
     es.generate("hello", strength={"warm": 1.0})    # never engaged, but strength is explicit
     assert ec.intervene_calls == ["hello"]
     assert ec.complete_calls == []
+
+
+# ==================================================================================== run_meta (repro metadata)
+
+class _HealthEngine:
+    """A stand-in engine exposing just /health, for run_meta(): {model (a GGUF path), mode}."""
+
+    def __init__(self, model="/models/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf", mode="autoregressive"):
+        self.base = "http://127.0.0.1:1"
+        self._h = {"status": "ok", "model": model, "mode": mode}
+
+    def health(self):
+        return dict(self._h)
+
+
+def test_quant_from_name_reads_gguf_tags():
+    assert cs._quant_from_name("Qwen2.5-0.5B-Instruct-Q4_K_M.gguf") == "Q4_K_M"
+    assert cs._quant_from_name("model-q8_0.gguf") == "Q8_0"
+    assert cs._quant_from_name("tiny-IQ4_XS.gguf") == "IQ4_XS"
+    assert cs._quant_from_name("weights-f16.gguf") == "F16"
+    assert cs._quant_from_name("no-quant-here.gguf") is None
+
+
+def test_run_meta_reads_model_file_quant_and_mode(iso):
+    sub = object.__new__(cs.EngineSubstrate)
+    sub.engine = _HealthEngine()
+    meta = sub.run_meta()
+    assert meta["model_file"] == "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"    # basename of the /health model path
+    assert meta["quant"] == "Q4_K_M"
+    assert meta["mode"] == "autoregressive"
+    assert meta["sampling"] == "greedy"                                  # chat/chat_stream force temperature 0
+
+
+def test_run_meta_is_cached_after_first_call(iso):
+    sub = object.__new__(cs.EngineSubstrate)
+    calls = {"n": 0}
+
+    class _CountEngine:
+        base = "x"
+
+        def health(self):
+            calls["n"] += 1
+            return {"model": "m-Q4_0.gguf", "mode": "autoregressive"}
+
+    sub.engine = _CountEngine()
+    sub.run_meta()
+    sub.run_meta()
+    assert calls["n"] == 1                              # /health fetched once, then cached for the session
+
+
+def test_run_meta_never_raises_on_a_bad_health(iso):
+    sub = object.__new__(cs.EngineSubstrate)
+
+    class _BoomEngine:
+        base = "x"
+
+        def health(self):
+            raise RuntimeError("no engine")
+
+    sub.engine = _BoomEngine()
+    assert sub.run_meta() == {"sampling": "greedy"}     # degrades to the one thing we know, never fabricates

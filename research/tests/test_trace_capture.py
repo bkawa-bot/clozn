@@ -63,6 +63,36 @@ def test_accumulate_empty_and_garbage():
     assert runlog.accumulate_ar_events([1, "x", {"type": "other"}, {"type": "step_lens"}]) == []
 
 
+# --------------------------------------------------------------------------- finish_reason_from_frames
+
+def test_finish_reason_reads_the_final_frame():
+    """The engine's real stop cause rides the final OpenAI-style frame's choices[0].finish_reason -- the
+    very frame accumulate_ar_events ignores. finish_reason_from_frames plucks it back."""
+    assert runlog.finish_reason_from_frames(fake_engine_frames()) == "stop"
+
+
+def test_finish_reason_length_when_truncated():
+    frames = [
+        {"type": "tokens_committed", "items": [{"pos": 0, "conf": 0.9, "piece": "hi"}]},
+        {"id": "cmpl-x", "object": "text_completion",
+         "choices": [{"text": "hi", "index": 0, "finish_reason": "length"}]},
+    ]
+    assert runlog.finish_reason_from_frames(frames) == "length"
+
+
+def test_finish_reason_accepts_state_stream_final_frame():
+    """The state-stream protocol carries it top-level on a 'final' frame, not under choices -- accept both."""
+    assert runlog.finish_reason_from_frames([{"kind": "final", "text": "x", "finish_reason": "length"}]) == "length"
+
+
+def test_finish_reason_none_when_absent_or_garbage():
+    assert runlog.finish_reason_from_frames([]) is None
+    assert runlog.finish_reason_from_frames(None) is None
+    assert runlog.finish_reason_from_frames([1, "x", {"type": "tokens_committed"}]) is None
+    # a choices frame that carries text but no finish_reason field -> still None (nothing to pluck)
+    assert runlog.finish_reason_from_frames([{"choices": [{"text": "hi", "index": 0}]}]) is None
+
+
 # --------------------------------------------------------------------------- steps_to_trace
 
 def test_engine_steps_to_trace_full_shape():
@@ -167,3 +197,42 @@ def test_record_hf_chat_leaves_trace_empty(tmp_path, monkeypatch):
     rid = runlog.record(source="studio_chat", messages=[{"role": "user", "content": "hey"}],
                         response="hello")                                # no trace= at all
     assert runlog.get_run(rid)["trace"] == {}
+
+
+# --------------------------------------------------------------------------- finish_reason on the record
+
+def test_record_persists_finish_reason_and_truncated_flag(tmp_path, monkeypatch):
+    """finish_reason is stored on the run, and 'length' (cut off at the token cap) raises a 'truncated' flag."""
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path))
+    rid = runlog.record(source="engine_chat", messages=[{"role": "user", "content": "hi"}],
+                        response="The cat s", finish_reason="length")
+    run = runlog.get_run(rid)
+    assert run["finish_reason"] == "length"
+    assert "truncated" in run["flags"]
+
+
+def test_record_stop_is_not_truncated(tmp_path, monkeypatch):
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path))
+    rid = runlog.record(source="engine_chat", messages=[{"role": "user", "content": "hi"}],
+                        response="Done.", finish_reason="stop")
+    run = runlog.get_run(rid)
+    assert run["finish_reason"] == "stop"
+    assert "truncated" not in run["flags"]
+
+
+def test_record_without_finish_reason_stores_none(tmp_path, monkeypatch):
+    """The HF paths don't compute a stop cause -> the field is present and None, never fabricated."""
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path))
+    rid = runlog.record(source="studio_chat", messages=[{"role": "user", "content": "hey"}], response="hi")
+    assert runlog.get_run(rid)["finish_reason"] is None
+
+
+def test_record_persists_meta_block(tmp_path, monkeypatch):
+    """Reproducibility metadata (model_file/quant/mode) rides the run record; absent -> a clean {}."""
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path))
+    meta = {"model_file": "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf", "quant": "Q4_K_M", "mode": "autoregressive"}
+    rid = runlog.record(source="engine_chat", messages=[{"role": "user", "content": "hi"}],
+                        response="hey", meta=meta)
+    assert runlog.get_run(rid)["meta"] == meta
+    rid2 = runlog.record(source="studio_chat", messages=[{"role": "user", "content": "x"}], response="y")
+    assert runlog.get_run(rid2)["meta"] == {}          # no meta -> clean empty, never fabricated
