@@ -58,6 +58,19 @@ reassuring), `audience_level` (eli5, expert, jargon_free), `verbosity` (concise,
 **Per-model (Law #6):** ranges + which dials survive are Qwen-7B-specific; a different model needs its own
 sweep (a natural idle/overnight job — Gemma-9B sweep is queued but not run). The metric measures
 *projection onto the dial's linear axis*, which correlates with but isn't identical to human-perceived
-tone (the human pass is the safety net). One model / one seed / one prompt sample. **To go live:** register
-the 33 as studio dials + drop a `~/.clozn/dial_calibration.json` (the `/steer/axes` + `behavior.js` wiring
-already caps sliders + greys dead dials) — the remaining integration step.
+tone (the human pass is the safety net). One model / one seed / one prompt sample.
+
+**Narrow-tolerance dials (6/33 have a zero-width range):** warm [0.5], wry [0.5], detailed [0.25],
+first_principles [0.5], reassuring [0.5], jargon_free [0.5]. These are NOT curation artifacts — each is a
+dial the model only renders coherently at ONE low strength, then derails (warm @0.75 → vacuous meta, @1.0+
+→ garbled repeated opener; first_principles @0.75 → "my primary goal as an AI language model from scratch
+provided by Alibaba"). The calibration is doing exactly its job here: `warm` as a built-in defaulted to a
+1.5 ceiling that let a user push it into garble — the honest cap is 0.5. (A UX polish: a zero-width range
+should render "best at 0.5", not "works 0.5–0.5".)
+
+**DEPLOYED (2026-07-06).** `research/deploy_dial_library.py` registers the 27 library-only dials on the
+studio (persisted to `~/.clozn/studio_library.json`, flagged `"library"` — distinct from user "yours"
+customs, no delete-✕); `research/gen_dial_calibration.py` writes `~/.clozn/dial_calibration.json` capping
+all 33. The `/steer/axes` + `behavior.js` wiring caps the sliders + tags library dials. The 6 built-in
+overlaps (warm/playful/formal/concise/poetic/concrete) now serve their calibrated (often tighter) caps.
+Known gap: `/steer/custom_delete` doesn't server-side-block deleting a library dial (UI hides the ✕ only).

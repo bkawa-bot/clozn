@@ -5,7 +5,11 @@
  * before/after. NO jargon: the user never sees "activation steering"; they see concise <-> detailed.
  *
  * Backend (research/clozn_server.py, all guarded so the page renders offline):
- *   POST /steer/axes {}                     -> {axes:[{name, value, poles:[hi,lo], max, custom?}], ...}
+ *   POST /steer/axes {}                     -> {axes:[{name, value, poles:[hi,lo], max, custom?,
+ *                                              library?}], ...} -- custom: true = user-made ("yours" +
+ *                                              deletable); library: true = shipped, curated dial (its own
+ *                                              subtle tag, no delete). Mutually exclusive; both optional
+ *                                              (absent on a built-in, and on any install predating either).
  *   POST /steer/set {name, value}           (debounced on drag)
  *   POST /steer/custom {name, pos, neg}     -> reload sliders
  *   POST /steer/custom_delete {name}        -> reload sliders
@@ -149,9 +153,15 @@
       });
     }
 
-    // label line: plain-language poles, a "yours" tag + delete for custom dials, and the value.
+    // label line: plain-language poles, a tag for library/custom dials (+ delete for the user's own ones),
+    // and the value. "library" (shipped, curated) and "custom" (user-made) are mutually exclusive per
+    // /steer/axes (clozn_server.py never sets both on one axis), checked defensively here in that order
+    // anyway so a stray/future axis carrying neither (or, defensively, both) never crashes and never grows
+    // a delete button it shouldn't have.
     var labelKids = [S.el("b", {}, [axisLabel(a)])];
-    if (a.custom) {
+    if (a.library === true) {
+      labelKids.push(S.el("span", { class: "bx-tag bx-tag-lib" }, ["library"]));
+    } else if (a.custom) {
       labelKids.push(S.el("span", { class: "bx-tag" }, ["yours"]));
       labelKids.push(S.el("span", {
         class: "bx-del", title: "delete this dial",
@@ -416,6 +426,7 @@
       ".bx-slider-dead{opacity:.55}" +
       ".bx-slider-dead .bx-range{cursor:not-allowed}" +
       ".bx-tag{font-size:9.5px;color:var(--cyan);border:1px solid var(--line);border-radius:7px;padding:0 4px;margin-left:6px;vertical-align:middle}" +
+      ".bx-tag-lib{color:var(--faint)}" +
       ".bx-del{cursor:pointer;color:var(--faint);margin-left:7px;font-size:11px;vertical-align:middle}" +
       ".bx-del:hover{color:#e0607a}" +
       ".bx-dialmaker{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}" +

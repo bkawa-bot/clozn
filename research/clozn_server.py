@@ -150,6 +150,25 @@ def _with_calibration(axis, c):
     return axis
 
 
+def _library_dial_names() -> set:
+    """The set of custom-dial names that are SHIPPED-LIBRARY dials (research/deploy_dial_library.py's
+    one-time registration), read from ~/.clozn/studio_library.json's keys -- a file distinct from the
+    user's own studio_custom_<name>.json, so a library dial can never be mistaken for something the user
+    made. Missing/broken file -> empty set (never raise): before the library is deployed (or on any
+    substrate that has never loaded studio_library.json), /steer/axes must behave EXACTLY as it always
+    has -- every steer.custom entry tags "custom": True and none tag "library" -- the same Law-#6-style
+    backward compat _dial_calibration() already gives the calibration merge."""
+    path = _pers("studio_library.json")
+    if not os.path.isfile(path):
+        return set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return set(data) if isinstance(data, dict) else set()
+    except Exception:
+        return set()
+
+
 # ------- memory cards <-> the working prefix (D2 + E1) --------------------------------------------
 # The cards (research/memory_cards.py) are the metadata + review layer; the trained soft-prefix is
 # UNCHANGED. The contract that keeps the prefix safe: m.rules is ALWAYS the texts of the ACTIVE cards,
@@ -1006,10 +1025,14 @@ class Substrate:
                         {"name": k, "poles": AXES[k]["poles"], "value": self.steer.strength.get(k, 0.0),
                          "max": AXES[k].get("max", 1.5)}, calib.get(k))
                     for k in AXES]
-            for k, v in getattr(self.steer, "custom", {}).items():   # user-defined dials alongside the built-ins
-                axes.append(_with_calibration(
-                    {"name": k, "poles": v["poles"], "value": self.steer.strength.get(k, 0.0),
-                     "max": v["max"], "custom": True}, calib.get(k)))
+            lib_names = _library_dial_names()   # shipped-library custom dials -- NOT user-made, never "yours"
+            for k, v in getattr(self.steer, "custom", {}).items():   # user-defined + shipped-library dials
+                axis = {"name": k, "poles": v["poles"], "value": self.steer.strength.get(k, 0.0), "max": v["max"]}
+                if k in lib_names:
+                    axis["library"] = True     # shipped, curated dial -- distinct from a user's own custom
+                else:
+                    axis["custom"] = True      # unchanged: a genuine user-made dial ("yours" + deletable)
+                axes.append(_with_calibration(axis, calib.get(k)))
             return {"axes": axes, "ready": self._steer_ready, "substrate": self.name}
         self._ensure_steer()                    # compute the axis vectors once on first real use (race-safe)
         if path == "/steer/compute":
@@ -1070,6 +1093,11 @@ class QwenSubstrate(Substrate):
         self._pers_steer = _pers("studio_personality.json")
         self.steer.load_state(self._pers_steer)             # restore the personality dials across restarts
         self.steer.load_custom(_pers(f"studio_custom_{self.name}.json"))    # + any user-defined dials
+        # + the shipped dial library (research/deploy_dial_library.py), if it has ever been deployed on
+        # this install -- a no-op (load_custom returns immediately) until that script runs. Loaded SECOND
+        # so a rare --force-deployed name collision (a user custom + a library dial sharing a name)
+        # resolves to the library's direction on every subsequent boot, matching what --force just did live.
+        self.steer.load_custom(_pers("studio_library.json"))
         if _memory_mode() == "prompt":
             # PROMPT MODE boots from the CARD STORE (the prefix isn't applied): adopt the active-card
             # texts as m.rules right away so /state + runlog bookkeeping don't lag until the first
