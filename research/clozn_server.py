@@ -1975,6 +1975,32 @@ def make_handler():
                 wd = body.get("window_days")
                 ws = float(wd) * 86400 if isinstance(wd, (int, float)) else None
                 return self._json(200, feedback.summary(window_seconds=ws))
+            if p == "/preferences":   # propose-and-review: fold the feedback pattern into proposals + return
+                import feedback, preferences   # the PENDING ones (a (dial,direction) lean that crossed the
+                sigs = feedback.list_signals()  # threshold). refresh() creates/updates; it NEVER sets a dial.
+                wd = body.get("window_days")
+                if isinstance(wd, (int, float)):
+                    cut = time.time() - float(wd) * 86400
+                    sigs = [s for s in sigs if float(s.get("ts", 0)) >= cut]
+                pending = preferences.refresh(
+                    sigs, threshold=int(body.get("threshold", preferences.DEFAULT_THRESHOLD)))
+                return self._json(200, {"pending": pending})
+            if p == "/preferences/resolve":   # APPROVE (persist the dial) or DISMISS a proposal -- the review
+                import preferences            # half of propose-and-review. Approve is the ONLY place a
+                pr = preferences.resolve(str(body.get("id", "")), str(body.get("action", "")))  # dial is set.
+                if pr is None:
+                    return self._json(400, {"error": "unknown proposal id, or action not in {approve,dismiss}"})
+                applied = None
+                if pr["status"] == "approved" and SUB is not None and getattr(SUB, "steer", None) is not None:
+                    try:                       # persist the dial exactly like the F2 save-fix does (steer.set
+                        SUB.steer.set(pr["dial"], float(pr["suggested_value"]))   # caps per-axis)
+                        if hasattr(SUB.steer, "save_state") and getattr(SUB, "_pers_steer", None):
+                            SUB.steer.save_state(SUB._pers_steer)
+                        applied = {"dial": pr["dial"],
+                                   "value": float(SUB.steer.strength.get(pr["dial"], pr["suggested_value"]))}
+                    except Exception as e:
+                        applied = {"error": f"{type(e).__name__}: {e}"}
+                return self._json(200, {"ok": True, "proposal": pr, "applied": applied})
             if p == "/memory/mode":   # swap the memory mechanism (persisted; takes effect immediately)
                 import memory_mode
                 mode = str(body.get("mode", "")).strip().lower()
