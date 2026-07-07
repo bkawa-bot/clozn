@@ -1435,6 +1435,7 @@ class EngineSubstrate(Substrate):
         if self.steer is not None:               # metadata-only: the shipped library's names/poles/max, so
             try:                                  # they show up in /steer/axes immediately (their direction
                 self.steer.load_library(_pers("studio_library.json"))   # vectors are computed lazily by compute())
+                self.steer.load_custom(_pers(f"studio_custom_{self.name}.json"))  # + the user's own custom dials
             except Exception:
                 pass
         self._mem = _EngineMemory()

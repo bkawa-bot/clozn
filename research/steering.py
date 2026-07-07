@@ -541,6 +541,53 @@ class EngineSteer:
         self.ready = True
         return {"resid_norm": round(self.resid_norm, 1), "base": round(self.base, 1), "axes": list(self.vecs)}
 
+    def add_custom(self, name, pos, neg, mx=0.5, seeds=SEED_PROMPTS) -> dict:
+        """A USER-DEFINED dial on the engine: the exact same diff-of-means recipe compute() runs for a
+        built-in AXES entry (harvest each pole + every seed, mean-pool over seeds, diff, unit-normalize) --
+        but on one arbitrary (pos, neg) pole-sentence pair instead of a fixed axis, so a studio user can
+        mint a brand-new tone dial from two pole sentences with no retraining, on the engine exactly as
+        SteeringControl.add_custom does on the PyTorch backbone. Tagged "source": "user" so save_custom can
+        tell a user-made dial apart from a shipped-library one sitting in the same self.custom dict -- a
+        load_library entry carries no "source" key at all (see save_custom for why)."""
+        name = name.strip()[:24]
+        pos_v = np.mean([self.ec.harvest(pos + "\n\n" + s, layer=self.layer).activations.mean(0)
+                          for s in seeds], axis=0)
+        neg_v = np.mean([self.ec.harvest(neg + "\n\n" + s, layer=self.layer).activations.mean(0)
+                          for s in seeds], axis=0)
+        d = pos_v - neg_v
+        self.vecs[name] = d / (float(np.linalg.norm(d)) + 1e-8)
+        self.custom[name] = {"pos": pos, "neg": neg, "max": float(mx), "poles": [name, "neutral"],
+                              "source": "user"}
+        return self.custom[name]
+
+    def remove_custom(self, name):
+        self.custom.pop(name, None)
+        self.vecs.pop(name, None)
+        self.strength.pop(name, None)
+
+    def save_custom(self, path):
+        """Persist only the dials this user actually MADE (add_custom's entries carry "source": "user").
+        A shipped-library dial (from load_library) carries NO "source" key at all -- deliberately: that
+        dict shape is a small, separately-tested contract (pos, neg, max, poles) and its metadata already
+        lives in studio_library.json, so re-saving it into the user's own studio_custom_<name>.json would
+        make a fresh install look like it has dials the user never made, and would leak library pole text
+        into a file meant to be "what this person built". So the filter is inverted from what you might
+        expect -- "include only source=='user'", not "exclude source=='library'" -- a library entry (or
+        anything else untagged) is excluded by the ABSENCE of the tag, not by its presence."""
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({k: {"pos": v["pos"], "neg": v["neg"], "max": v["max"]}
+                       for k, v in self.custom.items() if v.get("source") == "user"}, f)
+
+    def load_custom(self, path):
+        if not os.path.isfile(path):
+            return
+        try:
+            for k, v in json.load(open(path, encoding="utf-8")).items():
+                self.add_custom(k, v["pos"], v["neg"], float(v.get("max", 0.5)))
+        except Exception:
+            pass
+
     def set(self, name, value):
         # cap per-dial: a built-in AXES max, falling back to a library/custom dial's own calibrated max
         # (finickier shipped dials -- e.g. "detailed" at 0.25 -- degenerate past their sweet spot too),
