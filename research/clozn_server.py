@@ -2098,6 +2098,14 @@ def make_handler():
                                       extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.md"'})
                 return self._json(200, {"run": run, "explain": xr},
                                   extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.json"'})
+            if p.startswith("/runs/") and p.endswith("/timeline"):   # ordered RunEvent list -- zero generation
+                import runlog
+                rid = p[len("/runs/"):-len("/timeline")]
+                run = runlog.get_run(rid)
+                if not run:
+                    return self._json(404, {"error": "run not found"})
+                import run_timeline
+                return self._json(200, {"run_id": rid, "events": run_timeline.timeline(run)})
             if p.startswith("/runs/"):
                 import runlog
                 r = runlog.get_run(p.split("/runs/", 1)[1])
