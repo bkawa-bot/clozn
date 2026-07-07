@@ -53,6 +53,19 @@
           counter: "dials over its tone and thinking — drag, test, then replay a real run to compare",
         }),
 
+        // learned-preference suggestions (propose-and-review): hidden unless there's a pending proposal.
+        // A pattern in your quick-repairs ("Too verbose" x3) surfaces here as "make concise your default?"
+        // -- approve to persist the dial, or dismiss. The system never changes a dial without this yes.
+        S.el("div", { class: "panel", id: "bx-suggest-panel", style: "margin-top:18px; display:none" }, [
+          S.el("h2", {}, ["Suggestions"]),
+          S.el("div", { class: "bx" }, [
+            S.el("p", { class: "bx-hint" }, [
+              "Patterns the model noticed in your quick-repairs. Approve one to make it a default, or dismiss it.",
+            ]),
+            S.el("div", { id: "bx-suggest-list" }, []),
+          ]),
+        ]),
+
         // the dials
         S.el("div", { class: "panel", style: "margin-top:18px" }, [
           S.el("h2", {}, ["Dials"]),
@@ -100,6 +113,7 @@
     wireTest(ctx);
     wireReplay(ctx);
     loadSliders(ctx);
+    loadSuggestions(ctx);
   }
 
   // ---- the sliders (ported from studio.html loadSliders) --------------------------------------
@@ -110,6 +124,53 @@
       state.axes.forEach(function (a) { state.values[a.name] = +a.value || 0; });
       drawSliders(ctx);
     });
+  }
+
+  // ---- learned-preference suggestions (propose-and-review) ------------------------------------
+  // POST /preferences -> {pending:[{id,dial,direction,suggested_value,count,evidence,label}]}. Only PENDING
+  // proposals render; the panel hides itself when there are none, so the page is unchanged until the model
+  // has actually learned something. Approve persists the dial (server-side, via /preferences/resolve) and
+  // reloads the sliders so the new default shows; dismiss just clears it. Guarded via the postJSON fallback,
+  // so an offline / older backend (no /preferences route) leaves the panel hidden, never an error.
+  function loadSuggestions(ctx) {
+    ctx.postJSON("/preferences", { threshold: 3 }, { pending: [] }).then(function (d) {
+      var pend = (d && d.pending) || [];
+      var panel = document.getElementById("bx-suggest-panel");
+      var list = document.getElementById("bx-suggest-list");
+      if (!panel || !list) return;
+      list.innerHTML = "";
+      if (!pend.length) { panel.style.display = "none"; return; }
+      panel.style.display = "";
+      pend.forEach(function (p) { list.appendChild(mkSuggestion(p, ctx)); });
+    });
+  }
+
+  function mkSuggestion(p, ctx) {
+    var n = (p.evidence || []).length;
+    var meta = n ? "from " + n + " repl" + (n === 1 ? "y" : "ies") : "";
+    var approve = S.el("button", { class: "btn", style: "padding:5px 12px" }, ["Approve"]);
+    var dismiss = S.el("button", { class: "btn ghost", style: "padding:5px 12px; opacity:.7" }, ["Dismiss"]);
+    function resolve(action) {
+      approve.disabled = dismiss.disabled = true;
+      ctx.postJSON("/preferences/resolve", { id: p.id, action: action }, null).then(function () {
+        loadSuggestions(ctx);                 // refresh the list (this one drops off)
+        if (action === "approve") loadSliders(ctx);   // the dial value changed -> reflect it
+      });
+    }
+    approve.onclick = function () { resolve("approve"); };
+    dismiss.onclick = function () { resolve("dismiss"); };
+    return S.el("div", {
+      style: "display:flex; align-items:center; gap:12px; padding:10px 0; border-top:1px solid var(--line,#2a2a2a)",
+    }, [
+      S.el("span", { style: "flex:1" }, [p.label || ("Make " + poleHiName(p) + " a default?")]),
+      S.el("span", { class: "bx-hint", style: "opacity:.55; white-space:nowrap" }, [meta]),
+      approve, dismiss,
+    ]);
+  }
+
+  // best-effort friendly name if a proposal ever lacks a server label (shouldn't, but never render blank).
+  function poleHiName(p) {
+    return (p && p.dial) ? String(p.dial) : "this";
   }
 
   function drawSliders(ctx) {
