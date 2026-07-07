@@ -42,7 +42,17 @@ guard. See `RUNTIME_SPLIT.md` hard-part #6.
 1. **🔑 Preference-signal plumbing (thumbs / regenerate / edits).** STILL the highest-leverage single
    input — unblocks dial auto-SELECT (pick the value, not just calibrate the range) AND voice/LoRA "learn
    how you want me to act." Where: chat UI + a `/feedback` seam + the run log. Done: a thumbs/edit persists
-   a signal the calibration/learning loops can read. Model: Opus (design) + Sonnet (wiring).
+   a signal the calibration/learning loops can read. Model: Opus (design) + Sonnet (wiring). **STATUS
+   2026-07-07 — SHIPPED v1 (propose-and-review), live-validated end-to-end.** CAPTURE: the Run Inspector
+   quick-repair clicks ("Too verbose"→concise) POST `/feedback` signals (`research/feedback.py`, tied to
+   the run — the reframe was that the *manual* loop already existed via quick-repairs + F2 save-fix; the
+   click is the right signal since a saved fix has nothing left to propose). ACCUMULATE: `/feedback/summary`.
+   PROPOSE: `research/preferences.py` — a (dial,direction) lean crossing a threshold becomes a pending
+   proposal ("asked for concise 3× — make it default?") carrying its evidence runs; not-nagging is
+   first-class (dismiss sticks until a fresh burst; approve goes quiet). REVIEW: the Behavior page
+   "Suggestions" panel (Approve → `/preferences/resolve` persists the dial; Dismiss clears). Follow-ups:
+   directional-feedback affordances beyond the 4 quick-repairs; the deeper voice/LoRA "learn how I talk"
+   phase (accumulate edits → train; `voice_lora.py` exists); a browser pass on the Suggestions UI.
 
 2. **➕ Auto-calibrate custom dials on creation — now engine-native + timely.** The "make your own dial" UI
    runs the calibration engine live → "works (range X)" or "doesn't steer on your model." `EngineSteer`
