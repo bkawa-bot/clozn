@@ -2106,6 +2106,15 @@ def make_handler():
                     return self._json(404, {"error": "run not found"})
                 import run_timeline
                 return self._json(200, {"run_id": rid, "events": run_timeline.timeline(run)})
+            if p.startswith("/runs/") and p.endswith("/spans"):   # confidence spans -- the shape of the reply's certainty
+                import runlog
+                rid = p[len("/runs/"):-len("/spans")]
+                run = runlog.get_run(rid)
+                if not run:
+                    return self._json(404, {"error": "run not found"})
+                import confidence_spans
+                sp = confidence_spans.spans(run)
+                return self._json(200, {"run_id": rid, "spans": sp, "summary": confidence_spans.summarize(sp)})
             if p.startswith("/runs/"):
                 import runlog
                 r = runlog.get_run(p.split("/runs/", 1)[1])
