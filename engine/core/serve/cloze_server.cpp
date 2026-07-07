@@ -64,8 +64,9 @@ void quiet_log(ggml_log_level level, const char* text, void*) {
 
 GenerateConfig config_from(const json& body) {
     GenerateConfig cfg;
-    cfg.max_new = body.value("max_tokens", 32);
-    cfg.steps = body.value("steps", 8);
+    int mn = body.value("max_tokens", 32); cfg.max_new = mn < 1 ? 1 : mn;   // clamp >= 1: the generators
+    int st = body.value("steps", 8);       cfg.steps   = st < 1 ? 1 : st;   // throw on < 1, and on the
+    //                                          STREAMING path an uncaught throw silently abort()s the engine.
     cfg.block_len = body.value("block_len", 0);
     cfg.topk = body.value("topk", -1);
     return cfg;
@@ -1053,17 +1054,32 @@ int main(int argc, char** argv) {
             // ar_forward_embd arg instead). Either way it's the HF-trained memory, injected into the GGUF.
             const bool diff_prefix = !ar_mode && !prefix_embd.empty() && prefix_rows > 0;
             if (diff_prefix) (*lease).set_diffusion_prefix(prefix_embd, prefix_rows);
-            auto r = ar_mode
+            // Restore the pooled context to a clean state (steer/prefix/tap/emit off) on EVERY exit path.
+            // Critical: a generator can throw (n_ctx exceeded, llama_decode failure, ...). On the STREAMING
+            // path that throw escapes into cpp-httplib's worker thread with no handler -> std::terminate() ->
+            // abort(): a silent hard crash (no trace on a Windows Release build). So clean up + rethrow -- the
+            // streaming provider below catches the rethrow and emits a clean error frame; the non-streaming
+            // caller is already inside httplib's routing try/catch, so it degrades to a 500. Either way the
+            // pooled context goes back clean, never dirty.
+            auto cleanup = [&]() {
+                if (diff_prefix) (*lease).clear_diffusion_prefix();
+                if (steering || raw_steer) (*lease).clear_steer();
+                if (sae_on) (*lease).set_tap_layer(default_tap);
+                (*lease).set_emit_activations(false);  // reset before returning the pooled context
+            };
+            try {
+                GenerateResult r = ar_mode
                        ? generate_ar(*lease, prompt_ids, cfg, ev, sample, probes,
                                      prefix_embd.empty() ? nullptr : &prefix_embd, prefix_rows)
                        : (is_infill
                             ? infill(*lease, prompt_ids, suffix_ids, gap, cfg, nullptr, ev, revise, sample, probes)
                             : generate(*lease, prompt_ids, cfg, cache, nullptr, ev, revise, sample, probes));
-            if (diff_prefix) (*lease).clear_diffusion_prefix();
-            if (steering || raw_steer) (*lease).clear_steer();
-            if (sae_on) (*lease).set_tap_layer(default_tap);
-            (*lease).set_emit_activations(false);  // reset before returning the pooled context
-            return r;
+                cleanup();
+                return r;
+            } catch (...) {
+                cleanup();
+                throw;
+            }
         };
         const std::string id = make_id(is_infill ? "infill-" : "cmpl-");
         const char* object = is_infill ? "infill" : "text_completion";
@@ -1076,6 +1092,8 @@ int main(int argc, char** argv) {
                 [run, id, object, model, prompt_ids, suffix_ids, protocol, state_full, substrate, mask_token]
                 (size_t, httplib::DataSink& sink) {
                     auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    try {                                 // a generator throw here would otherwise escape into
+                                                          // httplib's worker thread -> abort(); catch it below.
                     if (protocol) {
                         // State-stream protocol: fold the §5.1 events into StateStep frames.
                         StateStepBuilder builder(*model, substrate, state_full, write);
@@ -1105,6 +1123,20 @@ int main(int argc, char** argv) {
                     write("data: [DONE]\n\n");
                     sink.done();
                     return true;
+                    } catch (const std::exception& e) {
+                        // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
+                        // and close the stream gracefully -- run() already restored the pooled context.
+                        json err = {{"error", std::string("generation failed: ") + e.what()}};
+                        write("data: " + err.dump() + "\n\n");
+                        write("data: [DONE]\n\n");
+                        sink.done();
+                        return true;
+                    } catch (...) {
+                        write("data: {\"error\":\"generation failed\"}\n\n");
+                        write("data: [DONE]\n\n");
+                        sink.done();
+                        return true;
+                    }
                 });
             return;
         }
