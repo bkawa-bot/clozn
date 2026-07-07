@@ -330,6 +330,64 @@ def _mem_migrate(m):
         return []
 
 
+def _export_markdown(run: dict, xr: dict | None) -> str:
+    """Render a run (+ its M1 explain) as a human-readable Markdown receipt: the conversation, what memory
+    and which dials shaped it (with per-card relevance), why it stopped, and where it hesitated. Pure / no
+    model -- the JSON export carries the full structured bundle; this is its readable companion."""
+    run = run if isinstance(run, dict) else {}
+    L = [f"# Run {run.get('id', '?')}"]
+    head = " · ".join(str(x) for x in [run.get("created_at"),
+                                       f"{run.get('source', '?')}/{run.get('client', '?')}",
+                                       run.get("model")] if x)
+    if head:
+        L.append(f"\n_{head}_")
+    metabits = [str(m) for m in [(run.get("meta") or {}).get(k)
+                                 for k in ("model_file", "quant", "mode", "sampling")] if m]
+    if metabits:
+        L.append("`" + " · ".join(metabits) + "`")
+    fr = run.get("finish_reason")
+    if fr:
+        L.append(f"\n**stop:** {fr}" + ("  — ⚠ truncated (hit the token cap)" if fr == "length" else ""))
+
+    L.append("\n## Conversation")
+    msgs = run.get("messages") or []
+    for m in msgs:
+        L.append(f"\n**{m.get('role', '?')}:** {str(m.get('content', '')).strip()}")
+    if run.get("response") and not (msgs and msgs[-1].get("role") == "assistant"):
+        L.append(f"\n**assistant:** {str(run.get('response')).strip()}")
+
+    mem = run.get("memory") or {}
+    cards = mem.get("cards_applied") or []
+    if cards:
+        L.append("\n## Memory applied")
+        rels = mem.get("relevance") or []
+        for i, c in enumerate(cards):
+            r = rels[i] if i < len(rels) else None
+            L.append(f"- {c}" + (f"  _(relevance {r:.2f})_" if isinstance(r, (int, float)) else ""))
+        bits = []
+        if mem.get("strength") is not None:
+            bits.append(f"strength {float(mem['strength']):.2f}")
+        if mem.get("gate") is not None:
+            bits.append(f"gate {float(mem['gate']):.2f}")
+        if mem.get("mode"):
+            bits.append(f"{mem['mode']} mode")
+        if bits:
+            L.append("\n_" + " · ".join(bits) + "_")
+
+    dials = (run.get("behavior") or {}).get("active_dials") or {}
+    if dials:
+        L.append("\n## Behavior dials")
+        for k, v in dials.items():
+            L.append(f"- {k}: {v}")
+
+    conf = (xr or {}).get("confidence") or {}
+    if conf.get("available"):
+        L.append("\n## Token trace")
+        L.append(f"{conf.get('n_tokens', '?')} tokens · {conf.get('summary', '')}")
+
+    return "\n".join(L) + "\n"
+
+
 def _runs_for_card(card_id):
     """Best-effort: the run summaries whose memory.cards_applied names this card (by id OR by text).
     cards_applied currently records the active rule TEXTS (see _log_run), so we match on text primarily
@@ -2007,6 +2065,24 @@ def make_handler():
             if p == "/runs":                 # the Run Log -- every interaction, newest first (the Studio Runs page)
                 import runlog
                 return self._json(200, {"runs": runlog.list_runs(80)})
+            if p.startswith("/runs/") and p.endswith("/export"):   # one-call download: run + M1 explain + trace
+                import runlog
+                import explain
+                from urllib.parse import urlparse, parse_qs
+                rid = p[len("/runs/"):-len("/export")]
+                run = runlog.get_run(rid)
+                if not run:
+                    return self._json(404, {"error": "run not found"})
+                try:
+                    xr = explain.explain(run)                # M1: pure read/reshape, no generation
+                except Exception:
+                    xr = None
+                fmt = (parse_qs(urlparse(self.path).query).get("format") or ["json"])[0]
+                if fmt == "md":
+                    return self._send(200, _export_markdown(run, xr), "text/markdown; charset=utf-8",
+                                      extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.md"'})
+                return self._json(200, {"run": run, "explain": xr},
+                                  extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.json"'})
             if p.startswith("/runs/"):
                 import runlog
                 r = runlog.get_run(p.split("/runs/", 1)[1])

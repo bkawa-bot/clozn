@@ -1,0 +1,108 @@
+"""test_export_server -- GET /runs/<id>/export, the one-call run bundle (JSON + Markdown).
+
+The endpoint does zero generation (it reuses M1 explain, a pure read), so like /explain it needs no
+substrate. Drives the REAL clozn_server do_GET handler with the no-socket object.__new__(H) trick
+(mirrors test_explain_server.py) against an isolated runlog.RUNS_DIR. Also unit-tests _export_markdown
+(pure) directly, since the readable receipt is where the new fields -- finish_reason, per-card relevance,
+metadata -- have to actually show up.
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import sys
+
+import pytest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RESEARCH = os.path.dirname(HERE)
+sys.path.insert(0, RESEARCH)
+
+import clozn_server as cs   # noqa: E402
+import runlog                # noqa: E402
+
+
+def _get(path):
+    """Drive do_GET without a socket; return (raw header block, raw body bytes)."""
+    H = cs.make_handler()
+    h = object.__new__(H)
+    h.path = path
+    h.rfile = io.BytesIO(b"")
+    h.wfile = io.BytesIO()
+    h.headers = {"Content-Length": "0", "User-Agent": "pytest"}
+    h.requestline, h.request_version, h.command = f"GET {path} HTTP/1.1", "HTTP/1.1", "GET"
+    h.do_GET()
+    head, _, body = h.wfile.getvalue().partition(b"\r\n\r\n")
+    return head.decode("latin-1"), body
+
+
+@pytest.fixture
+def iso(tmp_path, monkeypatch):
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(cs, "SUB", None)                    # export must not need a substrate
+    return tmp_path
+
+
+def _a_run():
+    return runlog.record(
+        source="engine_chat", model="clozn-qwen (engine)",
+        messages=[{"role": "user", "content": "explain gravity"}],
+        response="Mass attracts mass.",
+        trace={"tokens": ["Mass", " attracts", " mass", "."], "confidence": [0.95, 0.2, 0.9, 0.99],
+               "alternatives": [[], [{"piece": " pulls", "prob": 0.4}], [], []]},
+        memory={"cards_applied": ["Keep it brief."], "applied_ids": ["c1"], "relevance": [0.81],
+                "gate": 0.77, "strength": 1.0, "mode": "prompt"},
+        behavior={"active_dials": {"concise": 0.5}},
+        finish_reason="length",
+        meta={"model_file": "qwen2.5-0.5b-instruct-q4_k_m.gguf", "quant": "Q4_K_M",
+              "mode": "autoregressive", "sampling": "greedy"},
+    )
+
+
+# --- the route ---------------------------------------------------------------------------------------------
+
+def test_export_missing_run_is_a_clean_404(iso):
+    head, body = _get("/runs/run_nope/export")
+    assert "404" in head
+    assert json.loads(body) == {"error": "run not found"}
+
+
+def test_export_json_bundles_run_and_explain(iso):
+    rid = _a_run()
+    head, body = _get(f"/runs/{rid}/export")
+    data = json.loads(body)
+    assert data["run"]["id"] == rid
+    assert data["run"]["finish_reason"] == "length"
+    assert data["run"]["meta"]["quant"] == "Q4_K_M"
+    assert data["explain"]["run_id"] == rid               # M1 explain rides along (the receipts summary)
+    assert 'filename="' + rid + '.json"' in head          # download disposition
+
+
+def test_export_markdown_variant_renders_the_receipt(iso):
+    rid = _a_run()
+    head, body = _get(f"/runs/{rid}/export?format=md")
+    assert "text/markdown" in head
+    md = body.decode("utf-8")
+    assert md.startswith("# Run ")
+    assert "explain gravity" in md and "Mass attracts mass." in md
+    assert "Keep it brief." in md and "relevance 0.81" in md
+    assert "truncated" in md                               # finish_reason == length
+    assert "Q4_K_M" in md and "concise: 0.5" in md
+
+
+# --- _export_markdown (pure) -------------------------------------------------------------------------------
+
+def test_markdown_minimal_run_never_crashes():
+    md = cs._export_markdown({"id": "r1", "messages": [{"role": "user", "content": "hi"}], "response": "yo"}, None)
+    assert "# Run r1" in md and "**user:** hi" in md and "**assistant:** yo" in md
+
+
+def test_markdown_omits_empty_sections():
+    """No memory / no dials / no stop cause -> those sections are simply absent (never empty headers)."""
+    md = cs._export_markdown({"id": "r2", "messages": [], "response": "x"}, None)
+    assert "Memory applied" not in md and "Behavior dials" not in md and "stop:" not in md
+
+
+def test_markdown_is_robust_to_a_non_dict_run():
+    assert cs._export_markdown(None, None).startswith("# Run ?")
