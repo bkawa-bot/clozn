@@ -258,6 +258,18 @@ def _prompt_gate(last_user, texts):
         return 1.0
 
 
+def _prompt_relevance(last_user, texts):
+    """Per-card topic cosine {text: relevance} for the applied block -- the SAME embeddings _prompt_gate
+    just used (cached by string in topic_gate), so it's ~free. {} when the embedder is unavailable. This
+    is the per-card signal the run record needs so the inspector can show WHY each card fired, not just
+    that the block as a whole did (the scalar gate)."""
+    try:
+        from topic_gate import get_gate
+        return dict(get_gate().relevance(last_user, list(texts)))
+    except Exception:
+        return {}
+
+
 def _prompt_mem_cards(mem, exclude_ids=()):
     """The ACTIVE cards ({id, text}) that feed the prompt block, minus exclude_ids (replay's REAL
     per-card ablation). Reads the card store directly (memory_mode.active_cards) -- in prompt mode the
@@ -287,8 +299,10 @@ def _prompt_block_for(mem, last_user, strength=None):
     g = _prompt_gate(last_user, texts)
     if g < PROMPT_GATE_MIN:
         return None, [], g
+    rel = _prompt_relevance(last_user, texts)          # {text: cosine} per card (best-effort; {} if no embedder)
+    applied = [dict(c, relevance=rel.get(c["text"])) for c in cards]
     import memory_mode
-    return memory_mode.compile_prompt_block(texts), cards, g
+    return memory_mode.compile_prompt_block(texts), applied, g
 
 
 def _inject_block(messages, block):
@@ -1787,6 +1801,9 @@ def make_handler():
                             "strength": float(strength),
                             "has_prefix": (getattr(mem, "prefix", None) is not None) if mem is not None else False,
                             "mode": mode, "proposed_cards": []}
+                    rel = [c.get("relevance") for c in applied]   # per-card topic cosine, aligned with cards_applied
+                    if any(r is not None for r in rel):           # omit entirely when the embedder was unavailable
+                        memd["relevance"] = [round(float(r), 4) if r is not None else None for r in rel]
                     if mo.get("gate") is not None:
                         memd["gate"] = round(float(mo["gate"]), 4)
                     if applied:                                  # bump exactly the cards that rode this turn
