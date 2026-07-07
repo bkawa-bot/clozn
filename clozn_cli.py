@@ -1286,6 +1286,82 @@ def cmd_explain(args):
         print(format_narrate(_fetch_narrate(port, rid)))
 
 
+# ------------------------------------------------------------------ preferences (propose-and-review surface)
+# `clozn preferences` renders the Studio's POST /preferences (research/preferences.py): the learned-preference
+# suggestions the model proposes from your Run Inspector quick-repairs ("Too verbose" x3 -> "make concise your
+# default?"). Zero generation -- it reads the accumulated pattern. --approve/--dismiss POST /preferences/resolve
+# (approve persists the dial; the ONLY place a dial changes). Terminal-reachable, like `clozn explain`, so the
+# learning loop isn't studio-only. format_preferences is a pure JSON->text function, testable with a canned dict.
+
+def _fetch_preferences(port: int) -> dict:
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/preferences", data=b'{"threshold":3}',
+                                 method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except urllib.error.URLError as e:
+        raise CloznError(f"couldn't reach the Studio on port {port} ({getattr(e, 'reason', e)}). "
+                         f"Start it first:  clozn studio")
+    except Exception as e:
+        raise CloznError(f"preferences failed: {e}")
+
+
+def _resolve_preference(port: int, pid: str, action: str) -> dict:
+    body = json.dumps({"id": pid, "action": action}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/preferences/resolve", data=body,
+                                 method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error", str(e))
+        except Exception:
+            msg = str(e)
+        raise CloznError(f"{action} failed ({e.code}): {msg}")
+    except urllib.error.URLError as e:
+        raise CloznError(f"couldn't reach the Studio on port {port} ({getattr(e, 'reason', e)}). "
+                         f"Start it first:  clozn studio")
+
+
+def format_preferences(data: dict) -> str:
+    """Pure JSON->text render of the pending proposals (no server -- testable with a canned dict). Lists what
+    the model is asking to make a default; nothing here changes a dial (that's `--approve <id>`)."""
+    pend = (data or {}).get("pending") or []
+    if not pend:
+        return (f"{DIM}no suggestions yet -- use the Run Inspector's \"Too verbose / Too cold\" buttons a few "
+                f"times and a pattern will surface here.{RST}")
+    out = [f"{BOLD}learned-preference suggestions{RST}  {DIM}approve to make one a default, or dismiss{RST}"]
+    for p in pend:
+        n = len(p.get("evidence") or [])
+        ev = f"   {DIM}from {n} repl{'y' if n == 1 else 'ies'}{RST}" if n else ""
+        out.append(f"  {p.get('label', '(preference)')}{ev}")
+        out.append(f"    {DIM}approve:{RST} clozn preferences --approve {p.get('id')}"
+                   f"   {DIM}dismiss:{RST} --dismiss {p.get('id')}")
+    return "\n".join(out)
+
+
+def cmd_preferences(args):
+    port = args.port or 8090
+    pid = args.approve or args.dismiss
+    if pid:
+        action = "approve" if args.approve else "dismiss"
+        r = _resolve_preference(port, pid, action)
+        pr = (r or {}).get("proposal") or {}
+        if action == "approve":
+            ap = (r or {}).get("applied") or {}
+            if ap.get("error"):
+                print(f"approved, but the dial couldn't be applied: {ap['error']}")
+            else:
+                print(f"approved -- {BOLD}{pr.get('dial', '?')}{RST} set to {ap.get('value', '?')} "
+                      f"{DIM}(now your default){RST}")
+        else:
+            print(f"dismissed -- {pr.get('dial', '?')} {DIM}won't resurface unless the pattern gets much "
+                  f"stronger{RST}")
+        return
+    print(format_preferences(_fetch_preferences(port)))
+
+
 def build_parser():
     """The full argparse tree, factored out of main() so tests can introspect flags without dispatching."""
     p = argparse.ArgumentParser(prog="clozn", description="a reliable front door to the local model engine")
@@ -1338,6 +1414,12 @@ def build_parser():
                     "it overclaims. Opt-in -- unlike the rest of `explain`, this GENERATES (two model calls; "
                     "needs the qwen substrate loaded in `clozn studio`)")
     pe.set_defaults(fn=cmd_explain)
+    ppref = sub.add_parser("preferences", help="review learned-preference suggestions the model proposes "
+                           "from your quick-repairs (needs `clozn studio` running)")
+    ppref.add_argument("--approve", metavar="ID", default=None, help="approve a proposal by id (persists the dial)")
+    ppref.add_argument("--dismiss", metavar="ID", default=None, help="dismiss a proposal by id")
+    ppref.add_argument("--port", type=int, default=0, help="Studio port (default 8090)")
+    ppref.set_defaults(fn=cmd_preferences)
     return p
 
 
