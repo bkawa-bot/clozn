@@ -9,7 +9,63 @@ Environment: CUDA python = C:\Users\brigi\src\cloze\.venv\Scripts\python.exe; en
 
 ---
 
-## 2026-07-06 — decision-updated production list (READ THIS FIRST; supersedes items 1–11 below where they conflict)
+## 2026-07-07 — runtime bet LANDED (READ THIS FIRST; supersedes the sections below where they conflict)
+
+*Session 2026-07-06→07 built + validated the engine convergence (the ⭐ North Star of the 2026-07-06 list)
+and finished shipping the dial library — its two flagship items are DONE. The living record of the runtime
+work is `RUNTIME_SPLIT.md`: the "what lives where" definition, the phased migration, and the engine-crash
+forensics. Research still pinned in `FINDINGS.md`.*
+
+**✅ DONE — engine convergence (the North Star; "biggest structural lever").** `EngineSubstrate` in
+`research/clozn_server.py` implements the `Substrate` interface over the C++ engine, so chat + the whole
+receipts stack (explain/receipts/counterfactual/narrate/replay) + prompt-mode RAG memory + all 33 tone
+dials run on the GGUF runtime with ZERO PyTorch model resident. The clean split (`RUNTIME_SPLIT.md`):
+**product = engine (forward-only), lab = PyTorch (offline trainer/research)**, joined by forward-only
+artifacts; the learned soft-prefix TTT is CUT from the product (kept lab-only) so the product is 100%
+forward-only. Validated **12/12** by `research/smoke_engine_substrate.py` (a full session survives).
+
+**✅ DONE — validated dial library, deployed + engine-native.** 71→47→33 curated
+(`research/dial_library_shipped.json`), per-model-calibrated. Deployed live (`deploy_dial_library.py` →
+`~/.clozn/studio_library.json`; `gen_dial_calibration.py` → `~/.clozn/dial_calibration.json`; tagged
+"library" in `/steer/axes`). Works on BOTH substrates (PyTorch + engine via `EngineSteer.load_library`).
+Findings: `research/dial_library_findings.md`.
+
+**🔧 FIXED — the engine's #1 robustness blocker.** Uncaught exceptions on the streaming SSE path silently
+`abort()`ed the single-worker engine (crashed a normal session ~7 generations in). Root-caused + fixed in
+`serve/cloze_server.cpp` (clamp inputs + restore-and-rethrow + a streaming try/catch). Remaining C++
+follow-ups (lower priority now sessions are stable): the same guard on `/v1/revise`, `/v1/board`,
+`/intervene`; `/intervene`'s dangling `&raw_vec`/`&applied_layers` captures; the mid-stream-disconnect
+guard. See `RUNTIME_SPLIT.md` hard-part #6.
+
+**➡️ OPEN WORK, re-ranked by leverage:**
+
+1. **🔑 Preference-signal plumbing (thumbs / regenerate / edits).** STILL the highest-leverage single
+   input — unblocks dial auto-SELECT (pick the value, not just calibrate the range) AND voice/LoRA "learn
+   how you want me to act." Where: chat UI + a `/feedback` seam + the run log. Done: a thumbs/edit persists
+   a signal the calibration/learning loops can read. Model: Opus (design) + Sonnet (wiring).
+
+2. **➕ Auto-calibrate custom dials on creation — now engine-native + timely.** The "make your own dial" UI
+   runs the calibration engine live → "works (range X)" or "doesn't steer on your model." `EngineSteer`
+   already computes directions via `/harvest`, so this runs on the engine with no PyTorch. Extra pull: this
+   session found **calibration is SUBSTRATE-specific** (the engine's steer scale ≠ PyTorch's — a dial value
+   means different things per substrate), so a per-substrate calibrate-on-the-engine flow is genuinely
+   needed (`RUNTIME_SPLIT.md` Phase 5). Where: refactor the calibration core to run against the live
+   substrate; give `EngineSteer` an `add_custom`. Model: Sonnet.
+
+3. **📋 Profiles studio UI** — unchanged; contained ~1-day product win (backend `research/profiles.py`
+   tested, no front-end). Persona picker in the masthead, `/profiles/*` endpoints. Model: Sonnet/Opus.
+
+4. **Runtime polish (`RUNTIME_SPLIT.md` Phases 3–5):** streaming `chat_stream` on the engine (live-token
+   UX — the OpenAI streaming endpoint falls through to non-stream today); the C++ hardening follow-ups
+   above; engine supervision (auto-restart) + studio retry-on-connection-refused (defense-in-depth);
+   engine-native dial calibration (Phase 5).
+
+**🕗 DEFERRED / ❌ KILLED — unchanged from 2026-07-06:** memory hardening (single-user threat model), slot
+value-injection, persistent-injection KV-edit bug, receipt-tuned wording deferred; Parliament + Quine killed.
+
+---
+
+## 2026-07-06 — decision-updated production list (mostly DONE — superseded by the 2026-07-07 section above; supersedes items 1–11 below)
 
 *Session 2026-07-05→06 closed all six wild experiments, made the product-scope calls below, and built the
 dial auto-calibration feature. Items 1–11 (dated 2026-07-03) are mostly DONE or superseded — this section
