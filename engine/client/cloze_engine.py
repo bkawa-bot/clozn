@@ -177,6 +177,19 @@ class EngineClient:
         return Harvest(tokens=r["tokens"], layer=int(r["layer"]),
                        activations=decode_tensor(r["activations"]))
 
+    def harvest_layers(self, text: str) -> dict:
+        """POST /harvest/layers: per-layer activation SUMMARY in ONE causal forward -- the L2 norm of every
+        token's residual at EVERY layer (the depth x position "MRI" map) + a per-layer mean. Unlike
+        harvest() (one layer's full tensor), this is the cheap cross-depth view: one forward, all layers.
+        Returns {tokens, n_tokens, n_layer, norms:[n_layer][n_tokens], layer_mean:[n_layer]} -- plain
+        floats (no tensor codec), so it's handed back as-is for the UI to render."""
+        r = self._post("/harvest/layers", {"text": text})
+        return {"tokens": r.get("tokens", []),
+                "n_tokens": int(r.get("n_tokens", 0)),
+                "n_layer": int(r.get("n_layer", 0)),
+                "norms": r.get("norms", []),
+                "layer_mean": r.get("layer_mean", [])}
+
     def write_state(self, text: str, layer: int, positions: Sequence[int],
                     values: ArrayLike) -> Observation:
         """POST /state: overwrite `positions`' residual at `layer` with `values`, then observe.

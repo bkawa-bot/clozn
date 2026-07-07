@@ -1585,6 +1585,10 @@ class EngineSubstrate(Substrate):
                     m["quant"] = q
             if (h or {}).get("mode"):
                 m["mode"] = h["mode"]
+            for k in ("n_ctx", "device", "gpu_layers"):     # present once the engine's /health exposes them
+                v = (h or {}).get(k)
+                if v is not None:
+                    m[k] = v
         except Exception:
             pass
         self._run_meta = m
@@ -2423,6 +2427,11 @@ def make_handler():
                                             "norms": [round(float(x), 3) for x in norms]})
                 except Exception as e:
                     return self._json(502, {"error": f"engine: {e}"})
+            if p == "/engine/layers":    # per-layer activation SUMMARY (depth x position norms) from the C++ engine
+                try:
+                    return self._json(200, ENGINE.harvest_layers(str(body.get("text", ""))[:300]))
+                except Exception as e:
+                    return self._json(502, {"error": f"engine-layers: {e}"})
             if p == "/engine/observe":   # WRITE a scaled residual back at one token, OBSERVE how the prediction moves
                 try:
                     pos = int(body.get("position", 0))

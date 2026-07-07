@@ -353,11 +353,12 @@ def test_engine_steer_generate_explicit_strength_is_unaffected_by_engage():
 # ==================================================================================== run_meta (repro metadata)
 
 class _HealthEngine:
-    """A stand-in engine exposing just /health, for run_meta(): {model (a GGUF path), mode}."""
+    """A stand-in engine exposing just /health, for run_meta(): {model (a GGUF path), mode, n_ctx, device}."""
 
     def __init__(self, model="/models/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf", mode="autoregressive"):
         self.base = "http://127.0.0.1:1"
-        self._h = {"status": "ok", "model": model, "mode": mode}
+        self._h = {"status": "ok", "model": model, "mode": mode,
+                   "n_ctx": 4096, "device": "cuda", "gpu_layers": 99}
 
     def health(self):
         return dict(self._h)
@@ -379,6 +380,8 @@ def test_run_meta_reads_model_file_quant_and_mode(iso):
     assert meta["quant"] == "Q4_K_M"
     assert meta["mode"] == "autoregressive"
     assert meta["sampling"] == "greedy"                                  # chat/chat_stream force temperature 0
+    assert meta["n_ctx"] == 4096 and meta["device"] == "cuda"           # from /health, once the engine exposes them
+    assert meta["gpu_layers"] == 99
 
 
 def test_run_meta_is_cached_after_first_call(iso):

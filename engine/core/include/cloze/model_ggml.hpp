@@ -71,6 +71,15 @@ private:
     bool shift_logits_ = true;  // see shift_logits(): default to the Dream-family shifted head
 };
 
+// Per-layer activation summary from ONE forward: the L2 norm of every token's residual at every layer
+// (the "Model MRI" depth x position map). Captured by the eval callback prefix-matching "l_out-<il>"
+// across all layers in a single decode (cf. llama.cpp's cvector-generator) -- one forward, not n_layer.
+struct LayerSummary {
+    int n_layer = 0;
+    int n_tokens = 0;
+    std::vector<std::vector<float>> norms;   // [n_layer][n_tokens]: |residual| per token per layer
+};
+
 class GgmlAdapter : public ModelAdapter {
 public:
     // Standalone: load a fresh model + create a context over it (the original API).
@@ -172,6 +181,11 @@ public:
     // (tap_layer_ > 0); on the final-layer fallback (tap_layer_ == 0) it returns the per-token
     // embeddings instead (one D2H per token — slower but still correct). Not a golden path.
     ForwardResult harvest(const std::vector<int>& tokens);
+    // Per-layer activation SUMMARY: one causal forward over `tokens` with the eval callback capturing
+    // EVERY layer's residual (prefix-match "l_out-"), reduced to the L2 norm of each token's hidden state
+    // at each layer — the depth x position map, in ONE forward (vs n_layer separate harvests). Caller sets
+    // set_causal(true) first (as /harvest does); the read/steer tap state is left untouched.
+    LayerSummary layer_summary(const std::vector<int>& tokens);
     // Number of forwards that actually took the device path (host D2H skipped) — lets a test
     // prove the zero-copy path was exercised rather than silently falling back to host.
     long long device_forwards() const { return device_forwards_; }
@@ -219,6 +233,8 @@ private:
     std::string tap_name_;           // "l_out-<tap_layer_>": the residual tensor the eval callback captures
     std::vector<float> tap_buf_;     // last-decode residual at tap_layer_ [rows*n_embd], filled by eval_cb
     int tap_rows_ = 0;               // token rows in tap_buf_ (= the last decode segment's length)
+    bool emit_layer_summary_ = false;              // when on, eval_cb folds EVERY l_out-<il> into layer_norms_
+    std::vector<std::vector<float>> layer_norms_;  // [n_layer][rows]: per-token |residual| per layer (summary)
     // White-box state-WRITE (GAP #1): the mirror of the tap — eval_cb overwrites these positions' rows
     // at write_name_ during decode (ggml_backend_tensor_set), applied until clear_write().
     bool have_write_ = false;

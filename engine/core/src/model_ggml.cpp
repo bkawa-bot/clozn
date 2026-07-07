@@ -1,5 +1,7 @@
 #include "cloze/model_ggml.hpp"
 
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <utility>
@@ -112,7 +114,9 @@ bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
     const char* nm = ggml_get_name(t);
     const bool read = emit_activations_ && tap_layer_ > 0 && tap_name_ == nm;   // the read tap
     const bool write = have_write_ && write_layer_ > 0 && write_name_ == nm;    // the state-WRITE
-    if (!read && !write) return false;                        // not a residual tensor we read or write
+    // layer-summary mode: match EVERY per-layer residual "l_out-<il>" (prefix) for per-layer norms in one pass
+    const bool summary = emit_layer_summary_ && std::strncmp(nm, "l_out-", 6) == 0;
+    if (!read && !write && !summary) return false;           // not a residual tensor we read or write
     if (ask) return true;                                     // yes — hand me its data after it computes
     const int ne0 = static_cast<int>(t->ne[0]);  // n_embd
     const int ne1 = static_cast<int>(t->ne[1]);  // token rows (the decode segment)
@@ -120,6 +124,21 @@ bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
         tap_rows_ = ne1;
         tap_buf_.resize(static_cast<size_t>(ne0) * ne1);
         ggml_backend_tensor_get(t, tap_buf_.data(), 0, tap_buf_.size() * sizeof(float));
+    }
+    if (summary && ne0 == n_embd_ && ne1 > 0) {
+        const int il = std::atoi(nm + 6);                    // "l_out-<il>" -> il
+        if (il >= 0 && il < n_layer_) {
+            std::vector<float> rows(static_cast<size_t>(ne0) * ne1);
+            ggml_backend_tensor_get(t, rows.data(), 0, rows.size() * sizeof(float));
+            std::vector<float>& dst = layer_norms_[il];
+            dst.assign(ne1, 0.0f);
+            for (int r = 0; r < ne1; ++r) {
+                const float* h = rows.data() + static_cast<size_t>(r) * ne0;
+                double ss = 0.0;
+                for (int i = 0; i < ne0; ++i) ss += static_cast<double>(h[i]) * h[i];
+                dst[r] = static_cast<float>(std::sqrt(ss));
+            }
+        }
     }
     // WRITE side (GAP #1): overwrite each marked position's row (row = board position - this segment's
     // `from`), AFTER the read (so the tap reports the PRE-edit state) and before downstream layers consume
@@ -310,6 +329,34 @@ ForwardResult GgmlAdapter::harvest(const std::vector<int>& tokens) {
                                static_cast<size_t>(n_embd_) * sizeof(float));
         }
     }
+    return out;
+}
+
+LayerSummary GgmlAdapter::layer_summary(const std::vector<int>& tokens) {
+    const int len = static_cast<int>(tokens.size());
+    if (len <= 0) throw std::invalid_argument("layer_summary: empty tokens");
+    if (len > n_ctx_) throw std::invalid_argument("layer_summary: exceeds n_ctx");
+
+    // One causal forward from a clean cache; the eval callback folds EVERY layer's l_out-<il> into
+    // layer_norms_ (per-token L2 norm) as the graph runs -- all layers in this single pass.
+    layer_norms_.assign(n_layer_, {});
+    llama_memory_clear(llama_get_memory(ctx_), true);
+    frozen_end_ = 0;
+    boundary_row_.clear();
+    const bool prev = emit_layer_summary_;
+    emit_layer_summary_ = true;
+    try {
+        decode_only(tokens, 0, len);
+    } catch (...) {
+        emit_layer_summary_ = prev;
+        throw;
+    }
+    emit_layer_summary_ = prev;
+
+    LayerSummary out;
+    out.n_layer = n_layer_;
+    out.n_tokens = len;
+    out.norms = layer_norms_;
     return out;
 }
 

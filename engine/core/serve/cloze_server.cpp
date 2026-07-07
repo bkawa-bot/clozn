@@ -935,7 +935,10 @@ int main(int argc, char** argv) {
 
     svr.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
         json h{{"status", "ok"}, {"model", model_path},
-               {"mode", ar_mode ? "autoregressive" : "diffusion"}};
+               {"mode", ar_mode ? "autoregressive" : "diffusion"},
+               {"n_ctx", n_ctx},                              // configured context window (repro metadata)
+               {"gpu_layers", gpu_layers},                    // layers offloaded to the GPU (0 => CPU-resident)
+               {"device", gpu_layers > 0 ? "cuda" : "cpu"}};  // CUDA build; device follows the offload setting
 #ifdef CLOZE_SAE
         if (sae_serve.on)
             h["sae"] = {{"d_sae", sae_serve.enc.d_sae()}, {"layer", sae_serve.layer}, {"k", sae_serve.k}};
@@ -1228,6 +1231,69 @@ int main(int argc, char** argv) {
                 {"activations", tensor_json_f32(
                     fwd.activations,
                     {static_cast<int>(tokens.size()), fwd.n_embd})},
+            };
+            res.set_content(resp.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
+    // POST /harvest/layers — the per-layer activation SUMMARY: one causal forward, and every layer's
+    // residual is reduced to the L2 norm of each token's hidden state (GgmlAdapter::layer_summary). Returns
+    // the depth x position "MRI" map ([n_layer][n_tokens] norms) + a per-layer mean, in ONE forward — the
+    // cheap cross-depth view /harvest (single-layer, full tensor) can't give without n_layer separate calls.
+    svr.Post("/harvest/layers", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+        if (body.is_discarded()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON body"}}.dump(), "application/json");
+            return;
+        }
+        const std::string text = body.value("text", std::string());
+        if (text.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "empty text"}}.dump(), "application/json");
+            return;
+        }
+        const std::vector<int> tokens = model->encode(text);
+        if (tokens.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "text tokenized to zero tokens"}}.dump(), "application/json");
+            return;
+        }
+        if (static_cast<int>(tokens.size()) > n_ctx) {
+            res.status = 400;
+            res.set_content(json{{"error", "text too long for one forward"},
+                                 {"n_tokens", static_cast<int>(tokens.size())},
+                                 {"n_ctx", n_ctx}}.dump(), "application/json");
+            return;
+        }
+        try {
+            LayerSummary ls;
+            {
+                ContextPool::Lease lease = pool.acquire();
+                GgmlAdapter& ad = *lease;
+                ad.set_causal(true);              // summary under causal attention (also clears the KV)
+                ls = ad.layer_summary(tokens);    // one forward, all layers (the method restores its own flag)
+            }
+            json pieces = json::array();
+            for (int id : tokens) pieces.push_back(model->decode({id}));
+            json norms = json::array();
+            json layer_mean = json::array();
+            for (const std::vector<float>& layer : ls.norms) {
+                json row = json::array();
+                double sum = 0.0;
+                for (float v : layer) { row.push_back(v); sum += v; }
+                norms.push_back(row);
+                layer_mean.push_back(layer.empty() ? 0.0 : sum / static_cast<double>(layer.size()));
+            }
+            json resp = {
+                {"tokens", pieces},
+                {"n_tokens", ls.n_tokens},
+                {"n_layer", ls.n_layer},
+                {"norms", norms},           // [n_layer][n_tokens]: |residual| per token per layer
+                {"layer_mean", layer_mean}, // [n_layer]: mean token norm at each layer
             };
             res.set_content(resp.dump(), "application/json");
         } catch (const std::exception& e) {
