@@ -1961,6 +1961,20 @@ def make_handler():
                 self._json(200, {"active": name, "switched": True, "note": "reloading -- poll /substrate"})
                 threading.Thread(target=lambda: (time.sleep(0.4), switch_substrate(name)), daemon=True).start()
                 return
+            if p == "/feedback":   # preference-signal CAPTURE (the plumbing) -- log a directional signal
+                # (e.g. a Run Inspector "Too verbose" click) tied to the run that prompted it, so a later
+                # accumulate-and-propose step can mine "you keep asking for concise". Records only; changes
+                # nothing (agency-agnostic), and never fails the user's action over a feedback write.
+                import feedback
+                sig = feedback.record(body.get("run_id"), str(body.get("kind", "quick_repair")),
+                                      dial=body.get("dial"), direction=body.get("direction"),
+                                      meta=body.get("meta"))
+                return self._json(200, {"ok": True, "signal": sig})
+            if p == "/feedback/summary":   # the rollup a learning step reads: per-(dial,direction) counts +
+                import feedback            # the last run driving each, over an optional recent window (days)
+                wd = body.get("window_days")
+                ws = float(wd) * 86400 if isinstance(wd, (int, float)) else None
+                return self._json(200, feedback.summary(window_seconds=ws))
             if p == "/memory/mode":   # swap the memory mechanism (persisted; takes effect immediately)
                 import memory_mode
                 mode = str(body.get("mode", "")).strip().lower()

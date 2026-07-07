@@ -903,6 +903,11 @@
         if (btn.disabled) return;
         var preset = QR_BY_KEY[btn.dataset.qr];
         if (!preset || !out) return;
+        // Capture the click as a preference signal (best-effort; postJSON never throws and we don't await
+        // it -- the replay must not wait on the log). Directional + run-tied, so a later accumulate-and-
+        // propose step can mine "you keep asking for <axis>" and offer to make it a default.
+        postJSON("/feedback", { run_id: run.id, kind: "quick_repair", dial: preset.axis,
+                                direction: 1, meta: { complaint: preset.key } });
         doReplay(out, run, { behavior_overrides: presetOverrides(preset, run) }, btn);
       };
     });
