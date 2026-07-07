@@ -136,7 +136,7 @@ def _hesitations(run: dict) -> list[dict]:
         if c is None or c >= LOW_CONF:
             continue
         alts = alternatives[i] if i < len(alternatives) and isinstance(alternatives[i], list) else []
-        out.append({"type": "hesitation", "label": f'Unsure at "{piece}"', "index": i, "piece": piece,
+        out.append({"type": "hesitation", "label": f'Unsure at "{piece}"', "index": i, "token": piece,
                     "confidence": round(c, 4), "alternatives": alts})
     return out
 

@@ -84,7 +84,7 @@ def test_timeline_happy_path_returns_ordered_events_over_http(iso):
     assert types == ["run_started", "memory_applied", "dials_applied", "generation", "hesitation", "finished"]
     # spot-check a couple of fields actually round-tripped over the wire (JSON null, floats intact)
     hes = data["events"][types.index("hesitation")]
-    assert hes["piece"] == " attracts" and hes["alternatives"] == [{"piece": " pulls", "prob": 0.4}]
+    assert hes["token"] == " attracts" and hes["alternatives"] == [{"piece": " pulls", "prob": 0.4}]
     mem_ev = data["events"][types.index("memory_applied")]
     assert mem_ev["cards"][0]["relevance"] == 0.81
     assert data["events"][-1]["finish_reason"] == "stop"
