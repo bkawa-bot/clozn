@@ -77,7 +77,7 @@ Write that, and the whole Server tier (③) runs on the engine — because it al
 
 ## Migration sequence
 
-- **Phase 0 — the keystone.** `EngineSubstrate(Substrate)` with `.chat`/`.chat_stream` over `/v1/completions`, owning per-model chat templating (the engine takes raw strings — no template today). *Validates:* receipts/explain/replay run against the engine substrate.
+- **Phase 0 — the keystone. ✅ DONE (2026-07-06), live-validated.** `EngineSubstrate(Substrate)` with `.chat` over `/v1/completions` (`_engine_complete_traced` for the per-token trace), memory as the prompt-mode card block, dials via `EngineSteer.steer_vec`. Reuses `_qwen_tmpl`. Wired into `load_substrate("engine")` (was `None`). **Validated against a live GGUF engine (Qwen-7B Q4, GPU): studio boots in ~0s with zero PyTorch model, and all six flagship endpoints work on the engine substrate — `/v1/chat/completions`, `/explain` (M1, 28-token trace + "2 hesitations"), `/receipts` (M2), `/counterfactual` (M3, `warm=1.0` `causal_verified:true` — and it visibly over-bleeds off-facts, exactly as calibration predicted), `/narrate` (M4), `/replay` (F1).** Deferred to a fast-follow: `.chat_stream` (SSE streaming — the OpenAI endpoint falls through to non-stream cleanly meanwhile) and moving chat templating engine-side (it's Python `_qwen_tmpl` today, fine for the studio orchestration layer). 48 model-free tests + full suite green.
 - **Phase 1 — dials engine-native.** Compute the 33-dial directions via `/harvest` over the pole prompts (forward-only, native activation space), apply via `steer_vec`, capped by the existing calibration artifact. *Validates:* the dial library works on the engine.
 - **Phase 2 — RAG memory.** Already substrate-agnostic (runs before `.chat`) — "just works" once Phase 0 lands. *Validates:* cards inject + gate on the engine.
 - **Phase 3 — sampler + streaming parity.** Richer sampling (top-p/k; upstream has it, unwired) for chat; SSE through `.chat_stream`. Keep greedy for receipts (they *want* determinism).
@@ -91,6 +91,7 @@ Write that, and the whole Server tier (③) runs on the engine — because it al
 3. **KV-level persistent injection** has *no working reference anywhere* (the one PyTorch attempt, `persistent_injection.py`, is broken/deferred). But slot-memory is receipt-only + off-by-default → off the critical path, and `/state`-write is a better foundation than the broken torch KV-edit.
 4. **Attention-weight taps** cost flash-attention perf (probs aren't a tensor on the flash path). Live receipts appear not to need them (logits + hidden-state harvest) → likely moot.
 5. **No batched decode** — engine concurrency is N full contexts = N× KV. Don't assume vLLM-style continuous batching.
+6. **Engine robustness (observed).** During Phase 0 validation the single-worker engine died *silently once* (no crash trace, hard exit) while being hammered with concurrent test requests — recovered fully on restart, not reproducible in isolation (`compute()` harvest-storm + `/v1/completions`+`steer_vec` streaming all pass clean on a fresh engine). Consistent with the recon's flagged gaps (single worker, no request cancellation). A production runtime needs a supervised/auto-restart engine + a studio-side retry-on-connection-refused.
 
 ## Security note
 

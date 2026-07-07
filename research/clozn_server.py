@@ -1383,9 +1383,117 @@ class DreamSubstrate(Substrate):
         return {"dials": self.steer.active(), "cards": self.dmem.rules}
 
 
+class _EngineMemory:
+    """Thin prompt-mode memory for the engine substrate: the CARD STORE *is* the memory. No model, no
+    learned prefix (the soft-prefix TTT is a lab experiment now, not shipped in the engine product -- see
+    RUNTIME_SPLIT.md). Exposes exactly the surface the base Substrate._memory handler, _prompt_block_for,
+    and the receipts/replay stack read: .rules (active-card texts), .prefix (always None), .memory_strength,
+    ._exclude_card_ids (replay sets this for per-card receipts), .consolidate/.reset (no-ops -- prompt mode
+    never trains), .state(), .lock."""
+
+    def __init__(self):
+        self.prefix = None
+        self._exclude_card_ids = None
+        self.lock = threading.Lock()
+        try:
+            import memory_mode                    # 0.35 == the shipped product default (commit f3e9f60, the
+            self.memory_strength = float(memory_mode.get_setting("memory_strength", 0.35))   # over-bleed fix);
+        except Exception:                          # matches SelfTeach.__init__ so a fresh engine-first boot
+            self.memory_strength = 0.35            # doesn't diverge. (Prompt mode treats it as on/off anyway.)
+
+    @property
+    def rules(self):
+        import memory_cards
+        return [c["text"] for c in (memory_cards.list_cards() or []) if c.get("status") == "active"]
+
+    def consolidate(self, rules):
+        return {"ok": True, "mode": "prompt"}      # prompt mode never trains a prefix
+
+    def reset(self):
+        pass
+
+    def state(self):
+        import memory_cards
+        return {"mode": "prompt", "has_prefix": False,
+                "cards": len(memory_cards.list_cards() or []), "rules": self.rules}
+
+
+class EngineSubstrate(Substrate):
+    """PURE-ENGINE substrate: chat + prompt-mode memory + tone dials on the C++ GGUF runtime, NO PyTorch
+    model resident. THIS is the class that brings the whole torch-free Server tier -- /v1/chat/completions,
+    replay, receipts, explain, narrate, counterfactual -- onto the fast engine, because every one of those
+    routes through SUB.chat(). Memory is prompt-mode only (the card store as a topic-gated system block);
+    dials apply via EngineSteer's steer_vec. See RUNTIME_SPLIT.md (the keystone)."""
+
+    name = "engine"
+
+    def __init__(self):
+        if ENGINE_QWEN is None:
+            raise RuntimeError("engine substrate needs a running GGUF engine (set CLOZN_ENGINE_QWEN_PORT)")
+        self.engine = ENGINE_QWEN
+        self.steer = _engine_steer()            # an EngineSteer on the GGUF (tone dials via steer_vec)
+        self._mem = _EngineMemory()
+        self.memory = self._mem                 # the studio reads SUB.memory in a few places
+        self._pers_steer = _pers("studio_personality.json")
+        self._steer_ready = False
+        self._steer_info = {}
+        self._steer_lock = threading.Lock()
+        self.brain = None                       # no SAE/brain on the pure-engine substrate (concepts 409 cleanly)
+        if self.steer is not None:              # restore persisted dial values (shared personality.json)
+            try:
+                self.steer.load_state(self._pers_steer)
+            except Exception:
+                pass
+
+    def _gen(self, prompt):                     # one-shot generate for the /steer/check A/B (base _steer)
+        if self.steer is not None:
+            return self.steer.generate(prompt, max_new=90)
+        from steering import EngineSteer
+        return EngineSteer._text(self.engine.complete(prompt, max_tokens=90))
+
+    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+        """One stateless chat completion on the engine with memory (prompt-mode card block) + tone dials
+        applied. Mirrors QwenSubstrate.chat's contract EXACTLY (same signature, same trace_out/mem_out
+        fill) so the receipts/replay stack is backend-agnostic. `sample` is accepted for signature parity;
+        the engine trace path decodes greedily (temperature 0) so a receipt diff is attributable, matching
+        how the stack already drives QwenSubstrate for receipts."""
+        # MEMORY: the active cards as a topic-gated system block (omitted off-topic / when strength 0).
+        block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
+        if mem_out is not None:
+            mem_out.update(mode="prompt", applied=applied, gate=gate)
+        prompt = _qwen_tmpl(_inject_block(messages, block))
+        # TONE: dials from self.steer.strength (replay toggles this in place), falling back to disk.
+        kw = {}
+        st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or _disk_dials()
+        if self.steer is not None and st and any(st.values()):
+            sv = self.steer.steer_vector(st)
+            if sv:
+                kw["steer_vec"] = sv
+                kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
+        reply_raw, steps = _engine_complete_traced(self.engine, prompt, max_new, kw)
+        if trace_out is not None:
+            trace_out.extend(steps)
+        return reply_raw.strip()
+
+    def handle(self, path, body):
+        r = self._memory(path, body)
+        if r is not None:
+            return r
+        return self._steer(path, body)
+
+    def state(self):
+        import memory_cards
+        return {"dials": dict(getattr(self.steer, "strength", {}) or {}),
+                "cards": len(memory_cards.list_cards() or [])}
+
+
 def load_substrate(name):
     if name == "engine":
-        return None        # pure-engine: NO HF model -- serve the GGUF via the C++ engine + the saved prefix from disk
+        try:
+            return EngineSubstrate()
+        except Exception as e:
+            print(f"[substrate] engine substrate unavailable ({e}); running with SUB=None", file=sys.stderr)
+            return None
     return QwenSubstrate() if name == "qwen" else DreamSubstrate()
 
 

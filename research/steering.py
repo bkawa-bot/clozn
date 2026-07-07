@@ -518,7 +518,7 @@ class EngineSteer:
         completion, so this doubles as the baseline for an A/B)."""
         if not self.ready:
             self.compute()
-        s = self.strength if strength is None else strength
+        s = (self.strength if getattr(self, "_engaged", False) else {}) if strength is None else strength
         active = {k: v for k, v in s.items() if v and k in self.vecs}
         if not active:
             return self._text(self.ec.complete(prompt, max_tokens=max_new))
@@ -544,3 +544,32 @@ class EngineSteer:
         if n > cap:
             vec = vec * (cap / n)
         return vec.tolist()
+
+    # --- SteeringControl-compatible surface, so the studio's base Substrate._steer works on the engine.
+    # Engine steering is applied PER REQUEST (a steer_vec on /intervene), so there is no persistent hook to
+    # install: engage/disengage just flip a flag that gates the default (strength=None) generate() path, which
+    # is what lets /steer/check produce a clean unsteered baseline before the one dial under test is set.
+    def clear(self):
+        self.strength = {}
+
+    def engage(self):
+        self._engaged = True
+
+    def disengage(self):
+        self._engaged = False
+
+    def active(self):
+        return {k: v for k, v in self.strength.items() if v}
+
+    def save_state(self, path):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.strength, f)
+
+    def load_state(self, path):
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    self.strength = {k: float(v) for k, v in json.load(f).items()}
+            except Exception:
+                pass
