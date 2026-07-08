@@ -24,8 +24,9 @@ htmlcov/
 # until then, recreate with: clone llama.cpp @ e36a602, apply 0001-llama_get_logits_tensor.patch. ---
 /engine/core/third_party/llama.cpp/
 
-# --- Model weights — multi-GB GGUFs / checkpoints live locally, never in the repo ---
-/engine/**/models/
+# --- Model weights — multi-GB GGUFs / checkpoints live locally, never in the repo.
+# NB: do NOT ignore whole `models/` dirs — engine/lab/cloze_lab/models/ is Python source
+# (the substrate adapters), not weights. The extension globs below cover the actual weights. ---
 *.gguf
 *.safetensors
 *.pt

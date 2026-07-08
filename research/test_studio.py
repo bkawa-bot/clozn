@@ -10,72 +10,83 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, "..", "engine", "lab"))      # cloze_lab (dream substrate)
-sys.path.insert(0, os.path.join(HERE, "..", "engine", "client"))   # cloze_engine SDK
-
-_checks = []
-
-
-def ok(name, cond):
-    _checks.append(bool(cond))
-    print(f"  {'PASS' if cond else 'FAIL'}  {name}", flush=True)
 
 
 def has_all(obj, names):
     return all(hasattr(obj, n) for n in names)
 
 
-# --- clozn_server: the substrate base + the two substrates (imports without torch) ------------------
-import clozn_server as cs
+def main():
+    """Run the smoke checks; return an exit code (0 green, 1 regressed).
 
-ok("Substrate base has _memory + _steer", has_all(cs.Substrate, ("_memory", "_steer")))
-ok("QwenSubstrate(Substrate)", issubclass(cs.QwenSubstrate, cs.Substrate))
-ok("DreamSubstrate(Substrate)", issubclass(cs.DreamSubstrate, cs.Substrate))
-ok("QwenSubstrate: chat + chat_stream + _gen + _handle/handle",
-   has_all(cs.QwenSubstrate, ("chat", "chat_stream", "_gen", "handle")))
-ok("DreamSubstrate: _gen + handle", has_all(cs.DreamSubstrate, ("_gen", "handle")))
+    Everything lives inside main() -- including the imports and sys.path setup -- so that a plain
+    `pytest` collection can import this module without executing the checks or calling sys.exit
+    (which would abort the collector). Run it directly for the smoke test; see the module docstring.
+    """
+    sys.path.insert(0, HERE)
+    sys.path.insert(0, os.path.join(HERE, "..", "engine", "lab"))      # cloze_lab (dream substrate)
+    sys.path.insert(0, os.path.join(HERE, "..", "engine", "client"))   # cloze_engine SDK
 
-# --- steering: the tone dials (AR + diffusion) -----------------------------------------------------
-import steering
+    _checks = []
 
-ok("7 tone axes", len(steering.AXES) == 7)
-ok("SteeringControl: compute/set/engage/save_state/load_state",
-   has_all(steering.SteeringControl, ("compute", "set", "engage", "disengage", "save_state", "load_state")))
-ok("DreamSteering(SteeringControl)", issubclass(steering.DreamSteering, steering.SteeringControl))
-ok("EngineSteer: compute/set/generate (tone dials on any GGUF via the engine)",
-   has_all(steering.EngineSteer, ("compute", "set", "generate")))
+    def ok(name, cond):
+        _checks.append(bool(cond))
+        print(f"  {'PASS' if cond else 'FAIL'}  {name}", flush=True)
 
-# --- memory: AR soft-prefix + diffusion soft-prefix ------------------------------------------------
-import dream_memory
+    # --- clozn_server: the substrate base + the two substrates (imports without torch) --------------
+    import clozn_server as cs
 
-ok("DreamMemory: consolidate/denoise/save/load/reset",
-   has_all(dream_memory.DreamMemory, ("consolidate", "denoise", "save", "load", "reset")))
-ok("PrefixAdapter: forward + config", has_all(dream_memory.PrefixAdapter, ("forward", "encode", "decode")))
+    ok("Substrate base has _memory + _steer", has_all(cs.Substrate, ("_memory", "_steer")))
+    ok("QwenSubstrate(Substrate)", issubclass(cs.QwenSubstrate, cs.Substrate))
+    ok("DreamSubstrate(Substrate)", issubclass(cs.DreamSubstrate, cs.Substrate))
+    ok("QwenSubstrate: chat + chat_stream + _gen + _handle/handle",
+       has_all(cs.QwenSubstrate, ("chat", "chat_stream", "_gen", "handle")))
+    ok("DreamSubstrate: _gen + handle", has_all(cs.DreamSubstrate, ("_gen", "handle")))
 
-import self_teach_server
+    # --- steering: the tone dials (AR + diffusion) -------------------------------------------------
+    import steering
 
-ok("SelfTeach: say/consolidate/save/load/_generate",
-   has_all(self_teach_server.SelfTeach, ("say", "consolidate", "save", "load", "_generate")))
+    ok("10 base tone axes", len(steering.AXES) == 10)
+    ok("SteeringControl: compute/set/engage/save_state/load_state",
+       has_all(steering.SteeringControl, ("compute", "set", "engage", "disengage", "save_state", "load_state")))
+    ok("DreamSteering(SteeringControl)", issubclass(steering.DreamSteering, steering.SteeringControl))
+    ok("EngineSteer: compute/set/generate (tone dials on any GGUF via the engine)",
+       has_all(steering.EngineSteer, ("compute", "set", "generate")))
 
-# --- brain readout (concepts) + the rest ----------------------------------------------------------
-import brain_readout
+    # --- memory: AR soft-prefix + diffusion soft-prefix --------------------------------------------
+    import dream_memory
 
-ok("BrainReadout: think/concepts_only/concepts_from_engine",
-   has_all(brain_readout.BrainReadout, ("think", "concepts_only", "concepts_from_engine")))
+    ok("DreamMemory: consolidate/denoise/save/load/reset",
+       has_all(dream_memory.DreamMemory, ("consolidate", "denoise", "save", "load", "reset")))
+    ok("PrefixAdapter: forward + config", has_all(dream_memory.PrefixAdapter, ("forward", "encode", "decode")))
 
-import sae7b
+    import self_teach_server
 
-ok("sae7b: GpuSAE/load7b/feats7b", has_all(sae7b, ("GpuSAE", "load7b", "feats7b")))
+    ok("SelfTeach: say/consolidate/save/load/_generate",
+       has_all(self_teach_server.SelfTeach, ("say", "consolidate", "save", "load", "_generate")))
 
-import atlas_concepts
+    # --- brain readout (concepts) + the rest -------------------------------------------------------
+    import brain_readout
 
-ok("atlas_concepts.content_word", hasattr(atlas_concepts, "content_word"))
+    ok("BrainReadout: think/concepts_only/concepts_from_engine",
+       has_all(brain_readout.BrainReadout, ("think", "concepts_only", "concepts_from_engine")))
 
-import denoise_server
+    import sae7b
 
-ok("denoise_server.trace_for", hasattr(denoise_server, "trace_for"))
+    ok("sae7b: GpuSAE/load7b/feats7b", has_all(sae7b, ("GpuSAE", "load7b", "feats7b")))
 
-passed = sum(_checks)
-print(f"\n{passed}/{len(_checks)} checks passed", flush=True)
-sys.exit(0 if passed == len(_checks) else 1)
+    import atlas_concepts
+
+    ok("atlas_concepts.content_word", hasattr(atlas_concepts, "content_word"))
+
+    import denoise_server
+
+    ok("denoise_server.trace_for", hasattr(denoise_server, "trace_for"))
+
+    passed = sum(_checks)
+    print(f"\n{passed}/{len(_checks)} checks passed", flush=True)
+    return 0 if passed == len(_checks) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
