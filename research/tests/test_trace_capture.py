@@ -16,6 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))   # research/ (runlog lives here)
 import runlog
+import workspace_lens
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -191,16 +192,31 @@ def test_record_persists_engine_trace(tmp_path, monkeypatch):
     assert "low-confidence" not in run["flags"]
 
 
-def test_record_attaches_mock_workspace_readouts(tmp_path, monkeypatch):
+def test_record_does_not_auto_mock_workspace_readouts(tmp_path, monkeypatch):
     monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path))
     steps = runlog.accumulate_ar_events(fake_engine_frames())
     rid = runlog.record(source="engine_chat", client="test", model="clozn-qwen (engine)",
                         messages=[{"role": "user", "content": "hi"}], response="The cat sat", trace=steps)
+    assert "workspace_readouts" not in runlog.get_run(rid)["trace"]
+
+
+def test_record_attaches_provider_workspace_readouts(tmp_path, monkeypatch):
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path))
+    steps = runlog.accumulate_ar_events(fake_engine_frames())
+
+    def provider(rid, trace):
+        return workspace_lens.readouts_from_concepts(
+            rid, trace, {"considered": [{"label": "dragon/fear/RPG", "rel": 0.82}], "layer": 15},
+            provider="engine_concepts", layer=15)
+
+    rid = runlog.record(source="engine_chat", client="test", model="clozn-qwen (engine)",
+                        messages=[{"role": "user", "content": "hi"}], response="The cat sat",
+                        trace=steps, workspace_provider=provider)
     readouts = runlog.get_run(rid)["trace"]["workspace_readouts"]
     assert len(readouts) == 3
     assert readouts[0]["type"] == "workspace_readout"
     assert readouts[0]["run_id"] == rid
-    assert readouts[0]["provider"] == "mock"
+    assert readouts[0]["provider"] == "engine_concepts"
     assert {"label", "score"} <= set(readouts[0]["top_readouts"][0])
     assert all("entropy" in r for r in readouts)
 

@@ -1837,6 +1837,39 @@ def make_handler():
                     return v
             return ua[:24] or "unknown"
 
+        def _workspace_lens_provider(self, messages, response, error=None):
+            """Return a provider callback for real concept readouts, if the brain stack is live.
+
+            Preferred path: C++ engine activations -> SAE concepts (`engine_concepts`).
+            Fallback path: loaded Python Qwen activations -> SAE/probe concepts (`sae/probe`).
+            No mock data is attached to real runs from here.
+            """
+            if error or not response or not (SUB and getattr(SUB, "brain", None)):
+                return None
+            text = str(response or _last_user(messages) or "").strip()[:300]
+            if not text:
+                return None
+
+            def provider(rid, norm_trace):
+                import workspace_lens
+                if not norm_trace or not norm_trace.get("tokens"):
+                    return []
+                if ENGINE_QWEN is not None:
+                    try:
+                        data = SUB.brain.concepts_from_engine(text, ENGINE_QWEN, 15)
+                        return workspace_lens.readouts_from_concepts(
+                            rid, norm_trace, data, provider="engine_concepts", layer=data.get("layer"))
+                    except Exception:
+                        pass
+                try:
+                    data = SUB.brain.concepts_only(text)
+                    return workspace_lens.readouts_from_concepts(
+                        rid, norm_trace, data, provider="sae/probe", layer=15)
+                except Exception:
+                    return []
+
+            return provider
+
         def _log_run(self, source, messages, response, model, started, error=None, trace=None,
                      mem_out=None, finish_reason=None):
             """Persist this interaction as an inspectable run (never let logging break the request).
@@ -1936,10 +1969,12 @@ def make_handler():
                         trace = None                          # light: text + finish_reason + metadata only
                 except Exception:
                     pass
+                workspace_provider = self._workspace_lens_provider(messages, response, error)
                 rid = runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
                                     model=str(model), substrate=SUBNAME, messages=messages, response=response,
                                     memory=memd, behavior={"active_dials": dials}, started=started, error=error,
-                                    trace=trace, finish_reason=finish_reason, meta=meta)
+                                    trace=trace, finish_reason=finish_reason, meta=meta,
+                                    workspace_provider=workspace_provider)
                 self._maybe_snapshot_turn(rid, messages, trace, error)
                 return rid                        # M5 bridge: the run id, for callers that want to surface it
             except Exception:

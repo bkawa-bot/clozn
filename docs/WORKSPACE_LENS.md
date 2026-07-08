@@ -5,13 +5,17 @@ Workspace Lens is the UI-visible seam for per-token, per-layer latent workspace 
 This first implementation is deliberately small:
 
 - `workspace_readout` is an additive event type in the generation event spine.
-- `research/workspace_lens.py` provides a deterministic mock provider.
-- `research/runlog.py` attaches mock readouts to completed runs that already have a token trace.
+- `research/workspace_lens.py` adapts existing Clozn concept/SAE readouts into that event shape.
+- `research/clozn_server.py` prefers the live C++ engine concept path (`/engine/concepts`, backed by
+  `/harvest` + SAE) and stores provider `engine_concepts` when available.
+- If the engine concept path is unavailable but the Python Qwen + SAE brain stack is loaded, the server
+  stores provider `sae/probe`.
 - The Studio Run Inspector displays the latest readout, provider name, token strip, and fogginess.
 - `inspector/demo/workspace_lens_trace.jsonl` is a tiny fixture trace for demos and schema examples.
 
-The mock provider does not inspect real activations and should not be treated as interpretability evidence.
-It only emits plausible labels so the product surface and storage shape can be exercised:
+Mock readouts are not auto-attached to real runs. The deterministic mock provider remains only for fixture
+or offline sample traces, where it should be treated as UI/sample data rather than interpretability evidence.
+Its sample labels are:
 
 - `code_error`
 - `uncertainty`
@@ -20,8 +24,8 @@ It only emits plausible labels so the product surface and storage shape can be e
 - `hallucination_risk`
 
 Future providers should keep the same payload shape and replace only the readout source. Good adapter
-targets include logit lens, Jacobian Lens, SAE probes, and linear probes. A real provider can live beside
-the mock provider and emit `workspace_readout` events with `provider` set to its own name.
+targets include logit lens, Jacobian Lens, SAE probes, and linear probes. Do not label a provider as
+J-Space or Jacobian Lens until that adapter exists.
 
 ## Event Payload
 
@@ -34,13 +38,13 @@ the mock provider and emit `workspace_readout` events with `provider` set to its
   "layer": 12,
   "position": 3,
   "top_readouts": [
-    { "label": "uncertainty", "score": 0.83 },
-    { "label": "hallucination_risk", "score": 0.58 }
+    { "label": "dragon/fear/RPG", "score": 0.83 },
+    { "label": "mythic creatures", "score": 0.58 }
   ],
   "entropy": 0.67,
-  "provider": "mock"
+  "provider": "engine_concepts"
 }
 ```
 
-`entropy` is the current UI's fogginess signal. For the mock provider it is derived from token confidence
-and label spread; real providers should document their calibration when they replace it.
+`entropy` is the current UI's fogginess signal. The engine-concepts adapter derives it from the aligned
+token confidence until the engine emits a per-token concept entropy directly.

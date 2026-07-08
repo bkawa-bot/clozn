@@ -182,17 +182,38 @@ def _norm_trace(trace) -> dict:
     return {}
 
 
-def _with_workspace_readouts(rid: str, trace: dict) -> dict:
-    """Attach mock Workspace Lens readouts to token traces.
+def _normalize_workspace_readouts(rid: str, readouts) -> list[dict]:
+    """Keep explicit readouts, filling the run id when a provider leaves it blank."""
+    out = []
+    for r in readouts or []:
+        if not isinstance(r, dict):
+            continue
+        item = dict(r)
+        item.setdefault("type", "workspace_readout")
+        if not item.get("run_id"):
+            item["run_id"] = rid
+        out.append(item)
+    return out
 
-    The provider is an optional, observe-only demo seam. Any failure leaves the
-    trace exactly as it was so run logging can never break a generation.
+
+def _with_workspace_readouts(rid: str, trace: dict, workspace_provider=None) -> dict:
+    """Attach explicit/provider Workspace Lens readouts to token traces.
+
+    Mock readouts are intentionally not auto-generated here. Real logging paths
+    pass a provider callback from the server when engine/SAE concepts are live;
+    fixtures may pass ready `trace.workspace_readouts` directly.
     """
-    if not isinstance(trace, dict) or not trace.get("tokens") or trace.get("workspace_readouts"):
+    if not isinstance(trace, dict) or not trace.get("tokens"):
+        return trace
+    if trace.get("workspace_readouts"):
+        trace = dict(trace)
+        trace["workspace_readouts"] = _normalize_workspace_readouts(rid, trace["workspace_readouts"])
+        return trace
+    if workspace_provider is None:
         return trace
     try:
-        import workspace_lens
-        readouts = workspace_lens.mock_readouts_for_trace(rid, trace)
+        readouts = workspace_provider(rid, trace)
+        readouts = _normalize_workspace_readouts(rid, readouts)
         if readouts:
             trace = dict(trace)
             trace["workspace_readouts"] = readouts
@@ -206,7 +227,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
            trace: dict | None = None, started: float | None = None, ended: float | None = None,
            parent_run_id: str | None = None, changes_applied: dict | None = None,
            error: str | None = None, finish_reason: str | None = None,
-           meta: dict | None = None) -> str | None:
+           meta: dict | None = None, workspace_provider=None) -> str | None:
     """Persist a completed run; return its id (or None on failure -- logging must never break a request)."""
     try:
         _ensure()
@@ -215,7 +236,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
         rid = f"run_{int(started * 1000):013x}_{uuid.uuid4().hex[:6]}"
         msgs = messages or []
         prompt = next((m.get("content", "") for m in reversed(msgs) if m.get("role") == "user"), "")
-        norm_trace = _with_workspace_readouts(rid, _norm_trace(trace))
+        norm_trace = _with_workspace_readouts(rid, _norm_trace(trace), workspace_provider)
         rec = {
             "id": rid,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)),
