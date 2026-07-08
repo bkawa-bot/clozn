@@ -42,6 +42,7 @@ One forward pass's events fold into one `StateStep`:
 | `tokens_committed` (items) | `StateStep.token` (the committed id(s)) + `meta.confidence` |
 | `step_features` (concept scores) | `readouts`: one `Readout` per concept (`name`, `value`=score, per slot) |
 | `step_lens` (top-k candidates) | a `Readout` (`name="logit-lens"`, `value`=candidates+probs) |
+| `workspace_readout` | `readouts`: named latent-workspace labels, fogginess/entropy, provider metadata |
 | `step_stats` (committed/remaining/ms) | `meta` (committed, remaining, ms, cache_hit) |
 | `tokens_revised` | a `StateStep` with `meta.kind="revise"` (diffusion-only) |
 | block start/finalize | `meta.block`, `meta.span` |

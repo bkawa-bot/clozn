@@ -28,6 +28,11 @@ struct ReviseItem {
     double conf;
 };
 
+struct WorkspaceReadoutItem {
+    std::string label;
+    double score;
+};
+
 struct GenStarted {
     int t;
     int prompt_tokens;
@@ -118,8 +123,23 @@ struct StepActivations {
     std::vector<float> values;           // [positions.size() * n_embd], position-major row r = positions[r]
 };
 
+// Latent workspace readout for one token/layer position. The mock provider uses this payload today;
+// future adapters can fill the same event from logit lens, Jacobian Lens, SAE probes, or linear probes.
+struct WorkspaceReadout {
+    int t;
+    std::string run_id;
+    int token_index;
+    std::string token_text;
+    int layer;
+    int position;
+    std::vector<WorkspaceReadoutItem> top_readouts;
+    double entropy;
+    std::string provider;
+};
+
 using Event = std::variant<GenStarted, BlockStarted, TokensCommitted, TokensRevised, StepStats,
-                           BlockFinalized, GenFinished, StepFeatures, StepLens, StepActivations>;
+                           BlockFinalized, GenFinished, StepFeatures, StepLens, StepActivations,
+                           WorkspaceReadout>;
 
 // §5.1 wire form: one JSON object per event, {"t": ..., "type": "...", **payload} — byte-compatible
 // with the lab's event_to_dict / to_jsonl_line so logs replay across both runtimes.

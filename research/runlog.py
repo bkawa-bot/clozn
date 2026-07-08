@@ -67,7 +67,7 @@ def _flags(rec: dict) -> list[str]:
 # us the SAME per-token "step" shape -- keep the mapping in ONE pure, testable place so the on-disk trace
 # schema stays a single contract. The three keys below are load-bearing (read by _flags and the UI); do
 # not rename them.
-TRACE_KEYS = ("tokens", "confidence", "alternatives")
+TRACE_KEYS = ("tokens", "confidence", "alternatives", "workspace_readouts")
 
 
 def _clean_alts(alts) -> list[dict]:
@@ -182,6 +182,25 @@ def _norm_trace(trace) -> dict:
     return {}
 
 
+def _with_workspace_readouts(rid: str, trace: dict) -> dict:
+    """Attach mock Workspace Lens readouts to token traces.
+
+    The provider is an optional, observe-only demo seam. Any failure leaves the
+    trace exactly as it was so run logging can never break a generation.
+    """
+    if not isinstance(trace, dict) or not trace.get("tokens") or trace.get("workspace_readouts"):
+        return trace
+    try:
+        import workspace_lens
+        readouts = workspace_lens.mock_readouts_for_trace(rid, trace)
+        if readouts:
+            trace = dict(trace)
+            trace["workspace_readouts"] = readouts
+    except Exception:
+        pass
+    return trace
+
+
 def record(*, source: str, client: str = "unknown", model: str = "", substrate: str = "",
            messages=None, response: str = "", memory: dict | None = None, behavior: dict | None = None,
            trace: dict | None = None, started: float | None = None, ended: float | None = None,
@@ -196,6 +215,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
         rid = f"run_{int(started * 1000):013x}_{uuid.uuid4().hex[:6]}"
         msgs = messages or []
         prompt = next((m.get("content", "") for m in reversed(msgs) if m.get("role") == "user"), "")
+        norm_trace = _with_workspace_readouts(rid, _norm_trace(trace))
         rec = {
             "id": rid,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)),
@@ -203,7 +223,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
             "source": source, "client": client or "unknown", "model": model, "substrate": substrate,
             "prompt_summary": _summ(prompt), "response_summary": _summ(response),
             "messages": msgs, "response": response,
-            "memory": memory or {}, "behavior": behavior or {}, "trace": _norm_trace(trace),
+            "memory": memory or {}, "behavior": behavior or {}, "trace": norm_trace,
             "timing": {"started_at": started, "ended_at": ended, "duration_ms": int((ended - started) * 1000)},
             "parent_run_id": parent_run_id, "changes_applied": changes_applied, "error": error,
             "finish_reason": finish_reason, "meta": meta or {},

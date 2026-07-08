@@ -63,6 +63,16 @@ std::string items_array(const std::vector<ReviseItem>& items) {
 
 // One visitor producing the §5.1 wire form {"t", "type", **payload}. Same schema/keys as the lab's
 // event_to_dict (float text may differ; ints/keys/structure match), so consumers parse either.
+std::string readouts_array(const std::vector<WorkspaceReadoutItem>& items) {
+    std::string out = "[";
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i) out += ", ";
+        out += "{\"label\": " + jstr(items[i].label) + ", \"score\": " + num(items[i].score) + "}";
+    }
+    out += "]";
+    return out;
+}
+
 struct ToJsonl {
     std::string operator()(const GenStarted& e) const {
         char b[160];
@@ -146,6 +156,17 @@ struct ToJsonl {
         out += "], \"values\": [";
         for (size_t i = 0; i < e.values.size(); ++i) { if (i) out += ", "; out += num(e.values[i]); }
         out += "]}";
+        return out;
+    }
+    std::string operator()(const WorkspaceReadout& e) const {
+        std::string out = "{\"t\": " + std::to_string(e.t) + ", \"type\": \"workspace_readout\", \"run_id\": "
+                        + jstr(e.run_id) + ", \"token_index\": " + std::to_string(e.token_index)
+                        + ", \"token_text\": " + jstr(e.token_text)
+                        + ", \"layer\": " + std::to_string(e.layer)
+                        + ", \"position\": " + std::to_string(e.position)
+                        + ", \"top_readouts\": " + readouts_array(e.top_readouts)
+                        + ", \"entropy\": " + num(e.entropy)
+                        + ", \"provider\": " + jstr(e.provider) + "}";
         return out;
     }
 };

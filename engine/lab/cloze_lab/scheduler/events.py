@@ -35,6 +35,14 @@ class ReviseItem:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceReadoutItem:
+    """One named latent-workspace readout score."""
+
+    label: str
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
 class GenStarted:
     t: int
     prompt_tokens: int
@@ -92,6 +100,25 @@ class GenFinished:
     tok_per_s: float
 
 
+@dataclass(frozen=True, slots=True)
+class WorkspaceReadout:
+    """Latent workspace readout for one token/layer position.
+
+    Placeholder providers can emit this today; real adapters can later fill the
+    same payload from logit lens, Jacobian Lens, SAE probes, or linear probes.
+    """
+
+    t: int
+    run_id: str
+    token_index: int
+    token_text: str
+    layer: int
+    position: int
+    top_readouts: tuple[WorkspaceReadoutItem, ...]
+    entropy: float
+    provider: str
+
+
 Event = Union[
     GenStarted,
     BlockStarted,
@@ -100,6 +127,7 @@ Event = Union[
     StepStats,
     BlockFinalized,
     GenFinished,
+    WorkspaceReadout,
 ]
 
 _TYPE_NAMES: dict[type, str] = {
@@ -110,6 +138,7 @@ _TYPE_NAMES: dict[type, str] = {
     StepStats: "step_stats",
     BlockFinalized: "block_finalized",
     GenFinished: "gen_finished",
+    WorkspaceReadout: "workspace_readout",
 }
 
 

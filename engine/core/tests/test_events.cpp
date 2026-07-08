@@ -107,6 +107,19 @@ int main() {
         CHECK(std::get<GenFinished>(r.events.back()).reason == "eos");
     }
 
+    // --- Workspace Lens event: additive JSONL wire type for future providers.
+    {
+        WorkspaceReadout wr{/*t=*/3, /*run_id=*/"run_demo", /*token_index=*/1, /*token_text=*/" cat",
+                            /*layer=*/12, /*position=*/1,
+                            /*top_readouts=*/{{"uncertainty", 0.62}, {"hallucination_risk", 0.31}},
+                            /*entropy=*/0.44, /*provider=*/"mock"};
+        const std::string line = to_jsonl_line(Event{wr});
+        CHECK(line.find("\"type\": \"workspace_readout\"") != std::string::npos);
+        CHECK(line.find("\"run_id\": \"run_demo\"") != std::string::npos);
+        CHECK(line.find("\"provider\": \"mock\"") != std::string::npos);
+        CHECK(line.find("\"top_readouts\":") != std::string::npos);
+    }
+
     std::printf("test_events: all assertions passed\n");
     return 0;
 }

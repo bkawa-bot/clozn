@@ -86,6 +86,24 @@
       ".ri-tk-pop .aprob{min-width:34px;text-align:right;color:var(--faint,#9aa0b3);font-size:11px}" +
       ".ri-tk-pop .none{color:var(--faint,#9aa0b3)}" +
       ".ri-tl-note{margin-top:9px;font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45}" +
+      ".ri-ws{margin-top:14px;border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:10px 11px;background:rgba(47,163,146,.05)}" +
+      ".ri-ws-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:8px}" +
+      ".ri-ws-title{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint,#9aa0b3);font-weight:640}" +
+      ".ri-ws-provider{font-size:11px;color:var(--soft,#5a6072);font-family:ui-monospace,Consolas,monospace}" +
+      ".ri-ws-toks{display:flex;gap:3px;align-items:center;flex-wrap:wrap;margin:4px 0 9px}" +
+      ".ri-ws-dot{width:9px;height:18px;border-radius:3px;background:var(--cyan,#2fa392);box-shadow:0 0 8px rgba(47,163,146,.14)}" +
+      ".ri-ws-dot.hot{background:var(--amber,#c08a3e);box-shadow:0 0 8px rgba(192,138,62,.18)}" +
+      ".ri-ws-meta{font-size:11.5px;color:var(--soft,#5a6072);margin-bottom:8px}" +
+      ".ri-ws-fog{display:flex;align-items:center;gap:8px;font-size:12px;margin:5px 0 9px}" +
+      ".ri-ws-fog .k{color:var(--faint,#9aa0b3);min-width:66px}" +
+      ".ri-ws-fog .track{flex:1;height:7px;border-radius:5px;background:var(--wash,#eef1fb);overflow:hidden;min-width:64px}" +
+      ".ri-ws-fog .fill{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--cyan,#2fa392),var(--amber,#c08a3e))}" +
+      ".ri-ws-fog .v{font-size:11px;color:var(--faint,#9aa0b3);min-width:34px;text-align:right}" +
+      ".ri-ws-readout{display:flex;align-items:center;gap:8px;margin:5px 0;font-size:12.5px}" +
+      ".ri-ws-readout .lbl{min-width:126px;color:var(--ink,#1b1f2a);font-family:ui-monospace,Consolas,monospace;font-size:11.5px}" +
+      ".ri-ws-readout .track{flex:1;height:7px;border-radius:5px;background:var(--wash,#eef1fb);overflow:hidden;min-width:48px}" +
+      ".ri-ws-readout .fill{display:block;height:100%;border-radius:5px;background:var(--halo,#7aa7ff)}" +
+      ".ri-ws-readout .score{font-size:11px;color:var(--faint,#9aa0b3);min-width:34px;text-align:right}" +
       ".ri-kv{display:flex;justify-content:space-between;gap:10px;font-size:13px;margin:5px 0}" +
       ".ri-kv .k{color:var(--faint,#9aa0b3)}" +
       ".ri-card{border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:7px 9px;margin:6px 0;font-size:12.5px}" +
@@ -242,6 +260,7 @@
     var lastA = msgs.length && msgs[msgs.length - 1].role === "assistant";
     if (run.response && !lastA) h += '<div class="ri-turn assistant"><div class="who">assistant</div>' + esc(run.response) + "</div>";
     h += tokenTimeline(run);
+    h += workspaceLensPanel(run);
     return h;
   }
 
@@ -302,6 +321,48 @@
       h += "</div>";
     } else {
       h += '<div class="none">no recorded alternatives for this token.</div>';
+    }
+    h += "</div>";
+    return h;
+  }
+
+  function workspaceReadouts(run) {
+    var tr = run.trace || {}, r = tr.workspace_readouts || [];
+    return Array.isArray(r) ? r.filter(function (x) { return x && typeof x === "object"; }) : [];
+  }
+
+  function workspaceLensPanel(run) {
+    var readouts = workspaceReadouts(run);
+    var h = '<div class="ri-ws"><div class="ri-ws-head"><span class="ri-ws-title">Workspace Lens</span>';
+    if (!readouts.length) {
+      h += '<span class="ri-ws-provider">provider none</span></div>' +
+        '<div class="sub">No workspace_readout events on this run.</div></div>';
+      return h;
+    }
+    var latest = readouts[readouts.length - 1] || {};
+    var provider = latest.provider || "unknown";
+    h += '<span class="ri-ws-provider">provider ' + esc(provider) + "</span></div>";
+    h += '<div class="ri-ws-toks">' + readouts.map(function (r) {
+      var e = Math.max(0, Math.min(1, +(r.entropy == null ? 0 : r.entropy)));
+      var title = "token " + (r.token_index == null ? "?" : r.token_index) + " fogginess " + e.toFixed(2);
+      return '<span class="ri-ws-dot' + (e >= 0.5 ? " hot" : "") + '" style="opacity:' + (0.35 + 0.65 * e).toFixed(3) + '" title="' + esc(title) + '"></span>';
+    }).join("") + "</div>";
+    var tok = latest.token_text == null ? "" : labelTok(latest.token_text);
+    h += '<div class="ri-ws-meta">latest token <b>' + esc(tok) + "</b> · layer " +
+      esc(latest.layer == null ? "?" : latest.layer) + " · position " + esc(latest.position == null ? "?" : latest.position) + "</div>";
+    var fog = Math.max(0, Math.min(1, +(latest.entropy == null ? 0 : latest.entropy)));
+    h += '<div class="ri-ws-fog"><span class="k">fogginess</span><span class="track"><span class="fill" style="width:' +
+      (fog * 100).toFixed(1) + '%"></span></span><span class="v">' + fog.toFixed(2) + "</span></div>";
+    var top = Array.isArray(latest.top_readouts) ? latest.top_readouts : [];
+    if (!top.length) {
+      h += '<div class="sub">no top readouts recorded.</div>';
+    } else {
+      top.slice(0, 5).forEach(function (r) {
+        var score = Math.max(0, Math.min(1, +(r && r.score) || 0));
+        h += '<div class="ri-ws-readout"><span class="lbl">' + esc(r && r.label || "?") +
+          '</span><span class="track"><span class="fill" style="width:' + (score * 100).toFixed(1) +
+          '%"></span></span><span class="score">' + score.toFixed(2) + "</span></div>";
+      });
     }
     h += "</div>";
     return h;

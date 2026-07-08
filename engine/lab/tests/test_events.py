@@ -12,6 +12,8 @@ from cloze_lab.scheduler.events import (
     TokensCommitted,
     TokensRevised,
     ReviseItem,
+    WorkspaceReadout,
+    WorkspaceReadoutItem,
     event_to_dict,
     to_jsonl_line,
     write_jsonl,
@@ -40,6 +42,9 @@ def test_every_event_type_serializes() -> None:
         StepStats(t=7, block=3, step=7, committed=21, remaining=11, ms=38.2, cache_hit=0.82),
         BlockFinalized(t=9, block=3, text=" the cache is refreshed", steps_used=9),
         GenFinished(t=9, reason="eos", new_tokens=487, wall_ms=5210.0, steps_total=134, tok_per_s=93.5),
+        WorkspaceReadout(t=10, run_id="run_demo", token_index=1, token_text=" cat", layer=12, position=1,
+                         top_readouts=(WorkspaceReadoutItem(label="uncertainty", score=0.62),),
+                         entropy=0.41, provider="mock"),
     ]
     names = [event_to_dict(e)["type"] for e in events]
     assert names == [
@@ -50,9 +55,36 @@ def test_every_event_type_serializes() -> None:
         "step_stats",
         "block_finalized",
         "gen_finished",
+        "workspace_readout",
     ]
     for e in events:
         assert json.loads(to_jsonl_line(e))["t"] == e.t
+
+
+def test_workspace_readout_payload_shape() -> None:
+    d = event_to_dict(
+        WorkspaceReadout(t=3, run_id="run_demo", token_index=2, token_text=" maybe", layer=12, position=2,
+                         top_readouts=(
+                             WorkspaceReadoutItem(label="uncertainty", score=0.71),
+                             WorkspaceReadoutItem(label="hallucination_risk", score=0.43),
+                         ),
+                         entropy=0.52, provider="mock")
+    )
+    assert d == {
+        "t": 3,
+        "type": "workspace_readout",
+        "run_id": "run_demo",
+        "token_index": 2,
+        "token_text": " maybe",
+        "layer": 12,
+        "position": 2,
+        "top_readouts": [
+            {"label": "uncertainty", "score": 0.71},
+            {"label": "hallucination_risk", "score": 0.43},
+        ],
+        "entropy": 0.52,
+        "provider": "mock",
+    }
 
 
 def test_write_jsonl_roundtrip(tmp_path) -> None:
