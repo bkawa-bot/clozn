@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clozn · inspector</title>
+<style>
+  :root{
+    --bg:#0b1016; --panel:#0f151d; --line:#1e2a36; --ink:#cdd8e3; --mut:#6f7d8c;
+    --you:#e3b356; --clz:#2fbfd4; --err:#e07d4c; --ok:#57c98a;
+    --strong:#57c98a; --mid:#2fbfd4; --warn:#e07d4c; --gold:#e3b356;
+    --mono:"Cascadia Code","JetBrains Mono","SF Mono",ui-monospace,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:14px;line-height:1.55;
+    display:flex;flex-direction:column;height:100dvh}
+  :focus-visible{outline:2px solid var(--clz);outline-offset:2px}
+
+  header{flex:none;display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);
+    background:var(--panel)}
+  header .brand{font-weight:700;letter-spacing:.02em;color:#eef4fa}
+  header .brand b{color:var(--clz);font-weight:700}
+  header .back{margin-left:auto;color:var(--mut);font-size:12.5px;text-decoration:none;padding:4px 2px;border-radius:4px}
+  header .back:hover{color:var(--clz)}
+
+  main{flex:1;min-height:0;display:flex}
+
+  .pane-list{width:340px;flex:none;border-right:1px solid var(--line);background:var(--panel);
+    display:flex;flex-direction:column;min-height:0}
+  .list-head{flex:none;padding:9px 14px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--mut);border-bottom:1px solid var(--line)}
+  .list-body{flex:1;overflow-y:auto;min-height:0}
+
+  .dim-note{color:var(--mut);padding:14px 16px;font-size:12.5px;line-height:1.55}
+  .dim-note a{color:var(--clz)}
+
+  .runrow{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+  .runrow:hover{background:#121a24}
+  .runrow.sel{background:#0f1c26;box-shadow:inset 3px 0 0 var(--clz)}
+  .runrow .rprompt{display:block;color:var(--ink);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .runrow .rsub{color:var(--mut);font-size:11px;margin-top:3px}
+  .runrow .rchips{margin-top:7px;display:flex;flex-wrap:wrap;gap:4px}
+
+  .chip{display:inline-block;font-size:10.5px;line-height:1.6;border:1px solid var(--line);border-radius:9px;
+    padding:1px 7px;color:var(--mut);white-space:nowrap}
+  .chip-ok{color:var(--ok);border-color:rgba(87,201,138,.4)}
+  .chip-warn{color:var(--warn);border-color:rgba(224,125,76,.4)}
+  .chip-cyan{color:var(--clz);border-color:rgba(47,191,212,.4)}
+  .chip-gold{color:var(--gold);border-color:rgba(227,179,86,.4)}
+  .chip-dim{color:var(--mut);border-style:dashed;opacity:.85}
+
+  .pane-detail{flex:1;min-width:0;overflow-y:auto;padding:22px 28px 60px}
+  .sec{margin-bottom:28px}
+  .sec h2{margin:0 0 12px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);font-weight:600}
+
+  .hdr-prompt{white-space:pre-wrap;word-break:break-word;color:var(--ink);margin-bottom:12px}
+  .hdr-reply{white-space:pre-wrap;word-break:break-word;background:rgba(47,191,212,.07);
+    border:1px solid rgba(47,191,212,.28);border-left:3px solid var(--clz);border-radius:8px;padding:11px 13px}
+  .hdr-prompt .lbl,.hdr-reply .lbl{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:5px}
+  .hdr-prompt .lbl{color:var(--you)}
+  .hdr-reply .lbl{color:var(--clz)}
+  .hdr-meta{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 0}
+  .hdr-dim{color:var(--mut);font-size:12px;margin-top:10px}
+
+  .spans-summary{font-size:16px;font-weight:600;color:#eef4fa;margin-bottom:14px}
+  .spans-bar{display:flex;width:100%;height:32px;border-radius:6px;overflow:hidden;border:1px solid var(--line)}
+  .spans-seg{flex-shrink:0;flex-basis:0;min-width:2px;display:flex;align-items:center;justify-content:center;
+    font-size:10.5px;color:#04141a;overflow:hidden;white-space:nowrap;padding:0 4px}
+  .spans-seg.band-strong{background:var(--strong)}
+  .spans-seg.band-okay{background:var(--mid)}
+  .spans-seg.band-shaky{background:var(--warn)}
+  .spans-legend{display:flex;gap:16px;margin-top:10px;font-size:11px;color:var(--mut)}
+  .spans-legend .sw{display:inline-flex;align-items:center;gap:5px}
+  .spans-legend .dot{width:9px;height:9px;border-radius:2px;display:inline-block}
+
+  .tt-note{color:var(--mut);font-size:12.5px;font-style:italic}
+  .tt-stream{white-space:pre-wrap;word-break:break-word;line-height:1.9;font-size:13.5px}
+  .tt-tok{border-radius:3px;padding:0 .5px}
+  .tt-tok.low{cursor:pointer;box-shadow:inset 0 -2px 0 var(--warn)}
+  .tt-tok.low:hover{background:rgba(224,125,76,.13)}
+  .tt-tok.low.open{background:rgba(224,125,76,.2)}
+  .tt-pop-host:empty{display:none}
+  .tt-pop{margin:8px 0;border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:8px;
+    padding:9px 11px;background:#0c131a;font-size:12px}
+  .tt-pop .hd{color:var(--mut);margin-bottom:7px}
+  .tt-pop .hd b{color:var(--ink)}
+  .tt-pop .sub{color:var(--mut)}
+  .tt-pop .arow{display:flex;align-items:center;gap:8px;margin:4px 0}
+  .tt-pop .apiece{min-width:70px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font-size:11.5px}
+  .tt-pop .atrack{flex:1;height:7px;border-radius:5px;background:#182029;overflow:hidden;min-width:36px}
+  .tt-pop .afill{height:100%;background:var(--clz);border-radius:5px}
+  .tt-pop .aprob{min-width:36px;text-align:right;color:var(--mut);font-size:11px}
+  .tt-foot{margin-top:10px;font-size:11.5px;color:var(--mut)}
+
+  .evl{position:relative;padding-left:20px}
+  .evl::before{content:"";position:absolute;left:5px;top:5px;bottom:5px;width:1px;background:var(--line)}
+  .ev{position:relative;margin-bottom:15px}
+  .ev:last-child{margin-bottom:0}
+  .ev .dot{position:absolute;left:-20px;top:5px;width:9px;height:9px;border-radius:50%;background:var(--mut)}
+  .ev.t-branched_from .dot{background:var(--gold)}
+  .ev.t-memory_applied .dot{background:var(--clz)}
+  .ev.t-dials_applied .dot{background:var(--ink)}
+  .ev.t-hesitation .dot{background:var(--warn)}
+  .ev.t-finished .dot{background:var(--ok)}
+  .ev.t-finished.trunc .dot{background:var(--warn)}
+  .ev.t-error .dot{background:var(--warn)}
+  .ev .label{color:var(--ink);font-size:13px}
+  .ev .sub{color:var(--mut);font-size:11.5px;margin-top:3px}
+  .ev .cards{margin-top:7px}
+  .ev .card{border:1px solid var(--line);border-radius:7px;padding:6px 9px;margin:5px 0;font-size:12px;
+    color:var(--ink);display:flex;justify-content:space-between;gap:10px}
+  .ev .card .rel{color:var(--mut);flex:none}
+  .ev .dials{margin-top:7px;display:flex;flex-wrap:wrap;gap:4px}
+
+  .mem-kv{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:var(--mut)}
+  .mem-card{border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin:7px 0}
+  .mem-card .txt{color:var(--ink);font-size:13px;white-space:pre-wrap;word-break:break-word}
+  .mem-rel{display:flex;align-items:center;gap:8px;margin-top:6px}
+  .mem-rel .track{flex:1;height:6px;border-radius:4px;background:#182029;overflow:hidden;max-width:180px}
+  .mem-rel .fill{height:100%;background:var(--clz)}
+  .mem-rel .val{color:var(--mut);font-size:11px;min-width:36px;text-align:right}
+
+  .exp-row{display:flex;gap:10px;flex-wrap:wrap}
+  .btn{display:inline-block;background:var(--clz);color:#04141a;border:0;border-radius:7px;font:inherit;
+    font-weight:700;padding:9px 16px;cursor:pointer;text-decoration:none}
+  .btn:hover{filter:brightness(1.08)}
+  .btn.secondary{background:transparent;border:1px solid var(--line);color:var(--ink)}
+  .btn.secondary:hover{border-color:var(--clz);color:#eef4fa}
+  .btn:disabled{opacity:.55;cursor:not-allowed;filter:none}
+  .btn:disabled:hover{filter:none}
+
+  .rcpt-lead{color:var(--mut);font-size:12.5px;line-height:1.6;max-width:72ch;margin-bottom:14px}
+  .rcpt-lead b{color:var(--ink);font-weight:600}
+  .rcpt-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .rcpt-status{color:var(--mut);font-size:12.5px;font-style:italic}
+  .spinner{display:inline-block;width:11px;height:11px;margin-right:6px;vertical-align:-1px;
+    border-radius:50%;border:2px solid rgba(205,216,227,.22);border-top-color:var(--clz);
+    animation:rcpt-spin .7s linear infinite}
+  @keyframes rcpt-spin{to{transform:rotate(360deg)}}
+
+  .rcpt-card{border:1px solid var(--line);border-radius:9px;padding:12px 14px;margin:0 0 14px;background:#0c131a}
+  .rcpt-inf{margin-bottom:9px}
+  .rcpt-inf .k{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin-bottom:4px}
+  .rcpt-inf .txt{color:var(--ink);font-size:13.5px;white-space:pre-wrap;word-break:break-word}
+  .rcpt-inf-dial .txt b{color:var(--ink)}
+
+  .rcpt-verdict{font-size:13px;font-weight:600;margin-bottom:11px;padding:6px 10px;border-radius:6px}
+  .rcpt-verdict.verdict-strong{color:var(--ok);background:rgba(87,201,138,.1)}
+  .rcpt-verdict.verdict-some{color:var(--mid);background:rgba(47,191,212,.1)}
+  .rcpt-verdict.verdict-light{color:var(--gold);background:rgba(227,179,86,.1);font-weight:500}
+  .rcpt-verdict.verdict-no{color:var(--mut);background:rgba(111,125,140,.08);font-weight:400}
+  .rcpt-verdict.verdict-unverified{color:var(--warn);background:rgba(224,125,76,.1);font-weight:400}
+  .rcpt-verdict-caption{color:var(--mut);font-size:11px;font-style:italic;line-height:1.5;margin:-5px 0 12px}
+
+  .rcpt-diff{display:flex;flex-direction:column;gap:9px;margin-bottom:10px}
+  .rcpt-diff-arm{border-left:3px solid var(--line);padding-left:11px}
+  .rcpt-diff-arm.arm-with{border-left-color:var(--clz)}
+  .rcpt-diff-arm.arm-without{border-left-color:var(--mut);border-left-style:dashed}
+  .rcpt-diff-arm .lbl{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:5px;color:var(--mut)}
+  .rcpt-diff-arm.arm-with .lbl{color:var(--clz)}
+  .rcpt-diff-arm .lbl .sub{text-transform:none;letter-spacing:0;font-size:10.5px;color:var(--mut);margin-left:5px}
+  .rcpt-diff-text{white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.65;
+    background:rgba(255,255,255,.02);border:1px solid var(--line);border-radius:6px;padding:9px 11px}
+  .df-add{background:rgba(87,201,138,.19);color:var(--ok);border-radius:3px;padding:0 1px}
+  .df-del{background:rgba(224,125,76,.16);color:var(--warn);text-decoration:line-through;border-radius:3px;padding:0 1px}
+  .rcpt-diff-note{color:var(--mut);font-size:11px;font-style:italic}
+
+  .rcpt-meta{color:var(--mut);font-size:11.5px;line-height:1.6}
+
+  .rcpt-skipped,.rcpt-redundant{margin-top:8px;padding-top:10px;border-top:1px dashed var(--line)}
+  .rcpt-skip-hd,.rcpt-redundant-hd{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin-bottom:7px}
+  .rcpt-skip-row{display:flex;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:7px;
+    padding:6px 9px;margin:5px 0;font-size:12px;color:var(--ink)}
+  .rcpt-skip-row .reason{color:var(--mut);flex:none;text-align:right;max-width:48%}
+  .rcpt-redundant-row{font-size:12px;color:var(--ink);margin:5px 0}
+  .rcpt-note{color:var(--mut);font-size:11px;line-height:1.6;margin-top:12px}
+
+  @media (max-width:760px){
+    main{flex-direction:column}
+    .pane-list{width:100%;max-height:36vh;border-right:0;border-bottom:1px solid var(--line)}
+    .pane-detail{padding:18px}
+  }
+</style>
+</head>
+<body>
+  <header>
+    <span class="brand">clozn<b>·</b>inspector</span>
+    <a class="back" href="/talk.html">← talk</a>
+  </header>
+  <main>
+    <div class="pane-list">
+      <div class="list-head" id="listhead">runs</div>
+      <div class="list-body" id="list"><div class="dim-note">Loading runs…</div></div>
+    </div>
+    <div class="pane-detail" id="detail"><div class="dim-note">Loading…</div></div>
+  </main>
+
+<script>
+(function () {
+  "use strict";
+
+  var HDRS = { "bypass-tunnel-reminder": "1" };
+  var listEl = document.getElementById("list");
+  var headEl = document.getElementById("listhead");
+  var detailEl = document.getElementById("detail");
+
+  var state = { runs: [], selected: null, receiptsByRun: {} };
+
+  // ------------------------------------------------------------------------------------- tiny helpers
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (m) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m];
+    });
+  }
+  function truncate(s, n) {
+    s = String(s == null ? "" : s);
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  }
+  function fmt2(v) {
+    var n = +v;
+    return isFinite(n) ? n.toFixed(2) : "—";
+  }
+  function fmtTime(iso) {
+    return iso ? String(iso).replace("T", " ") : "—";
+  }
+  // A caret-visible label for a token/piece: real spaces/newlines shown, never blank.
+  function labelTok(s) {
+    var t = String(s == null ? "" : s).replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+    return t === "" ? "∅" : t.replace(/ /g, "·");
+  }
+
+  function getJSON(url) {
+    return fetch(url, { headers: HDRS }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+  }
+
+  // ---- flag / finish-reason chips (shared by the run list rows and the detail header) --------------
+  var FLAG_CLASS = {
+    memory: "chip-cyan", "pending-memory": "chip-gold", steered: "chip-gold",
+    replayed: "chip-dim", "low-confidence": "chip-warn", error: "chip-warn",
+    truncated: "chip-warn", long: "chip-dim"
+  };
+  var FLAG_LABEL = {
+    memory: "memory", "pending-memory": "pending memory", steered: "steered",
+    replayed: "replayed", "low-confidence": "low confidence", error: "error",
+    truncated: "truncated", long: "long"
+  };
+  function chipHTML(flag) {
+    var cls = FLAG_CLASS[flag] || "chip-dim";
+    var label = FLAG_LABEL[flag] || flag;
+    return '<span class="chip ' + cls + '">' + esc(label) + "</span>";
+  }
+  function finishChipHTML(fr) {
+    if (fr === "stop") return '<span class="chip chip-ok">stop</span>';
+    if (fr === "length") return '<span class="chip chip-warn">length · truncated</span>';
+    return '<span class="chip chip-dim">—</span>';
+  }
+
+  // ============================================================================ run list (left pane)
+  function loadRuns() {
+    listEl.innerHTML = '<div class="dim-note">Loading runs…</div>';
+    getJSON("/runs").then(function (d) {
+      state.runs = (d && d.runs) || [];
+      renderList();
+      if (state.runs.length) {
+        selectRun(state.runs[0].id);
+      } else {
+        detailEl.innerHTML = '<div class="dim-note">No runs yet — say something in <a href="/talk.html">talk</a>, then come back.</div>';
+      }
+    }).catch(function () {
+      listEl.innerHTML = '<div class="dim-note">Couldn’t load runs — is the studio server up?</div>';
+      detailEl.innerHTML = '<div class="dim-note">—</div>';
+    });
+  }
+
+  function renderList() {
+    if (headEl) headEl.textContent = state.runs.length ? (state.runs.length + (state.runs.length === 1 ? " run" : " runs")) : "runs";
+    listEl.innerHTML = "";
+    if (!state.runs.length) {
+      listEl.innerHTML = '<div class="dim-note">No runs yet.</div>';
+      return;
+    }
+    state.runs.forEach(function (r) {
+      var row = document.createElement("div");
+      row.className = "runrow" + (r.id === state.selected ? " sel" : "");
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.dataset.id = r.id;
+      var chips = (r.flags || []).map(chipHTML).join("") + finishChipHTML(r.finish_reason);
+      row.innerHTML =
+        '<span class="rprompt">' + esc(r.prompt_summary || "(no prompt)") + "</span>" +
+        '<div class="rsub">' + esc(fmtTime(r.created_at)) + " · " + esc(r.source || "?") + "/" + esc(r.client || "?") + "</div>" +
+        '<div class="rchips">' + chips + "</div>";
+      row.addEventListener("click", function () { selectRun(r.id); });
+      row.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectRun(r.id); }
+      });
+      listEl.appendChild(row);
+    });
+  }
+
+  function selectRun(id) {
+    state.selected = id;
+    listEl.querySelectorAll(".runrow").forEach(function (el) {
+      el.classList.toggle("sel", el.dataset.id === id);
+    });
+    loadDetail(id);
+  }
+
+  // ============================================================================ run detail (right pane)
+  function loadDetail(id) {
+    detailEl.innerHTML = '<div class="dim-note">Loading run…</div>';
+    var pRun = getJSON("/runs/" + encodeURIComponent(id)).catch(function () { return null; });
+    var pTl = getJSON("/runs/" + encodeURIComponent(id) + "/timeline").catch(function () { return null; });
+    var pSp = getJSON("/runs/" + encodeURIComponent(id) + "/spans").catch(function () { return null; });
+    Promise.all([pRun, pTl, pSp]).then(function (res) {
+      if (state.selected !== id) return;   // a newer click already superseded this fetch
+      var run = res[0], tl = res[1], sp = res[2];
+      if (!run) {
+        detailEl.innerHTML = '<div class="dim-note">Couldn’t load run ' + esc(id) + ".</div>";
+        return;
+      }
+      renderDetail(run, tl, sp);
+    });
+  }
+
+  function renderDetail(run, tl, sp) {
+    var html =
+      buildHeader(run) +
+      buildSpansSection(sp) +
+      buildTokenSection(run) +
+      buildTimelineSection(tl) +
+      buildMemorySection(run) +
+      buildReceiptsSection(run) +
+      buildExportSection(run);
+    detailEl.innerHTML = html;
+    wireTokenTimeline(run);
+    wireReceipts(run);
+  }
+
+  // ---- 1. header ---------------------------------------------------------------------------------
+  function lastUserMessage(run) {
+    var msgs = run.messages || [];
+    for (var i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i] && msgs[i].role === "user") return msgs[i].content || "";
+    }
+    return run.prompt_summary || "";
+  }
+
+  function buildHeader(run) {
+    var prompt = lastUserMessage(run);
+    var reply = run.response != null && run.response !== "" ? run.response : (run.response_summary || "");
+    var meta = run.meta || {};
+    var fields = [
+      ["model", run.model], ["quant", meta.quant], ["mode", meta.mode], ["sampling", meta.sampling],
+      ["n_ctx", meta.n_ctx], ["device", meta.device], ["capture tier", meta.capture_tier]
+    ].filter(function (kv) { return kv[1] != null && kv[1] !== ""; });
+    var chips = fields.map(function (kv) {
+      return '<span class="chip chip-dim">' + esc(kv[0]) + " " + esc(kv[1]) + "</span>";
+    }).join("") + finishChipHTML(run.finish_reason);
+    var dur = (run.timing && run.timing.duration_ms != null) ? " · " + run.timing.duration_ms + "ms" : "";
+    var dim = esc(fmtTime(run.created_at)) + " · " + esc(run.source || "?") + "/" + esc(run.client || "?") + dur;
+    return (
+      '<div class="sec">' +
+        '<div class="hdr-prompt"><span class="lbl">prompt</span>' + esc(prompt || "(no prompt)") + "</div>" +
+        '<div class="hdr-reply"><span class="lbl">clozn</span>' + esc(reply || "(no response)") + "</div>" +
+        '<div class="hdr-meta">' + chips + "</div>" +
+        '<div class="hdr-dim">' + dim + "</div>" +
+      "</div>"
+    );
+  }
+
+  // ---- 2. confidence spans (the highlight) --------------------------------------------------------
+  function buildSpansSection(sp) {
+    var spans = (sp && sp.spans) || [];
+    if (!spans.length) return "";
+    var bar = spans.map(function (s) {
+      var band = s.band === "strong" ? "band-strong" : s.band === "shaky" ? "band-shaky" : "band-okay";
+      var g = Math.max(1, +s.n_tokens || 1);
+      var title = esc(s.text) + " — mean " + fmt2(s.mean_conf) + ", min " + fmt2(s.min_conf) + " (" + (s.n_tokens || 0) + " tok)";
+      return '<span class="spans-seg ' + band + '" style="flex-grow:' + g + '" title="' + title + '">' + esc(truncate(s.text, 24)) + "</span>";
+    }).join("");
+    return (
+      '<div class="sec">' +
+        "<h2>Confidence spans</h2>" +
+        '<div class="spans-summary">' + esc(sp.summary || "") + "</div>" +
+        '<div class="spans-bar">' + bar + "</div>" +
+        '<div class="spans-legend">' +
+          '<span class="sw"><span class="dot" style="background:var(--strong)"></span>strong</span>' +
+          '<span class="sw"><span class="dot" style="background:var(--mid)"></span>okay</span>' +
+          '<span class="sw"><span class="dot" style="background:var(--warn)"></span>shaky</span>' +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  // ---- 3. token timeline ---------------------------------------------------------------------------
+  function buildTokenSection(run) {
+    var trace = run.trace || {};
+    var toks = trace.tokens || [];
+    if (!toks.length) {
+      return '<div class="sec"><h2>Token timeline</h2><div class="tt-note">token trace captured on the engine path</div></div>';
+    }
+    var conf = trace.confidence || [];
+    var lows = 0, stream = "";
+    for (var i = 0; i < toks.length; i++) {
+      var c = conf[i] == null ? 1 : +conf[i];
+      var low = c < 0.5;
+      if (low) lows++;
+      var op = (0.45 + 0.55 * Math.max(0, Math.min(1, isFinite(c) ? c : 1))).toFixed(3);
+      var title = "confidence " + (isFinite(c) ? c.toFixed(2) : "?") + (low ? " — click for alternatives" : "");
+      stream += '<span class="tt-tok' + (low ? " low" : "") + '"' +
+        (low ? ' tabindex="0" role="button" data-ti="' + i + '"' : "") +
+        ' style="opacity:' + op + '" title="' + esc(title) + '">' + esc(toks[i]) + "</span>";
+    }
+    return (
+      '<div class="sec"><h2>Token timeline</h2>' +
+        '<div class="tt-stream" id="tt-stream">' + stream + "</div>" +
+        '<div class="tt-pop-host" id="tt-pop-host"></div>' +
+        '<div class="tt-foot">' + lows + " uncertain moment" + (lows === 1 ? "" : "s") + "</div>" +
+      "</div>"
+    );
+  }
+
+  function buildTokenPop(run, i) {
+    var trace = run.trace || {};
+    var toks = trace.tokens || [], conf = trace.confidence || [], alts = trace.alternatives || [];
+    var c = conf[i] == null ? 1 : +conf[i];
+    var a = Array.isArray(alts[i]) ? alts[i] : [];
+    var h = '<div class="tt-pop">';
+    h += '<div class="hd">token <b>' + esc(labelTok(toks[i])) + "</b> · confidence " + (isFinite(c) ? c.toFixed(2) : "?") + "</div>";
+    if (a.length) {
+      a.slice(0, 5).forEach(function (alt) {
+        var p = Math.max(0, Math.min(1, +(alt && alt.prob) || 0));
+        h += '<div class="arow"><span class="apiece">' + esc(labelTok(alt && alt.piece)) + "</span>" +
+          '<span class="atrack"><span class="afill" style="width:' + (p * 100).toFixed(1) + '%"></span></span>' +
+          '<span class="aprob">' + p.toFixed(2) + "</span></div>";
+      });
+    } else {
+      h += '<div class="sub">no recorded alternatives for this token.</div>';
+    }
+    h += "</div>";
+    return h;
+  }
+
+  function wireTokenTimeline(run) {
+    var stream = document.getElementById("tt-stream");
+    var host = document.getElementById("tt-pop-host");
+    if (!stream || !host) return;
+    function toggle(el) {
+      var i = +el.dataset.ti;
+      var wasOpen = el.classList.contains("open");
+      stream.querySelectorAll(".tt-tok.open").forEach(function (o) { o.classList.remove("open"); });
+      host.innerHTML = "";
+      if (wasOpen) return;   // clicking the already-open token just closes it
+      el.classList.add("open");
+      host.innerHTML = buildTokenPop(run, i);
+    }
+    stream.querySelectorAll(".tt-tok.low").forEach(function (el) {
+      el.addEventListener("click", function () { toggle(el); });
+      el.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(el); }
+      });
+    });
+  }
+
+  // ---- 4. event timeline --------------------------------------------------------------------------
+  function buildTimelineSection(tl) {
+    var events = (tl && tl.events) || [];
+    if (!events.length) return "";
+    var rows = events.map(buildEventRow).join("");
+    return '<div class="sec"><h2>Event timeline</h2><div class="evl">' + rows + "</div></div>";
+  }
+
+  function buildEventRow(ev) {
+    ev = ev || {};
+    var type = ev.type || "unknown";
+    var cls = "ev t-" + type + (type === "finished" && ev.truncated ? " trunc" : "");
+    var label = esc(ev.label || type);
+    if (type === "generation" && ev.duration_ms != null) label += " · " + ev.duration_ms + "ms";
+    var extra = "";
+    if (type === "memory_applied" && Array.isArray(ev.cards) && ev.cards.length) {
+      extra = '<div class="cards">' + ev.cards.map(function (c) {
+        c = c || {};
+        var rel = c.relevance != null ? fmt2(c.relevance) : "—";
+        return '<div class="card"><span>' + esc(c.text) + '</span><span class="rel">' + rel + "</span></div>";
+      }).join("") + "</div>";
+    } else if (type === "dials_applied" && ev.dials) {
+      extra = '<div class="dials">' + Object.keys(ev.dials).map(function (k) {
+        var v = +ev.dials[k];
+        return '<span class="chip chip-dim">' + esc(k) + " " + (isFinite(v) ? v.toFixed(2) : esc(ev.dials[k])) + "</span>";
+      }).join("") + "</div>";
+    } else if (type === "hesitation") {
+      extra = '<div class="sub">“' + esc(labelTok(ev.token)) + '” · confidence ' + fmt2(ev.confidence) + "</div>";
+    } else if (type === "branched_from") {
+      extra = '<div class="sub">parent ' + esc(ev.parent_run_id || "—") + "</div>";
+    } else if (type === "error") {
+      extra = '<div class="sub">' + esc(ev.message || "") + "</div>";
+    }
+    return '<div class="' + cls + '"><div class="dot"></div><div class="label">' + label + "</div>" + extra + "</div>";
+  }
+
+  // ---- 5. memory ------------------------------------------------------------------------------------
+  function buildMemorySection(run) {
+    var mem = run.memory || {};
+    var cards = mem.cards_applied || [];
+    if (!cards.length) return "";
+    var rel = mem.relevance || [];
+    var kv = [];
+    if (mem.gate != null) kv.push("gate " + fmt2(mem.gate));
+    if (mem.strength != null) kv.push("strength " + fmt2(mem.strength));
+    if (mem.mode) kv.push("mode " + esc(mem.mode));
+    var kvHTML = kv.length ? '<div class="mem-kv">' + kv.map(function (s) { return "<span>" + s + "</span>"; }).join("") + "</div>" : "";
+    var rows = cards.map(function (c, i) {
+      var r = rel[i];
+      var text = typeof c === "string" ? c : ((c && c.text) || "");
+      var relRow = r != null
+        ? '<div class="mem-rel"><span class="track"><span class="fill" style="width:' + (Math.max(0, Math.min(1, +r)) * 100).toFixed(0) + '%"></span></span><span class="val">' + fmt2(r) + "</span></div>"
+        : '<div class="mem-rel"><span class="val">—</span></div>';
+      return '<div class="mem-card"><div class="txt">' + esc(text) + "</div>" + relRow + "</div>";
+    }).join("");
+    return '<div class="sec"><h2>Memory</h2>' + kvHTML + rows + "</div>";
+  }
+
+  // ---- 6. receipts — did it actually matter? (causal, leave-one-out ablation) ----------------------
+  // A card/dial being logged as "applied" only means it rode along in the prompt. A receipt re-runs the
+  // reply WITHOUT that one influence — everything else held fixed, both arms greedy — to prove whether it
+  // actually changed the output, and a word-level diff shows exactly where. This regenerates on the live
+  // model (slow: tens of seconds per influence), so it is entirely gated behind a button click below —
+  // never fired just from selecting a run.
+  function buildReceiptsSection(run) {
+    if (!run || !run.id) return "";
+    var cached = state.receiptsByRun[run.id];
+    return (
+      '<div class="sec">' +
+        "<h2>Receipts — did it actually matter?</h2>" +
+        '<div class="rcpt-lead">A card or dial showing up as “applied” only means it rode along in the ' +
+          "prompt. A receipt re-runs the reply <b>without</b> that one influence — everything else held " +
+          "fixed, both arms greedy — to prove whether it actually changed the output, and shows exactly " +
+          "which words changed.</div>" +
+        '<div class="rcpt-actions">' +
+          '<button type="button" class="btn" id="rcpt-btn">Prove it — re-runs the model</button>' +
+          '<span class="rcpt-status" id="rcpt-status"></span>' +
+        "</div>" +
+        '<div id="rcpt-results">' + (cached ? renderReceiptsResults(cached) : "") + "</div>" +
+      "</div>"
+    );
+  }
+
+  function wireReceipts(run) {
+    var btn = document.getElementById("rcpt-btn");
+    if (!btn || !run || !run.id) return;
+    btn.addEventListener("click", function () { runProveAll(run.id); });
+  }
+
+  function runProveAll(id) {
+    var btn = document.getElementById("rcpt-btn");
+    var status = document.getElementById("rcpt-status");
+    var results = document.getElementById("rcpt-results");
+    if (btn) { btn.disabled = true; btn.textContent = "Proving…"; }
+    if (status) status.innerHTML = '<span class="spinner" aria-hidden="true"></span>re-running the ' +
+      "model without each influence — this can take tens of seconds…";
+    if (results) results.innerHTML = "";
+    fetch("/runs/" + encodeURIComponent(id) + "/receipts", { method: "POST", headers: HDRS })
+      .then(function (r) {
+        if (r.ok) return r.json();
+        return r.json().catch(function () { return null; }).then(function (body) {
+          throw new Error((body && body.error) || ("HTTP " + r.status));
+        });
+      })
+      .then(function (data) {
+        state.receiptsByRun[id] = data;
+        if (state.selected !== id) return;   // the user moved to another run meanwhile
+        var b = document.getElementById("rcpt-btn"), s = document.getElementById("rcpt-status"),
+            res = document.getElementById("rcpt-results");
+        if (b) { b.disabled = false; b.textContent = "Prove it — re-runs the model"; }
+        if (s) s.textContent = "";
+        if (res) res.innerHTML = renderReceiptsResults(data);
+      })
+      .catch(function (err) {
+        if (state.selected !== id) return;
+        var b = document.getElementById("rcpt-btn"), s = document.getElementById("rcpt-status");
+        if (b) { b.disabled = false; b.textContent = "Prove it — re-runs the model"; }
+        if (s) s.textContent = "Couldn’t prove it — " + (err && err.message ? err.message : "request failed") + ".";
+      });
+  }
+
+  function influenceLabel(inf) {
+    inf = inf || {};
+    if (inf.text) return truncate(inf.text, 140);
+    if (inf.dial) return "dial: " + inf.dial + (inf.value != null ? " = " + fmt2(inf.value) : "");
+    return "(baseline)";
+  }
+
+  function renderReceiptsResults(data) {
+    data = data || {};
+    var receipts = data.receipts || [];
+    var skipped = data.skipped || [];
+    var redundant = data.redundant_pairs || [];
+    var html = "";
+    if (!receipts.length && !skipped.length) {
+      html += '<div class="dim-note">No fired influences to prove on this run.</div>';
+    }
+    receipts.forEach(function (r) { html += buildReceiptCard(r); });
+    if (redundant.length) {
+      html += '<div class="rcpt-redundant"><div class="rcpt-redundant-hd">Redundancy check</div>' +
+        redundant.map(function (p) {
+          return '<div class="rcpt-redundant-row">' + esc((p.redundant || []).join(" + ")) +
+            " — " + esc(p.note || "") + "</div>";
+        }).join("") + "</div>";
+    }
+    if (skipped.length) {
+      html += '<div class="rcpt-skipped"><div class="rcpt-skip-hd">Skipped</div>' +
+        skipped.map(function (s) {
+          return '<div class="rcpt-skip-row"><span class="txt">' + esc(influenceLabel(s.influence)) +
+            '</span><span class="reason">' + esc(s.reason || "") + "</span></div>";
+        }).join("") + "</div>";
+    }
+    var notes = [];
+    if (data.approximation_note) notes.push(esc(data.approximation_note));
+    if (data.perf_note) notes.push(esc(data.perf_note));
+    if (notes.length) html += '<div class="rcpt-note">' + notes.join(" ") + "</div>";
+    return html;
+  }
+
+  // ---- graded verdict: magnitude, not yes/no. Prefers the server's delta.changed ("% of wording
+  // changed"); falls back to our own word-level diff (reusing diffTokens below) only when that field
+  // is absent. Buckets: >=40% strong, 15-40% some, >0-15% light, 0% (or has_effect:false) no effect.
+  function wordsOnly(s) {
+    return String(s == null ? "" : s).split(/\s+/).filter(function (t) { return t.length > 0; });
+  }
+
+  // Word-level %-changed via the same LCS diff used for the with/without render below, just on
+  // whitespace-stripped word tokens: 1 - (2*matched)/(total words on both sides) -- 0% for identical
+  // text, 100% for a total rewrite (no shared words), scaling smoothly in between.
+  function computeChangedPct(withText, withoutText) {
+    var a = wordsOnly(withoutText), b = wordsOnly(withText);
+    var denom = a.length + b.length;
+    if (!denom) return 0;
+    var ops = diffTokens(a, b);
+    var eq = 0;
+    for (var k = 0; k < ops.length; k++) { if (ops[k][0] === "eq") eq++; }
+    return Math.round((1 - (2 * eq) / denom) * 100);
+  }
+
+  function resolveChangedPct(r) {
+    var d = (r && r.delta) || {};
+    if (d.changed != null && isFinite(+d.changed)) return { pct: +d.changed, computed: false };
+    return { pct: computeChangedPct(r && r.baseline_reply, r && r.ablated_reply), computed: true };
+  }
+
+  function gradeInfluence(hasEffect, pct) {
+    if (!hasEffect || !(pct > 0)) {
+      return { cls: "verdict-no", icon: "—", label: "no measurable change (present, but didn’t move the output)" };
+    }
+    if (pct >= 40) return { cls: "verdict-strong", icon: "✓", label: "strongly influenced this reply" };
+    if (pct >= 15) return { cls: "verdict-some", icon: "~", label: "some influence" };
+    return { cls: "verdict-light", icon: "·", label: "light influence" };
+  }
+
+  function buildReceiptCard(r) {
+    r = r || {};
+    var inf = r.influence || {};
+    var head = inf.card_id
+      ? '<div class="rcpt-inf"><span class="k">memory card</span><div class="txt">' +
+        esc(inf.text || "(no text)") + "</div></div>"
+      : inf.dial
+      ? '<div class="rcpt-inf rcpt-inf-dial"><span class="k">dial</span><div class="txt"><b>' +
+        esc(inf.dial) + "</b>" + (inf.value != null ? " = " + esc(fmt2(inf.value)) : "") + "</div></div>"
+      : '<div class="rcpt-inf"><span class="k">influence</span><div class="txt">—</div></div>';
+
+    // pctInfo stays null when unverified -- an ablation that "didn't actually take effect" has no
+    // trustworthy magnitude to report, so we grade (and show a %) only on the verified path.
+    var pctInfo = null;
+    var verdict;
+    if (r.causal_verified === false) {
+      verdict = '<div class="rcpt-verdict verdict-unverified">⚠ couldn’t verify — ' +
+        esc(r.ablation_note || "the ablation didn’t actually take effect") + "</div>";
+    } else {
+      pctInfo = resolveChangedPct(r);
+      var grade = gradeInfluence(!!r.has_effect, pctInfo.pct);
+      verdict = '<div class="rcpt-verdict ' + grade.cls + '">' + grade.icon + " " + esc(grade.label) + "</div>";
+      if (grade.cls === "verdict-strong") {
+        verdict += '<div class="rcpt-verdict-caption">a high % on a card unrelated to the topic can be ' +
+          "tone-leak or greedy drift, not the card’s content — the diff shows which.</div>";
+      }
+    }
+
+    var diffHTML = buildDiffBlock(r.baseline_reply, r.ablated_reply);
+
+    var d = r.delta || {};
+    var bits = [];
+    if (Array.isArray(d.words)) bits.push("words " + d.words[0] + " → " + d.words[1]);
+    if (Array.isArray(d.wps)) bits.push("words/sentence " + d.wps[0] + " → " + d.wps[1]);
+    if (pctInfo) bits.push(pctInfo.pct + "% of wording changed" + (pctInfo.computed ? " (estimated from the diff)" : ""));
+    if (r.note) bits.push(r.note);
+    if (r.cost_note) bits.push(r.cost_note);
+    var meta = bits.length ? '<div class="rcpt-meta">' + bits.map(esc).join(" · ") + "</div>" : "";
+
+    return '<div class="rcpt-card">' + head + verdict + diffHTML + meta + "</div>";
+  }
+
+  // A small word-level LCS diff (vanilla JS, no deps): tokenize on whitespace runs (kept as their own
+  // tokens so re-joining reproduces the exact original spacing), then a classic O(n*m) LCS backtrack
+  // turns that into an edit script. "with" renders equal + inserted (added) words; "without" renders
+  // equal + deleted (removed) words — the same script read from two sides, so the two panels are
+  // guaranteed consistent with each other.
+  function tokenizeForDiff(s) {
+    return String(s == null ? "" : s).split(/(\s+)/).filter(function (t) { return t.length > 0; });
+  }
+
+  function diffTokens(oldToks, newToks) {
+    var n = oldToks.length, m = newToks.length;
+    var dp = [];
+    var i, j;
+    for (i = 0; i <= n; i++) {
+      dp[i] = [];
+      for (j = 0; j <= m; j++) dp[i][j] = 0;
+    }
+    for (i = n - 1; i >= 0; i--) {
+      for (j = m - 1; j >= 0; j--) {
+        dp[i][j] = oldToks[i] === newToks[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    var ops = [];
+    i = 0; j = 0;
+    while (i < n && j < m) {
+      if (oldToks[i] === newToks[j]) { ops.push(["eq", oldToks[i]]); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push(["del", oldToks[i]]); i++; }
+      else { ops.push(["add", newToks[j]]); j++; }
+    }
+    while (i < n) { ops.push(["del", oldToks[i]]); i++; }
+    while (j < m) { ops.push(["add", newToks[j]]); j++; }
+    return ops;
+  }
+
+  function renderDiffArm(ops, side) {
+    var out = ops.map(function (op) {
+      var kind = op[0], text = op[1];
+      if (kind === "eq") return esc(text);
+      if (kind === "add" && side === "with") return '<span class="df-add">' + esc(text) + "</span>";
+      if (kind === "del" && side === "without") return '<span class="df-del">' + esc(text) + "</span>";
+      return "";
+    }).join("");
+    return out || '<span class="rcpt-status">(empty reply)</span>';
+  }
+
+  function buildDiffBlock(withText, withoutText) {
+    var ops = diffTokens(tokenizeForDiff(withoutText), tokenizeForDiff(withText));
+    return (
+      '<div class="rcpt-diff">' +
+        '<div class="rcpt-diff-arm arm-with">' +
+          '<span class="lbl">with <span class="sub">baseline, greedy</span></span>' +
+          '<div class="rcpt-diff-text">' + renderDiffArm(ops, "with") + "</div>" +
+        "</div>" +
+        '<div class="rcpt-diff-arm arm-without">' +
+          '<span class="lbl">without <span class="sub">ablated, greedy</span></span>' +
+          '<div class="rcpt-diff-text">' + renderDiffArm(ops, "without") + "</div>" +
+        "</div>" +
+        '<div class="rcpt-diff-note">both arms are greedy (deterministic), so this diff is attributable ' +
+          "to this one change — not to sampling.</div>" +
+      "</div>"
+    );
+  }
+
+  // ---- 7. export -------------------------------------------------------------------------------------
+  function buildExportSection(run) {
+    if (!run.id) return "";
+    var id = encodeURIComponent(run.id);
+    return (
+      '<div class="sec"><h2>Export</h2><div class="exp-row">' +
+        '<a class="btn" href="/runs/' + id + '/export" target="_blank" rel="noopener">Download JSON</a>' +
+        '<a class="btn secondary" href="/runs/' + id + '/export?format=md" target="_blank" rel="noopener">Download Markdown</a>' +
+      "</div></div>"
+    );
+  }
+
+  loadRuns();
+})();
+</script>
+</body>
+</html>
