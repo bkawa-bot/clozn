@@ -58,23 +58,61 @@ class FakeMem:
 class FakeSub:
     name = "qwen"
 
-    def __init__(self):
+    def __init__(self, finish_reason="stop"):
         self.memory = FakeMem()
         self._mem = self.memory
         self.steer = FakeSteer()
         self.calls = 0
+        self.finish_reason = finish_reason
+        self._run_meta = {"model_id": "fake-qwen", "sampler_mode": "greedy",
+                          "sampling": "greedy", "temperature": 0.0}
 
     def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
         self.calls += 1
+        self._run_meta.update(max_tokens=int(max_new), stream=False)
         if mem_out is not None:
             mem_out.update(applied=[], gate=None)
         return "A plain reply."
 
     def chat_stream(self, messages, max_new=256, mem_out=None):
+        self._run_meta.update(max_tokens=int(max_new), stream=True)
         if mem_out is not None:
             mem_out.update(applied=[], gate=None)
         for piece in ("Hel", "lo"):
             yield piece
+
+    def last_finish_reason(self):
+        return self.finish_reason
+
+    def run_meta(self):
+        return dict(self._run_meta)
+
+
+class NoFinishSub:
+    name = "qwen"
+
+    def __init__(self):
+        self.memory = FakeMem()
+        self._mem = self.memory
+        self.steer = FakeSteer()
+        self._run_meta = {"model_id": "legacy-fake-qwen", "sampler_mode": "sample",
+                          "sampling": "sample", "temperature": 0.7}
+
+    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+        self._run_meta.update(max_tokens=int(max_new), stream=False)
+        if mem_out is not None:
+            mem_out.update(applied=[], gate=None)
+        return "A plain reply."
+
+    def chat_stream(self, messages, max_new=256, mem_out=None):
+        self._run_meta.update(max_tokens=int(max_new), stream=True)
+        if mem_out is not None:
+            mem_out.update(applied=[], gate=None)
+        for piece in ("Hel", "lo"):
+            yield piece
+
+    def run_meta(self):
+        return dict(self._run_meta)
 
 
 # --- driving the real handler without a socket (mirrors test_counterfactual_server / test_narrate_server) ---
@@ -133,6 +171,7 @@ def test_chat_completions_carries_clozn_run_id_that_resolves_to_the_logged_run(i
     # the OpenAI shape is untouched except for the one additive field
     assert set(out.keys()) == {"id", "object", "created", "model", "choices", "usage", "clozn_run_id"}
     assert out["object"] == "chat.completion"
+    assert out["choices"][0]["finish_reason"] == "stop"
     assert out["choices"][0]["message"] == {"role": "assistant", "content": "A plain reply."}
     # the bridge: a real id that resolves, via runlog, to the exact run this reply just produced
     rid = out["clozn_run_id"]
@@ -140,8 +179,39 @@ def test_chat_completions_carries_clozn_run_id_that_resolves_to_the_logged_run(i
     logged = runlog.get_run(rid)
     assert logged is not None
     assert logged["source"] == "openai_api"
+    assert logged["finish_reason"] == "stop"
+    assert logged["meta"]["finish_reason_source"] == "substrate"
+    assert logged["meta"]["sampler_mode"] == "greedy"
+    assert logged["meta"]["temperature"] == 0.0
+    assert logged["meta"]["max_tokens"] == 256
     assert logged["response"] == "A plain reply."
     assert logged["messages"] == [{"role": "user", "content": "hi there"}]
+
+
+def test_chat_completions_uses_real_length_finish_reason_end_to_end(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", FakeSub(finish_reason="length"))
+    out = _post("/v1/chat/completions", {"model": "clozn-qwen",
+                                         "messages": [{"role": "user", "content": "hi"}],
+                                         "max_tokens": 3})
+    assert out["choices"][0]["finish_reason"] == "length"
+    logged = runlog.get_run(out["clozn_run_id"])
+    assert logged["finish_reason"] == "length"
+    assert "truncated" in logged["flags"]
+    assert logged["meta"]["finish_reason_source"] == "substrate"
+    assert logged["meta"]["max_tokens"] == 3
+
+
+def test_chat_completions_fallback_finish_reason_is_explicit_not_persisted_as_real(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", NoFinishSub())
+    out = _post("/v1/chat/completions", {"model": "clozn-qwen",
+                                         "messages": [{"role": "user", "content": "hi"}],
+                                         "max_tokens": 4})
+    assert out["choices"][0]["finish_reason"] == "stop"
+    logged = runlog.get_run(out["clozn_run_id"])
+    assert logged["finish_reason"] is None
+    assert logged["meta"]["finish_reason_source"] == "fallback"
+    assert logged["meta"]["finish_reason_fallback"] == "stop"
+    assert logged["meta"]["max_tokens"] == 4
 
 
 def test_chat_completions_raw_http_response_carries_the_x_clozn_run_id_header(iso):
@@ -174,3 +244,16 @@ def test_streaming_path_is_left_unchanged_run_id_deferred_not_dropped(iso):
     assert "X-Clozn-Run-Id" not in text
     # the reply still streamed through untouched
     assert '"content": "Hel"' in text and '"content": "lo"' in text
+
+
+def test_streaming_path_uses_real_length_finish_reason_and_logs_it(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", FakeSub(finish_reason="length"))
+    raw = _post_raw("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}],
+                                             "stream": True, "max_tokens": 2})
+    text = raw.decode("utf-8")
+    assert '"finish_reason": "length"' in text
+    logged = runlog.get_run(runlog.list_runs(1)[0]["id"])
+    assert logged["finish_reason"] == "length"
+    assert logged["meta"]["finish_reason_source"] == "substrate"
+    assert logged["meta"]["max_tokens"] == 2
+    assert logged["meta"]["stream"] is True

@@ -56,7 +56,10 @@ def _a_run():
         behavior={"active_dials": {"concise": 0.5}},
         finish_reason="length",
         meta={"model_file": "qwen2.5-0.5b-instruct-q4_k_m.gguf", "quant": "Q4_K_M",
-              "mode": "autoregressive", "sampling": "greedy"},
+              "mode": "autoregressive", "sampler_mode": "greedy", "sampling": "greedy",
+              "temperature": 0.0, "repetition_penalty": 1.0, "max_tokens": 64, "seed": 0,
+              "n_ctx": 4096, "device": "cuda", "gpu_layers": 99,
+              "finish_reason_source": "substrate", "build_git_commit": "abc123"},
     )
 
 
@@ -75,6 +78,8 @@ def test_export_json_bundles_run_and_explain(iso):
     assert data["run"]["id"] == rid
     assert data["run"]["finish_reason"] == "length"
     assert data["run"]["meta"]["quant"] == "Q4_K_M"
+    assert data["repro"]["temperature"] == 0.0
+    assert data["repro"]["max_tokens"] == 64
     assert data["explain"]["run_id"] == rid               # M1 explain rides along (the receipts summary)
     assert 'filename="' + rid + '.json"' in head          # download disposition
 
@@ -88,7 +93,8 @@ def test_export_markdown_variant_renders_the_receipt(iso):
     assert "explain gravity" in md and "Mass attracts mass." in md
     assert "Keep it brief." in md and "relevance 0.81" in md
     assert "truncated" in md                               # finish_reason == length
-    assert "Q4_K_M" in md and "concise: 0.5" in md
+    assert "Q4_K_M" in md and "temperature=0.0" in md and "max_tokens=64" in md
+    assert "concise: 0.5" in md
 
 
 # --- _export_markdown (pure) -------------------------------------------------------------------------------

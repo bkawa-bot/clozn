@@ -121,6 +121,27 @@ def steps_from_records(records: list[dict], gen_ids: list[int], tok) -> list[dic
     return steps
 
 
+def finish_reason_from_generated_ids(ids, eos_token_id, max_new) -> str | None:
+    """Infer the HF generate stop cause from generated ids when it is observable; otherwise return None."""
+    try:
+        gen_ids = [int(t) for t in (ids or [])]
+    except Exception:
+        gen_ids = []
+    try:
+        eos = int(eos_token_id) if eos_token_id is not None else None
+    except Exception:
+        eos = None
+    if eos is not None and gen_ids and gen_ids[-1] == eos:
+        return "stop"
+    try:
+        cap = int(max_new)
+    except Exception:
+        cap = 0
+    if cap > 0 and len(gen_ids) >= cap:
+        return "length"
+    return None
+
+
 def resolve_model_path(name: str) -> str:
     local = os.path.join(os.path.expanduser("~"), "hf_models", name.split("/")[-1])
     return local if os.path.isfile(os.path.join(local, "config.json")) else name
@@ -182,6 +203,8 @@ class SelfTeach:
     def __init__(self, model_name: str, m: int = 16, four_bit: bool = True, model=None, tok=None,
                  persist_path: str | None = None):
         self.lock = threading.Lock()
+        self.model_name = model_name
+        self._last_finish_reason = None
         self.m = m
         self.memory_strength = 0.35         # dialed down from 1.0: at full strength a topical memory over-bleeds
                                             # into every reply in long chats (baking invaded a cover letter in
@@ -338,11 +361,13 @@ class SelfTeach:
             except Exception:
                 recorder = None
         out = self.model.generate(**gen_kw)
+        gen_ids_full = [int(t) for t in out[0].tolist()]
+        self._last_finish_reason = finish_reason_from_generated_ids(gen_ids_full, self.eos, max_new)
         # With inputs_embeds, out[0] is the GENERATED tokens only (no prompt echo) -> aligns 1:1 with the
         # recorder's per-step rows. Build the trace defensively; on any failure trace_out stays empty.
         if recorder is not None:
             try:
-                gen_ids = [int(t) for t in out[0].tolist()]
+                gen_ids = list(gen_ids_full)
                 while gen_ids and gen_ids[-1] == (self.eos or -1):   # drop trailing EOS from the visible trace
                     gen_ids.pop()
                 trace_out.extend(steps_from_records(recorder.records, gen_ids, self.tok))

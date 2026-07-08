@@ -14,6 +14,7 @@ from inspector/demo, so the iframes' fetches all land here.
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -37,6 +38,58 @@ except Exception:
     ENGINE = ENGINE_QWEN = None
 
 CLOZN_DIR = os.path.join(os.path.expanduser("~"), ".clozn")   # studio memory + personality persist here
+REPO_ROOT = os.path.abspath(os.path.join(HERE, ".."))
+
+
+def _git_commit():
+    """Best-effort build/repro id. Returns None when this checkout is not a git repo or git is unavailable."""
+    if getattr(_git_commit, "_read", False):
+        return getattr(_git_commit, "_value", None)
+    try:
+        out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT,
+                                      stderr=subprocess.DEVNULL, timeout=2)
+        val = out.decode("utf-8", "replace").strip() or None
+    except Exception:
+        val = None
+    _git_commit._value = val
+    _git_commit._read = True
+    return val
+
+
+def _without_unknowns(d):
+    """Drop only unknown values; keep honest falsy repro values like 0 temperature or seed."""
+    return {k: v for k, v in (d or {}).items() if v is not None}
+
+
+def _openai_finish_reason(fr):
+    """OpenAI-compatible responses need a concrete finish_reason string even if a substrate cannot provide one."""
+    return fr if isinstance(fr, str) and fr else "stop"
+
+
+def _qwen_generation_meta(max_new=None, sample=True, stream=None):
+    return _without_unknowns({
+        "model_id": "Qwen/Qwen2.5-7B-Instruct",
+        "sampler_mode": "sample" if sample else "greedy",
+        "sampling": "sample" if sample else "greedy",
+        "temperature": 0.7 if sample else 0.0,
+        "top_p": 0.9 if sample else None,
+        "repetition_penalty": 1.3,
+        "no_repeat_ngram_size": 3,
+        "max_tokens": int(max_new) if max_new is not None else None,
+        "stream": bool(stream) if stream is not None else None,
+    })
+
+
+def _engine_generation_meta(max_new=None, stream=None):
+    return _without_unknowns({
+        "sampler_mode": "greedy",
+        "sampling": "greedy",
+        "temperature": 0.0,
+        "repetition_penalty": 1.0,
+        "seed": 0,
+        "max_tokens": int(max_new) if max_new is not None else None,
+        "stream": bool(stream) if stream is not None else None,
+    })
 
 
 def _pers(name):
@@ -341,8 +394,12 @@ def _export_markdown(run: dict, xr: dict | None) -> str:
                                        run.get("model")] if x)
     if head:
         L.append(f"\n_{head}_")
-    metabits = [str(m) for m in [(run.get("meta") or {}).get(k)
-                                 for k in ("model_file", "quant", "mode", "sampling")] if m]
+    meta = run.get("meta") or {}
+    meta_keys = ("model_id", "model_file", "quant", "mode", "sampler_mode", "sampling",
+                 "temperature", "top_p", "repetition_penalty", "no_repeat_ngram_size",
+                 "max_tokens", "seed", "n_ctx", "device", "gpu_layers", "build_git_commit",
+                 "finish_reason_source", "finish_reason_fallback", "capture_tier")
+    metabits = [f"{k}={meta[k]}" for k in meta_keys if meta.get(k) is not None]
     if metabits:
         L.append("`" + " · ".join(metabits) + "`")
     fr = run.get("finish_reason")
@@ -1297,6 +1354,8 @@ class QwenSubstrate(Substrate):
         mem_out (optional dict): prompt mode fills {mode, applied, gate} -- what memory ACTUALLY rode
         this turn -- so the run log records per-turn application, not just the active set."""
         with _TRAIN_LOCK:                        # wait out any background retrain, then hold for this reply
+            self._last_generation_meta = _qwen_generation_meta(max_new, sample=sample, stream=False)
+            self._last_finish_reason = None
             if self.steer.strength:             # persisted personality -> ensure vectors are ready (race-safe)
                 self._ensure_steer()
             self.steer.engage()
@@ -1308,15 +1367,26 @@ class QwenSubstrate(Substrate):
                     block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
                     if mem_out is not None:
                         mem_out.update(mode="prompt", applied=applied, gate=gate)
-                    return self.memory._generate(_inject_block(messages, block), use_prefix=False,
-                                                 max_new=max_new, sample=sample, trace_out=trace_out)
+                    reply = self.memory._generate(_inject_block(messages, block), use_prefix=False,
+                                                  max_new=max_new, sample=sample, trace_out=trace_out)
+                    self._last_finish_reason = getattr(self.memory, "_last_finish_reason", None)
+                    return reply
                 # gate="auto" -> _generate scales the memory prefix by memory_strength x TOPIC RELEVANCE, so
                 # the OpenAI /v1/chat path gets the same on-topic gating as /say (fixes the always-on
                 # over-bleed). memory_strength 0 still zeroes it; a missing embedder falls back to no-gating.
-                return self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample,
-                                             gate="auto", trace_out=trace_out)
+                reply = self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample,
+                                              gate="auto", trace_out=trace_out)
+                self._last_finish_reason = getattr(self.memory, "_last_finish_reason", None)
+                return reply
             finally:
                 self.steer.disengage()
+
+    def last_finish_reason(self):
+        return getattr(self, "_last_finish_reason", None)
+
+    def run_meta(self):
+        return dict(getattr(self, "_last_generation_meta", None) or
+                    _qwen_generation_meta(sample=True))
 
     def last_stream_trace(self):
         """The per-token trace captured during the most recent chat_stream (raw step list, or []). The SSE
@@ -1338,6 +1408,8 @@ class QwenSubstrate(Substrate):
         import torch
         from transformers import TextIteratorStreamer
         _TRAIN_LOCK.acquire()                    # serialize behind an in-flight retrain (released in finally)
+        self._last_generation_meta = _qwen_generation_meta(max_new, sample=True, stream=True)
+        self._last_finish_reason = None
         if self.steer.strength:
             self._ensure_steer()
         m = self.memory
@@ -1390,10 +1462,16 @@ class QwenSubstrate(Substrate):
                     yield chunk
         finally:
             th.join()
+            raw_ids = list(gen_out.get("ids", []) or [])
+            try:
+                from self_teach_server import finish_reason_from_generated_ids
+                self._last_finish_reason = finish_reason_from_generated_ids(raw_ids, m.eos, max_new)
+            except Exception:
+                self._last_finish_reason = None
             if recorder is not None:                        # assemble the trace from rows + emitted ids
                 try:
                     from self_teach_server import steps_from_records
-                    gen_ids = gen_out.get("ids", [])
+                    gen_ids = list(raw_ids)
                     while gen_ids and gen_ids[-1] == (m.eos or -1):
                         gen_ids.pop()
                     self._last_stream_trace = steps_from_records(recorder.records, gen_ids, m.tok)
@@ -1535,6 +1613,7 @@ class EngineSubstrate(Substrate):
         fill) so the receipts/replay stack is backend-agnostic. `sample` is accepted for signature parity;
         the engine trace path decodes greedily (temperature 0) so a receipt diff is attributable, matching
         how the stack already drives QwenSubstrate for receipts."""
+        self._last_generation_meta = _engine_generation_meta(max_new, stream=False)
         # MEMORY: the active cards as a topic-gated system block (omitted off-topic / when strength 0).
         block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
         if mem_out is not None:
@@ -1569,30 +1648,32 @@ class EngineSubstrate(Substrate):
     def run_meta(self):
         """Reproducibility metadata -- WHAT produced a run -- for the run record. Fetched once from
         /health (model file -> quant, engine mode) and cached; the sampling regime is greedy (chat and
-        chat_stream both force temperature 0). n_ctx and device aren't exposed by /health yet -- a small
-        C++ follow-up -- so we OMIT them rather than fabricate. Never raises: metadata never breaks a run."""
-        m = getattr(self, "_run_meta", None)
-        if m is not None:
-            return dict(m)
-        m = {"sampling": "greedy"}
-        try:
-            h = self.engine.health() if (self.engine and hasattr(self.engine, "health")) else {}
-            mp = str((h or {}).get("model", ""))
-            if mp:
-                m["model_file"] = mp.replace("\\", "/").rsplit("/", 1)[-1]
-                q = _quant_from_name(m["model_file"])
-                if q:
-                    m["quant"] = q
-            if (h or {}).get("mode"):
-                m["mode"] = h["mode"]
-            for k in ("n_ctx", "device", "gpu_layers"):     # present once the engine's /health exposes them
-                v = (h or {}).get(k)
-                if v is not None:
-                    m[k] = v
-        except Exception:
-            pass
-        self._run_meta = m
-        return dict(m)
+        chat_stream both force temperature 0). Health-derived fields are omitted when unavailable rather
+        than guessed. Never raises: metadata never breaks a run."""
+        health_meta = getattr(self, "_run_meta", None)
+        if health_meta is None:
+            health_meta = {}
+            try:
+                h = self.engine.health() if (self.engine and hasattr(self.engine, "health")) else {}
+                mp = str((h or {}).get("model", ""))
+                if mp:
+                    health_meta["model_file"] = mp.replace("\\", "/").rsplit("/", 1)[-1]
+                    q = _quant_from_name(health_meta["model_file"])
+                    if q:
+                        health_meta["quant"] = q
+                if (h or {}).get("mode"):
+                    health_meta["mode"] = h["mode"]
+                for k in ("n_ctx", "device", "gpu_layers"):
+                    v = (h or {}).get(k)
+                    if v is not None:
+                        health_meta[k] = v
+            except Exception:
+                pass
+            self._run_meta = dict(health_meta)
+        meta = _engine_generation_meta()
+        meta.update(dict(health_meta))
+        meta.update(getattr(self, "_last_generation_meta", None) or {})
+        return dict(meta)
 
     def chat_stream(self, messages, max_new=256, mem_out=None):
         """Streaming twin of chat(): the SAME memory-block + tone-dial construction (kept in lockstep --
@@ -1611,6 +1692,7 @@ class EngineSubstrate(Substrate):
         [], same as the non-streaming path's fallback."""
         import urllib.request
         import runlog
+        self._last_generation_meta = _engine_generation_meta(max_new, stream=True)
         # MEMORY + TONE: built EXACTLY as chat() builds them.
         block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
         if mem_out is not None:
@@ -1624,7 +1706,7 @@ class EngineSubstrate(Substrate):
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
         body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_new)
-        body["temperature"] = 0.0; body["stream"] = True
+        body["temperature"] = 0.0; body["rep_penalty"] = 1.0; body["seed"] = 0; body["stream"] = True
         req = urllib.request.Request(self.engine.base + "/v1/completions",
                                      data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
@@ -1719,7 +1801,7 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw):
     """
     import urllib.request
     body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_tokens)
-    body["temperature"] = 0.0; body["stream"] = True
+    body["temperature"] = 0.0; body["rep_penalty"] = 1.0; body["seed"] = 0; body["stream"] = True
     try:
         req = urllib.request.Request(engine.base + "/v1/completions",
                                      data=json.dumps(body).encode("utf-8"),
@@ -1751,7 +1833,7 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw):
     except Exception:
         pass
     # Fallback: the original blocking path, reply preserved, trace simply empty.
-    r = engine.complete(prompt, max_tokens=max_tokens, temperature=0.0, **kw)
+    r = engine.complete(prompt, max_tokens=max_tokens, temperature=0.0, rep_penalty=1.0, seed=0, **kw)
     ch = r.get("choices") if isinstance(r, dict) else None
     finish = ch[0].get("finish_reason") if (ch and isinstance(ch[0], dict)) else None
     return (ch[0].get("text", "") if ch else str(r)), [], finish
@@ -1814,12 +1896,14 @@ def make_handler():
                 for piece in SUB.chat_stream(messages, max_new, mem_out=memout):
                     acc.append(piece); chunk({"content": piece})
                 fr = SUB.last_finish_reason() if hasattr(SUB, "last_finish_reason") else None
-                chunk({}, finish=fr or "stop")              # the engine's real stop cause, not a hard-coded "stop"
+                openai_fr = _openai_finish_reason(fr)
+                chunk({}, finish=openai_fr)
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
                 trace = SUB.last_stream_trace() if hasattr(SUB, "last_stream_trace") else None
                 self._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace, mem_out=memout,
-                              finish_reason=fr)
+                              finish_reason=fr,
+                              finish_reason_fallback=None if fr else openai_fr)
             except Exception as e:
                 self._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e), mem_out=memout)
                 try:
@@ -1871,7 +1955,7 @@ def make_handler():
             return provider
 
         def _log_run(self, source, messages, response, model, started, error=None, trace=None,
-                     mem_out=None, finish_reason=None):
+                     mem_out=None, finish_reason=None, finish_reason_fallback=None):
             """Persist this interaction as an inspectable run (never let logging break the request).
             mem_out (prompt mode): the {applied, gate, strength?} record the generation path filled --
             what memory ACTUALLY rode this turn (the topic gate may have omitted the block).
@@ -1961,10 +2045,19 @@ def make_handler():
                         meta = SUB.run_meta() or None
                 except Exception:
                     meta = None
+                meta = dict(meta or {})
+                git = _git_commit()
+                if git:
+                    meta.setdefault("build_git_commit", git)
+                if finish_reason:
+                    meta.setdefault("finish_reason_source", "substrate")
+                elif finish_reason_fallback:
+                    meta.setdefault("finish_reason_source", "fallback")
+                    meta.setdefault("finish_reason_fallback", finish_reason_fallback)
                 try:                                          # CAPTURE TIER: record it, and drop the trace at light
                     import capture_mode
                     tier = capture_mode.tier()
-                    meta = {**(meta or {}), "capture_tier": tier}
+                    meta = {**meta, "capture_tier": tier}
                     if not capture_mode.captures_trace(tier):
                         trace = None                          # light: text + finish_reason + metadata only
                 except Exception:
@@ -2131,7 +2224,7 @@ def make_handler():
                 if fmt == "md":
                     return self._send(200, _export_markdown(run, xr), "text/markdown; charset=utf-8",
                                       extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.md"'})
-                return self._json(200, {"run": run, "explain": xr},
+                return self._json(200, {"run": run, "explain": xr, "repro": run.get("meta") or {}},
                                   extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.json"'})
             if p.startswith("/runs/") and p.endswith("/timeline"):   # ordered RunEvent list -- zero generation
                 import runlog
@@ -2610,12 +2703,14 @@ def make_handler():
                 reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0, trace_out=trace_steps,
                                  mem_out=memout)
                 fr = SUB.last_finish_reason() if hasattr(SUB, "last_finish_reason") else None
+                openai_fr = _openai_finish_reason(fr)
                 # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}.
                 rid = self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0,
-                                    trace=trace_steps, mem_out=memout, finish_reason=fr)
+                                    trace=trace_steps, mem_out=memout, finish_reason=fr,
+                                    finish_reason_fallback=None if fr else openai_fr)
                 resp = {"id": "chatcmpl-clozn", "object": "chat.completion",
                        "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
-                       "choices": [{"index": 0, "finish_reason": fr or "stop",
+                       "choices": [{"index": 0, "finish_reason": openai_fr,
                                     "message": {"role": "assistant", "content": reply}}],
                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
                 # M5 any-client run_id bridge (EXPLAIN_THIS_ANSWER_SPEC.md): surface the id two ways so a

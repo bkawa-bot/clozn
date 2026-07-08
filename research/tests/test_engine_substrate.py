@@ -357,11 +357,15 @@ class _HealthEngine:
 
     def __init__(self, model="/models/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf", mode="autoregressive"):
         self.base = "http://127.0.0.1:1"
+        self.timeout = 0.2
         self._h = {"status": "ok", "model": model, "mode": mode,
                    "n_ctx": 4096, "device": "cuda", "gpu_layers": 99}
 
     def health(self):
         return dict(self._h)
+
+    def complete(self, prompt, **params):
+        return {"choices": [{"text": "ok", "finish_reason": "stop"}]}
 
 
 def test_quant_from_name_reads_gguf_tags():
@@ -380,6 +384,10 @@ def test_run_meta_reads_model_file_quant_and_mode(iso):
     assert meta["quant"] == "Q4_K_M"
     assert meta["mode"] == "autoregressive"
     assert meta["sampling"] == "greedy"                                  # chat/chat_stream force temperature 0
+    assert meta["sampler_mode"] == "greedy"
+    assert meta["temperature"] == 0.0
+    assert meta["repetition_penalty"] == 1.0
+    assert meta["seed"] == 0
     assert meta["n_ctx"] == 4096 and meta["device"] == "cuda"           # from /health, once the engine exposes them
     assert meta["gpu_layers"] == 99
 
@@ -411,4 +419,22 @@ def test_run_meta_never_raises_on_a_bad_health(iso):
             raise RuntimeError("no engine")
 
     sub.engine = _BoomEngine()
-    assert sub.run_meta() == {"sampling": "greedy"}     # degrades to the one thing we know, never fabricates
+    assert sub.run_meta() == {"sampler_mode": "greedy", "sampling": "greedy", "temperature": 0.0,
+                              "repetition_penalty": 1.0, "seed": 0}
+
+
+def test_run_meta_includes_request_specific_generation_fields_after_chat(iso, monkeypatch):
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    sub = object.__new__(cs.EngineSubstrate)
+    sub.engine = _HealthEngine()
+    sub.steer = None
+    sub._mem = cs._EngineMemory()
+    sub.memory = sub._mem
+
+    sub.chat([{"role": "user", "content": "hi"}], max_new=17)
+
+    meta = sub.run_meta()
+    assert meta["max_tokens"] == 17
+    assert meta["stream"] is False
+    assert meta["temperature"] == 0.0
+    assert meta["seed"] == 0
