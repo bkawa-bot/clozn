@@ -161,15 +161,16 @@ import argparse, gc, json, os, sys, time
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # repo root (clozn/ package)
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import steering as steering_mod
-from steering import SteeringControl
-from counterfactual import _coherence   # {"degenerate": bool, "reason": str} -- the mandatory coherence axis
-import receipts                          # receipt_metrics -- the word-type-Jaccard "%changed" DIAGNOSTIC
-import runlog
+from clozn import steering as steering_mod
+from clozn.steering import SteeringControl
+from clozn.counterfactual import _coherence   # {"degenerate": bool, "reason": str} -- the mandatory coherence axis
+from clozn import receipts                          # receipt_metrics -- the word-type-Jaccard "%changed" DIAGNOSTIC
+from clozn import runlog
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 

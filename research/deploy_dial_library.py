@@ -50,11 +50,12 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))   # repo root -- clozn_server/steering moved into the clozn/ package
 
-import clozn_server as cs      # noqa: E402  -- cheap: no model load at import time (mirrors test_dial_*.py)
-from steering import AXES      # noqa: E402  -- torch import only; no CUDA/model needed just to read the dict
+from clozn import clozn_server as cs      # noqa: E402  -- cheap: no model load at import time (mirrors test_dial_*.py)
+from clozn.steering import AXES      # noqa: E402  -- torch import only; no CUDA/model needed just to read the dict
 
-SHIPPED_LIBRARY_PATH = os.path.join(HERE, "dial_library_shipped.json")
+SHIPPED_LIBRARY_PATH = os.path.join(HERE, "..", "clozn", "data", "dial_library_shipped.json")
 
 
 def load_shipped_library(path: str = SHIPPED_LIBRARY_PATH) -> list[dict]:

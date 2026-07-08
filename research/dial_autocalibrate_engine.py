@@ -102,11 +102,12 @@ import time
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)   # research/ on path -- so `import counterfactual` / `import runlog` resolve
-#                            regardless of the caller's own cwd, matching dial_autocalibrate.py's own idiom.
+sys.path.insert(0, HERE)   # research/ on path -- so any other research-local sibling still resolves
+sys.path.insert(0, os.path.dirname(HERE))   # repo root -- so `from clozn import ...` resolves (counterfactual/
+#                            runlog/steering all moved into the clozn/ package).
 
-from counterfactual import _coherence   # noqa: E402  -- {"degenerate": bool, "reason": str}; torch-free.
-import runlog                           # noqa: E402  -- torch-free (see its own docstring).
+from clozn.counterfactual import _coherence   # noqa: E402  -- {"degenerate": bool, "reason": str}; torch-free.
+from clozn import runlog                           # noqa: E402  -- torch-free (see its own docstring).
 
 
 # ================================================================================================ constants
@@ -193,7 +194,7 @@ def _axis_max(steer, dial: str) -> float:
     if entry and entry.get("max") is not None:
         return float(entry["max"])
     try:
-        from steering import AXES as _AXES
+        from clozn.steering import AXES as _AXES
     except Exception:
         _AXES = {}
     return float((_AXES.get(dial) or {}).get("max", 1.5))
@@ -493,7 +494,7 @@ def _resync_shadowed_directions(steer, lib_meta: dict, axes: dict | None = None,
     over dials that don't happen to collide with anything)."""
     if axes is None or seeds is None:
         try:
-            import steering as _steering_mod
+            from clozn import steering as _steering_mod
         except Exception:
             return []
         axes = _steering_mod.AXES if axes is None else axes
@@ -619,8 +620,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8092")))
     ap.add_argument("--layer", type=int, default=int(os.environ.get("LAYER", "14")))
-    ap.add_argument("--shipped", default=os.path.join(HERE, "dial_library_shipped.json"),
-                    help="path to the shipped dial library (default: research/dial_library_shipped.json)")
+    ap.add_argument("--shipped", default=os.path.join(HERE, "..", "clozn", "data", "dial_library_shipped.json"),
+                    help="path to the shipped dial library (default: clozn/data/dial_library_shipped.json)")
     ap.add_argument("--dials", nargs="+", default=None,
                     help="calibrate only these shipped dial names (default: all of them)")
     ap.add_argument("--n-prompts", type=int, default=6)
@@ -637,7 +638,7 @@ def main(argv=None):
 
     sys.path.insert(0, os.path.join(HERE, "..", "engine", "client"))
     from cloze_engine import EngineClient   # noqa: E402 -- deferred: keeps a bare module import client-free
-    from steering import EngineSteer        # noqa: E402 -- deferred: steering.py imports torch at module scope
+    from clozn.steering import EngineSteer        # noqa: E402 -- deferred: steering.py imports torch at module scope
 
     ec = EngineClient(host=args.host, port=args.port, timeout=240)
     print(f"[engine] {ec.health()}", flush=True)

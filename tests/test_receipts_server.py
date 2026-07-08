@@ -1,0 +1,210 @@
+"""test_receipts_server -- POST /runs/<id>/receipt and /runs/<id>/receipts, the M2 endpoint wiring
+(EXPLAIN_THIS_ANSWER_SPEC.md).
+
+No model, no GPU: drives the REAL clozn_server do_POST handler (the object.__new__(H) no-socket trick used
+by test_explain_server.py / test_profiles_server.py / test_timetravel_server.py) against an isolated
+runlog store + memory_cards store + memory_mode settings, with a FAKE substrate standing in for the qwen
+one. receipts.py itself (both-arms-greedy generation, the metric math, the redundancy guard) is exhaustively
+unit-tested in test_receipts.py against fixture dicts; this file only proves the THIN endpoint wiring: the
+routes match, a missing run is a clean 404, no substrate is a clean 503 (both endpoints regenerate, so --
+unlike /runs/<id>/explain -- they need the live substrate), a malformed influence body is a clean 400, and a
+real request's receipt/prove-all comes back over HTTP with the fields (and Python True -> JSON true) intact.
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import sys
+
+import pytest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RESEARCH = os.path.dirname(HERE)
+sys.path.insert(0, RESEARCH)
+
+from clozn import clozn_server as cs   # noqa: E402
+from clozn import memory_cards         # noqa: E402
+from clozn import memory_mode          # noqa: E402
+from clozn import runlog                # noqa: E402
+
+
+# --- a fake substrate: deterministic chat() keyed on which influence is currently ablated -------------------
+
+class FakeSteer:
+    def __init__(self, strength=None):
+        self.strength = dict(strength or {})
+
+    def set(self, name, value):
+        self.strength[str(name)] = float(value)
+
+    def clear(self):
+        self.strength = {}
+
+    def active(self):
+        return {k: v for k, v in self.strength.items() if v}
+
+
+class FakeMem:
+    def __init__(self, strength=1.0):
+        self.memory_strength = float(strength)
+        self.rules = []
+        self.prefix = "PFX"
+
+
+class FakeSub:
+    name = "qwen"
+
+    def __init__(self, mem=None, steer=None, concise_card_ids=()):
+        self.memory = mem if mem is not None else FakeMem()
+        self._mem = self.memory
+        self.steer = steer if steer is not None else FakeSteer()
+        self.concise_card_ids = {str(i) for i in concise_card_ids}
+        self.calls = 0
+
+    def chat(self, messages, max_new=256, sample=True):
+        self.calls += 1
+        excluded = {str(i) for i in (getattr(self.memory, "_exclude_card_ids", None) or [])}
+        if self.memory.memory_strength <= 0:
+            return "Generic reply, memory off."
+        concise_active = self.concise_card_ids - excluded
+        concise_dial = float(self.steer.strength.get("concise", 0.0) or 0.0)
+        base = "Short answer." if (concise_active or concise_dial > 0) else "A much longer rambling reply."
+        if float(self.steer.strength.get("warm", 0.0) or 0.0) > 0:
+            base += " Warmly!"
+        return base
+
+
+# --- driving the real handler without a socket (mirrors test_explain_server / test_timetravel_server) ------
+
+def _dispatch(method, path, body_obj=None):
+    raw = json.dumps(body_obj if body_obj is not None else {}).encode("utf-8")
+    H = cs.make_handler()
+    h = object.__new__(H)
+    h.path = path
+    h.rfile = io.BytesIO(raw)
+    h.wfile = io.BytesIO()
+    h.headers = {"Content-Length": str(len(raw)), "User-Agent": "pytest"}
+    h.requestline, h.request_version, h.command = f"{method} {path} HTTP/1.1", "HTTP/1.1", method
+    getattr(h, f"do_{method}")()
+    _, _, payload = h.wfile.getvalue().partition(b"\r\n\r\n")
+    return json.loads(payload.decode("utf-8"))
+
+
+def _post(path, body_obj=None):
+    return _dispatch("POST", path, body_obj)
+
+
+@pytest.fixture
+def iso(tmp_path, monkeypatch):
+    """Isolate the run/card/settings stores; SUB starts as a FakeSub (tests that want the 503 path
+    override it to None explicitly)."""
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(memory_cards, "CARDS_PATH", str(tmp_path / "cards.json"))
+    monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(memory_mode, "LEGACY_PREFIX_PATHS", [str(tmp_path / "no_such.pt")])
+    monkeypatch.setattr(cs, "SUB", FakeSub(mem=FakeMem(1.0), steer=FakeSteer({"warm": 0.5})))
+    return tmp_path
+
+
+def _seed_run():
+    return runlog.record(source="studio_chat", client="studio", model="clozn-qwen", substrate="QwenSubstrate",
+                         messages=[{"role": "user", "content": "hi there"}],
+                         response="THE SAMPLED reply -- must never come back as a baseline",
+                         behavior={"active_dials": {"warm": 0.5}})
+
+
+# ============================================================================================ /receipt (one)
+
+def test_receipt_missing_run_is_a_clean_404(iso):
+    out = _post("/runs/run_does_not_exist/receipt", {"influence": {"behavior_off": True}})
+    assert out == {"error": "run not found"}
+
+
+def test_receipt_needs_the_substrate_503(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", None)
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipt", {"influence": {"behavior_off": True}})
+    assert out == {"error": "receipt needs the qwen substrate"}
+
+
+def test_receipt_rejects_a_missing_influence_spec_with_400(iso):
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipt", {})
+    assert "error" in out
+    out2 = _post(f"/runs/{rid}/receipt", {"influence": "not-a-dict"})
+    assert "error" in out2
+
+
+def test_receipt_rejects_an_unrecognized_influence_shape(iso):
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipt", {"influence": {"nonsense": True}})
+    assert "error" in out          # _ablation_changes resolves to None -> receipts.receipt() -> None -> 500
+
+
+def test_receipt_happy_path_dial_ablation_over_http(iso):
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipt", {"influence": {"dial": "warm"}})
+    assert "error" not in out
+    assert out["causal_verified"] is True                 # JSON true, round-tripped from Python True
+    assert out["has_effect"] is True
+    assert out["baseline_reply"] == "A much longer rambling reply. Warmly!"
+    assert out["ablated_reply"] == "A much longer rambling reply."
+    assert out["changes_applied"] == {"behavior_overrides": {"warm": 0.0}}
+    # the stored sampled reply never shows up as either arm, and the receipt says so
+    stored = runlog.get_run(rid)["response"]
+    assert stored not in (out["baseline_reply"], out["ablated_reply"])
+    assert "sampled" in out["note"].lower() and "baseline" in out["note"].lower()
+    assert "cost_note" in out
+
+
+def test_receipt_memory_off_ablation_over_http(iso):
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipt", {"influence": {"memory_off": True}})
+    assert out["causal_verified"] is True
+    assert out["ablated_reply"] == "Generic reply, memory off."
+
+
+# =========================================================================================== /receipts (all)
+
+def test_receipts_missing_run_is_a_clean_404(iso):
+    out = _post("/runs/run_does_not_exist/receipts", {})
+    assert out == {"error": "run not found"}
+
+
+def test_receipts_needs_the_substrate_503(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", None)
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipts", {})
+    assert out == {"error": "receipts need the qwen substrate"}
+
+
+def test_receipts_prove_all_happy_path_over_http_finds_the_redundant_pair(iso, monkeypatch):
+    memory_mode.set_mode("prompt")
+    card_a, card_b = "mem_a", "mem_b"
+    monkeypatch.setattr(cs, "SUB", FakeSub(mem=FakeMem(1.0), steer=FakeSteer({"warm": 0.5}),
+                                          concise_card_ids=[card_a, card_b]))
+    rid = runlog.record(source="studio_chat", client="studio", model="clozn-qwen", substrate="QwenSubstrate",
+                        messages=[{"role": "user", "content": "how's it going"}],
+                        response="SAMPLED, never a baseline",
+                        memory={"cards_applied": ["Be concise.", "Keep it short."],
+                               "applied_ids": [card_a, card_b], "mode": "prompt", "gate": 0.8},
+                        behavior={"active_dials": {"warm": 0.5}})
+    out = _post(f"/runs/{rid}/receipts", {})
+    assert "error" not in out
+    assert out["run_id"] == rid
+    assert len(out["receipts"]) == 3                       # card_a, card_b, warm
+    assert all(r["causal_verified"] is True for r in out["receipts"])
+    assert len(out["redundant_pairs"]) == 1
+    assert set(out["redundant_pairs"][0]["redundant"]) == {f"card:{card_a}", f"card:{card_b}"}
+    assert out["redundant_pairs"][0]["note"] == "together they drive this; individually neither is load-bearing"
+    assert "approximation_note" in out and "perf_note" in out   # the documented-approximation SAY-SO
+
+
+def test_receipts_no_fired_influences_is_a_clean_empty_200(iso):
+    rid = _seed_run()                                       # no memory cards, dials ARE active though
+    # strip the dial too, for a maximally bare manifest
+    rid2 = runlog.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hey")
+    out = _post(f"/runs/{rid2}/receipts", {})
+    assert out["receipts"] == []
+    assert out["run_id"] == rid2
