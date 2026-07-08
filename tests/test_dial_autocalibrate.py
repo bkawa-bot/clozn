@@ -869,8 +869,10 @@ def test_load_dial_library_duplicate_name_raises(tmp_path):
         dac.load_dial_library(path)
 
 
+@pytest.mark.skip(reason="dial_library_candidates.json moved to the sibling ../clozn-research repo in the "
+                         "reorg; this candidate-schema check belongs with it, not in the product suite")
 def test_load_dial_library_real_candidate_file_loads_cleanly():
-    """The actual research/dial_library_candidates.json this rig ships with must load through the same
+    """The actual dial_library_candidates.json this rig ships with must load through the same
     validation path -- catches a future hand-edit to that file breaking the schema before any GPU work."""
     path = os.path.join(REPO_ROOT, "research", "dial_library_candidates.json")
     dials = dac.load_dial_library(path)
