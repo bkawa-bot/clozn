@@ -34,9 +34,14 @@ engine and tears it down after. Stale daemon entries self-heal (a dead one fails
 Every run is debuggable after the fact — the engine streams per-token confidence + the alternatives it weighed:
 
 ```bash
-clozn trace                               # the last run's confidence timeline + what it almost said
+clozn trace                               # last shared runlog entry: confidence timeline + almost-said tokens
+clozn trace --legacy-cache                # old ~/.clozn/traces cache, kept for compatibility
 clozn branch                              # re-run from the most uncertain token on the alternative
 ```
+
+`clozn trace` reads the same `~/.clozn/runs` journal that Studio's Runs page and Run Inspector use. The
+older `~/.clozn/traces` cache is still written for compatibility and branching, but it is no longer the
+default trace source.
 
 `clozn run …` works once the repo root is on PATH; otherwise `python clozn_cli.py run …`. Put GGUFs in
 `~/.clozn/models`, set `CLOZN_MODELS=<dir>`, or list dirs in `~/.clozn/config.json`. Build the engine

@@ -83,10 +83,12 @@ class RecordingLogitsProcessor(LogitsProcessor):
         try:
             row = scores[0].detach().float()                       # [V] -- batch size 1 on this path
             probs = torch.softmax(row, dim=-1)
+            entropy = float(-(probs * torch.log(probs.clamp_min(1e-45))).sum().item())
             k = min(self.topk, probs.shape[-1])
             top = torch.topk(probs, k)
             self.records.append({"ids": [int(i) for i in top.indices.tolist()],
-                                 "probs": [float(p) for p in top.values.tolist()]})
+                                 "probs": [float(p) for p in top.values.tolist()],
+                                 "entropy": entropy})
         except Exception:
             # never let observation perturb generation; a missing record just yields a shorter trace
             self.records.append({"ids": [], "probs": []})
@@ -113,9 +115,13 @@ def steps_from_records(records: list[dict], gen_ids: list[int], tok) -> list[dic
             tid = int(gen_ids[i])
             prob_by_id = {int(a): float(b) for a, b in zip(ids, probs)}
             conf = float(prob_by_id.get(tid, 0.0))                 # committed token's own probability
-            alts = [{"piece": tok.decode([a]), "prob": round(float(b), 4)}
+            alts = [{"token_id": int(a), "piece": tok.decode([a]), "prob": round(float(b), 4)}
                     for a, b in zip(ids, probs) if int(a) != tid][:3]
-            steps.append({"piece": tok.decode([tid]), "conf": round(conf, 4), "alts": alts})
+            step = {"index": i, "token_id": tid, "piece": tok.decode([tid]),
+                    "conf": round(conf, 4), "alts": alts}
+            if rec.get("entropy") is not None:
+                step["entropy"] = float(rec["entropy"])
+            steps.append(step)
         except Exception:
             continue
     return steps

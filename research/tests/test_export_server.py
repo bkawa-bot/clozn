@@ -20,6 +20,7 @@ RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
 import clozn_server as cs   # noqa: E402
+import receipt_bundle        # noqa: E402
 import runlog                # noqa: E402
 
 
@@ -50,7 +51,13 @@ def _a_run():
         messages=[{"role": "user", "content": "explain gravity"}],
         response="Mass attracts mass.",
         trace={"tokens": ["Mass", " attracts", " mass", "."], "confidence": [0.95, 0.2, 0.9, 0.99],
-               "alternatives": [[], [{"piece": " pulls", "prob": 0.4}], [], []]},
+               "alternatives": [[], [{"piece": " pulls", "prob": 0.4}], [], []],
+               "workspace_readouts": [{
+                   "type": "workspace_readout", "provider": "engine_concepts",
+                   "token_index": 1, "token_text": " attracts", "layer": 15, "position": 1,
+                   "top_readouts": [{"label": "force_relation", "score": 0.74}],
+                   "entropy": 0.31,
+               }]},
         memory={"cards_applied": ["Keep it brief."], "applied_ids": ["c1"], "relevance": [0.81],
                 "gate": 0.77, "strength": 1.0, "mode": "prompt"},
         behavior={"active_dials": {"concise": 0.5}},
@@ -75,12 +82,23 @@ def test_export_json_bundles_run_and_explain(iso):
     rid = _a_run()
     head, body = _get(f"/runs/{rid}/export")
     data = json.loads(body)
+    assert data["schema_version"] == "receipt_bundle.v1"
     assert data["run"]["id"] == rid
     assert data["run"]["finish_reason"] == "length"
     assert data["run"]["meta"]["quant"] == "Q4_K_M"
+    assert data["repro"]["run_id"] == rid
     assert data["repro"]["temperature"] == 0.0
     assert data["repro"]["max_tokens"] == 64
+    assert data["repro"]["meta"]["quant"] == "Q4_K_M"
+    assert data["trace"]["tokens"][1] == " attracts"
+    assert data["memory"]["cards_applied"] == ["Keep it brief."]
     assert data["explain"]["run_id"] == rid               # M1 explain rides along (the receipts summary)
+    assert data["receipts"] is None
+    assert data["workspace_readouts"][0]["provider"] == "engine_concepts"
+    assert data["workspace_readouts"][0]["provider_type"] == "engine_concepts"
+    assert data["workspace_readouts"][0]["readout_kind"] == "concept"
+    assert data["workspace_readouts"][0]["run_id"] == rid
+    assert data["tiny_tests"] is None
     assert 'filename="' + rid + '.json"' in head          # download disposition
 
 
@@ -95,6 +113,7 @@ def test_export_markdown_variant_renders_the_receipt(iso):
     assert "truncated" in md                               # finish_reason == length
     assert "Q4_K_M" in md and "temperature=0.0" in md and "max_tokens=64" in md
     assert "concise: 0.5" in md
+    assert "Workspace readouts" in md and "engine_concepts" in md
 
 
 # --- _export_markdown (pure) -------------------------------------------------------------------------------
@@ -110,5 +129,52 @@ def test_markdown_omits_empty_sections():
     assert "Memory applied" not in md and "Behavior dials" not in md and "stop:" not in md
 
 
+def test_markdown_renders_prompt_mode_assembled_messages():
+    md = cs._export_markdown({
+        "id": "r3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response": "yo",
+        "assembled_messages": [{"role": "system", "content": "MEMORY BLOCK"},
+                               {"role": "user", "content": "hi"}],
+        "memory": {"mode": "prompt", "prompt_block": "MEMORY BLOCK"},
+    }, None)
+    assert "Assembled prompt/messages" in md
+    assert "**system:** MEMORY BLOCK" in md
+    assert "Memory-injected section" in md
+
+
+def test_markdown_internalized_mode_stays_honest_about_soft_prefix():
+    md = cs._export_markdown({
+        "id": "r4",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response": "yo",
+        "memory": {"mode": "internalized", "has_prefix": True},
+    }, None)
+    assert "Memory injected as soft prefix; no literal prompt string." in md
+    assert "MEMORY BLOCK" not in md
+
+
 def test_markdown_is_robust_to_a_non_dict_run():
     assert cs._export_markdown(None, None).startswith("# Run ?")
+
+
+def test_receipt_bundle_unknowns_are_null_or_empty():
+    bundle = receipt_bundle.build({"id": "r1"})
+    assert bundle["schema_version"] == "receipt_bundle.v1"
+    assert bundle["repro"]["run_id"] == "r1"
+    assert bundle["repro"]["temperature"] is None
+    assert bundle["trace"] == {}
+    assert bundle["memory"] == {}
+    assert bundle["receipts"] is None
+    assert bundle["workspace_readouts"] is None
+    assert bundle["concepts"] is None
+    assert bundle["tiny_tests"] is None
+
+
+def test_receipt_bundle_preserves_actual_stored_receipts_and_tiny_tests():
+    rec = {"influence": {"dial": "concise"}, "has_effect": True}
+    tiny = [{"name": "reply_mentions_mass", "status": "pass"}]
+    bundle = receipt_bundle.build({"id": "r2", "receipts": {"receipts": [rec]}, "tiny_tests": tiny})
+    assert bundle["receipts"]["run_id"] == "r2"
+    assert bundle["receipts"]["receipts"] == [rec]
+    assert bundle["tiny_tests"] == tiny

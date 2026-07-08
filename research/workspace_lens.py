@@ -17,6 +17,9 @@ LABELS = (
     "hallucination_risk",
 )
 
+PROVIDER_TYPES = {"sae", "probe", "logit_lens", "jacobian_lens", "mock", "engine_concepts"}
+READOUT_KINDS = {"concept", "token", "feature", "risk", "summary"}
+
 
 def _clamp(v: float) -> float:
     return max(0.0, min(1.0, float(v)))
@@ -63,6 +66,49 @@ def _concept_items(concepts: dict, limit: int = 5) -> list[dict]:
                 rows.append({"label": label, "score": 0.5})
     rows.sort(key=lambda r: r["score"], reverse=True)
     return rows[:limit]
+
+
+def provider_type_for(provider: str | None) -> str | None:
+    """Classify a concrete provider name into the persisted readout taxonomy."""
+    p = str(provider or "").strip().lower()
+    if p in PROVIDER_TYPES:
+        return p
+    if p in {"fixture", "sample"}:
+        return "mock"
+    if "engine" in p and "concept" in p:
+        return "engine_concepts"
+    if "jacobian" in p or p in {"j_lens", "jlens"}:
+        return "jacobian_lens"
+    if "logit" in p:
+        return "logit_lens"
+    if "sae" in p:
+        return "sae"
+    if "probe" in p:
+        return "probe"
+    return None
+
+
+def default_readout_kind(provider_type: str | None) -> str | None:
+    if provider_type in {"engine_concepts", "sae", "probe"}:
+        return "concept"
+    if provider_type == "logit_lens":
+        return "token"
+    if provider_type == "jacobian_lens":
+        return "feature"
+    if provider_type == "mock":
+        return "risk"
+    return None
+
+
+def taxonomy_fields(provider: str | None, readout_kind: str | None = None) -> dict:
+    provider_type = provider_type_for(provider)
+    kind = str(readout_kind or "").strip().lower() or default_readout_kind(provider_type)
+    out = {}
+    if provider_type:
+        out["provider_type"] = provider_type
+    if kind in READOUT_KINDS:
+        out["readout_kind"] = kind
+    return out
 
 
 def _token_scores(run_id: str, token_index: int, token_text: str, confidence: float) -> dict[str, float]:
@@ -118,12 +164,14 @@ def mock_readouts_for_trace(run_id: str, trace: dict, *, layer: int = 12) -> lis
             "top_readouts": [{"label": label, "score": round(score, 4)} for label, score in top],
             "entropy": round(entropy, 4),
             "provider": "mock",
+            **taxonomy_fields("mock", "risk"),
         })
     return out
 
 
 def readouts_from_concepts(run_id: str, trace: dict, concepts: dict, *,
-                           provider: str, layer: int | None = None) -> list[dict]:
+                           provider: str, layer: int | None = None,
+                           readout_kind: str = "concept") -> list[dict]:
     """Project an existing concept/SAE readout onto a token trace.
 
     BrainReadout produces run-level concept activations (`considered`) rather
@@ -156,5 +204,6 @@ def readouts_from_concepts(run_id: str, trace: dict, concepts: dict, *,
             "top_readouts": [{"label": r["label"], "score": round(r["score"], 4)} for r in top],
             "entropy": round(entropy, 4),
             "provider": provider,
+            **taxonomy_fields(provider, readout_kind),
         })
     return out

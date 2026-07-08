@@ -72,6 +72,26 @@ def _rounded(x):
         return None
 
 
+def _trace_steps(trace: dict) -> list[dict]:
+    """Return rich token steps when present; synthesize the old v1 arrays into the same shape otherwise."""
+    trace = _as_dict(trace)
+    steps = _as_list(trace.get("steps"))
+    if steps and all(isinstance(s, dict) for s in steps):
+        return steps
+    tokens = _as_list(trace.get("tokens"))
+    confidence = _as_list(trace.get("confidence"))
+    alternatives = _as_list(trace.get("alternatives"))
+    out = []
+    for i, piece in enumerate(tokens):
+        step = {"index": i, "piece": piece, "text": piece,
+                "alternatives": alternatives[i] if i < len(alternatives) and isinstance(alternatives[i], list) else []}
+        if i < len(confidence):
+            step["confidence"] = confidence[i]
+            step["prob"] = confidence[i]
+        out.append(step)
+    return out
+
+
 # --------------------------------------------------------------------------------------------- memory_applied
 def _memory_applied(run: dict) -> dict | None:
     """One event for the whole set of cards that fired this turn, each resolved to {text, id, relevance} by
@@ -109,8 +129,9 @@ def _generation(run: dict) -> dict | None:
     trace = _as_dict(run.get("trace"))
     if not response and not trace:
         return None
+    steps = _trace_steps(trace)
     tokens = _as_list(trace.get("tokens"))
-    n = len(tokens) if tokens else len(str(response or "").split())
+    n = len(steps) if steps else (len(tokens) if tokens else len(str(response or "").split()))
     duration = _as_dict(run.get("timing")).get("duration_ms")
     return {"type": "generation", "label": f"Generated {n} tokens", "n_tokens": n, "duration_ms": duration}
 
@@ -122,22 +143,27 @@ def _hesitations(run: dict) -> list[dict]:
     threshold, same tolerance for a missing/malformed confidence or alternatives entry) -- just emitted as
     ordered timeline events instead of folded into one aggregate panel. [] when there's no per-token trace."""
     trace = _as_dict(run.get("trace"))
-    tokens = _as_list(trace.get("tokens"))
-    if not tokens:
+    steps = _trace_steps(trace)
+    if not steps:
         return []
-    confidence = _as_list(trace.get("confidence"))
-    alternatives = _as_list(trace.get("alternatives"))
     out = []
-    for i, piece in enumerate(tokens):
+    for i, step in enumerate(steps):
+        piece = step.get("piece", step.get("text", ""))
         try:
-            c = float(confidence[i]) if i < len(confidence) else None
+            c = float(step.get("confidence", step.get("prob"))) if step.get("confidence", step.get("prob")) is not None else None
         except (TypeError, ValueError):
             c = None
         if c is None or c >= LOW_CONF:
             continue
-        alts = alternatives[i] if i < len(alternatives) and isinstance(alternatives[i], list) else []
-        out.append({"type": "hesitation", "label": f'Unsure at "{piece}"', "index": i, "token": piece,
-                    "confidence": round(c, 4), "alternatives": alts})
+        alts = step.get("alternatives")
+        alts = alts if isinstance(alts, list) else []
+        ev = {"type": "hesitation", "label": f'Unsure at "{piece}"',
+              "index": step.get("index", i), "token": piece,
+              "confidence": round(c, 4), "prob": round(c, 4), "alternatives": alts}
+        for k in ("token_id", "logprob", "entropy", "wall_ms", "dt_ms"):
+            if step.get(k) is not None:
+                ev[k] = step[k]
+        out.append(ev)
     return out
 
 

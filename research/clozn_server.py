@@ -387,62 +387,8 @@ def _export_markdown(run: dict, xr: dict | None) -> str:
     """Render a run (+ its M1 explain) as a human-readable Markdown receipt: the conversation, what memory
     and which dials shaped it (with per-card relevance), why it stopped, and where it hesitated. Pure / no
     model -- the JSON export carries the full structured bundle; this is its readable companion."""
-    run = run if isinstance(run, dict) else {}
-    L = [f"# Run {run.get('id', '?')}"]
-    head = " · ".join(str(x) for x in [run.get("created_at"),
-                                       f"{run.get('source', '?')}/{run.get('client', '?')}",
-                                       run.get("model")] if x)
-    if head:
-        L.append(f"\n_{head}_")
-    meta = run.get("meta") or {}
-    meta_keys = ("model_id", "model_file", "quant", "mode", "sampler_mode", "sampling",
-                 "temperature", "top_p", "repetition_penalty", "no_repeat_ngram_size",
-                 "max_tokens", "seed", "n_ctx", "device", "gpu_layers", "build_git_commit",
-                 "finish_reason_source", "finish_reason_fallback", "capture_tier")
-    metabits = [f"{k}={meta[k]}" for k in meta_keys if meta.get(k) is not None]
-    if metabits:
-        L.append("`" + " · ".join(metabits) + "`")
-    fr = run.get("finish_reason")
-    if fr:
-        L.append(f"\n**stop:** {fr}" + ("  — ⚠ truncated (hit the token cap)" if fr == "length" else ""))
-
-    L.append("\n## Conversation")
-    msgs = run.get("messages") or []
-    for m in msgs:
-        L.append(f"\n**{m.get('role', '?')}:** {str(m.get('content', '')).strip()}")
-    if run.get("response") and not (msgs and msgs[-1].get("role") == "assistant"):
-        L.append(f"\n**assistant:** {str(run.get('response')).strip()}")
-
-    mem = run.get("memory") or {}
-    cards = mem.get("cards_applied") or []
-    if cards:
-        L.append("\n## Memory applied")
-        rels = mem.get("relevance") or []
-        for i, c in enumerate(cards):
-            r = rels[i] if i < len(rels) else None
-            L.append(f"- {c}" + (f"  _(relevance {r:.2f})_" if isinstance(r, (int, float)) else ""))
-        bits = []
-        if mem.get("strength") is not None:
-            bits.append(f"strength {float(mem['strength']):.2f}")
-        if mem.get("gate") is not None:
-            bits.append(f"gate {float(mem['gate']):.2f}")
-        if mem.get("mode"):
-            bits.append(f"{mem['mode']} mode")
-        if bits:
-            L.append("\n_" + " · ".join(bits) + "_")
-
-    dials = (run.get("behavior") or {}).get("active_dials") or {}
-    if dials:
-        L.append("\n## Behavior dials")
-        for k, v in dials.items():
-            L.append(f"- {k}: {v}")
-
-    conf = (xr or {}).get("confidence") or {}
-    if conf.get("available"):
-        L.append("\n## Token trace")
-        L.append(f"{conf.get('n_tokens', '?')} tokens · {conf.get('summary', '')}")
-
-    return "\n".join(L) + "\n"
+    import receipt_bundle
+    return receipt_bundle.to_markdown(receipt_bundle.build(run, explain=xr))
 
 
 def _runs_for_card(card_id):
@@ -1292,10 +1238,12 @@ class QwenSubstrate(Substrate):
         with m.lock:
             m.history.append({"role": "user", "content": message})
             block, applied, gate = _prompt_block_for(m, message)
+            assembled = _inject_block(m.history, block)
             if mem_out is not None:
-                mem_out.update(mode="prompt", applied=applied, gate=gate)
-            reply = m._generate(_inject_block(m.history, block), use_prefix=False,
-                                max_new=max_new, sample=True, trace_out=trace_out)
+                mem_out.update(mode="prompt", applied=applied, gate=gate,
+                               prompt_block=block, assembled_messages=assembled)
+            reply = m._generate(assembled, use_prefix=False, max_new=max_new,
+                                sample=True, trace_out=trace_out)
             m.history.append({"role": "assistant", "content": reply})
             return reply
 
@@ -1365,9 +1313,11 @@ class QwenSubstrate(Substrate):
                     # this turn is off-memory); the model runs prefix-free. The block wording is the
                     # exact distillation target the prefix trains toward, so behavior stays comparable.
                     block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
+                    assembled = _inject_block(messages, block)
                     if mem_out is not None:
-                        mem_out.update(mode="prompt", applied=applied, gate=gate)
-                    reply = self.memory._generate(_inject_block(messages, block), use_prefix=False,
+                        mem_out.update(mode="prompt", applied=applied, gate=gate,
+                                       prompt_block=block, assembled_messages=assembled)
+                    reply = self.memory._generate(assembled, use_prefix=False,
                                                   max_new=max_new, sample=sample, trace_out=trace_out)
                     self._last_finish_reason = getattr(self.memory, "_last_finish_reason", None)
                     return reply
@@ -1417,9 +1367,11 @@ class QwenSubstrate(Substrate):
             # PROMPT MODE: the gated system block replaces the prefix concat below -- it simply becomes
             # part of the chat template, so the streaming mechanics are untouched.
             block, applied, gate = _prompt_block_for(m, _last_user(messages))
+            assembled = _inject_block(messages, block)
             if mem_out is not None:
-                mem_out.update(mode="prompt", applied=applied, gate=gate)
-            e = m._embed(m._chat_ids(_inject_block(messages, block)))
+                mem_out.update(mode="prompt", applied=applied, gate=gate,
+                               prompt_block=block, assembled_messages=assembled)
+            e = m._embed(m._chat_ids(assembled))
         else:
             e = m._embed(m._chat_ids(messages))
             if m.prefix is not None:                        # prepend the consolidated memory prefix, scaled by
@@ -1616,9 +1568,11 @@ class EngineSubstrate(Substrate):
         self._last_generation_meta = _engine_generation_meta(max_new, stream=False)
         # MEMORY: the active cards as a topic-gated system block (omitted off-topic / when strength 0).
         block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
+        assembled = _inject_block(messages, block)
         if mem_out is not None:
-            mem_out.update(mode="prompt", applied=applied, gate=gate)
-        prompt = _qwen_tmpl(_inject_block(messages, block))
+            mem_out.update(mode="prompt", applied=applied, gate=gate,
+                           prompt_block=block, assembled_messages=assembled)
+        prompt = _qwen_tmpl(assembled)
         # TONE: dials from self.steer.strength (replay toggles this in place), falling back to disk.
         kw = {}
         st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or _disk_dials()
@@ -1695,9 +1649,11 @@ class EngineSubstrate(Substrate):
         self._last_generation_meta = _engine_generation_meta(max_new, stream=True)
         # MEMORY + TONE: built EXACTLY as chat() builds them.
         block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
+        assembled = _inject_block(messages, block)
         if mem_out is not None:
-            mem_out.update(mode="prompt", applied=applied, gate=gate)
-        prompt = _qwen_tmpl(_inject_block(messages, block))
+            mem_out.update(mode="prompt", applied=applied, gate=gate,
+                           prompt_block=block, assembled_messages=assembled)
+        prompt = _qwen_tmpl(assembled)
         kw = {}
         st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or _disk_dials()
         if self.steer is not None and st and any(st.values()):
@@ -1965,13 +1921,13 @@ def make_handler():
             try:
                 import runlog
                 mem = getattr(SUB, "_mem", None) if SUB else None
-                mode = _memory_mode()
+                mo = mem_out or {}
+                mode = mo.get("mode") or _memory_mode()
                 if mode == "prompt":
                     # cards_applied == what was INJECTED this turn -- the per-turn honesty prompt mode
                     # buys (internalized can only report the whole active set). applied_ids ride along so
                     # the Run Inspector can offer per-card receipts. A path that filled nothing (or
                     # errored before generating) honestly records an empty application.
-                    mo = mem_out or {}
                     applied = [c for c in (mo.get("applied") or []) if isinstance(c, dict)]
                     strength = mo.get("strength",
                                       getattr(mem, "memory_strength", 1.0) if mem is not None else 1.0)
@@ -1985,6 +1941,8 @@ def make_handler():
                         memd["relevance"] = [round(float(r), 4) if r is not None else None for r in rel]
                     if mo.get("gate") is not None:
                         memd["gate"] = round(float(mo["gate"]), 4)
+                    if mo.get("prompt_block"):
+                        memd["prompt_block"] = str(mo["prompt_block"])
                     if applied:                                  # bump exactly the cards that rode this turn
                         try:
                             import memory_cards
@@ -2063,10 +2021,12 @@ def make_handler():
                 except Exception:
                     pass
                 workspace_provider = self._workspace_lens_provider(messages, response, error)
+                assembled_messages = mo.get("assembled_messages") if mode == "prompt" else None
                 rid = runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
                                     model=str(model), substrate=SUBNAME, messages=messages, response=response,
                                     memory=memd, behavior={"active_dials": dials}, started=started, error=error,
                                     trace=trace, finish_reason=finish_reason, meta=meta,
+                                    assembled_messages=assembled_messages,
                                     workspace_provider=workspace_provider)
                 self._maybe_snapshot_turn(rid, messages, trace, error)
                 return rid                        # M5 bridge: the run id, for callers that want to surface it
@@ -2211,6 +2171,7 @@ def make_handler():
             if p.startswith("/runs/") and p.endswith("/export"):   # one-call download: run + M1 explain + trace
                 import runlog
                 import explain
+                import receipt_bundle
                 from urllib.parse import urlparse, parse_qs
                 rid = p[len("/runs/"):-len("/export")]
                 run = runlog.get_run(rid)
@@ -2220,11 +2181,12 @@ def make_handler():
                     xr = explain.explain(run)                # M1: pure read/reshape, no generation
                 except Exception:
                     xr = None
+                bundle = receipt_bundle.build(run, explain=xr)
                 fmt = (parse_qs(urlparse(self.path).query).get("format") or ["json"])[0]
                 if fmt == "md":
-                    return self._send(200, _export_markdown(run, xr), "text/markdown; charset=utf-8",
+                    return self._send(200, receipt_bundle.to_markdown(bundle), "text/markdown; charset=utf-8",
                                       extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.md"'})
-                return self._json(200, {"run": run, "explain": xr, "repro": run.get("meta") or {}},
+                return self._json(200, bundle,
                                   extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.json"'})
             if p.startswith("/runs/") and p.endswith("/timeline"):   # ordered RunEvent list -- zero generation
                 import runlog
@@ -2234,6 +2196,13 @@ def make_handler():
                     return self._json(404, {"error": "run not found"})
                 import run_timeline
                 return self._json(200, {"run_id": rid, "events": run_timeline.timeline(run)})
+            if p.startswith("/runs/") and p.endswith("/lineage"):   # branch/replay ancestry + child tree
+                import runlog
+                rid = p[len("/runs/"):-len("/lineage")]
+                out = runlog.lineage(rid)
+                if not out:
+                    return self._json(404, {"error": "run not found"})
+                return self._json(200, out)
             if p.startswith("/runs/") and p.endswith("/spans"):   # confidence spans -- the shape of the reply's certainty
                 import runlog
                 rid = p[len("/runs/"):-len("/spans")]
@@ -2641,8 +2610,10 @@ def make_handler():
                         ms = float(getattr(mem, "memory_strength", 1.0)) if mem is not None \
                             else _disk_memory()[1]
                         block, applied, gate = _prompt_block_for(mem, _last_user(msgs), strength=ms)
-                        memout.update(mode="prompt", applied=applied, gate=gate, strength=ms)
-                        prompt = _qwen_tmpl(_inject_block(msgs, block))
+                        assembled = _inject_block(msgs, block)
+                        memout.update(mode="prompt", applied=applied, gate=gate, strength=ms,
+                                      prompt_block=block, assembled_messages=assembled)
+                        prompt = _qwen_tmpl(assembled)
                     else:
                         prompt = _qwen_tmpl(msgs)
                         # MEMORY: the live HF prefix if a qwen substrate is loaded, else the SAVED prefix from

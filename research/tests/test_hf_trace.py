@@ -177,8 +177,12 @@ def test_steps_feed_runlog_steps_to_trace_aligned():
     assert trace["tokens"] == ["The", " cat"]
     assert len(trace["confidence"]) == 2
     assert len(trace["alternatives"]) == 2                 # parallel, one per token
+    assert trace["steps"][0]["index"] == 0 and trace["steps"][0]["token_id"] == 0
+    assert "entropy" in trace["steps"][0]                  # HF recorder has the full softmax row
+    assert trace["steps"][0]["logprob"] < 0
     # step 1 committed id 1 -> its alternatives exclude " cat" and are the other top-k
     assert all(a["piece"] != " cat" for a in trace["alternatives"][1])
+    assert all("token_id" in a and "logprob" in a for a in trace["alternatives"][1])
     # confidences are real probabilities in (0, 1]
     assert all(0.0 < c <= 1.0 for c in trace["confidence"])
 

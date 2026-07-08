@@ -145,7 +145,10 @@ def test_chat_stream_yields_pieces_in_order(iso, monkeypatch, fake_urlopen):
     pieces = list(sub.chat_stream([{"role": "user", "content": "capital of France?"}], mem_out=mem_out))
 
     assert pieces == [" Par", "is", "."]
-    assert mem_out == {"mode": "prompt", "applied": [], "gate": 0.0}
+    assert {k: mem_out[k] for k in ("mode", "applied", "gate")} == {
+        "mode": "prompt", "applied": [], "gate": 0.0}
+    assert mem_out["prompt_block"] is None
+    assert mem_out["assembled_messages"] == [{"role": "user", "content": "capital of France?"}]
 
 
 def test_chat_stream_skips_empty_pieces(iso, monkeypatch):

@@ -389,14 +389,19 @@ def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
         for obj in frames:
             if obj.get("type") == "tokens_committed":
                 for it in obj.get("items", []):
-                    by_pos[it.get("pos")] = {"pos": it.get("pos"), "piece": it.get("piece", ""),
+                    by_pos[it.get("pos")] = {"pos": it.get("pos"), "index": it.get("pos"),
+                                             "token_id": it.get("id"), "piece": it.get("piece", ""),
+                                             "prob": round(float(it.get("conf", 0.0)), 3),
                                              "conf": round(float(it.get("conf", 0.0)), 3), "alts": []}
             elif obj.get("type") == "step_lens":
                 step = by_pos.get((obj.get("positions") or [None])[0])
                 if step:
-                    step["alts"] = [{"piece": p, "prob": round(float(pr), 3)}
-                                    for p, pr in zip(obj.get("pieces", []), obj.get("probs", []))
-                                    if p != step["piece"]][:3]
+                    pieces, probs = obj.get("pieces", []), obj.get("probs", [])
+                    ids = obj.get("ids") or [None] * len(pieces)
+                    chosen_id = step.get("token_id")
+                    step["alts"] = [{"token_id": tid, "piece": p, "prob": round(float(pr), 3)}
+                                    for tid, p, pr in zip(ids, pieces, probs)
+                                    if (chosen_id is None or tid != chosen_id) and p != step["piece"]][:3]
         steps = [by_pos[p] for p in sorted(by_pos, key=lambda x: (x is None, x))]
     return n, steps
 
@@ -412,8 +417,9 @@ def complete_once(port: int, prompt: str, max_tokens: int) -> str:
 
 
 # ----------------------------------------------------------------------------- trace (the debugger seam)
-# Every AR run auto-saves its timeline to ~/.clozn/traces/<id>.json so a run is debuggable after the fact:
-# `clozn trace` shows the per-token confidence + what the model almost said -- the seed of branch-a-bad-answer.
+# Every run is persisted to ~/.clozn/runs through research/runlog.py; Studio and `clozn trace` read that
+# same journal. AR runs also keep writing the older ~/.clozn/traces/<id>.json cache for branch/back-compat;
+# `clozn trace --legacy-cache` can inspect it, but the shared runlog is the default source of truth.
 
 def _runid() -> str:
     return f"{int(time.time())}-{os.getpid() % 1000:03d}"
@@ -427,11 +433,6 @@ def _save_trace(meta: dict, steps: list) -> str:
         json.dump({"meta": meta, "steps": steps}, open(path, "w"))
     except Exception:
         return ""
-    for old in sorted(glob.glob(os.path.join(d, "*.json")))[:-25]:   # keep the last 25 runs
-        try:
-            os.remove(old)
-        except Exception:
-            pass
     return path
 
 
@@ -877,11 +878,66 @@ def cmd_stop(args):
     _reg_write(d)
 
 
-def cmd_trace(args):
+def _trace_cache_files() -> list[str]:
     d = os.path.join(HOME, "traces")
-    files = sorted(glob.glob(os.path.join(d, "*.json")))
+    return sorted(glob.glob(os.path.join(d, "*.json")))
+
+
+def _render_trace(meta: dict, steps: list):
+    m = meta or {}
+    steps = [s for s in (steps or []) if isinstance(s, dict)]
+    print(f"{BOLD}{m.get('model', '?')}{RST}  \"{m.get('prompt', '')[:64]}\"")
+    print(f"{DIM}{m.get('n', len(steps))} tokens - {m.get('backend', '?')} - short bar = less sure; "
+          f"'almost' = what it nearly said{RST}")
+    if not steps:
+        print("-" * 62)
+        print(f"{DIM}no per-token trace recorded on this run{RST}")
+        return
+    # the reply reconstructed from the trace, each token painted by its confidence -- the denoise board, in
+    # the terminal. Then the per-token detail below (piece also painted, so the two views share one palette).
+    hm = _heatmap_lines([(s.get("piece", s.get("text", "")),
+                          _num(s.get("prob", s.get("conf", s.get("confidence"))))) for s in steps])
+    if hm:
+        print("-" * 62)
+        for ln in hm:
+            print(ln)
+        print(_conf_legend())
+    print("-" * 62)
+    for i, s in enumerate(steps):
+        piece = (s.get("piece", s.get("text", "")) or "").replace("\n", "\\n").replace("\t", "\\t")
+        conf = _num(s.get("prob", s.get("conf", s.get("confidence"))))
+        mark = " " if conf >= 0.5 else "?"
+        shown = piece[:16]
+        cell = _paint(shown, conf) + " " * max(0, 16 - len(shown))
+        idx = s.get("index", s.get("pos", i))
+        meta = []
+        if s.get("token_id") is not None:
+            meta.append(f"id {s.get('token_id')}")
+        if s.get("logprob") is not None:
+            meta.append(f"logp {_num(s.get('logprob')):.3f}")
+        if s.get("entropy") is not None:
+            meta.append(f"H {_num(s.get('entropy')):.3f}")
+        line = f" {mark} {str(idx):>3} {cell} {_confbar(conf)} {conf:.2f}"
+        if meta:
+            line += f"   {DIM}{' '.join(meta)}{RST}"
+        if conf < 0.5 and s.get("alts"):
+            alts = "  ".join(f"{(a.get('piece', a.get('text', '')) or '').strip() or '_'} "
+                              f"{_num(a.get('prob')):.2f}" +
+                              (f" id {a.get('token_id')}" if a.get("token_id") is not None else "")
+                              for a in s["alts"][:3] if isinstance(a, dict))
+            if alts:
+                line += f"   {DIM}almost: {alts}{RST}"
+        print(line)
+    lows = [s for s in steps if _num(s.get("prob", s.get("conf", s.get("confidence"))), 1.0) < 0.5]
+    print("-" * 62)
+    tail = " -> " + ", ".join((s.get("piece", s.get("text", "")) or "").strip() for s in lows[:6]) if lows else ""
+    print(f"{DIM}{len(lows)} uncertain moment(s){tail}{RST}")
+
+
+def _cmd_trace_legacy(args):
+    files = _trace_cache_files()
     if not files:
-        print('no traces yet -- run something first:  clozn run qwen "..."'); return
+        print('no legacy trace cache entries yet -- run something first:  clozn run qwen "..."'); return
     if args.list:
         print(f"{'WHEN':<18} {'MODEL':<11} {'TOK':>4}  PROMPT")
         for f in files[-12:]:
@@ -890,33 +946,93 @@ def cmd_trace(args):
         return
     tr = json.load(open(files[-1]))
     m, steps = tr.get("meta", {}), tr.get("steps", [])
-    print(f"{BOLD}{m.get('model', '?')}{RST}  \"{m.get('prompt', '')[:64]}\"")
-    print(f"{DIM}{m.get('n', 0)} tokens - {m.get('backend', '?')} - short bar = less sure; "
-          f"'almost' = what it nearly said{RST}")
-    # the reply reconstructed from the trace, each token painted by its confidence -- the denoise board, in
-    # the terminal. Then the per-token detail below (piece also painted, so the two views share one palette).
-    hm = _heatmap_lines([(s.get("piece", ""), _num(s.get("conf"))) for s in steps])
-    if hm:
-        print("-" * 62)
-        for ln in hm:
-            print(ln)
-        print(_conf_legend())
-    print("-" * 62)
-    for s in steps:
-        piece = (s.get("piece", "") or "").replace("\n", "\\n").replace("\t", "\\t")
-        conf = _num(s.get("conf"))
-        mark = " " if conf >= 0.5 else "?"
-        shown = piece[:16]
-        cell = _paint(shown, conf) + " " * max(0, 16 - len(shown))
-        line = f" {mark} {cell} {_confbar(conf)} {conf:.2f}"
-        if conf < 0.5 and s.get("alts"):
-            alts = "  ".join(f"{(a['piece'] or '').strip() or '_'} {a['prob']:.2f}" for a in s["alts"][:3])
-            line += f"   {DIM}almost: {alts}{RST}"
-        print(line)
-    lows = [s for s in steps if s.get("conf", 1) < 0.5]
-    print("-" * 62)
-    tail = " -> " + ", ".join((s.get("piece", "") or "").strip() for s in lows[:6]) if lows else ""
-    print(f"{DIM}{len(lows)} uncertain moment(s){tail}{RST}")
+    _render_trace(m, steps)
+
+
+def _import_runlog():
+    sys.path.insert(0, os.path.join(REPO, "research"))
+    import runlog
+    return runlog
+
+
+def _run_prompt(run: dict) -> str:
+    for msg in reversed(run.get("messages") or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return str(msg.get("content", ""))
+    return str(run.get("prompt_summary", ""))
+
+
+def _runlog_trace_steps(run: dict) -> list[dict]:
+    trace = run.get("trace") if isinstance(run, dict) else {}
+    trace = trace if isinstance(trace, dict) else {}
+    rich = trace.get("steps") if isinstance(trace.get("steps"), list) else []
+    if rich:
+        out = []
+        for i, s in enumerate(rich):
+            if not isinstance(s, dict):
+                continue
+            piece = s.get("piece", s.get("text", ""))
+            conf = s.get("prob", s.get("conf", s.get("confidence")))
+            alts = s.get("alts", s.get("alternatives", []))
+            step = {"index": s.get("index", s.get("pos", i)), "piece": str(piece),
+                    "conf": _num(conf, 1.0), "alts": alts if isinstance(alts, list) else []}
+            for k in ("token_id", "logprob", "entropy", "wall_ms", "dt_ms"):
+                if s.get(k) is not None:
+                    step[k] = s.get(k)
+            out.append(step)
+        return out
+    tokens = trace.get("tokens") if isinstance(trace.get("tokens"), list) else []
+    confidence = trace.get("confidence") if isinstance(trace.get("confidence"), list) else []
+    alternatives = trace.get("alternatives") if isinstance(trace.get("alternatives"), list) else []
+    out = []
+    for i, piece in enumerate(tokens):
+        alts = alternatives[i] if i < len(alternatives) and isinstance(alternatives[i], list) else []
+        out.append({"pos": i, "piece": str(piece),
+                    "conf": _num(confidence[i], 1.0) if i < len(confidence) else 1.0,
+                    "alts": alts})
+    return out
+
+
+def _runlog_trace_meta(run: dict, steps: list[dict]) -> dict:
+    backend = run.get("substrate") or run.get("source") or run.get("client") or "runlog"
+    return {"id": run.get("id", ""), "model": run.get("model", ""), "prompt": _run_prompt(run),
+            "backend": backend, "n": len(steps), "t": run.get("created_ts")}
+
+
+def _list_runlog_traces(runlog, limit=12):
+    rows = runlog.list_runs(limit=limit)
+    print(f"{'WHEN':<19} {'MODEL':<11} {'TOK':>4}  PROMPT")
+    for row in reversed(rows):
+        run = runlog.get_run(row.get("id", "")) or {}
+        trace = run.get("trace") if isinstance(run.get("trace"), dict) else {}
+        toks = trace.get("tokens") if isinstance(trace.get("tokens"), list) else []
+        when = str(row.get("created_at") or row.get("id", ""))[:19]
+        print(f"{when:<19} {str(row.get('model', ''))[:11]:<11} {len(toks):>4}  "
+              f"{str(row.get('prompt_summary', ''))[:46]}")
+
+
+def cmd_trace(args):
+    if getattr(args, "legacy_cache", False):
+        return _cmd_trace_legacy(args)
+    try:
+        runlog = _import_runlog()
+        rows = runlog.list_runs(limit=12 if args.list else 1)
+    except Exception as e:
+        raise CloznError(f"could not read the run journal (~/.clozn/runs): {e}")
+    if not rows:
+        hint = ""
+        if _trace_cache_files():
+            hint = "  Legacy trace cache entries exist; use: clozn trace --legacy-cache"
+        print(f'no runs yet -- run something first:  clozn run qwen "..."{hint}')
+        return
+    if args.list:
+        _list_runlog_traces(runlog, limit=12)
+        return
+    run = runlog.get_run(rows[0].get("id", "")) or {}
+    if not run:
+        raise CloznError("latest run disappeared from the run journal")
+    steps = _runlog_trace_steps(run)
+    _render_trace(_runlog_trace_meta(run, steps), steps)
 
 
 def cmd_branch(args):
@@ -928,23 +1044,27 @@ def cmd_branch(args):
     if not files:
         raise CloznError('no trace yet -- run something first:  clozn run qwen "..."')
     tr = json.load(open(files[-1])); meta = tr.get("meta", {})
-    steps = [s for s in tr.get("steps", []) if (s.get("piece", "") or "").strip()]   # branch on real tokens
+    steps = [s for s in tr.get("steps", []) if (s.get("piece", s.get("text", "")) or "").strip()]   # branch on real tokens
     if not steps:
         raise CloznError("the last trace has no branchable tokens.")
     idx = (max(0, min(args.at, len(steps) - 1)) if args.at is not None
-           else min(range(len(steps)), key=lambda i: steps[i].get("conf", 1.0)))
+           else min(range(len(steps)),
+                    key=lambda i: _num(steps[i].get("prob", steps[i].get("conf", steps[i].get("confidence"))), 1.0)))
     step = steps[idx]; alts = step.get("alts", [])
     if not alts:
-        raise CloznError(f"no recorded alternative at '{step['piece'].strip()}' (conf {step.get('conf', 0):.2f}).")
+        raise CloznError(f"no recorded alternative at '{step.get('piece', step.get('text', '')).strip()}' "
+                         f"(conf {_num(step.get('prob', step.get('conf', step.get('confidence')))):.2f}).")
     alt = alts[max(0, min(args.pick, len(alts) - 1))]
     model = resolve_model(meta.get("model", "")); flags = _flags_for(model)
     head = _chat_wrap(meta.get("prompt", "")) if flags.get("chat") else meta.get("prompt", "")
-    kept = "".join(s["piece"] for s in steps[:idx])
-    prefix = head + kept + alt["piece"]
+    kept = "".join(s.get("piece", s.get("text", "")) for s in steps[:idx])
+    alt_piece = alt.get("piece", alt.get("text", ""))
+    prefix = head + kept + alt_piece
     print(f"{BOLD}branch{RST} of \"{meta.get('prompt', '')[:54]}\"")
-    print(f"  fork at token {idx}: it chose {BOLD}{step['piece'].strip()!r}{RST} ({step.get('conf', 0):.2f})"
-          f"  ->  branch on {BOLD}{alt['piece'].strip()!r}{RST} ({alt['prob']:.2f})")
-    print(f"  {DIM}original:{RST} {''.join(s['piece'] for s in steps).strip()[:130]}")
+    print(f"  fork at token {idx}: it chose {BOLD}{step.get('piece', step.get('text', '')).strip()!r}{RST} "
+          f"({_num(step.get('prob', step.get('conf', step.get('confidence')))):.2f})"
+          f"  ->  branch on {BOLD}{alt_piece.strip()!r}{RST} ({_num(alt.get('prob')):.2f})")
+    print(f"  {DIM}original:{RST} {''.join(s.get('piece', s.get('text', '')) for s in steps).strip()[:130]}")
     warm = _find_warm(model); proc = logf = None
     if warm:
         port = warm[0]
@@ -1396,8 +1516,10 @@ def build_parser():
     sub.add_parser("ps", help="list running serve daemons").set_defaults(fn=cmd_ps)
     pstop = sub.add_parser("stop", help="stop a serve daemon (by model name, port, or 'all')")
     pstop.add_argument("which"); pstop.set_defaults(fn=cmd_stop)
-    pt = sub.add_parser("trace", help="inspect the last run's confidence timeline")
-    pt.add_argument("--list", action="store_true", help="list recent runs instead of showing the last")
+    pt = sub.add_parser("trace", help="inspect the last run journal entry's confidence timeline")
+    pt.add_argument("--list", action="store_true", help="list recent run journal entries instead of showing the last")
+    pt.add_argument("--legacy-cache", action="store_true",
+                    help="read the old ~/.clozn/traces cache instead of the shared ~/.clozn/runs journal")
     pt.set_defaults(fn=cmd_trace)
     pb = sub.add_parser("branch", help="re-run from an uncertain point on the alternative (the road not taken)")
     pb.add_argument("--at", type=int, default=None, help="token index to fork at (default: the most uncertain)")

@@ -166,7 +166,9 @@ struct ToJsonl {
                         + ", \"position\": " + std::to_string(e.position)
                         + ", \"top_readouts\": " + readouts_array(e.top_readouts)
                         + ", \"entropy\": " + num(e.entropy)
-                        + ", \"provider\": " + jstr(e.provider) + "}";
+                        + ", \"provider\": " + jstr(e.provider)
+                        + ", \"provider_type\": " + jstr(e.provider_type)
+                        + ", \"readout_kind\": " + jstr(e.readout_kind) + "}";
         return out;
     }
 };

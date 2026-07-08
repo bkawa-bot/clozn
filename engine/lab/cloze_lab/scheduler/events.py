@@ -104,8 +104,8 @@ class GenFinished:
 class WorkspaceReadout:
     """Latent workspace readout for one token/layer position.
 
-    Placeholder providers can emit this today; real adapters can later fill the
-    same payload from logit lens, Jacobian Lens, SAE probes, or linear probes.
+    `provider` is the concrete adapter id. `provider_type` and `readout_kind`
+    are the stable taxonomy fields consumers should branch on.
     """
 
     t: int
@@ -117,6 +117,8 @@ class WorkspaceReadout:
     top_readouts: tuple[WorkspaceReadoutItem, ...]
     entropy: float
     provider: str
+    provider_type: str = "mock"
+    readout_kind: str = "risk"
 
 
 Event = Union[
@@ -145,6 +147,8 @@ _TYPE_NAMES: dict[type, str] = {
 def event_to_dict(event: Event) -> dict:
     """§5.1 wire form: {"t": ..., "type": ..., **payload}."""
     d = asdict(event)
+    if isinstance(event, WorkspaceReadout):
+        d["top_readouts"] = list(d.get("top_readouts") or [])
     return {"t": d.pop("t"), "type": _TYPE_NAMES[type(event)], **d}
 
 

@@ -117,6 +117,8 @@ int main() {
         CHECK(line.find("\"type\": \"workspace_readout\"") != std::string::npos);
         CHECK(line.find("\"run_id\": \"run_demo\"") != std::string::npos);
         CHECK(line.find("\"provider\": \"mock\"") != std::string::npos);
+        CHECK(line.find("\"provider_type\": \"mock\"") != std::string::npos);
+        CHECK(line.find("\"readout_kind\": \"risk\"") != std::string::npos);
         CHECK(line.find("\"top_readouts\":") != std::string::npos);
     }
 

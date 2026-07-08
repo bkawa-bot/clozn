@@ -53,7 +53,8 @@ def test_accumulate_pairs_commits_with_lens_in_order():
     # confidences carried through from tokens_committed
     assert steps[0]["conf"] == 0.95 and steps[1]["conf"] == 0.42
     # step_lens folded in as alternatives, chosen token excluded, capped at 3
-    assert steps[1]["alts"] == [{"piece": " dog", "prob": 0.31}, {"piece": " fox", "prob": 0.2}]
+    assert steps[1]["alts"] == [{"token_id": None, "piece": " dog", "prob": 0.31},
+                                {"token_id": None, "piece": " fox", "prob": 0.2}]
     assert steps[2]["alts"] == []                                        # no step_lens for pos 2
 
 
@@ -107,12 +108,19 @@ def test_finish_reason_none_when_absent_or_garbage():
 def test_engine_steps_to_trace_full_shape():
     steps = runlog.accumulate_ar_events(fake_engine_frames())
     trace = runlog.steps_to_trace(steps)
-    assert set(trace) == {"tokens", "confidence", "alternatives"}
+    assert set(trace) == {"tokens", "confidence", "alternatives", "steps"}
     assert trace["tokens"] == ["The", " cat", " sat"]
     assert trace["confidence"] == [0.95, 0.42, 0.88]
+    assert trace["steps"][1]["index"] == 1
+    assert trace["steps"][1]["token_id"] == 5
+    assert trace["steps"][1]["prob"] == 0.42
+    assert trace["steps"][1]["logprob"] == -0.867501
+    assert "entropy" not in trace["steps"][1]                         # engine frames expose top-k, not full entropy
+    assert "wall_ms" not in trace["steps"][1] and "dt_ms" not in trace["steps"][1]
     # parallel arrays: one alternatives entry per token (empty where none were recorded)
     assert len(trace["alternatives"]) == 3
-    assert trace["alternatives"][1] == [{"piece": " dog", "prob": 0.31}, {"piece": " fox", "prob": 0.2}]
+    assert trace["alternatives"][1] == [{"piece": " dog", "text": " dog", "prob": 0.31, "logprob": -1.171183},
+                                        {"piece": " fox", "text": " fox", "prob": 0.2, "logprob": -1.609438}]
     assert trace["alternatives"][2] == []
 
 
@@ -121,7 +129,8 @@ def test_cli_steps_to_trace_has_tokens_confidence_and_alts():
     assert trace["tokens"] == ["Hello", " there"]
     assert trace["confidence"] == [0.99, 0.55]
     assert "alternatives" in trace                                       # at least one step had alts
-    assert trace["alternatives"] == [[], [{"piece": " world", "prob": 0.4}]]
+    assert trace["alternatives"] == [[], [{"piece": " world", "text": " world", "prob": 0.4,
+                                           "logprob": -0.916291}]]
 
 
 def test_steps_without_alternatives_omit_the_key():
@@ -145,12 +154,23 @@ def test_legacy_step_keys_accepted():
     steps = [{"token": "x", "confidence": 0.5, "alternatives": [{"piece": "y", "prob": 0.3}]}]
     trace = runlog.steps_to_trace(steps)
     assert trace["tokens"] == ["x"] and trace["confidence"] == [0.5]
-    assert trace["alternatives"] == [[{"piece": "y", "prob": 0.3}]]
+    assert trace["alternatives"] == [[{"piece": "y", "text": "y", "prob": 0.3, "logprob": -1.203973}]]
 
 
 def test_bad_confidence_defaults_to_zero_not_crash():
     trace = runlog.steps_to_trace([{"piece": "x", "conf": "not-a-number", "alts": []}])
     assert trace["confidence"] == [0.0]
+
+
+def test_steps_to_trace_preserves_real_timing_without_inventing_missing_fields():
+    trace = runlog.steps_to_trace([
+        {"index": 2, "token_id": 99, "piece": "x", "prob": 0.25, "dt_ms": 12.3456, "wall_ms": 40}
+    ])
+    step = trace["steps"][0]
+    assert step["index"] == 2 and step["token_id"] == 99
+    assert step["prob"] == 0.25 and step["logprob"] == -1.386294
+    assert step["dt_ms"] == 12.346 and step["wall_ms"] == 40.0
+    assert "entropy" not in step
 
 
 # --------------------------------------------------------------------------- _norm_trace (record's coercion)
@@ -165,8 +185,9 @@ def test_norm_trace_accepts_raw_step_list():
 def test_norm_trace_keeps_ready_dict_but_only_known_keys():
     ready = {"tokens": ["a"], "confidence": [0.5], "alternatives": [[]], "junk": 1}
     norm = runlog._norm_trace(ready)
-    assert set(norm) == {"tokens", "confidence", "alternatives"}
+    assert set(norm) == {"tokens", "confidence", "alternatives", "steps"}
     assert "junk" not in norm
+    assert norm["steps"][0]["index"] == 0
 
 
 def test_norm_trace_empty_and_absent_stay_empty():
@@ -217,6 +238,8 @@ def test_record_attaches_provider_workspace_readouts(tmp_path, monkeypatch):
     assert readouts[0]["type"] == "workspace_readout"
     assert readouts[0]["run_id"] == rid
     assert readouts[0]["provider"] == "engine_concepts"
+    assert readouts[0]["provider_type"] == "engine_concepts"
+    assert readouts[0]["readout_kind"] == "concept"
     assert {"label", "score"} <= set(readouts[0]["top_readouts"][0])
     assert all("entropy" in r for r in readouts)
 
@@ -239,7 +262,10 @@ def test_ready_workspace_readouts_are_preserved(tmp_path, monkeypatch):
         }],
     }
     rid = runlog.record(source="cli", messages=[{"role": "user", "content": "q"}], response="x", trace=ready)
-    assert runlog.get_run(rid)["trace"]["workspace_readouts"][0]["provider"] == "fixture"
+    readout = runlog.get_run(rid)["trace"]["workspace_readouts"][0]
+    assert readout["provider"] == "fixture"
+    assert readout["provider_type"] == "mock"
+    assert readout["readout_kind"] == "risk"
 
 
 def test_record_low_confidence_flag_from_trace(tmp_path, monkeypatch):

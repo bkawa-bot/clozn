@@ -79,10 +79,12 @@ def test_full_run_ordered_events_with_pluralization_and_hesitations(store):
 
     h1, h2 = events[4], events[5]
     assert h1["index"] == 1 and h1["token"] == " sky" and h1["confidence"] == 0.30
-    assert h1["alternatives"] == [{"piece": " sea", "prob": 0.22}]
+    assert h1["prob"] == 0.30 and h1["logprob"] == -1.203973
+    assert h1["alternatives"] == [{"piece": " sea", "text": " sea", "prob": 0.22, "logprob": -1.514128}]
     assert h1["label"] == 'Unsure at " sky"'
     assert h2["index"] == 3 and h2["token"] == " blue" and h2["confidence"] == 0.41
-    assert h2["alternatives"] == [{"piece": " grey", "prob": 0.31}, {"piece": " green", "prob": 0.10}]
+    assert h2["alternatives"] == [{"piece": " grey", "text": " grey", "prob": 0.31, "logprob": -1.171183},
+                                  {"piece": " green", "text": " green", "prob": 0.10, "logprob": -2.302585}]
     # the two mid-confidence tokens (0.92, 0.95, 0.99) never cross LOW_CONF -- no hesitation for them
     assert {h1["index"], h2["index"]} == {1, 3}
 

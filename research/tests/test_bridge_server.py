@@ -115,6 +115,29 @@ class NoFinishSub:
         return dict(self._run_meta)
 
 
+class PromptCaptureSub(FakeSub):
+    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+        self._run_meta.update(max_tokens=int(max_new), stream=False)
+        block = "You are a helpful assistant talking with a returning user.\n- Keep it brief."
+        assembled = [{"role": "system", "content": block}] + [dict(m) for m in messages]
+        if mem_out is not None:
+            mem_out.update(mode="prompt",
+                           applied=[{"id": None, "text": "Keep it brief.", "relevance": 0.82}],
+                           gate=0.91, prompt_block=block, assembled_messages=assembled)
+        return "Brief reply."
+
+
+class InternalizedSub(FakeSub):
+    def __init__(self):
+        super().__init__()
+        self.memory.prefix = "PREFIX"
+        self.memory.rules = ["Keep it brief."]
+
+    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+        self._run_meta.update(max_tokens=int(max_new), stream=False)
+        return "Prefix-shaped reply."
+
+
 # --- driving the real handler without a socket (mirrors test_counterfactual_server / test_narrate_server) ---
 
 def _dispatch(method, path, body_obj=None):
@@ -186,6 +209,37 @@ def test_chat_completions_carries_clozn_run_id_that_resolves_to_the_logged_run(i
     assert logged["meta"]["max_tokens"] == 256
     assert logged["response"] == "A plain reply."
     assert logged["messages"] == [{"role": "user", "content": "hi there"}]
+
+
+def test_prompt_mode_logs_the_exact_assembled_messages(iso, monkeypatch):
+    memory_mode.set_mode("prompt")
+    monkeypatch.setattr(cs, "SUB", PromptCaptureSub())
+    out = _post("/v1/chat/completions", {"model": "clozn-qwen",
+                                         "messages": [{"role": "user", "content": "hi"}]})
+    logged = runlog.get_run(out["clozn_run_id"])
+
+    assert logged["response"] == "Brief reply."
+    assert logged["assembled_messages"] == [
+        {"role": "system", "content": "You are a helpful assistant talking with a returning user.\n- Keep it brief."},
+        {"role": "user", "content": "hi"},
+    ]
+    assert logged["memory"]["mode"] == "prompt"
+    assert logged["memory"]["prompt_block"].endswith("- Keep it brief.")
+    assert logged["memory"]["cards_applied"] == ["Keep it brief."]
+    assert logged["memory"]["relevance"] == [0.82]
+
+
+def test_internalized_mode_does_not_fabricate_an_assembled_prompt(iso, monkeypatch):
+    memory_mode.set_mode("internalized")
+    monkeypatch.setattr(cs, "SUB", InternalizedSub())
+    out = _post("/v1/chat/completions", {"model": "clozn-qwen",
+                                         "messages": [{"role": "user", "content": "hi"}]})
+    logged = runlog.get_run(out["clozn_run_id"])
+
+    assert logged["response"] == "Prefix-shaped reply."
+    assert logged["assembled_messages"] is None
+    assert logged["memory"]["mode"] == "internalized"
+    assert logged["memory"]["has_prefix"] is True
 
 
 def test_chat_completions_uses_real_length_finish_reason_end_to_end(iso, monkeypatch):

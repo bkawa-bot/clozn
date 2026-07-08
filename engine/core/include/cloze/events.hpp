@@ -123,8 +123,8 @@ struct StepActivations {
     std::vector<float> values;           // [positions.size() * n_embd], position-major row r = positions[r]
 };
 
-// Latent workspace readout for one token/layer position. The mock provider uses this payload today;
-// future adapters can fill the same event from logit lens, Jacobian Lens, SAE probes, or linear probes.
+// Latent workspace readout for one token/layer position. `provider` is the concrete adapter id;
+// `provider_type` and `readout_kind` are the stable taxonomy fields consumers should branch on.
 struct WorkspaceReadout {
     int t;
     std::string run_id;
@@ -135,6 +135,8 @@ struct WorkspaceReadout {
     std::vector<WorkspaceReadoutItem> top_readouts;
     double entropy;
     std::string provider;
+    std::string provider_type = "mock";
+    std::string readout_kind = "risk";
 };
 
 using Event = std::variant<GenStarted, BlockStarted, TokensCommitted, TokensRevised, StepStats,

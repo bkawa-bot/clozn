@@ -50,6 +50,124 @@ One forward pass's events fold into one `StateStep`:
 
 `meta.substrate ∈ {"diffusion","autoregressive","recurrent"}` tags every step.
 
+## Readout Event Taxonomy
+
+Clozn standardizes on one persisted readout event: `workspace_readout`.
+Do not add a separate `concept_readout` event unless a future producer needs
+different lifecycle semantics. Concepts, SAE features, probes, logit-lens
+tokens, and future Jacobian Lens adapters all use `workspace_readout` and
+differentiate themselves with subtype fields.
+
+Canonical persisted shape:
+
+```json
+{
+  "type": "workspace_readout",
+  "run_id": "run_...",
+  "token_index": 12,
+  "token_text": " example",
+  "layer": 15,
+  "position": 12,
+  "provider": "engine_concepts",
+  "provider_type": "engine_concepts",
+  "readout_kind": "concept",
+  "top_readouts": [{ "label": "feature_or_label", "score": 0.74 }],
+  "entropy": 0.31
+}
+```
+
+`provider` is the concrete adapter id. `provider_type` is the stable class:
+`sae`, `probe`, `logit_lens`, `jacobian_lens`, `mock`, or `engine_concepts`.
+`readout_kind` is the stable payload category: `concept`, `token`, `feature`,
+`risk`, or `summary`.
+
+Existing traces that only have `provider` remain valid. New writers should
+include both subtype fields. Consumers should branch on `provider_type` and
+`readout_kind` when they need behavior differences, while still displaying
+unknown providers as ordinary `workspace_readout` events.
+
+Examples:
+
+```json
+{
+  "type": "workspace_readout",
+  "provider": "qwen_scope_sae_l15",
+  "provider_type": "sae",
+  "readout_kind": "feature",
+  "run_id": "run_demo",
+  "token_index": 4,
+  "token_text": " dragons",
+  "layer": 15,
+  "position": 4,
+  "top_readouts": [
+    { "label": "sae:1421 mythology/fantasy", "score": 0.83 },
+    { "label": "sae:0774 creature/entity", "score": 0.61 }
+  ],
+  "entropy": 0.22
+}
+```
+
+```json
+{
+  "type": "workspace_readout",
+  "provider": "tone_probe_v1",
+  "provider_type": "probe",
+  "readout_kind": "concept",
+  "run_id": "run_demo",
+  "token_index": 7,
+  "token_text": " should",
+  "layer": 12,
+  "position": 7,
+  "top_readouts": [
+    { "label": "instruction_following", "score": 0.79 },
+    { "label": "uncertainty", "score": 0.18 }
+  ],
+  "entropy": 0.18
+}
+```
+
+```json
+{
+  "type": "workspace_readout",
+  "provider": "logit_lens_l20",
+  "provider_type": "logit_lens",
+  "readout_kind": "token",
+  "run_id": "run_demo",
+  "token_index": 9,
+  "token_text": " Paris",
+  "layer": 20,
+  "position": 9,
+  "top_readouts": [
+    { "label": " Paris", "score": 0.42 },
+    { "label": " London", "score": 0.21 }
+  ],
+  "entropy": 0.64
+}
+```
+
+```json
+{
+  "type": "workspace_readout",
+  "provider": "future_jacobian_lens_adapter",
+  "provider_type": "jacobian_lens",
+  "readout_kind": "feature",
+  "run_id": "run_demo",
+  "token_index": 11,
+  "token_text": " because",
+  "layer": 18,
+  "position": 11,
+  "top_readouts": [
+    { "label": "answer_support_direction", "score": 0.36 },
+    { "label": "citation_sensitivity", "score": 0.24 }
+  ],
+  "entropy": 0.49
+}
+```
+
+These are readouts over model state or logits, not private reasoning text. A
+Jacobian Lens provider should not be labeled as present until an actual adapter
+computes that readout.
+
 ## The wire (SSE + JSON)
 
 **Light frame by default, heavy state on demand.** Streaming the full activation tensor every

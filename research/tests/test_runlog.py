@@ -41,12 +41,21 @@ def test_record_schema_fields(store):
     rec = store.get_run(rid)
     for k in ("id", "created_at", "created_ts", "source", "client", "model", "substrate",
               "prompt_summary", "response_summary", "messages", "response", "memory", "behavior",
-              "trace", "timing", "parent_run_id", "changes_applied", "error", "flags"):
+              "assembled_messages", "trace", "timing", "parent_run_id", "changes_applied", "error", "flags"):
         assert k in rec, f"missing schema field {k}"
     assert rec["source"] == "studio_chat"
     assert rec["prompt_summary"] == "what is 2+2?"        # last user message summarized
     assert rec["response_summary"] == "4"
     assert set(("started_at", "ended_at", "duration_ms")).issubset(rec["timing"])
+
+
+def test_record_persists_assembled_messages_when_provided(store):
+    assembled = [{"role": "system", "content": "MEMORY BLOCK"},
+                 {"role": "user", "content": "what is 2+2?"}]
+    rid = store.record(source="studio_chat",
+                       messages=[{"role": "user", "content": "what is 2+2?"}],
+                       response="4", assembled_messages=assembled)
+    assert store.get_run(rid)["assembled_messages"] == assembled
 
 
 def test_prompt_summary_uses_last_user_message(store):

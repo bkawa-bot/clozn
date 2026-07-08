@@ -68,7 +68,7 @@ def test_workspace_readout_payload_shape() -> None:
                              WorkspaceReadoutItem(label="uncertainty", score=0.71),
                              WorkspaceReadoutItem(label="hallucination_risk", score=0.43),
                          ),
-                         entropy=0.52, provider="mock")
+                         entropy=0.52, provider="mock", provider_type="mock", readout_kind="risk")
     )
     assert d == {
         "t": 3,
@@ -84,6 +84,8 @@ def test_workspace_readout_payload_shape() -> None:
         ],
         "entropy": 0.52,
         "provider": "mock",
+        "provider_type": "mock",
+        "readout_kind": "risk",
     }
 
 

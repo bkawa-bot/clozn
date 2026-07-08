@@ -128,7 +128,10 @@ def test_chat_fills_mem_out_and_trace_out_without_raising(iso, fake_engine, monk
     trace_out, mem_out = [], {}
     reply = sub.chat([{"role": "user", "content": "hi"}], trace_out=trace_out, mem_out=mem_out)
     assert reply == "hi"
-    assert mem_out == {"mode": "prompt", "applied": [], "gate": 0.0}
+    assert {k: mem_out[k] for k in ("mode", "applied", "gate")} == {
+        "mode": "prompt", "applied": [], "gate": 0.0}
+    assert mem_out["prompt_block"] is None
+    assert mem_out["assembled_messages"] == [{"role": "user", "content": "hi"}]
     assert trace_out == []                         # the fallback path traces empty, but never raises
 
 
@@ -142,7 +145,13 @@ def test_chat_folds_the_memory_block_into_the_rendered_prompt(iso, fake_engine, 
     mem_out = {}
     sub.chat([{"role": "user", "content": "what should I do this weekend?"}], mem_out=mem_out)
 
-    assert mem_out == {"mode": "prompt", "applied": [{"id": "c1", "text": "x"}], "gate": 1.0}
+    assert {k: mem_out[k] for k in ("mode", "applied", "gate")} == {
+        "mode": "prompt", "applied": [{"id": "c1", "text": "x"}], "gate": 1.0}
+    assert mem_out["prompt_block"] == block
+    assert mem_out["assembled_messages"] == [
+        {"role": "system", "content": block},
+        {"role": "user", "content": "what should I do this weekend?"},
+    ]
     sent_prompt = fake_engine.calls[-1]["prompt"]
     assert block in sent_prompt                    # the block actually reached the engine's prompt
     assert "<|im_start|>system" in sent_prompt      # folded in via the real _qwen_tmpl rendering

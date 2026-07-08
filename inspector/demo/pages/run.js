@@ -104,9 +104,35 @@
       ".ri-ws-readout .track{flex:1;height:7px;border-radius:5px;background:var(--wash,#eef1fb);overflow:hidden;min-width:48px}" +
       ".ri-ws-readout .fill{display:block;height:100%;border-radius:5px;background:var(--halo,#7aa7ff)}" +
       ".ri-ws-readout .score{font-size:11px;color:var(--faint,#9aa0b3);min-width:34px;text-align:right}" +
+      ".ri-lineage-wrap{margin:0 0 16px}" +
+      ".ri-lineage-head{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline;margin-bottom:10px}" +
+      ".ri-lineage-head h3{margin:0}" +
+      ".ri-lineage-stat{font-size:11.5px;color:var(--soft,#5a6072)}" +
+      ".ri-tree{display:flex;flex-direction:column;gap:5px}" +
+      ".ri-tree-node{border:1px solid var(--line,#e3e6ef);border-radius:9px;background:#fff;padding:7px 9px;font-size:12.5px}" +
+      ".ri-tree-node.current{border-color:rgba(122,167,255,.55);background:rgba(122,167,255,.08)}" +
+      ".ri-tree-main{display:flex;gap:8px;align-items:center;text-decoration:none;color:var(--ink,#1b1f2a);min-width:0}" +
+      ".ri-tree-main:hover .ri-tree-title{text-decoration:underline}" +
+      ".ri-tree-mark{flex:none;font-size:10px;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line,#e3e6ef);border-radius:8px;padding:1px 6px;color:var(--faint,#9aa0b3);background:#fff}" +
+      ".ri-tree-node.current .ri-tree-mark{color:#2f4a7a;border-color:rgba(122,167,255,.45);background:rgba(122,167,255,.12)}" +
+      ".ri-tree-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".ri-tree-meta,.ri-tree-change{margin:3px 0 0 2px;color:var(--faint,#9aa0b3);font-size:11.5px;line-height:1.35}" +
+      ".ri-tree-change{color:var(--soft,#5a6072)}" +
+      ".ri-tree-empty{font-size:12px;color:var(--faint,#9aa0b3);line-height:1.45}" +
       ".ri-kv{display:flex;justify-content:space-between;gap:10px;font-size:13px;margin:5px 0}" +
       ".ri-kv .k{color:var(--faint,#9aa0b3)}" +
       ".ri-card{border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:7px 9px;margin:6px 0;font-size:12.5px}" +
+      ".ri-card .mtxt{white-space:pre-wrap;word-break:break-word}" +
+      ".ri-card .mmeta{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;font-size:10.5px;color:var(--soft,#5a6072)}" +
+      ".ri-card .mchip{display:inline-block;border:1px solid var(--line,#e3e6ef);border-radius:8px;padding:1px 6px;background:rgba(255,255,255,.72)}" +
+      ".ri-asm{margin-top:14px;border-top:1px dashed var(--line,#e3e6ef);padding-top:10px}" +
+      ".ri-asm-h{font-size:11px;color:var(--faint,#9aa0b3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}" +
+      ".ri-msg{display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px;border-top:1px solid var(--line,#edf0f7);padding:7px 0;font-size:12.5px;line-height:1.45}" +
+      ".ri-msg:first-of-type{border-top:0}" +
+      ".ri-msg .role{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint,#9aa0b3)}" +
+      ".ri-msg .body{white-space:pre-wrap;word-break:break-word;color:var(--ink,#1b1f2a)}" +
+      ".ri-injected{margin-top:8px;padding:7px 0;border-top:1px dashed var(--line,#e3e6ef)}" +
+      ".ri-injected .body{margin-top:4px;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.45;color:var(--soft,#5a6072);font-family:ui-monospace,Consolas,monospace}" +
       ".ri-dial{display:inline-block;font-size:11px;border:1px solid var(--line,#e3e6ef);border-radius:8px;padding:1px 7px;margin:2px 3px 0 0}" +
       ".ri-act{display:block;width:100%;text-align:left;border:1px solid var(--line,#e3e6ef);background:#fff;border-radius:10px;padding:8px 11px;margin:6px 0;font:inherit;font-size:13px;cursor:pointer}" +
       ".ri-act:hover{border-color:var(--halo,#7aa7ff)}" +
@@ -123,6 +149,26 @@
       ".ri-cmp .side.now .lbl{color:var(--halo,#7aa7ff)}" +
       ".ri-cmp .body{background:var(--wash,#f6f8ff);border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:8px 10px;white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.5;color:var(--ink,#1b1f2a)}" +
       ".ri-cmp .side.now .body{border-color:rgba(122,167,255,.4)}" +
+      ".ri-tprob{margin:10px 0;border:1px solid var(--line,#e3e6ef);border-radius:10px;background:#fff;overflow:hidden}" +
+      ".ri-tprob-h{display:flex;justify-content:space-between;gap:10px;align-items:baseline;padding:8px 10px;border-bottom:1px solid var(--line,#e3e6ef)}" +
+      ".ri-tprob-h b{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint,#9aa0b3)}" +
+      ".ri-tprob-h span{font-size:11px;color:var(--soft,#5a6072)}" +
+      ".ri-tprob-note{padding:7px 10px;border-bottom:1px solid var(--line,#e3e6ef);background:var(--wash,#f6f8ff);font-size:11px;color:var(--soft,#5a6072);line-height:1.4}" +
+      ".ri-tprob-scroll{overflow:auto;max-height:300px}" +
+      ".ri-tprob-row{display:grid;grid-template-columns:42px minmax(110px,1fr) 92px minmax(110px,1fr) 92px 74px;min-width:650px}" +
+      ".ri-tprob-row.hd{position:sticky;top:0;background:#fff;z-index:1}" +
+      ".ri-tprob-cell{min-width:0;padding:6px 8px;border-bottom:1px solid var(--line,#edf0f7);font-size:11.5px;line-height:1.35;color:var(--soft,#5a6072)}" +
+      ".ri-tprob-row.hd .ri-tprob-cell{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint,#9aa0b3);font-weight:640;background:#fff}" +
+      ".ri-tprob-cell.idx{font-family:ui-monospace,Consolas,monospace;color:var(--faint,#9aa0b3)}" +
+      ".ri-tprob-cell.tok{font-family:ui-monospace,Consolas,monospace;color:var(--ink,#1b1f2a);white-space:pre-wrap;word-break:break-word}" +
+      ".ri-tprob-cell.num{font-family:ui-monospace,Consolas,monospace}" +
+      ".ri-tprob-cell.delta{font-family:ui-monospace,Consolas,monospace;font-weight:640}" +
+      ".ri-tprob-cell.delta.up{color:#2f8a54}" +
+      ".ri-tprob-cell.delta.down{color:#c0603a}" +
+      ".ri-tprob-row.mismatch .tok{background:rgba(192,96,58,.055)}" +
+      ".ri-tprob-row.extra .tok{background:rgba(122,167,255,.06)}" +
+      ".ri-tprob-badge{display:inline-block;margin-top:4px;padding:1px 5px;border-radius:7px;border:1px solid rgba(122,167,255,.35);background:rgba(122,167,255,.10);color:#2f4a7a;font-size:10px;font-family:inherit;white-space:normal}" +
+      ".ri-tprob-empty{padding:9px 10px;font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45}" +
       // --- F2 save-fix: a persist affordance under the diff (turns the tried change into the new default) ---
       ".ri-save{margin-top:10px}" +
       ".ri-save-btn{display:inline-block;border:1px solid rgba(122,167,255,.4);background:rgba(122,167,255,.10);color:#3b485a;" +
@@ -250,18 +296,80 @@
   // Confidence -> text opacity in [0.5, 1]: sure tokens are full ink; less-sure ones visibly fade (but stay
   // readable). Low-confidence tokens also pick up the .low warm underline, so faintness never stands alone.
   function confOpacity(c) { return (0.5 + 0.5 * Math.max(0, Math.min(1, c))).toFixed(3); }
+  function traceSteps(tr) {
+    tr = tr || {};
+    if (Array.isArray(tr.steps) && tr.steps.length) return tr.steps.filter(function (s) { return s && typeof s === "object"; });
+    var toks = Array.isArray(tr.tokens) ? tr.tokens : [], conf = Array.isArray(tr.confidence) ? tr.confidence : [];
+    var alts = Array.isArray(tr.alternatives) ? tr.alternatives : [];
+    return toks.map(function (piece, i) {
+      var c = conf[i] == null ? null : +conf[i];
+      return { index: i, piece: piece, text: piece, prob: c, confidence: c,
+        alternatives: Array.isArray(alts[i]) ? alts[i] : [] };
+    });
+  }
+  function stepProb(step) {
+    var v = step && step.prob != null ? step.prob : (step && step.confidence != null ? step.confidence : null);
+    v = v == null ? NaN : +v;
+    return isFinite(v) ? v : NaN;
+  }
+  function fmtNum(v, n) {
+    v = v == null ? NaN : +v;
+    return isFinite(v) ? v.toFixed(n == null ? 2 : n) : "?";
+  }
+  function altText(alt) { return alt && (alt.piece != null ? alt.piece : alt.text); }
+  function tokenMeta(step) {
+    var bits = ["#" + (step && step.index != null ? step.index : "?")];
+    if (step && step.token_id != null) bits.push("id " + step.token_id);
+    if (step && step.logprob != null) bits.push("logp " + fmtNum(step.logprob, 3));
+    if (step && step.entropy != null) bits.push("entropy " + fmtNum(step.entropy, 3));
+    if (step && step.dt_ms != null) bits.push("dt " + fmtNum(step.dt_ms, 1) + "ms");
+    if (step && step.wall_ms != null) bits.push("wall " + fmtNum(step.wall_ms, 1) + "ms");
+    return bits.join(" Â· ");
+  }
 
   function transcriptCol(run) {
-    var msgs = run.messages || [], h = "<h3>Transcript</h3>";
+    var msgs = run.messages || [], h = "<h3>Original messages</h3>";
     for (var i = 0; i < msgs.length; i++) {
       var cls = msgs[i].role === "assistant" ? "assistant" : "";
       h += '<div class="ri-turn ' + cls + '"><div class="who">' + esc(msgs[i].role) + "</div>" + esc(msgs[i].content) + "</div>";
     }
     var lastA = msgs.length && msgs[msgs.length - 1].role === "assistant";
     if (run.response && !lastA) h += '<div class="ri-turn assistant"><div class="who">assistant</div>' + esc(run.response) + "</div>";
+    h += assembledPromptPanel(run);
     h += tokenTimeline(run);
     h += workspaceLensPanel(run);
     return h;
+  }
+
+  function messageRowsHTML(messages) {
+    return (messages || []).map(function (m) {
+      m = m || {};
+      return '<div class="ri-msg"><div class="role">' + esc(m.role || "?") + '</div><div class="body">' +
+        esc(m.content == null ? "" : m.content) + "</div></div>";
+    }).join("");
+  }
+
+  function assembledPromptPanel(run) {
+    var mem = run.memory || {};
+    var assembled = Array.isArray(run.assembled_messages) ? run.assembled_messages : [];
+    var mode = mem.mode || "";
+    if (mode === "prompt") {
+      var h = '<div class="ri-asm"><div class="ri-asm-h">Assembled prompt/messages</div>';
+      if (assembled.length) h += messageRowsHTML(assembled);
+      else h += '<div class="sub">No assembled prompt was captured for this run.</div>';
+      if (mem.prompt_block) {
+        h += '<div class="ri-injected"><div class="ri-asm-h">Memory-injected section</div>' +
+          '<div class="body">' + esc(mem.prompt_block) + "</div></div>";
+      } else {
+        h += '<div class="sub">No memory block was injected on this turn.</div>';
+      }
+      return h + "</div>";
+    }
+    if (mode === "internalized") {
+      return '<div class="ri-asm"><div class="ri-asm-h">Assembled prompt/messages</div>' +
+        '<div class="sub">memory injected as soft prefix; no literal prompt string</div></div>';
+    }
+    return "";
   }
 
   // C2: the token timeline. When run.trace carries a non-empty tokens[] array, render the response as its
@@ -269,12 +377,12 @@
   // clickable branch point that opens this token's confidence + "almost said" alternatives. When the trace
   // is empty/absent (e.g. the HF chat path), the plain transcript above stands and we add a subtle note.
   function tokenTimeline(run) {
-    var tr = run.trace || {}, toks = tr.tokens || [];
-    if (!toks.length) {
+    var tr = run.trace || {}, steps = traceSteps(tr);
+    if (!steps.length) {
       return '<div class="ri-tl-note">No token trace for this run — showing the response as-is. ' +
         "(Token-by-token confidence is captured on the local engine path, not the hosted chat path.)</div>";
     }
-    var conf = tr.confidence || [], lows = 0;
+    var lows = 0;
     var h = '<div class="ri-tl"><div class="ri-tl-h">Token timeline — where it was unsure, and what it almost said</div>';
     // compact legend: what the tint + underline mean.
     h += '<div class="ri-tl-legend">' +
@@ -283,10 +391,12 @@
       '<span class="sw"><span class="chip low"></span>unsure — click for alternatives</span>' +
       "</div>";
     h += '<div class="ri-tl-stream">';
-    for (var j = 0; j < toks.length; j++) {
-      var c = conf[j] == null ? 1 : +conf[j], low = c < LOW_CONF;
+    for (var j = 0; j < steps.length; j++) {
+      var step = steps[j], c = stepProb(step);
+      if (!isFinite(c)) c = 1;
+      var low = c < LOW_CONF;
       if (low) lows++;
-      var piece = escTok(toks[j]);
+      var piece = escTok(step.piece != null ? step.piece : step.text);
       // a lone marker so a low-confidence pure-whitespace token is still visibly clickable.
       var mk = low ? '<span class="mk">◆</span>' : "";
       var title = "confidence " + (isFinite(c) ? c.toFixed(2) : "?") + (low ? " — click to see what it almost said" : "");
@@ -304,17 +414,24 @@
   // Build the detail-pop HTML for token `j`: its confidence bar + the "almost said" alternatives as small
   // prob bars. Safe for a missing/empty alternatives entry (many tokens, and whole runs, have none).
   function tokenPopHTML(run, j) {
-    var tr = run.trace || {}, conf = tr.confidence || [], alts = tr.alternatives || [];
-    var c = conf[j] == null ? 1 : +conf[j], low = c < LOW_CONF;
-    var a = Array.isArray(alts[j]) ? alts[j] : [];
+    var tr = run.trace || {}, steps = traceSteps(tr), step = steps[j] || {};
+    var c = stepProb(step);
+    if (!isFinite(c)) c = 1;
+    var low = c < LOW_CONF;
+    var a = Array.isArray(step.alternatives) ? step.alternatives : [];
     var h = '<div class="ri-tk-pop' + (low ? " low" : "") + '">';
     h += '<div class="hd">token <b>' + esc(labelTok((tr.tokens || [])[j])) + "</b> · confidence <b>" +
       (isFinite(c) ? c.toFixed(2) : "?") + "</b> " + bar(c) + (low ? " · branch point" : "") + "</div>";
+    h += '<div class="sub">' + esc(tokenMeta(step)) + " · p " + fmtNum(c, 2) + "</div>";
     if (a.length) {
       h += '<div class="hd" style="margin:6px 0 2px">almost said</div><div class="alts">';
       a.slice(0, 5).forEach(function (alt) {
         var p = Math.max(0, Math.min(1, +(alt && alt.prob) || 0));
-        h += '<div class="arow"><span class="apiece">' + esc(labelTok(alt && alt.piece)) + '</span>' +
+        var suffix = [];
+        if (alt && alt.token_id != null) suffix.push("id " + alt.token_id);
+        if (alt && alt.logprob != null) suffix.push("logp " + fmtNum(alt.logprob, 3));
+        h += '<div class="arow"><span class="apiece">' + esc(labelTok(altText(alt))) +
+          (suffix.length ? ' <span class="muted">(' + esc(suffix.join(" · ")) + ")</span>" : "") + '</span>' +
           '<span class="atrack"><span class="afill" style="width:' + (p * 100).toFixed(1) + '%"></span></span>' +
           '<span class="aprob">' + p.toFixed(2) + "</span></div>";
       });
@@ -341,7 +458,11 @@
     }
     var latest = readouts[readouts.length - 1] || {};
     var provider = latest.provider || "unknown";
-    h += '<span class="ri-ws-provider">provider ' + esc(provider) + "</span></div>";
+    var tax = [];
+    if (latest.provider_type) tax.push(latest.provider_type);
+    if (latest.readout_kind) tax.push(latest.readout_kind);
+    h += '<span class="ri-ws-provider">provider ' + esc(provider) +
+      (tax.length ? " | " + esc(tax.join(" / ")) : "") + "</span></div>";
     h += '<div class="ri-ws-toks">' + readouts.map(function (r) {
       var e = Math.max(0, Math.min(1, +(r.entropy == null ? 0 : r.entropy)));
       var title = "token " + (r.token_index == null ? "?" : r.token_index) + " fogginess " + e.toFixed(2);
@@ -365,6 +486,56 @@
       });
     }
     h += "</div>";
+    return h;
+  }
+
+  function lineageMeta(n) {
+    n = n || {};
+    var bits = [];
+    if (n.created_at) bits.push(n.created_at);
+    if (n.duration_ms != null) bits.push(n.duration_ms + "ms");
+    if (n.source) bits.push(n.source);
+    if (n.finish_reason) bits.push("finish " + n.finish_reason);
+    return bits.join(" | ");
+  }
+
+  function lineageNodeHTML(node, depth) {
+    node = node || {};
+    var kids = Array.isArray(node.children) ? node.children : [];
+    var id = node.id || "";
+    var prompt = node.prompt_summary || node.response_summary || id || "(run)";
+    var marker = node.is_current ? "current" : (node.parent_run_id ? "branch" : "original");
+    var pad = 9 + Math.max(0, depth || 0) * 18;
+    var h = '<div class="ri-tree-node' + (node.is_current ? " current" : "") +
+      '" style="padding-left:' + pad + 'px">';
+    h += '<a class="ri-tree-main" href="#/run/' + esc(id) + '">' +
+      '<span class="ri-tree-mark">' + esc(marker) + '</span>' +
+      '<span class="ri-tree-title">' + esc(prompt) + '</span></a>';
+    var meta = lineageMeta(node);
+    if (meta) h += '<div class="ri-tree-meta">' + esc(meta) + "</div>";
+    if (node.change_label) h += '<div class="ri-tree-change">' + esc(node.change_label) + "</div>";
+    h += "</div>";
+    for (var i = 0; i < kids.length; i++) h += lineageNodeHTML(kids[i], (depth || 0) + 1);
+    return h;
+  }
+
+  function lineagePanel(lineage) {
+    var h = '<section class="ri-col ri-lineage-wrap"><div class="ri-lineage-head"><h3>Branch Lineage</h3>';
+    if (!lineage || !lineage.tree) {
+      h += '</div><div class="ri-tree-empty">Lineage is not available for this run.</div></section>';
+      return h;
+    }
+    var children = Array.isArray(lineage.children) ? lineage.children.length : 0;
+    var siblings = Array.isArray(lineage.siblings) ? lineage.siblings.length : 0;
+    var ancestors = Array.isArray(lineage.ancestors) ? lineage.ancestors.length : 0;
+    h += '<span class="ri-lineage-stat">' + ancestors + " ancestor" + (ancestors === 1 ? "" : "s") +
+      " | " + siblings + " sibling" + (siblings === 1 ? "" : "s") +
+      " | " + children + " child" + (children === 1 ? "" : "ren") + "</span></div>";
+    h += '<div class="ri-tree">' + lineageNodeHTML(lineage.tree, 0) + "</div>";
+    if (!ancestors && !siblings && !children) {
+      h += '<div class="ri-tree-empty" style="margin-top:8px">No branches or replays yet; this is an original run.</div>';
+    }
+    h += "</section>";
     return h;
   }
 
@@ -392,6 +563,26 @@
     return t.length > 42 ? t.slice(0, 40) + "…" : t;
   }
 
+  function cardText(c) { return typeof c === "string" ? c : String((c && c.text) || ""); }
+  function numericOrNull(v) {
+    v = v == null ? NaN : +v;
+    return isFinite(v) ? v : null;
+  }
+  function cardRelevance(mem, card, i) {
+    var rels = Array.isArray(mem && mem.relevance) ? mem.relevance : [];
+    if (i < rels.length) return numericOrNull(rels[i]);
+    return numericOrNull(card && card.relevance);
+  }
+  function memoryCardHTML(mem, card, i) {
+    var rel = cardRelevance(mem, card, i);
+    var h = '<div class="ri-card"><div class="mtxt">' + esc(cardText(card)) + "</div>";
+    if (rel !== null) {
+      h += '<div class="mmeta"><span class="mchip">relevance cosine ' + rel.toFixed(2) + "</span></div>";
+    }
+    h += "</div>";
+    return h;
+  }
+
   function influenceCol(run) {
     var mem = run.memory || {}, beh = run.behavior || {}, h = "<h3>What influenced it</h3>";
     h += '<div class="ri-kv"><span class="k">model</span><span>' + esc(run.model || "?") + "</span></div>";
@@ -403,7 +594,8 @@
     var modeTag = mem.mode ? " · " + esc(mem.mode) : "";
     var ids = Array.isArray(mem.applied_ids) ? mem.applied_ids : [];
     h += '<div class="ri-kv" style="margin-top:12px"><span class="k">memory (strength ' + (+strength).toFixed(2) + modeTag + ')</span><span>' + cards.length + " card(s)</span></div>";
-    for (var i = 0; i < cards.length; i++) h += '<div class="ri-card">' + esc(typeof cards[i] === "string" ? cards[i] : cards[i].text) + "</div>";
+    if (numericOrNull(mem.gate) !== null) h += '<div class="sub">gate score ' + numericOrNull(mem.gate).toFixed(2) + "</div>";
+    for (var i = 0; i < cards.length; i++) h += memoryCardHTML(mem, cards[i], i);
     if (!cards.length) {
       // prompt mode records per-turn application, so "none" there means the block wasn't injected on
       // THIS turn (topic-gated out / dial at 0) -- not necessarily that no cards exist.
@@ -773,6 +965,99 @@
     return h;
   }
 
+  // Token/probability evidence for replay/branch compare. This is deliberately a simple index alignment:
+  // it is useful for same-token-prefix replays and it says when tokenization diverges instead of implying a
+  // semantic alignment. Causal wording belongs to greedy receipt context above, not to this table itself.
+  function stepPiece(step) {
+    if (!step) return "";
+    var v = step.piece != null ? step.piece : step.text;
+    return v == null ? "" : String(v);
+  }
+  function stepId(step) { return step && step.token_id != null ? String(step.token_id) : null; }
+  function logProb(step, p) {
+    if (step && step.logprob != null && isFinite(+step.logprob)) return +step.logprob;
+    return isFinite(p) && p > 0 ? Math.log(p) : NaN;
+  }
+  function probCell(step) {
+    if (!step) return '<span class="sub">-</span>';
+    var p = stepProb(step), lp = logProb(step, p);
+    var bits = ["conf/prob " + fmtNum(p, 2)];
+    bits.push("logp " + fmtNum(lp, 3));
+    return esc(bits.join(" / "));
+  }
+  function deltaCell(parentStep, childStep) {
+    var p = stepProb(parentStep), c = stepProb(childStep);
+    if (!isFinite(p) || !isFinite(c)) return { text: "?", cls: "" };
+    var d = Math.round((c - p) * 1000) / 1000;
+    return { text: (d > 0 ? "+" : "") + d.toFixed(3), cls: d === 0 ? "" : (d > 0 ? " up" : " down") };
+  }
+  function matchingAlt(step, otherStep) {
+    var alts = step && Array.isArray(step.alternatives) ? step.alternatives : [];
+    var otherPiece = stepPiece(otherStep), otherId = stepId(otherStep);
+    for (var i = 0; i < alts.length; i++) {
+      var a = alts[i] || {}, ap = altText(a) == null ? "" : String(altText(a));
+      if (otherId != null && a.token_id != null && String(a.token_id) === otherId) return a;
+      if (ap === otherPiece) return a;
+      if (ap.trim() && ap.trim() === otherPiece.trim()) return a;
+    }
+    return null;
+  }
+  function altBadge(label, alt) {
+    if (!alt) return "";
+    var bits = [label, "p " + fmtNum(alt.prob, 2)];
+    if (alt.logprob != null) bits.push("logp " + fmtNum(alt.logprob, 3));
+    return '<span class="ri-tprob-badge">' + esc(bits.join(" / ")) + "</span>";
+  }
+  function tokenProbDiffHTML(parent, child, changes) {
+    var ps = traceSteps((parent || {}).trace || {}), cs = traceSteps((child || {}).trace || {});
+    var h = '<div class="ri-tprob"><div class="ri-tprob-h"><b>Token/probability evidence</b>' +
+      '<span>index-aligned parent vs child traces</span></div>';
+    if (!ps.length || !cs.length) {
+      h += '<div class="ri-tprob-empty">No token-level probability/confidence diff is available because ' +
+        (!ps.length && !cs.length ? "neither run has" : (!ps.length ? "the parent run has no" : "the child run has no")) +
+        " persisted token trace. The text comparison below still applies.</div></div>";
+      return h;
+    }
+    var n = Math.min(ps.length, cs.length), maxN = Math.max(ps.length, cs.length);
+    var divAt = null;
+    for (var i = 0; i < n; i++) {
+      if (stepPiece(ps[i]) !== stepPiece(cs[i]) || stepId(ps[i]) !== stepId(cs[i])) { divAt = i; break; }
+    }
+    if (divAt == null && ps.length !== cs.length) divAt = n;
+    var note = "Rows compare recorded token confidence/probability and logprob by token index. ";
+    note += divAt == null
+      ? "No token text divergence was found in the aligned span. "
+      : "Tokenization/content diverges at index " + divAt + "; rows after that are fallback index evidence, not semantic alignment. ";
+    note += (changes && changes.greedy)
+      ? "This replay has greedy receipt context; the table is still token/prob evidence, not a separate causal proof."
+      : "This is not causal evidence by itself; sampled replay deltas can include sampling noise.";
+    h += '<div class="ri-tprob-note">' + esc(note) + "</div>";
+    h += '<div class="ri-tprob-scroll"><div class="ri-tprob-row hd">' +
+      '<div class="ri-tprob-cell">idx</div><div class="ri-tprob-cell">parent token</div><div class="ri-tprob-cell">parent</div>' +
+      '<div class="ri-tprob-cell">child token</div><div class="ri-tprob-cell">child</div><div class="ri-tprob-cell">delta</div></div>';
+    var limit = Math.min(maxN, 80);
+    for (var j = 0; j < limit; j++) {
+      var pstep = ps[j] || null, cstep = cs[j] || null;
+      var mismatch = pstep && cstep && (stepPiece(pstep) !== stepPiece(cstep) || stepId(pstep) !== stepId(cstep));
+      var cls = !pstep || !cstep ? " extra" : (mismatch ? " mismatch" : "");
+      var d = deltaCell(pstep, cstep);
+      var childChoseParentAlt = matchingAlt(pstep, cstep);
+      var parentWasChildAlt = matchingAlt(cstep, pstep);
+      h += '<div class="ri-tprob-row' + cls + '">' +
+        '<div class="ri-tprob-cell idx">' + j + "</div>" +
+        '<div class="ri-tprob-cell tok">' + (pstep ? esc(labelTok(stepPiece(pstep))) + altBadge("parent is child alt", parentWasChildAlt) : '<span class="sub">-</span>') + "</div>" +
+        '<div class="ri-tprob-cell num">' + probCell(pstep) + "</div>" +
+        '<div class="ri-tprob-cell tok">' + (cstep ? esc(labelTok(stepPiece(cstep))) + altBadge("child chose parent alt", childChoseParentAlt) : '<span class="sub">-</span>') + "</div>" +
+        '<div class="ri-tprob-cell num">' + probCell(cstep) + "</div>" +
+        '<div class="ri-tprob-cell delta' + d.cls + '">' + esc(d.text) + "</div>" +
+        "</div>";
+    }
+    h += "</div>";
+    if (maxN > limit) h += '<div class="ri-tprob-empty">Showing first ' + limit + " of " + maxN + " token index rows.</div>";
+    h += "</div>";
+    return h;
+  }
+
   // Render the Original vs Replayed comparison + change summary + a Save-Fix affordance into `out`.
   // `child` is the child run returned by /runs/<id>/replay (its changes_applied / behavior are authoritative).
   function renderCompare(out, run, child) {
@@ -782,6 +1067,7 @@
     var html =
       '<div class="ri-cmp-sum">Changed: <b>' + summarizeChanges(changes, child) + "</b></div>" +
       receiptStrip(orig, repl, changes) +
+      tokenProbDiffHTML(run, child, changes) +
       '<div class="ri-cmp">' +
         '<div class="side"><div class="lbl">Original</div><div class="body">' + esc(orig) + "</div></div>" +
         '<div class="side now"><div class="lbl">Replayed</div><div class="body">' + esc(repl) + "</div></div>" +
@@ -1250,9 +1536,11 @@
     // M1 is free (zero generation -- a read + reshape of the run already being fetched): fire it alongside
     // the run fetch, not lazily after an Explain-tab click, so opening the tab is instant.
     var explainP = postJSON("/runs/" + runId + "/explain");
+    var lineageP = getJSON("/runs/" + runId + "/lineage").catch(function () { return null; });
     try { run = await getJSON("/runs/" + runId); }
     catch (e) { root.innerHTML = '<div class="sub">run not found (' + esc(e.message) + ")</div>"; return; }
     var explainR = await explainP;
+    var lineageR = await lineageP;
     var flags = run.flags || [];
     root.innerHTML =
       '<div class="ri-head"><b>' + esc(run.prompt_summary || "(run)") + "</b>" +
@@ -1263,6 +1551,7 @@
         '<button class="ri-tab" data-tab="explain">Explain</button>' +
       "</div>" +
       '<div id="ri-view-detail">' +
+        lineagePanel(lineageR) +
         '<div class="ri-cols"><section class="ri-col">' + transcriptCol(run) + '</section><section class="ri-col">' + influenceCol(run) + '</section><section class="ri-col">' + repairCol(run) + "</section></div>" +
       "</div>" +
       '<div id="ri-view-explain" style="display:none">' +
