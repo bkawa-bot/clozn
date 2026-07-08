@@ -85,6 +85,14 @@ def test_finish_reason_accepts_state_stream_final_frame():
     assert runlog.finish_reason_from_frames([{"kind": "final", "text": "x", "finish_reason": "length"}]) == "length"
 
 
+def test_finish_reason_from_gen_finished_event():
+    """The AR gen_finished event (raw reason: eos|length|steps_exhausted) is captured and mapped like the
+    engine's finish_reason(), so the stop cause survives even when the trailing OpenAI frame isn't present."""
+    assert runlog.finish_reason_from_frames([{"type": "gen_finished", "reason": "eos"}]) == "stop"
+    assert runlog.finish_reason_from_frames([{"type": "gen_finished", "reason": "length"}]) == "length"
+    assert runlog.finish_reason_from_frames([{"type": "gen_finished", "reason": "steps_exhausted"}]) == "length"
+
+
 def test_finish_reason_none_when_absent_or_garbage():
     assert runlog.finish_reason_from_frames([]) is None
     assert runlog.finish_reason_from_frames(None) is None

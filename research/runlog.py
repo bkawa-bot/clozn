@@ -158,6 +158,11 @@ def finish_reason_from_frames(frames) -> str | None:
     for obj in frames or []:
         if not isinstance(obj, dict):
             continue
+        # the AR `gen_finished` event carries the raw stop cause (eos | length | steps_exhausted) and is
+        # emitted on EVERY generation -- map it like the engine's finish_reason() so the reason is captured
+        # even when the trailing OpenAI `choices` frame isn't in this frame slice.
+        if obj.get("type") == "gen_finished" and isinstance(obj.get("reason"), str):
+            reason = "stop" if obj["reason"] == "eos" else "length"
         if isinstance(obj.get("finish_reason"), str):          # state-stream 'final' frame (top-level)
             reason = obj["finish_reason"]
         ch = obj.get("choices")                                # OpenAI-style final frame: choices[0]

@@ -103,6 +103,17 @@ SampleConfig sample_from(const json& body) {
 //   tokens_committed += piece per token (the committed text)
 // All other events pass through as the plain §5.1 wire form. Presentation only — the core events
 // stay {prompt_tokens,...} / {pos,id,conf}.
+// A decoded token piece can be a PARTIAL multi-byte UTF-8 sequence: byte-fallback tokens split a character
+// (e.g. "½", an em-dash, an emoji) across token boundaries, so ONE token's piece may end mid-codepoint.
+// nlohmann's default (strict) serializer THROWS on the incomplete bytes -- and on the streaming path that
+// aborted the whole generation mid-reply (truncated text, and the trailing gen_finished/finish_reason frames
+// never sent). Serialize with `replace` so an invalid byte becomes U+FFFD and a split char never kills the
+// stream: the reply completes and the final frames arrive. (A split char shows as U+FFFD until the model's
+// next multi-byte token; a full buffering fix is a separate refinement.)
+static std::string dump_json(const json& j) {
+    return j.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
 std::string sse_data(const Event& e, const GgmlModel& model, const std::vector<int>& prompt_ids,
                      const std::vector<int>& suffix_ids) {
     if (const auto* gs = std::get_if<GenStarted>(&e)) {
@@ -110,24 +121,24 @@ std::string sse_data(const Event& e, const GgmlModel& model, const std::vector<i
         for (int id : prompt_ids) pieces.push_back(model.decode({id}));
         json sfx = json::array();
         for (int id : suffix_ids) sfx.push_back(model.decode({id}));  // infill: the fixed right-context
-        return json{{"t", gs->t}, {"type", "gen_started"}, {"prompt_tokens", gs->prompt_tokens},
+        return dump_json(json{{"t", gs->t}, {"type", "gen_started"}, {"prompt_tokens", gs->prompt_tokens},
                     {"block_len", gs->block_len}, {"max_new", gs->max_new},
-                    {"prompt_pieces", pieces}, {"suffix_pieces", sfx}}.dump();
+                    {"prompt_pieces", pieces}, {"suffix_pieces", sfx}});
     }
     if (const auto* tc = std::get_if<TokensCommitted>(&e)) {
         json items = json::array();
         for (const auto& it : tc->items)
             items.push_back({{"pos", it.pos}, {"id", it.id}, {"conf", it.conf},
                              {"piece", model.decode({it.id})}});
-        return json{{"t", tc->t}, {"type", "tokens_committed"}, {"block", tc->block},
-                    {"items", items}}.dump();
+        return dump_json(json{{"t", tc->t}, {"type", "tokens_committed"}, {"block", tc->block},
+                    {"items", items}});
     }
     if (const auto* sl = std::get_if<StepLens>(&e)) {
         json pieces = json::array();
         for (int id : sl->ids) pieces.push_back(model.decode({id}));     // decode candidates (viz has no tokenizer)
-        return json{{"t", sl->t}, {"type", "step_lens"}, {"block", sl->block}, {"k", sl->k},
+        return dump_json(json{{"t", sl->t}, {"type", "step_lens"}, {"block", sl->block}, {"k", sl->k},
                     {"positions", sl->positions}, {"ids", sl->ids}, {"probs", sl->probs},
-                    {"pieces", pieces}}.dump();
+                    {"pieces", pieces}});
     }
     return to_jsonl_line(e);
 }
@@ -186,15 +197,15 @@ std::string sse_data_revise(const Event& e, const GgmlModel& model, const std::v
         for (const auto& it : tc->items)
             items.push_back({{"pos", it.pos}, {"id", it.id}, {"conf", it.conf},
                              {"piece", model.decode({it.id})}});
-        return json{{"t", tc->t}, {"type", "tokens_committed"}, {"block", tc->block},
-                    {"items", items}}.dump();
+        return dump_json(json{{"t", tc->t}, {"type", "tokens_committed"}, {"block", tc->block},
+                    {"items", items}});
     }
     if (const auto* sl = std::get_if<StepLens>(&e)) {
         json pieces = json::array();
         for (int id : sl->ids) pieces.push_back(model.decode({id}));     // decode candidates (viz has no tokenizer)
-        return json{{"t", sl->t}, {"type", "step_lens"}, {"block", sl->block}, {"k", sl->k},
+        return dump_json(json{{"t", sl->t}, {"type", "step_lens"}, {"block", sl->block}, {"k", sl->k},
                     {"positions", sl->positions}, {"ids", sl->ids}, {"probs", sl->probs},
-                    {"pieces", pieces}}.dump();
+                    {"pieces", pieces}});
     }
     return to_jsonl_line(e);
 }
@@ -381,7 +392,7 @@ private:
                    {"readouts", json::array()}, {"meta", meta}};
         write_frame(frame);
     }
-    void write_frame(const json& frame) { write_("data: " + frame.dump() + "\n\n"); }
+    void write_frame(const json& frame) { write_("data: " + dump_json(frame) + "\n\n"); }
 
     // Emit the accumulated pass as one StateStep, then reset for the next pass.
     void flush() {
