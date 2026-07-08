@@ -39,7 +39,7 @@ rest of the timeline (mirrors explain.py's per-panel try/except).
 """
 from __future__ import annotations
 
-# Matches explain.py's LOW_CONF (which itself matches inspector/demo/pages/run.js) -- ONE "unsure" cutoff
+# Matches explain.py's LOW_CONF (which itself matches studio/pages/run.js) -- ONE "unsure" cutoff
 # read in all three places, so this timeline's hesitation events and the Explain panel's uncertain_moments
 # never disagree about which tokens counted as a hesitation. Kept as its own constant (not imported from
 # explain) so this module stays a zero-dependency sibling -- if one changes, change the other.
@@ -56,7 +56,7 @@ def _as_dict(x) -> dict:
 
 def _card_text(c) -> str:
     """cards_applied entries are plain strings on every current logging path, but tolerate a {"text": ...}
-    shape too, defensively -- mirrors explain._card_text / inspector/demo/pages/run.js's cardLabel()."""
+    shape too, defensively -- mirrors explain._card_text / studio/pages/run.js's cardLabel()."""
     if isinstance(c, str):
         return c
     if isinstance(c, dict):

@@ -11,7 +11,7 @@ context only, and every receipt says so in its own `note` field (the spec's hone
 
 This module owns exactly two things: (1) turning one "influence spec" into the replay.py `changes` dict
 for its ablated arm, and (2) the pure delta-strip math (word count / words-per-sentence / %-of-wording-
-changed) that mirrors inspector/demo/pages/run.js's `receiptMetrics()` EXACTLY, so the client's JS and this
+changed) that mirrors studio/pages/run.js's `receiptMetrics()` EXACTLY, so the client's JS and this
 server-side Python can never silently disagree about what a delta strip says. It does NOT reimplement any
 state discipline: every generation goes through `replay.replay()`, which already owns the snapshot / apply-
 changes / restore-in-a-finally contract (never leaves the live studio mutated) and the greedy flag
@@ -65,7 +65,7 @@ import re
 from clozn import replay
 
 # ============================================================================================ metric math
-# Mirrors inspector/demo/pages/run.js's receiptMetrics() EXACTLY (word count, words/sentence, and a
+# Mirrors studio/pages/run.js's receiptMetrics() EXACTLY (word count, words/sentence, and a
 # word-TYPE Jaccard-distance %) so the client's delta strip and this server-side one can never silently
 # drift apart. The one deliberate non-literal-transliteration: JS's `for (k in oset)` / `rset[k]` lookups
 # walk a plain-object "set" (a latent prototype-chain gotcha for a word that collides with an

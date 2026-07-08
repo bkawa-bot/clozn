@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import re
 
-# Matches explain.py's LOW_CONF / run_timeline.py's LOW_CONF (which itself matches inspector/demo/pages/
+# Matches explain.py's LOW_CONF / run_timeline.py's LOW_CONF (which itself matches studio/pages/
 # run.js) -- ONE "unsure" cutoff read in all these places, so a span's "shaky" band never disagrees with
 # the Explain panel's uncertain_moments or the timeline's hesitation events about what counts as unsure.
 # Kept as its own constant (not imported from a sibling) so this module stays zero-dependency -- if one
@@ -57,7 +57,7 @@ def _as_dict(x) -> dict:
 
 def _conf(confidence: list, i: int) -> float:
     """Token i's confidence -- or 1.0 (certain) when absent/unparseable. Missing confidence reads as
-    certain, never as uncertain: matches inspector/demo/pages/run.js's `conf[j] == null ? 1`."""
+    certain, never as uncertain: matches studio/pages/run.js's `conf[j] == null ? 1`."""
     v = confidence[i] if i < len(confidence) else None
     if v is None:
         return 1.0

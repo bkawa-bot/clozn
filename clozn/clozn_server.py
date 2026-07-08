@@ -7,7 +7,7 @@
 
 Only one 7B fits the GPU, so switching substrates re-execs the process with the other one (a clean GPU);
 the instrument shows the active substrate and offers the switch. Serves the instrument + every window
-from inspector/demo, so the iframes' fetches all land here.
+from studio, so the iframes' fetches all land here.
 
     cloze .venv python -m clozn.clozn_server --port 8090
 """
@@ -23,7 +23,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "engine", "lab"))   # so the dream substrate can import cloze_lab
-DEMO = os.path.join(HERE, "..", "inspector", "demo")
+DEMO = os.path.join(HERE, "..", "studio")
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
 

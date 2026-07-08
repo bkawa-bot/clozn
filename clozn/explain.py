@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from clozn import memory_cards
 
-# Matches inspector/demo/pages/run.js's `LOW_CONF` (the token-timeline's "unsure" cutoff) -- ONE convention
+# Matches studio/pages/run.js's `LOW_CONF` (the token-timeline's "unsure" cutoff) -- ONE convention
 # read in both places, so the studio's visual "unsure" underline and this endpoint's "uncertain moment"
 # never disagree about what counts as a hesitation.
 LOW_CONF = 0.5
@@ -56,7 +56,7 @@ def _as_dict(x) -> dict:
 def _card_text(c) -> str:
     """cards_applied entries are plain strings on every current path (_log_run's prompt AND internalized
     branches both store texts, not dicts) -- but tolerate a {"text": ...} shape too, defensively, exactly
-    like inspector/demo/pages/run.js's cardLabel() does, so a future shape change degrades instead of
+    like studio/pages/run.js's cardLabel() does, so a future shape change degrades instead of
     breaking the endpoint."""
     if isinstance(c, str):
         return c

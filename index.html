@@ -56,9 +56,9 @@
 
   <div class="card" style="border-color:var(--angel); box-shadow:0 2px 18px rgba(122,167,255,.22)">
     <div class="row">
-      <h3><a href="inspector/demo/studio.html">clozn studio — a local model you can see and shape</a></h3>
+      <h3><a href="studio/studio.html">clozn studio — a local model you can see and shape</a></h3>
       <span class="pill boot">needs clozn_server</span>
-      <a class="open" href="inspector/demo/studio.html">open →</a>
+      <a class="open" href="studio/studio.html">open →</a>
     </div>
     <p class="desc">Chat with a local model like you would through Ollama — but open the panels and
       <b>see what it has learned about you</b> (editable trait cards, baked into a soft prefix) and
@@ -72,9 +72,9 @@
 
   <div class="card" style="border-color:var(--cyan); box-shadow:0 2px 16px rgba(79,195,214,.20)">
     <div class="row">
-      <h3><a href="inspector/demo/instrument.html">The instrument — all three windows in one</a></h3>
+      <h3><a href="studio/instrument.html">The instrument — all three windows in one</a></h3>
       <span class="pill live">open file</span>
-      <a class="open" href="inspector/demo/instrument.html">open →</a>
+      <a class="open" href="studio/instrument.html">open →</a>
     </div>
     <p class="desc">One luminous page that tabs across the three windows. Open it from disk for the static
       versions, or boot the <b>unified server</b> for the live instrument: <b>one Qwen-7B drives both the
@@ -85,9 +85,9 @@
 
   <div class="card" style="border-color:var(--angel); box-shadow:0 2px 14px rgba(122,167,255,.18)">
     <div class="row">
-      <h3><a href="inspector/demo/brain.html">The brain — luminous concept atlas</a></h3>
+      <h3><a href="studio/brain.html">The brain — luminous concept atlas</a></h3>
       <span class="pill live">open file</span>
-      <a class="open" href="inspector/demo/brain.html">open →</a>
+      <a class="open" href="studio/brain.html">open →</a>
     </div>
     <p class="desc">A 3D, bioluminescent map of the model's interior: ~1000 <b>real SAE features</b>
       (Qwen2.5-7B) clustering by decoder geometry into 26 emergent lobes. Type a prompt and it pulls the
@@ -99,9 +99,9 @@
 
   <div class="card" style="border-color:#e7a8c4; box-shadow:0 2px 14px rgba(231,168,196,.18)">
     <div class="row">
-      <h3><a href="inspector/demo/memory.html">Watch it remember you</a></h3>
+      <h3><a href="studio/memory.html">Watch it remember you</a></h3>
       <span class="pill live">open file</span>
-      <a class="open" href="inspector/demo/memory.html">open →</a>
+      <a class="open" href="studio/memory.html">open →</a>
     </div>
     <p class="desc">A frozen local 4-bit Qwen-7B holds a 20-turn conversation, is <b>never told a single
       rule</b>, then distils what it noticed about you into a <b>16-vector memory</b> by test-time training.
@@ -126,9 +126,9 @@ clozn .venv-sae python research/wire_memory.py      # wire it into memory.html</
 
   <div class="card" style="border-color:var(--cyan); box-shadow:0 2px 14px rgba(79,195,214,.16)">
     <div class="row">
-      <h3><a href="inspector/demo/denoise.html">Watch it denoise — diffusion</a></h3>
+      <h3><a href="studio/denoise.html">Watch it denoise — diffusion</a></h3>
       <span class="pill live">open file</span>
-      <a class="open" href="inspector/demo/denoise.html">open →</a>
+      <a class="open" href="studio/denoise.html">open →</a>
     </div>
     <p class="desc">A real <b>Dream-7B</b> diffusion LM fills a board of masked slots <b>in parallel</b> over
       20 passes — the answer crystallising out of the mask, <b>out of order</b> (it commits "Jupiter" before
@@ -140,9 +140,9 @@ PYTHONPATH=engine/lab cloze .venv python research/denoise_capture.py            
 
   <div class="card" style="border-color:#9b8ce8; box-shadow:0 2px 14px rgba(155,140,232,.16)">
     <div class="row">
-      <h3><a href="inspector/demo/engine.html">The runtime — read &amp; edit the real C++ engine</a></h3>
+      <h3><a href="studio/engine.html">The runtime — read &amp; edit the real C++ engine</a></h3>
       <span class="pill boot">via clozn_server</span>
-      <a class="open" href="inspector/demo/engine.html">open →</a>
+      <a class="open" href="studio/engine.html">open →</a>
     </div>
     <p class="desc">The white-box loop on the <b>actual C++ engine</b> (cloze-server, ggml), not a Python
       wrapper: <code>/harvest</code> reads every token's residual in one forward; you scale one and
@@ -187,7 +187,7 @@ PATH="$PWD/bin/Release:$PATH" ./Release/cloze-server.exe &lt;model.gguf&gt; --po
     </div>
     <p class="desc">The earlier memory window: watch what moves when a fact is recalled, alongside the thinking panel.
       Pass <code>--seed-facts</code> to preload a few.</p>
-    <code>cloze .venv python inspector/demo/memory_server.py --port 8077 --seed-facts</code>
+    <code>cloze .venv python studio/memory_server.py --port 8077 --seed-facts</code>
   </div>
 
   <h2>Static visualizations · generate, then open the file</h2>
@@ -199,7 +199,7 @@ PATH="$PWD/bin/Release:$PATH" ./Release/cloze-server.exe &lt;model.gguf&gt; --po
       <a class="open" href="inspector/runs/think_graph.html">open file →</a>
     </div>
     <p class="desc">The answer resolving with concepts feeding the firing token, animated. Light "Artificial Angels" palette.</p>
-    <code>cloze .venv python inspector/demo/think_graph.py   # writes inspector/runs/think_graph.html</code>
+    <code>cloze .venv python studio/think_graph.py   # writes inspector/runs/think_graph.html</code>
   </div>
 
   <div class="card">
@@ -209,7 +209,7 @@ PATH="$PWD/bin/Release:$PATH" ./Release/cloze-server.exe &lt;model.gguf&gt; --po
       <a class="open" href="inspector/runs/watch_it_think.html">open file →</a>
     </div>
     <p class="desc">The answer crystallizing across layers with concepts present at each. Earlier dark (Maiko) palette.</p>
-    <code>cloze .venv python inspector/demo/watch_it_think.py   # writes inspector/runs/watch_it_think.html</code>
+    <code>cloze .venv python studio/watch_it_think.py   # writes inspector/runs/watch_it_think.html</code>
   </div>
 
   <div class="card">

@@ -1,6 +1,6 @@
 """denoise_server.py -- LIVE diffusion: type a prompt, watch Dream-7B denoise it in real time.
 
-Loads the Dream-7B adapter once, serves inspector/demo/denoise.html, and on POST /denoise {prompt} runs a
+Loads the Dream-7B adapter once, serves studio/denoise.html, and on POST /denoise {prompt} runs a
 real denoise and returns the pass-by-pass trace (reconstructed from the event spine) for the viz to play.
 
     PYTHONPATH=engine/lab cloze .venv python research/denoise_server.py --port 8082
@@ -24,7 +24,7 @@ from cloze_lab.generate import GenerateConfig, generate                         
 from cloze_lab.scheduler.events import GenStarted, TokensCommitted, TokensRevised  # noqa: E402
 from cloze_lab.scheduler.policies import RemaskLowConf                             # noqa: E402
 
-UI = os.path.join(HERE, "..", "inspector", "demo", "denoise.html")
+UI = os.path.join(HERE, "..", "studio", "denoise.html")
 LOCK = threading.Lock()
 
 
