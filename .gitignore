@@ -17,7 +17,7 @@ htmlcov/
 
 # --- C++ / CMake out-of-source build trees (incl. the CUDA DLLs) ---
 /engine/**/build-*/
-/kernels/**/build-*/
+/engine/kernels/**/build-*/
 
 # --- Vendored llama.cpp: pinned at e36a602 + the CLOZE patch (engine/core/third_party/patches/).
 # Not tracked here (link, don't fork). Proper git submodule is a follow-up (needs a network clone);

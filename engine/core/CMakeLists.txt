@@ -103,14 +103,14 @@ if(CLOZE_BUILD_CUDA OR CLOZE_BUILD_SAE)
     # dim), vendored from kernels/ — shared by the CUDA parity tests AND the SAE readout library.
     # Validated on sm_120: selected indices exact, values within f32-vs-f64 eps (also proven
     # standalone by kernels/sae_topk/validate.py vs the numpy reference).
-    set(SAE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../kernels/sae_topk)  # monorepo: engine/core -> kernels/
+    set(SAE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../kernels/sae_topk)  # monorepo: engine/core -> kernels/
     add_library(cloze_sae_topk STATIC ${SAE_DIR}/sae_topk.cu)
     set_target_properties(cloze_sae_topk PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_include_directories(cloze_sae_topk PUBLIC ${SAE_DIR})
 endif()
 
 if(CLOZE_BUILD_CUDA)
-    set(CS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../kernels/confidence_select)  # monorepo: engine/core -> kernels/
+    set(CS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../kernels/confidence_select)  # monorepo: engine/core -> kernels/
     add_library(cloze_confidence_select STATIC ${CS_DIR}/confidence_select.cu)
     set_target_properties(cloze_confidence_select PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_include_directories(cloze_confidence_select PUBLIC ${CS_DIR})
