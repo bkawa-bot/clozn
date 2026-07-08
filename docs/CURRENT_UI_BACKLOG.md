@@ -1,5 +1,46 @@
 ﻿# Current UI Backlog
 
+**Updated 2026-07-08 (post-reorg).** This top section is the current, reconciled backlog. The detailed
+item table further down is dated 2026-07-07 and PRE-REORG — kept as evidence, but see the staleness
+banner above it.
+
+## ✅ Done since the 2026-07-07 audit
+- **Repo reorg** — product-only tree (`clozn/` package, `studio/`, `engine/kernels/`); research spikes/findings split to the sibling `../clozn-research` repo (local, not pushed).
+- **#1 repro-metadata** — sampler / `seed` / `n_ctx` / `device` on `run.meta` + a self-describing `meta.decode` block (engine reproducible `seed 0`; qwen honest `null`).
+- **#2 rich-token-trace** — per-token `token_id` / `logprob` / top-k-entropy (labelled an approximation, kept distinct from the HF path's true full-softmax `entropy`).
+- These two = the reproduce-&-prove plan's **S2**. Also fixed: the memory approve/reject/disable/enable/remove crash on the engine substrate (`_EngineMemory.rules` had no setter).
+
+## Thread A — Reproduce & Prove (the headline; `notes/REPRODUCE_AND_PROVE_PLAN.md`)
+Engine-first forced-scoring receipts. S2 done; remaining:
+- **S0** — C++ `POST /score` (teacher-forced per-token logprob) **+ engine rebuild** — the big lift, not started.
+- **S1** — SDK + `EngineSubstrate.score_tokens` seam.
+- **S3** — `rederive.py` + **forced receipts** ("silent influence" / sub-threshold; the content-swap null is its null-floor recipe).
+- **S4** — forced-receipts UI in the Run Inspector.
+- **S5** — turn engine sampling on *(gated on a human go/no-go)*; **S6** — docs/claims update.
+
+## Thread B — Inspector / UI leftovers
+- **#3 branch-lineage-tree** — backend lineage helpers already in `clozn/runlog.py`; only the UI tree renderer remains.
+- **#5 capture-final-prompt** — persist the assembled/injected system block for prompt-mode runs.
+- **#4 persist-concept-spans** — decide whether raw concept/SAE spans join runs alongside `workspace_readout`.
+- **#6 studio-lab-mode** — Studio-native Lab entry point + capture-tier control; make brain/engine pages reachable; layer-summary "model-MRI" panel.
+- **tiny-test-harness** — user-authored run-level assertions on the receipt/replay seams.
+- **finish-reason** — drop the last `"stop"` fallback once every substrate reports it.
+- **J-lens adapter (NEW)** — `docs/WORKSPACE_LENS.md` reserves a `provider_type: jacobian_lens` slot (future-payload example) but forbids labelling anything J-lens until a real adapter exists. Build one — read the workspace via a Jacobian-lens provider, then **causally verify its readouts with Thread-A forced receipts** — as the "wrap the scoop" answer to the open-weight J-space work. No adapter exists yet.
+
+## Thread C — reorg housekeeping / honesty
+- **Push `../clozn-research`** (still local).
+- **Refresh this doc's detailed table** — flip #1/#2 to DONE, fix the pre-reorg paths.
+- **README repositioning + live-vs-research doc split** (both were backlog items #40/#42).
+- **Engine rebuild validation** for the kernels move (moved `kernels/` → `engine/kernels/` + fixed CMake, but never built here).
+
+**Notes:** `#7 unified-receipt-bundle` is subsumed by Thread A's forced receipts (don't double-count). Per-token wall-clock timing is blocked on an engine timing tap (deferred, not forgotten).
+
+---
+
+## Detailed item table (evidence dated 2026-07-07, PRE-REORG — historical)
+
+> Paths below moved in the reorg: `research/…` → `clozn/…` and `inspector/demo/…` → `studio/…`. Treat the file:line pointers as historical; the logic they name is still findable. #1 and #2 are now **DONE** (see the current section above).
+
 Evidence-backed backlog refresh against the current working tree on 2026-07-07.
 
 Status legend used here:
