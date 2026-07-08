@@ -429,7 +429,8 @@ def test_run_meta_never_raises_on_a_bad_health(iso):
 
     sub.engine = _BoomEngine()
     assert sub.run_meta() == {"sampler_mode": "greedy", "sampling": "greedy", "temperature": 0.0,
-                              "repetition_penalty": 1.0, "seed": 0}
+                              "repetition_penalty": 1.0, "seed": 0,
+                              "decode": {"mode": "greedy", "temperature": 0.0, "seed": 0}}
 
 
 def test_run_meta_includes_request_specific_generation_fields_after_chat(iso, monkeypatch):

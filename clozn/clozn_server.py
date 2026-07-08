@@ -74,6 +74,13 @@ def _qwen_generation_meta(max_new=None, sample=True, stream=None):
         "top_p": 0.9 if sample else None,
         "repetition_penalty": 1.3,
         "no_repeat_ngram_size": 3,
+        # Self-describing decode block (REPRODUCE_AND_PROVE_PLAN S2). seed is honestly null: HF
+        # generate() sets no fixed seed on this path, so a sampled Qwen run is NOT exactly
+        # reproducible -- the deliberate contrast with the engine's reproducible {"seed": 0}.
+        "decode": {"mode": "sample" if sample else "greedy",
+                   "temperature": 0.7 if sample else 0.0,
+                   "top_p": 0.9 if sample else None,
+                   "seed": None},
         "max_tokens": int(max_new) if max_new is not None else None,
         "stream": bool(stream) if stream is not None else None,
     })
@@ -86,6 +93,11 @@ def _engine_generation_meta(max_new=None, stream=None):
         "temperature": 0.0,
         "repetition_penalty": 1.0,
         "seed": 0,
+        # Self-describing decode block (REPRODUCE_AND_PROVE_PLAN S2): the honest regime this run
+        # was produced under, so re-derivation/forced-scoring is exact-by-construction and S5
+        # (sampling) can flip it to {"mode":"sample", ...} + the real seed without schema churn.
+        # Engine chat is greedy (temperature 0), seed 0 -- the actual values passed, not a guess.
+        "decode": {"mode": "greedy", "temperature": 0.0, "seed": 0},
         "max_tokens": int(max_new) if max_new is not None else None,
         "stream": bool(stream) if stream is not None else None,
     })

@@ -92,3 +92,21 @@ def test_qwen_substrate_run_meta_reflects_the_actual_last_call(monkeypatch):
     assert meta["temperature"] == 0.0
     assert meta["sampler_mode"] == "greedy"
     assert meta["max_tokens"] == 40
+
+
+def test_engine_decode_block_is_the_reproducible_greedy_regime():
+    """S2 self-describing `decode`: engine chat is greedy/temp0/seed0 -- reproducible by construction, the
+    exact values passed to the engine (not a guess). Nested block survives (it's not None, so
+    _without_unknowns keeps it; the meaningful nested values stay)."""
+    meta = cs._engine_generation_meta(128, stream=True)
+    assert meta["decode"] == {"mode": "greedy", "temperature": 0.0, "seed": 0}
+
+
+def test_qwen_decode_block_marks_sampling_as_not_reproducible():
+    """S2 self-describing `decode`: a sampled Qwen run carries seed=None ON PURPOSE -- HF sets no fixed
+    seed, so it is not exactly reproducible; that honest null is the whole point of the block (contrast
+    the engine's seed 0). Greedy Qwen: temperature 0.0, top_p null (N/A without sampling), seed still null."""
+    sampled = cs._qwen_generation_meta(256, sample=True, stream=False)["decode"]
+    assert sampled == {"mode": "sample", "temperature": 0.7, "top_p": 0.9, "seed": None}
+    greedy = cs._qwen_generation_meta(64, sample=False, stream=False)["decode"]
+    assert greedy == {"mode": "greedy", "temperature": 0.0, "top_p": None, "seed": None}
