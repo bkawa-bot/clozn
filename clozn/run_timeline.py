@@ -73,7 +73,12 @@ def _rounded(x):
 
 
 def _trace_steps(trace: dict) -> list[dict]:
-    """Return rich token steps when present; synthesize the old v1 arrays into the same shape otherwise."""
+    """Return rich token steps when present; synthesize the old v1 arrays into the same shape otherwise.
+
+    The synthesis also folds in the v2 parallel arrays (token_ids/logprobs/topk_entropy -- see runlog.py's
+    TRACE_KEYS docstring for exactly what each means/how approximate it is) when a trace carries them
+    without a `steps` list. A trace persisted before v2 (or any trace missing these arrays) simply has no
+    such keys to read -- .get() below degrades that to nothing rather than raising."""
     trace = _as_dict(trace)
     steps = _as_list(trace.get("steps"))
     if steps and all(isinstance(s, dict) for s in steps):
@@ -81,6 +86,9 @@ def _trace_steps(trace: dict) -> list[dict]:
     tokens = _as_list(trace.get("tokens"))
     confidence = _as_list(trace.get("confidence"))
     alternatives = _as_list(trace.get("alternatives"))
+    token_ids = _as_list(trace.get("token_ids"))
+    logprobs = _as_list(trace.get("logprobs"))
+    topk_entropy = _as_list(trace.get("topk_entropy"))
     out = []
     for i, piece in enumerate(tokens):
         step = {"index": i, "piece": piece, "text": piece,
@@ -88,6 +96,12 @@ def _trace_steps(trace: dict) -> list[dict]:
         if i < len(confidence):
             step["confidence"] = confidence[i]
             step["prob"] = confidence[i]
+        if i < len(token_ids) and token_ids[i] is not None:
+            step["token_id"] = token_ids[i]
+        if i < len(logprobs) and logprobs[i] is not None:
+            step["logprob"] = logprobs[i]
+        if i < len(topk_entropy) and topk_entropy[i] is not None:
+            step["topk_entropy"] = topk_entropy[i]
         out.append(step)
     return out
 
@@ -160,7 +174,7 @@ def _hesitations(run: dict) -> list[dict]:
         ev = {"type": "hesitation", "label": f'Unsure at "{piece}"',
               "index": step.get("index", i), "token": piece,
               "confidence": round(c, 4), "prob": round(c, 4), "alternatives": alts}
-        for k in ("token_id", "logprob", "entropy", "wall_ms", "dt_ms"):
+        for k in ("token_id", "logprob", "entropy", "topk_entropy", "wall_ms", "dt_ms"):
             if step.get(k) is not None:
                 ev[k] = step[k]
         out.append(ev)

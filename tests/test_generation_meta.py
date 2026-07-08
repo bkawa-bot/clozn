@@ -1,0 +1,94 @@
+"""test_generation_meta -- honest reproducibility metadata (backlog #1): the pure per-substrate
+generation-meta builders in clozn/clozn_server.py (_qwen_generation_meta, _engine_generation_meta,
+_without_unknowns) and QwenSubstrate.run_meta()'s use of them.
+
+Model-free: these are plain dict builders, no torch/HF/engine process involved. EngineSubstrate.run_meta()
+already has thorough coverage in test_engine_substrate.py (health-derived n_ctx/device/gpu_layers, greedy
+0-valued fields preserved, never-raises-on-bad-health) -- this file covers the Qwen/HF side of the same
+contract, which had no dedicated test before: the sampling regime it actually uses (temperature=0.7,
+top_p=0.9, repetition_penalty=1.3, no_repeat_ngram_size=3 -- QwenMemory._generate's real generate() kwargs)
+is honestly persisted; greedy mode's temperature 0.0 survives the "drop unknowns" filter (0 is not
+"unknown"); and fields the Qwen path genuinely never sets (seed -- HF sampling here uses no fixed seed;
+top_k -- generate() passes no explicit top_k, so its value is an implicit, transformers-version-dependent
+default this code cannot honestly report) are never invented.
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+from clozn import clozn_server as cs   # noqa: E402
+
+
+def test_without_unknowns_drops_none_but_keeps_honest_falsy_values():
+    d = {"temperature": 0.0, "seed": 0, "top_p": None, "max_tokens": None, "stream": False}
+    assert cs._without_unknowns(d) == {"temperature": 0.0, "seed": 0, "stream": False}
+
+
+def test_qwen_generation_meta_sampling_regime_is_honest():
+    """The Qwen chat/chat_stream sampling call: do_sample=True, temperature=0.7, top_p=0.9,
+    repetition_penalty=1.3, no_repeat_ngram_size=3 -- exactly QwenMemory._generate's real generate() kwargs
+    (self_teach_server.py) -- must be exactly what's persisted, not a guess."""
+    meta = cs._qwen_generation_meta(256, sample=True, stream=False)
+    assert meta["temperature"] == 0.7
+    assert meta["top_p"] == 0.9
+    assert meta["repetition_penalty"] == 1.3
+    assert meta["no_repeat_ngram_size"] == 3
+    assert meta["sampler_mode"] == "sample" and meta["sampling"] == "sample"
+    assert meta["max_tokens"] == 256
+    assert meta["stream"] is False
+    # never invented: the HF call sets no explicit seed anywhere on this path, and no explicit top_k either
+    assert "seed" not in meta
+    assert "top_k" not in meta
+
+
+def test_qwen_generation_meta_greedy_keeps_the_honest_zero_temperature():
+    """sample=False -> temperature 0.0, and _without_unknowns must NOT drop it just because it's falsy.
+    repetition_penalty/no_repeat_ngram_size still apply even in greedy mode (they're unconditional logits
+    processors in _generate, not sampling-only params) -- so they're still honestly reported here too."""
+    meta = cs._qwen_generation_meta(64, sample=False, stream=False)
+    assert meta["temperature"] == 0.0
+    assert meta["sampler_mode"] == "greedy" and meta["sampling"] == "greedy"
+    assert meta["repetition_penalty"] == 1.3 and meta["no_repeat_ngram_size"] == 3
+    # top_p has no effect once do_sample=False -- honestly omitted, not guessed at 0.9 or fabricated None
+    assert "top_p" not in meta
+    assert "seed" not in meta and "top_k" not in meta
+
+
+def test_engine_generation_meta_forced_greedy_regime_is_honest():
+    """The engine chat path forces temperature=0.0, rep_penalty=1.0, seed=0 -- greedy, deterministic,
+    reproducible -- and all three honest-falsy values must survive _without_unknowns."""
+    meta = cs._engine_generation_meta(128, stream=True)
+    assert meta["temperature"] == 0.0
+    assert meta["repetition_penalty"] == 1.0
+    assert meta["seed"] == 0
+    assert meta["sampler_mode"] == "greedy" and meta["sampling"] == "greedy"
+    assert meta["max_tokens"] == 128
+    assert meta["stream"] is True
+    # the C++ engine's SampleConfig (sample_from() in cloze_server.cpp) has no top_p/top_k/
+    # no_repeat_ngram_size knob at all for this path -- never fabricated
+    assert "top_p" not in meta and "top_k" not in meta and "no_repeat_ngram_size" not in meta
+
+
+def test_qwen_substrate_run_meta_uses_the_honest_generation_meta_before_any_chat_call():
+    """Before any chat()/chat_stream() call, run_meta() falls back to _qwen_generation_meta(sample=True) --
+    the substrate's default regime -- rather than an empty or fabricated dict."""
+    sub = object.__new__(cs.QwenSubstrate)
+    meta = sub.run_meta()
+    assert meta["temperature"] == 0.7 and meta["top_p"] == 0.9
+    assert meta["repetition_penalty"] == 1.3 and meta["no_repeat_ngram_size"] == 3
+    assert "seed" not in meta and "top_k" not in meta
+
+
+def test_qwen_substrate_run_meta_reflects_the_actual_last_call(monkeypatch):
+    """run_meta() after a chat() call reports what THAT call actually used, not the module default --
+    e.g. a caller who requested greedy (sample=False) sees temperature 0.0 reflected honestly."""
+    sub = object.__new__(cs.QwenSubstrate)
+    sub._last_generation_meta = cs._qwen_generation_meta(40, sample=False, stream=False)
+    meta = sub.run_meta()
+    assert meta["temperature"] == 0.0
+    assert meta["sampler_mode"] == "greedy"
+    assert meta["max_tokens"] == 40

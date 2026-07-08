@@ -296,15 +296,26 @@
   // Confidence -> text opacity in [0.5, 1]: sure tokens are full ink; less-sure ones visibly fade (but stay
   // readable). Low-confidence tokens also pick up the .low warm underline, so faintness never stands alone.
   function confOpacity(c) { return (0.5 + 0.5 * Math.max(0, Math.min(1, c))).toFixed(3); }
+  // steps synthesis also folds in the v2 parallel arrays (token_ids/logprobs/topk_entropy -- see
+  // runlog.py's TRACE_KEYS docstring for exactly what each means/how approximate it is) when a trace
+  // carries them without its own `steps` list. A trace persisted before this existed just has no such
+  // arrays -- every read below is a guarded index/null check, never an assumed key.
   function traceSteps(tr) {
     tr = tr || {};
     if (Array.isArray(tr.steps) && tr.steps.length) return tr.steps.filter(function (s) { return s && typeof s === "object"; });
     var toks = Array.isArray(tr.tokens) ? tr.tokens : [], conf = Array.isArray(tr.confidence) ? tr.confidence : [];
     var alts = Array.isArray(tr.alternatives) ? tr.alternatives : [];
+    var tids = Array.isArray(tr.token_ids) ? tr.token_ids : [];
+    var lps = Array.isArray(tr.logprobs) ? tr.logprobs : [];
+    var tke = Array.isArray(tr.topk_entropy) ? tr.topk_entropy : [];
     return toks.map(function (piece, i) {
       var c = conf[i] == null ? null : +conf[i];
-      return { index: i, piece: piece, text: piece, prob: c, confidence: c,
+      var step = { index: i, piece: piece, text: piece, prob: c, confidence: c,
         alternatives: Array.isArray(alts[i]) ? alts[i] : [] };
+      if (tids[i] != null) step.token_id = tids[i];
+      if (lps[i] != null) step.logprob = lps[i];
+      if (tke[i] != null) step.topk_entropy = tke[i];
+      return step;
     });
   }
   function stepProb(step) {
@@ -320,8 +331,12 @@
   function tokenMeta(step) {
     var bits = ["#" + (step && step.index != null ? step.index : "?")];
     if (step && step.token_id != null) bits.push("id " + step.token_id);
+    // logprob is DERIVED (log of this token's own recorded confidence), never a separately-emitted signal.
     if (step && step.logprob != null) bits.push("logp " + fmtNum(step.logprob, 3));
+    // entropy (true full-softmax, HF/Qwen path only) vs topk_entropy (top-k APPROXIMATION, engine path) are
+    // distinct fields -- label them differently so an approximation is never mistaken for the real thing.
     if (step && step.entropy != null) bits.push("entropy " + fmtNum(step.entropy, 3));
+    if (step && step.topk_entropy != null) bits.push("top-k entropy (approx) " + fmtNum(step.topk_entropy, 3));
     if (step && step.dt_ms != null) bits.push("dt " + fmtNum(step.dt_ms, 1) + "ms");
     if (step && step.wall_ms != null) bits.push("wall " + fmtNum(step.wall_ms, 1) + "ms");
     return bits.join(" Â· ");

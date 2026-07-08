@@ -911,10 +911,12 @@ def _render_trace(meta: dict, steps: list):
         meta = []
         if s.get("token_id") is not None:
             meta.append(f"id {s.get('token_id')}")
-        if s.get("logprob") is not None:
+        if s.get("logprob") is not None:                    # derived: log(confidence), never a separate signal
             meta.append(f"logp {_num(s.get('logprob')):.3f}")
-        if s.get("entropy") is not None:
+        if s.get("entropy") is not None:                    # true full-distribution entropy (HF/Qwen path only)
             meta.append(f"H {_num(s.get('entropy')):.3f}")
+        if s.get("topk_entropy") is not None:                # TOP-K APPROXIMATION only (engine path) -- say so
+            meta.append(f"H@k(approx) {_num(s.get('topk_entropy')):.3f}")
         line = f" {mark} {str(idx):>3} {cell} {_confbar(conf)} {conf:.2f}"
         if meta:
             line += f"   {DIM}{' '.join(meta)}{RST}"
@@ -973,20 +975,33 @@ def _runlog_trace_steps(run: dict) -> list[dict]:
             alts = s.get("alts", s.get("alternatives", []))
             step = {"index": s.get("index", s.get("pos", i)), "piece": str(piece),
                     "conf": _num(conf, 1.0), "alts": alts if isinstance(alts, list) else []}
-            for k in ("token_id", "logprob", "entropy", "wall_ms", "dt_ms"):
+            for k in ("token_id", "logprob", "entropy", "topk_entropy", "wall_ms", "dt_ms"):
                 if s.get(k) is not None:
                     step[k] = s.get(k)
             out.append(step)
         return out
+    # legacy v1-array reconstruction (no `steps` on this trace) -- also folds in the v2 parallel arrays
+    # (token_ids/logprobs/topk_entropy) when a trace happens to carry them without a `steps` list; absent
+    # on any trace persisted before this change, so every lookup below is a guarded .get()/length check.
     tokens = trace.get("tokens") if isinstance(trace.get("tokens"), list) else []
     confidence = trace.get("confidence") if isinstance(trace.get("confidence"), list) else []
     alternatives = trace.get("alternatives") if isinstance(trace.get("alternatives"), list) else []
+    token_ids = trace.get("token_ids") if isinstance(trace.get("token_ids"), list) else []
+    logprobs = trace.get("logprobs") if isinstance(trace.get("logprobs"), list) else []
+    topk_entropy = trace.get("topk_entropy") if isinstance(trace.get("topk_entropy"), list) else []
     out = []
     for i, piece in enumerate(tokens):
         alts = alternatives[i] if i < len(alternatives) and isinstance(alternatives[i], list) else []
-        out.append({"pos": i, "piece": str(piece),
-                    "conf": _num(confidence[i], 1.0) if i < len(confidence) else 1.0,
-                    "alts": alts})
+        step = {"pos": i, "piece": str(piece),
+                "conf": _num(confidence[i], 1.0) if i < len(confidence) else 1.0,
+                "alts": alts}
+        if i < len(token_ids) and token_ids[i] is not None:
+            step["token_id"] = token_ids[i]
+        if i < len(logprobs) and logprobs[i] is not None:
+            step["logprob"] = logprobs[i]
+        if i < len(topk_entropy) and topk_entropy[i] is not None:
+            step["topk_entropy"] = topk_entropy[i]
+        out.append(step)
     return out
 
 

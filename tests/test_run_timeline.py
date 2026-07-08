@@ -93,6 +93,41 @@ def test_full_run_ordered_events_with_pluralization_and_hesitations(store):
                         "finish_reason": "length", "truncated": True}
 
 
+def test_hesitation_events_carry_token_id_logprob_and_topk_entropy_when_present(store):
+    """Backlog #2: the new v2 parallel arrays (token_ids/logprobs/topk_entropy -- see runlog.py's
+    TRACE_KEYS docstring) must ride the hesitation event alongside confidence/alternatives, when the run's
+    trace actually carries them -- even when the trace has no `steps` list of its own (record() derives
+    one from the parallel arrays, topk_entropy included)."""
+    rid = store.record(
+        source="engine_chat", client="studio", model="clozn-qwen",
+        messages=[{"role": "user", "content": "what color is the sky?"}],
+        response="The sky",
+        trace={"tokens": ["The", " sky"], "confidence": [0.95, 0.30],
+              "token_ids": [101, 202], "topk_entropy": [None, 0.87]},
+    )
+    run = store.get_run(rid)
+    events = run_timeline.timeline(run)
+    hesitation = next(e for e in events if e["type"] == "hesitation")
+    assert hesitation["token_id"] == 202
+    assert hesitation["logprob"] is not None            # derived from confidence 0.30, never fabricated
+    assert hesitation["topk_entropy"] == 0.87
+
+
+def test_hesitation_events_omit_new_fields_on_a_legacy_trace(store):
+    """A trace shaped exactly like every run persisted before v2 (tokens/confidence/alternatives only)
+    must still produce a hesitation event -- just without token_id/topk_entropy, never a KeyError."""
+    rid = store.record(
+        source="cli", messages=[{"role": "user", "content": "q"}], response="um",
+        trace={"tokens": ["um"], "confidence": [0.1], "alternatives": [[]]},
+    )
+    events = run_timeline.timeline(store.get_run(rid))
+    hesitation = next(e for e in events if e["type"] == "hesitation")
+    assert "token_id" not in hesitation and "topk_entropy" not in hesitation
+    # runlog.record() itself always derives a per-step logprob from confidence -- that part of the v2
+    # schema isn't optional infrastructure, it's math on a number the run already had.
+    assert hesitation.get("logprob") is not None
+
+
 def test_singular_card_and_dial_labels_are_not_pluralized(store):
     rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a",
                        memory={"cards_applied": ["only one"], "mode": "prompt"},

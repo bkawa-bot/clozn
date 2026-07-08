@@ -68,7 +68,29 @@ def _flags(rec: dict) -> list[str]:
 # us the SAME per-token "step" shape -- keep the mapping in ONE pure, testable place so the on-disk trace
 # schema stays a single contract. The v1 parallel-array keys are load-bearing (read by _flags, explain,
 # and older UI code); do not rename them. `steps` is the richer v2 per-token schema stored alongside them.
-TRACE_KEYS = ("tokens", "confidence", "alternatives", "steps", "workspace_readouts")
+#
+# `token_ids`, `logprobs`, `topk_entropy` are v2 additions -- NEW parallel arrays, same length/index as
+# `tokens`, so a trace without them (every run persisted before this change) still has a valid `tokens`/
+# `confidence`/`alternatives` contract and renders unchanged. Every consumer must guard with .get()/length
+# checks rather than assume these arrays exist. What each one actually is (say this honestly everywhere it
+# is surfaced -- CLI, run_timeline, studio):
+#   token_ids    -- the engine's own committed token id per position. Real data, straight off the wire
+#                   (tokens_committed's `id`), never fabricated.
+#   logprobs     -- DERIVED, not a separately-emitted logprob: log(confidence) of the committed token, per
+#                   position. A position with no usable confidence stores null, never a fabricated value.
+#   topk_entropy -- a TOP-K APPROXIMATION of the next-token distribution's entropy (nats), computed as
+#                   -sum(p*ln(p)) over only the top-k probabilities the engine actually recorded at that
+#                   position (`step_lens`), INCLUDING the chosen token's own probability. This is NOT the
+#                   true full-vocabulary entropy (the engine never sends the full distribution over an AR
+#                   step) -- name and label it as the approximation it is. A position with no recorded
+#                   top-k stores null. (Contrast with the unrelated, older `entropy` per-step field: on the
+#                   HF/Qwen path, self_teach_server.py's RecordingLogitsProcessor computes the TRUE
+#                   full-softmax entropy, a strictly more precise number that this module never conflates
+#                   with the top-k approximation above.)
+# Included in the stored trace only when at least one position has a real (non-null) value -- same rule as
+# `alternatives`.
+TRACE_KEYS = ("tokens", "confidence", "alternatives", "token_ids", "logprobs", "topk_entropy",
+              "steps", "workspace_readouts")
 
 
 def _float_or_none(x):
@@ -158,20 +180,28 @@ def _clean_step(s, fallback_index: int) -> dict | None:
         step["logprob"] = round(float(s["logprob"]), 6)
     alts = _clean_alts(s.get("alts", s.get("alternatives")))
     step["alternatives"] = alts
-    for k in ("entropy", "wall_ms", "dt_ms"):
+    # `entropy` (true full-softmax, HF/Qwen path only) and `topk_entropy` (top-k approximation, engine
+    # path -- see accumulate_ar_events) are DISTINCT fields; both just pass through/round here when a
+    # caller already computed one -- this function never computes either from scratch.
+    for k in ("entropy", "topk_entropy", "wall_ms", "dt_ms"):
         v = _float_or_none(s.get(k))
         if v is not None:
-            step[k] = round(v, 6 if k == "entropy" else 3)
+            step[k] = round(v, 6 if k in ("entropy", "topk_entropy") else 3)
     return step
 
 
 def _steps_from_parallel(trace: dict) -> list[dict]:
+    """Reconstruct v2 `steps` from a ready trace dict's parallel arrays (tokens/confidence/alternatives,
+    plus the v2 token_ids/topk_entropy arrays when present). `logprobs` is deliberately NOT read back here:
+    _clean_step re-derives logprob from conf itself (a single source of truth), so a caller-supplied
+    logprobs array is redundant -- and it would always agree, since both are log(conf)."""
     tokens = trace.get("tokens") if isinstance(trace, dict) else None
     if not isinstance(tokens, list):
         return []
     confidence = trace.get("confidence") if isinstance(trace.get("confidence"), list) else []
     alternatives = trace.get("alternatives") if isinstance(trace.get("alternatives"), list) else []
     token_ids = trace.get("token_ids") if isinstance(trace.get("token_ids"), list) else []
+    topk_entropy = trace.get("topk_entropy") if isinstance(trace.get("topk_entropy"), list) else []
     out = []
     for i, piece in enumerate(tokens):
         raw = {"index": i, "piece": piece, "alts": alternatives[i] if i < len(alternatives) else []}
@@ -179,6 +209,8 @@ def _steps_from_parallel(trace: dict) -> list[dict]:
             raw["conf"] = confidence[i]
         if i < len(token_ids):
             raw["token_id"] = token_ids[i]
+        if i < len(topk_entropy) and topk_entropy[i] is not None:
+            raw["topk_entropy"] = topk_entropy[i]
         step = _clean_step(raw, i)
         if step is not None:
             out.append(step)
@@ -194,6 +226,12 @@ def steps_to_trace(steps) -> dict:
     {} (no half-populated trace): the caller stores that as-is and the timeline simply shows nothing.
     `alternatives` is only included when at least one step actually recorded some (the non-streaming engine
     path, for instance, has confidence but no alts -> we omit the key rather than store a wall of []).
+
+    v2 parallel arrays (token_ids/logprobs/topk_entropy -- see TRACE_KEYS' docstring for exactly what each
+    one means and how honest/approximate it is) are each included only when at least one position has a
+    real value; a position with none is `null` in that array, never fabricated. `logprobs` is exactly the
+    per-step `logprob` _clean_step already derived (log of that token's confidence, clamped to null rather
+    than -inf for a zero/missing confidence) -- not a separately-emitted logprob.
     Pure: no I/O, no model -- unit-testable with fabricated steps.
     """
     steps = [s for s in (steps or []) if isinstance(s, dict)]
@@ -209,9 +247,18 @@ def steps_to_trace(steps) -> dict:
     tokens = [s.get("piece", "") for s in rich]
     confidence = [s.get("prob", 0.0) for s in rich]
     alternatives = [s.get("alternatives", []) for s in rich]
+    token_ids = [s.get("token_id") for s in rich]
+    logprobs = [s.get("logprob") for s in rich]
+    topk_entropy = [s.get("topk_entropy") for s in rich]
     trace = {"tokens": tokens, "confidence": confidence, "steps": rich}
     if any(alternatives):                                   # only carry alts if some token actually had them
         trace["alternatives"] = alternatives
+    if any(v is not None for v in token_ids):                # 0 is a real token id -- never treat it as falsy
+        trace["token_ids"] = token_ids
+    if any(v is not None for v in logprobs):
+        trace["logprobs"] = logprobs
+    if any(v is not None for v in topk_entropy):
+        trace["topk_entropy"] = topk_entropy
     return trace
 
 
@@ -253,7 +300,6 @@ def accumulate_ar_events(events) -> list[dict]:
                 k = int(obj.get("k") or (len(probs) // max(1, len(positions))))
             except (TypeError, ValueError):
                 k = len(probs)
-            entropies = obj.get("entropy", obj.get("entropies"))
             for row, pos in enumerate(positions):
                 step = by_pos.get(pos)
                 if not step:
@@ -270,10 +316,14 @@ def accumulate_ar_events(events) -> list[dict]:
                     if len(alts) >= 3:
                         break
                 step["alts"] = alts
-                if isinstance(entropies, list) and row < len(entropies):
-                    step["entropy"] = entropies[row]
-                elif _float_or_none(entropies) is not None:
-                    step["entropy"] = entropies
+                # topk_entropy: a TOP-K APPROXIMATION of this position's next-token entropy -- the engine
+                # only ever reports the top-k it weighed (step_lens), never the full vocabulary
+                # distribution, so -sum(p*ln p) over that recorded slice (the chosen token's own prob
+                # included) is the best this frame data can honestly support. No step_lens captured for a
+                # position -> no key at all here (steps_to_trace/_clean_step store null for it, not 0).
+                topk_entropy = _entropy_from_probs(probs[start:end])
+                if topk_entropy is not None:
+                    step["topk_entropy"] = topk_entropy
     return [by_pos[p] for p in sorted(order, key=lambda x: (x is None, x))]
 
 
@@ -311,7 +361,9 @@ def _norm_trace(trace) -> dict:
         if isinstance(trace.get("steps"), list):
             norm = steps_to_trace(trace["steps"])
         else:
-            norm = {k: trace[k] for k in ("tokens", "confidence", "alternatives") if k in trace}
+            norm = {k: trace[k] for k in
+                    ("tokens", "confidence", "alternatives", "token_ids", "logprobs", "topk_entropy")
+                    if k in trace}
             steps = _steps_from_parallel(norm)
             if steps:
                 norm["steps"] = steps

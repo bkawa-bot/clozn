@@ -62,6 +62,26 @@ def test_trace_defaults_to_shared_runlog_even_when_legacy_cache_exists(isolated,
     assert "legacy prompt" not in out
 
 
+def test_trace_shows_token_id_logprob_and_topk_entropy_with_honest_labels(isolated, capsys):
+    """Backlog #2: `clozn trace` shows the v2 per-token fields, compactly and honestly labeled -- 'logp'
+    for the derived logprob, 'H@k(approx)' (never bare 'H', which is reserved for the true full-softmax
+    entropy the HF/Qwen path can compute) for the engine path's top-k entropy approximation."""
+    runlog.record(source="engine_chat", client="studio", model="new-model", substrate="engine",
+                  messages=[{"role": "user", "content": "new prompt"}], response="New answer",
+                  trace={"tokens": ["New", " answer"], "confidence": [0.92, 0.42],
+                         "token_ids": [11, 22], "topk_entropy": [None, 0.87],
+                         "alternatives": [[], [{"piece": " option", "prob": 0.31}]]},
+                  started=2000.0, ended=2000.1)
+
+    cli.cmd_trace(_args())
+
+    out = capsys.readouterr().out
+    assert "id 22" in out
+    assert "logp " in out
+    assert "H@k(approx) 0.870" in out
+    assert " H " not in out and "H 0." not in out       # never the true-entropy label for a top-k value
+
+
 def test_trace_legacy_cache_flag_still_reads_old_trace_files(isolated, capsys):
     _write_legacy(Path(cli.HOME), prompt="legacy prompt")
     runlog.record(source="studio_chat", client="studio", model="new-model",
