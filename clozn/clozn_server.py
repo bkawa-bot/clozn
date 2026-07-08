@@ -1507,6 +1507,15 @@ class _EngineMemory:
         from clozn import memory_cards
         return [c["text"] for c in (memory_cards.list_cards() or []) if c.get("status") == "active"]
 
+    @rules.setter
+    def rules(self, _value):
+        # The card store IS the memory here, so `rules` is derived and has nothing to set. The shared
+        # _mem_sync_rules() assigns m.rules for the soft-prefix (SelfTeach) backend; make that a harmless
+        # no-op on the engine substrate instead of an AttributeError -- otherwise every approve/reject/
+        # disable/enable/remove crashed AFTER already mutating the store (scrappy error toast, action
+        # silently succeeded). The store stays the single source of truth.
+        pass
+
     def consolidate(self, rules):
         return {"ok": True, "mode": "prompt"}      # prompt mode never trains a prefix
 
