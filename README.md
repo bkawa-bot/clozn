@@ -54,9 +54,11 @@ first: `cd engine/core && build_gpu.bat` (GPU, CUDA) or `build_serve.bat` (CPU).
 | `engine/`    | the runtime ("cloze"): C++/ggml core + the Python `lab/` reference — runs models, emits the state-stream, applies steers |
 | `kernels/`   | GPU kernels (confidence-select today; interp kernels — SAE top-k — to come) |
 | `inspector/` | the white-box product: the spine, ops (snapshot/restore/edit/probe/steer), memory, viz — what you actually use |
-| `research/`  | the legibility science (the interpretability-tax thread) |
 | `protocol/`  | the one state-stream contract the engine emits and the inspector consumes |
 | `docs/`      | architecture + the honest technical account |
+
+The legibility-science spikes and findings (the interpretability-tax thread) live outside this repo now,
+in a separate local-only sibling repo: `../clozn-research`.
 
 Three model substrates behind one spine: **diffusion** (LLaDA/Dream), **autoregressive**
 (Llama/Qwen/...), and **recurrent** (RWKV). The thing you view and steer — "the model's

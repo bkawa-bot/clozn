@@ -32,8 +32,8 @@ import numpy as np
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RESEARCH = os.path.join(os.path.dirname(HERE), "research")   # dial_autocalibrate_engine.py stays in research/
-sys.path.insert(0, RESEARCH)
+SCRIPTS = os.path.join(os.path.dirname(HERE), "scripts")   # dial_autocalibrate_engine.py lives in scripts/
+sys.path.insert(0, SCRIPTS)
 
 import dial_autocalibrate_engine as dae   # noqa: E402
 
@@ -381,7 +381,7 @@ def test_load_shipped_library_duplicate_name_raises(tmp_path):
 
 
 def test_load_shipped_library_real_shipped_file_loads_cleanly():
-    real_path = os.path.join(os.path.dirname(RESEARCH), "clozn", "data", "dial_library_shipped.json")
+    real_path = os.path.join(os.path.dirname(HERE), "clozn", "data", "dial_library_shipped.json")
     dials = dae.load_shipped_library(real_path)
     assert len(dials) == 33
     assert all({"name", "category", "pos", "neg"} <= set(d) for d in dials)

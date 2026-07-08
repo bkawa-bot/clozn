@@ -40,7 +40,7 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, REPO_ROOT)                                    # repo root, for `from clozn import ...`
-sys.path.insert(0, os.path.join(REPO_ROOT, "research"))          # deploy_dial_library.py stays in research/
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))           # deploy_dial_library.py lives in scripts/
 
 from clozn import clozn_server as cs          # noqa: E402
 import deploy_dial_library as ddl  # noqa: E402
