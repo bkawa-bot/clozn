@@ -115,6 +115,8 @@
       ".ri-tree-main:hover .ri-tree-title{text-decoration:underline}" +
       ".ri-tree-mark{flex:none;font-size:10px;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line,#e3e6ef);border-radius:8px;padding:1px 6px;color:var(--faint,#9aa0b3);background:#fff}" +
       ".ri-tree-node.current .ri-tree-mark{color:#2f4a7a;border-color:rgba(122,167,255,.45);background:rgba(122,167,255,.12)}" +
+      ".ri-tree-id{flex:none;font-family:ui-monospace,Consolas,monospace;font-size:10.5px;color:var(--faint,#9aa0b3)}" +
+      ".ri-tree-node.current .ri-tree-id{color:#2f4a7a}" +
       ".ri-tree-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
       ".ri-tree-meta,.ri-tree-change{margin:3px 0 0 2px;color:var(--faint,#9aa0b3);font-size:11.5px;line-height:1.35}" +
       ".ri-tree-change{color:var(--soft,#5a6072)}" +
@@ -568,6 +570,7 @@
       '" style="padding-left:' + pad + 'px">';
     h += '<a class="ri-tree-main" href="#/run/' + esc(id) + '">' +
       '<span class="ri-tree-mark">' + esc(marker) + '</span>' +
+      (node.short_id ? '<span class="ri-tree-id">' + esc(node.short_id) + '</span>' : '') +
       '<span class="ri-tree-title">' + esc(prompt) + '</span></a>';
     var meta = lineageMeta(node);
     if (meta) h += '<div class="ri-tree-meta">' + esc(meta) + "</div>";
@@ -575,6 +578,100 @@
     h += "</div>";
     for (var i = 0; i < kids.length; i++) h += lineageNodeHTML(kids[i], (depth || 0) + 1);
     return h;
+  }
+
+  // A short, recognizable id for a run node label. Run ids are "run_<13hexms>_<6hexuuid>"; the trailing
+  // uuid segment is the most distinguishing between runs seconds apart, so show that (with a "#" prefix).
+  // Falls back to a truncation for any id that doesn't match the shape.
+  function shortRunId(id) {
+    id = String(id == null ? "" : id);
+    var m = /^run_[0-9a-fA-F]+_([0-9a-fA-F]+)$/.exec(id);
+    if (m) return "#" + m[1];
+    return id.length > 8 ? "#" + id.slice(-6) : (id ? "#" + id : "");
+  }
+
+  // Chronological sort key for a run summary. The list carries timing.started_at (epoch float); the id also
+  // embeds a zero-padded ms timestamp, so an id compare is a safe fallback ordering.
+  function runStartKey(r) {
+    var t = r && r.timing && r.timing.started_at;
+    return (t == null || isNaN(+t)) ? null : +t;
+  }
+
+  // ---------------------------------------------------------------------------------------------------
+  // Backlog #3: the branch-lineage tree, assembled CLIENT-SIDE from the /runs list + each run's
+  // parent_run_id (the same field the Runs page filters "replayed" on) -- so it needs no server lineage
+  // endpoint (the record already carries parent_run_id in the summary). `runs` is the /runs window (capped
+  // at 80 most-recent server-side); `currentId` is the run being inspected. Returns the SAME shape the
+  // renderer below already consumes ({tree, ancestors[], siblings[], children[]}, plus truncation flags),
+  // so lineageNodeHTML/lineagePanel render it unchanged.
+  //
+  // CAP-AWARE + cycle-safe: we only walk parent/child links that resolve INSIDE the window. If the current
+  // run's parent isn't in the window, the visible root is the current run and `truncatedAncestor` is set so
+  // the panel can say "older ancestors are outside the recent-runs window" instead of silently dropping
+  // them or breaking. (A server helper exposing the full family regardless of the 80-cap is FLAGGED in the
+  // report, not built here -- clozn_server.py/runlog belong to another agent.)
+  function buildLineageFromRuns(runs, currentId) {
+    if (!Array.isArray(runs) || !runs.length || currentId == null) return null;
+    var byId = {}, childrenOf = {};
+    runs.forEach(function (r) { if (r && r.id != null) byId[r.id] = r; });
+    if (!byId[currentId]) return null;   // the current run isn't in the visible window -> panel degrades
+
+    runs.forEach(function (r) {
+      if (!r || r.id == null) return;
+      var p = r.parent_run_id;
+      if (p != null && byId[p] && p !== r.id) (childrenOf[p] = childrenOf[p] || []).push(r.id);
+    });
+    Object.keys(childrenOf).forEach(function (pid) {
+      childrenOf[pid].sort(function (a, b) {
+        var ka = runStartKey(byId[a]), kb = runStartKey(byId[b]);
+        if (ka != null && kb != null && ka !== kb) return ka - kb;   // oldest child first (chronological)
+        return String(a) < String(b) ? -1 : (String(a) > String(b) ? 1 : 0);
+      });
+    });
+
+    // walk up to the visible root, guarding cycles and window edges.
+    var rootId = currentId, seen = {}, truncatedAncestor = false, cur = currentId;
+    while (true) {
+      seen[cur] = 1;
+      var p = byId[cur] ? byId[cur].parent_run_id : null;
+      if (p == null) { rootId = cur; break; }
+      if (!byId[p]) { rootId = cur; truncatedAncestor = true; break; }   // parent is outside the window
+      if (seen[p]) { rootId = cur; break; }                             // cycle guard
+      cur = p; rootId = p;
+    }
+
+    // the ancestor chain (current -> ... -> root, exclusive of current), for the header count.
+    var ancestors = [], a = byId[currentId] ? byId[currentId].parent_run_id : null, g = {};
+    while (a != null && byId[a] && !g[a]) { ancestors.push(a); g[a] = 1; a = byId[a].parent_run_id; }
+    var parentOfCurrent = byId[currentId] ? byId[currentId].parent_run_id : null;
+    var siblings = (parentOfCurrent != null && childrenOf[parentOfCurrent])
+      ? childrenOf[parentOfCurrent].filter(function (id) { return id !== currentId; }) : [];
+    var children = childrenOf[currentId] ? childrenOf[currentId].slice() : [];
+
+    // build the tree from the visible root; `built` dedups (a proper tree has none, but guards cycles) and
+    // caps runaway on a pathological record.
+    var built = {}, MAX = 400, truncatedTree = false;
+    function node(id) {
+      if (built[id]) return null;
+      if (Object.keys(built).length >= MAX) { truncatedTree = true; return null; }
+      built[id] = 1;
+      var r = byId[id] || {};
+      var t = {
+        id: id, short_id: shortRunId(id),
+        prompt_summary: r.prompt_summary, response_summary: r.response_summary,
+        parent_run_id: r.parent_run_id, created_at: r.created_at, source: r.source,
+        finish_reason: r.finish_reason,
+        duration_ms: (r.timing && r.timing.duration_ms != null) ? r.timing.duration_ms : null,
+        is_current: id === currentId, children: []
+      };
+      (childrenOf[id] || []).forEach(function (cid) { var c = node(cid); if (c) t.children.push(c); });
+      return t;
+    }
+    return {
+      tree: node(rootId),
+      ancestors: ancestors, siblings: siblings, children: children,
+      truncatedAncestor: truncatedAncestor, truncatedTree: truncatedTree, window: runs.length
+    };
   }
 
   function lineagePanel(lineage) {
@@ -590,8 +687,16 @@
       " | " + siblings + " sibling" + (siblings === 1 ? "" : "s") +
       " | " + children + " child" + (children === 1 ? "" : "ren") + "</span></div>";
     h += '<div class="ri-tree">' + lineageNodeHTML(lineage.tree, 0) + "</div>";
-    if (!ancestors && !siblings && !children) {
+    if (!ancestors && !siblings && !children && !lineage.truncatedAncestor) {
       h += '<div class="ri-tree-empty" style="margin-top:8px">No branches or replays yet; this is an original run.</div>';
+    }
+    // cap-awareness: the /runs window is the 80 most-recent runs, so an older family member can fall outside
+    // it. Say so honestly rather than implying the tree is complete.
+    if (lineage.truncatedAncestor) {
+      h += '<div class="ri-tree-empty" style="margin-top:8px">This run’s parent is outside the recent-runs window — older ancestors aren’t shown here.</div>';
+    }
+    if (lineage.truncatedTree) {
+      h += '<div class="ri-tree-empty" style="margin-top:8px">This family is large; the tree was truncated for display.</div>';
     }
     h += "</section>";
     return h;
@@ -1873,11 +1978,15 @@
     // M1 is free (zero generation -- a read + reshape of the run already being fetched): fire it alongside
     // the run fetch, not lazily after an Explain-tab click, so opening the tab is instant.
     var explainP = postJSON("/runs/" + runId + "/explain");
-    var lineageP = getJSON("/runs/" + runId + "/lineage").catch(function () { return null; });
+    // Backlog #3: the branch lineage is assembled CLIENT-SIDE from the /runs list (each summary carries
+    // parent_run_id) -- no server lineage endpoint needed. The list is the 80 most-recent runs; buildLineage-
+    // FromRuns degrades gracefully (flags "parent outside window") when a family member falls outside it.
+    var runsListP = getJSON("/runs").catch(function () { return null; });
     try { run = await getJSON("/runs/" + runId); }
     catch (e) { root.innerHTML = '<div class="sub">run not found (' + esc(e.message) + ")</div>"; return; }
     var explainR = await explainP;
-    var lineageR = await lineageP;
+    var runsListR = await runsListP;
+    var lineageR = buildLineageFromRuns(runsListR && runsListR.runs, runId);
     var flags = run.flags || [];
     root.innerHTML =
       '<div class="ri-head"><b>' + esc(run.prompt_summary || "(run)") + "</b>" +
