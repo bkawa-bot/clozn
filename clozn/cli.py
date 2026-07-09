@@ -598,6 +598,94 @@ def cmd_pull(args):
           f"run it:  clozn run {_friendly(dest)} \"hello\"")
 
 
+# ------------------------------------------------------------------ plan (fit check, no download, no load)
+# `clozn plan <name|path|url>` answers "will it fit?" by reading only a GGUF's header -- a few MB at the
+# front of the file -- never the multi-GB tensor payload, never a model load, never the GPU. Local models
+# read straight off disk; a name `clozn pull` knows but hasn't fetched yet is read remotely over HTTP Range
+# against HuggingFace, so the fit check happens BEFORE the download it's trying to save you from.
+
+def _fmt_ctx(n) -> str:
+    if not n:
+        return "?"
+    return f"{n // 1024}k" if n % 1024 == 0 else str(n)
+
+
+def _detect_vram_gb():
+    """Best-effort local VRAM budget via `nvidia-smi` -- a driver metadata query, not a CUDA context: it
+    doesn't allocate anything or run compute, so it's consistent with this being a CPU-only, no-GPU-use
+    planner. Returns None (caller falls back to a default) if nvidia-smi isn't there or times out."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode == 0 and out.stdout.strip():
+            return round(float(out.stdout.strip().splitlines()[0]) / 1024, 1)
+    except Exception:
+        pass
+    return None
+
+
+def format_plan(name: str, header: dict, file_size_bytes: int, report: dict, vram_gb: float,
+                ctx_for_estimate: int = 8192, source_note: str = "") -> str:
+    """Pure dict(s)->text render of a fit_planner report (no I/O -- testable with canned dicts), e.g.:
+    'Qwen2.5 7B Instruct Q4_K_M -- 28 layers, 32k ctx, 4.4 GB file
+     on 16 GB VRAM: FITS (~est 5.3 GB at 8k ctx, KV-q8)'"""
+    quant = header.get("quant", "?")
+    n_layers = header.get("n_layers")
+    size_gb = (file_size_bytes or 0) / 1e9
+    verdict = f"{BOLD}FITS{RST}" if report["fits"] else f"{BOLD}WON'T FIT{RST}"
+    lines = [
+        f"{name} {quant} — {n_layers if n_layers is not None else '?'} layers, "
+        f"{_fmt_ctx(header.get('context_length'))} ctx, {size_gb:.1f} GB file"
+        + (f"  {DIM}{source_note}{RST}" if source_note else ""),
+        f"on {vram_gb:g} GB VRAM: {verdict}  (~est {report['est_vram_gb']:.1f} GB at "
+        f"{_fmt_ctx(ctx_for_estimate)} ctx, KV-q8)",
+    ]
+    if report.get("offload_hint"):
+        lines.append(f"  {report['offload_hint']}")
+    lines.append(f"{DIM}{report['note']}{RST}")
+    if header.get("quant_source") and header["quant_source"] != "general.file_type":
+        lines.append(f"{DIM}quant is a guess from the dominant tensor type ({header['quant_source']}).{RST}")
+    return "\n".join(lines)
+
+
+def cmd_plan(args):
+    from clozn import fit_planner   # stdlib+urllib only; imported lazily like the other clozn.* siblings
+
+    vram_gb = args.vram if args.vram is not None else (_detect_vram_gb() or 16.0)
+    spec = args.model
+
+    if spec.startswith("http://") or spec.startswith("https://"):
+        header = fit_planner.gguf_header_from_url(spec)
+        size = header.get("file_size_bytes") or 0
+        name = header.get("name") or spec.rsplit("/", 1)[-1]
+        source_note = f"remote, not downloaded: {spec}"
+    else:
+        path = spec if (spec.lower().endswith(".gguf") and os.path.isfile(spec)) else None
+        if path is None:
+            try:
+                path = resolve_model(spec)
+            except CloznError:
+                if spec not in PULLABLE:
+                    raise
+                repo, file = PULLABLE[spec]
+                url = f"https://huggingface.co/{repo}/resolve/main/{file}"
+                print(f"{DIM}- '{spec}' isn't downloaded yet -- reading its header straight off "
+                     f"HuggingFace (no download){RST}", file=sys.stderr)
+                header = fit_planner.gguf_header_from_url(url)
+                size = header.get("file_size_bytes") or 0
+                name = spec
+                source_note = f"not downloaded -- `clozn pull {spec}` fetches it: {url}"
+                path = None
+        if path is not None:
+            header = fit_planner.gguf_header_from_path(path)
+            size = header["file_size_bytes"]
+            name = _friendly(path)
+            source_note = path
+
+    report = fit_planner.fit_report(header, size, vram_gb)
+    print(format_plan(name, header, size, report, vram_gb, source_note=source_note))
+
+
 def _open_browser(url):
     try:
         import webbrowser
@@ -1520,6 +1608,12 @@ def build_parser():
     sub.add_parser("models", help="list local models + the engine backend").set_defaults(fn=cmd_models)
     pp = sub.add_parser("pull", help="download a model GGUF (by name, or owner/repo/file.gguf)")
     pp.add_argument("model"); pp.set_defaults(fn=cmd_pull)
+    ppl = sub.add_parser("plan", help="will it fit? read a GGUF's header (no download, no load, no GPU) "
+                         "before you commit to a multi-GB pull")
+    ppl.add_argument("model", help="a known model name, a local .gguf path, or a HF resolve/... .gguf URL")
+    ppl.add_argument("--vram", type=float, default=None,
+                     help="VRAM budget in GB (default: detect via nvidia-smi, else 16)")
+    ppl.set_defaults(fn=cmd_plan)
     pst = sub.add_parser("studio", help="launch Clozn Studio (the glass-box UI + the endpoint your tools connect to)")
     pst.add_argument("substrate", nargs="?", default=None, help="qwen (default) | dream | engine")
     pst.add_argument("--port", type=int, default=0); pst.add_argument("--open", action="store_true", help="open the UI in your browser")
