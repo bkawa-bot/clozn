@@ -26,6 +26,11 @@
 #endif
 #include "viz_html.hpp"
 
+#include "ggml.h"       // J-lens: standalone CPU ggml graph (J_l @ h -> rms_norm -> head)
+#include "ggml-cpu.h"   // ggml_graph_compute_with_ctx
+#include "gguf.h"       // read the GGUF's own output_norm.weight + output.weight for the J-lens head
+
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -33,13 +38,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <queue>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -783,6 +792,172 @@ std::vector<float> build_steer_cvec(const ConceptProbes& p, const std::string& c
     return data;
 }
 
+// ---- J-lens readout (JLENS_ENGINE_PLAN.md J2) --------------------------------------------------------
+// lens_l(h) = output.weight @ rmsnorm(J_l @ h): a fitted Jacobian J_l [d_model x d_model] f16 transports a
+// layer-l residual into the FINAL-layer basis, then the model's OWN final RMSNorm + output head unembed it
+// -> per-position top-k "disposed to say" tokens (Anthropic's J-lens, transferred to the GGUF engine in
+// J0/J1). The J_l matrices are fitted sidecars (config dir, out of git, treated like model weights); the
+// final_norm + head are read straight from the loaded GGUF (so the head is the model's own quantized q6_K
+// lm_head -> expect drift vs the fp32 numpy oracle, tolerance not bitwise). The apply is a small standalone
+// CPU ggml graph (the 7B stays on the GPU); weights are loaded once at startup, mirroring the SAE sidecar.
+struct JlensServe {
+    bool on = false;
+    std::string err;                            // last load failure, human-readable
+    int d_model = 0, vocab = 0;
+    int default_layer = 0;                      // manifest engine_default_tap_layer (the /jlens default)
+    float eps = 1e-6f;                          // final RMSNorm epsilon (read from the GGUF; Qwen2.5 = 1e-6)
+    struct ggml_context* wctx = nullptr;        // persistent: output_norm, output.weight, and each J_l
+    struct ggml_tensor* out_norm = nullptr;     // F32 [d_model]
+    struct ggml_tensor* out_head = nullptr;     // the GGUF's own lm_head, quantized [d_model, vocab]
+    std::map<int, struct ggml_tensor*> Jl;      // layer -> F16 [d_model, d_model] (ggml layout Jl(k,m)=J[m,k])
+    std::mutex mtx;                             // a readout builds a transient graph; serialize (on-demand)
+
+    JlensServe() = default;
+    JlensServe(const JlensServe&) = delete;
+    JlensServe& operator=(const JlensServe&) = delete;
+    ~JlensServe() { if (wctx) ggml_free(wctx); }
+
+    std::vector<int> layers() const {
+        std::vector<int> v;
+        for (const auto& kv : Jl) v.push_back(kv.first);
+        return v;
+    }
+    bool has(int layer) const { return Jl.count(layer) > 0; }
+
+    // Read `sz` bytes at absolute file offset `off` into `dst` (64-bit seek: the head lives past 2 GB).
+    static bool read_at(std::ifstream& f, void* dst, size_t off, size_t sz) {
+        f.clear();
+        f.seekg(static_cast<std::streamoff>(off), std::ios::beg);
+        f.read(static_cast<char*>(dst), static_cast<std::streamsize>(sz));
+        return static_cast<size_t>(f.gcount()) == sz;
+    }
+
+    // Load the J_l sidecars from `dir` (+ manifest.json) and the GGUF's OWN final_norm/head from
+    // `model_path`. n_embd/n_vocab come from the loaded model. Returns false + sets err on any failure.
+    bool load(const std::string& dir, const std::string& model_path, int n_embd, int n_vocab) {
+        d_model = n_embd;
+        vocab = n_vocab;
+        std::vector<int> want_layers;
+        {   // manifest: which layers + the default tap + a d_model sanity check.
+            std::ifstream mf(dir + "/manifest.json", std::ios::binary);
+            if (!mf) { err = "no manifest.json in " + dir; return false; }
+            json m;
+            try { mf >> m; } catch (...) { err = "manifest.json parse failed"; return false; }
+            if (m.contains("d_model") && m["d_model"].is_number() && m["d_model"].get<int>() != d_model) {
+                err = "manifest d_model " + std::to_string(m["d_model"].get<int>()) +
+                      " != model n_embd " + std::to_string(d_model);
+                return false;
+            }
+            if (m.contains("layers") && m["layers"].is_array())
+                for (const auto& l : m["layers"]) if (l.is_number_integer()) want_layers.push_back(l.get<int>());
+            default_layer = m.value("engine_default_tap_layer", want_layers.empty() ? 0 : want_layers.front());
+        }
+        if (want_layers.empty()) { err = "manifest lists no layers"; return false; }
+
+        // Read output_norm.weight + output.weight straight from the GGUF (no_alloc meta -> targeted file read;
+        // never loads the whole 4.7 GB file). The head is the model's OWN quantized lm_head.
+        struct ggml_context* meta = nullptr;
+        struct gguf_init_params gp; gp.no_alloc = true; gp.ctx = &meta;
+        struct gguf_context* gg = gguf_init_from_file(model_path.c_str(), gp);
+        if (!gg || !meta) { err = "gguf_init_from_file failed (head read)"; if (gg) gguf_free(gg); return false; }
+        {   // eps from the model's own metadata (matches the oracle's 1e-6 for Qwen2.5); default keeps 1e-6.
+            int64_t k = gguf_find_key(gg, "qwen2.attention.layer_norm_rms_epsilon");
+            if (k >= 0) eps = gguf_get_val_f32(gg, k);
+        }
+        // Untied head is "output.weight"; a tied-embedding model has none -> fall back to token_embd.weight.
+        std::string head_name = ggml_get_tensor(meta, "output.weight") ? "output.weight" : "token_embd.weight";
+        struct ggml_tensor* mo = ggml_get_tensor(meta, head_name.c_str());
+        struct ggml_tensor* mn = ggml_get_tensor(meta, "output_norm.weight");
+        if (!mo || !mn) { err = "GGUF missing output(.weight)/output_norm.weight"; ggml_free(meta); gguf_free(gg); return false; }
+        const int64_t oid = gguf_find_tensor(gg, head_name.c_str());
+        const int64_t nid = gguf_find_tensor(gg, "output_norm.weight");
+        const size_t data_off = gguf_get_data_offset(gg);
+        const size_t o_off = data_off + gguf_get_tensor_offset(gg, oid), o_sz = gguf_get_tensor_size(gg, oid);
+        const size_t n_off = data_off + gguf_get_tensor_offset(gg, nid), n_sz = gguf_get_tensor_size(gg, nid);
+        const enum ggml_type o_type = mo->type;  const int64_t o_ne0 = mo->ne[0], o_ne1 = mo->ne[1];
+        const enum ggml_type n_type = mn->type;  const int64_t n_ne0 = mn->ne[0];
+        ggml_free(meta); gguf_free(gg);
+        if (o_ne0 != d_model || o_ne1 != vocab) { err = "head shape mismatch vs model"; return false; }
+
+        // Persistent weight context sized to hold the head + norm + every J_l.
+        const size_t j_bytes = static_cast<size_t>(d_model) * d_model * sizeof(uint16_t);   // f16
+        const size_t mem = o_sz + n_sz + j_bytes * want_layers.size()
+                         + (want_layers.size() + 4) * ggml_tensor_overhead() + (1ULL << 20);
+        struct ggml_init_params ip; ip.mem_size = mem; ip.mem_buffer = nullptr; ip.no_alloc = false;
+        wctx = ggml_init(ip);
+        if (!wctx) { err = "ggml_init(jlens weights) failed"; return false; }
+
+        std::ifstream mfile(model_path, std::ios::binary);
+        if (!mfile) { err = "cannot reopen model file for head read"; return false; }
+        out_head = ggml_new_tensor_2d(wctx, o_type, o_ne0, o_ne1);
+        out_norm = ggml_new_tensor_1d(wctx, n_type, n_ne0);
+        if (!read_at(mfile, out_head->data, o_off, o_sz) || !read_at(mfile, out_norm->data, n_off, n_sz)) {
+            err = "short read on the GGUF head/norm"; return false;
+        }
+        for (int L : want_layers) {
+            const std::string path = dir + "/J_layer" + std::to_string(L) + ".f16";
+            std::ifstream jf(path, std::ios::binary);
+            if (!jf) { err = "missing sidecar " + path; return false; }
+            struct ggml_tensor* J = ggml_new_tensor_2d(wctx, GGML_TYPE_F16, d_model, d_model);
+            jf.read(static_cast<char*>(J->data), static_cast<std::streamsize>(j_bytes));
+            if (static_cast<size_t>(jf.gcount()) != j_bytes) { err = "short read on " + path; return false; }
+            Jl[L] = J;
+        }
+        on = true;
+        return true;
+    }
+
+    // Per-position top-k of lens_l(h). h = [n_tokens * d_model] host f32 (harvest layout, position-major).
+    // Fills out[pos] = up to `topk` (token_id, logit) descending. Serialized (transient graph per call).
+    bool readout(const float* h, int n_tokens, int layer, int topk,
+                 std::vector<std::vector<std::pair<int, float>>>& out, std::string& e) {
+        if (!on) { e = "jlens not loaded"; return false; }
+        auto it = Jl.find(layer);
+        if (it == Jl.end()) { e = "no J-lens sidecar for layer " + std::to_string(layer); return false; }
+        if (n_tokens <= 0) { e = "no tokens"; return false; }
+        struct ggml_tensor* J = it->second;
+        std::lock_guard<std::mutex> lk(mtx);
+
+        // Transient CPU graph context: leaves (h) + intermediates (hJ, normed, logits) + work buffer.
+        const size_t tens = static_cast<size_t>((3 * d_model) + vocab) * n_tokens * sizeof(float);
+        const size_t mem = tens + tens / 2 + ggml_graph_overhead() + 32 * ggml_tensor_overhead() + (128ULL << 20);
+        struct ggml_init_params ip; ip.mem_size = mem; ip.mem_buffer = nullptr; ip.no_alloc = false;
+        struct ggml_context* ctx = ggml_init(ip);
+        if (!ctx) { e = "ggml_init(jlens graph) failed"; return false; }
+
+        struct ggml_tensor* h_t = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d_model, n_tokens);   // h_t(k,n)=h[n][k]
+        std::memcpy(h_t->data, h, static_cast<size_t>(d_model) * n_tokens * sizeof(float));
+        struct ggml_tensor* hJ = ggml_mul_mat(ctx, J, h_t);           // [d_model, n]: x[n][m]=sum_k J[m,k]*h[n][k]
+        struct ggml_tensor* nm = ggml_rms_norm(ctx, hJ, eps);         // final RMSNorm over the feature dim
+        nm = ggml_mul(ctx, nm, out_norm);                             // * output_norm.weight (broadcast over n)
+        struct ggml_tensor* logits = ggml_mul_mat(ctx, out_head, nm); // [vocab, n]: the model's own head
+
+        struct ggml_cgraph* gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, logits);
+        int nthreads = static_cast<int>(std::thread::hardware_concurrency());
+        if (nthreads < 1) nthreads = 4;
+        if (nthreads > 16) nthreads = 16;
+        const enum ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, nthreads);
+        if (st != GGML_STATUS_SUCCESS) { ggml_free(ctx); e = "jlens graph compute failed"; return false; }
+
+        const float* Lg = static_cast<const float*>(logits->data);   // column p = Lg + p*vocab
+        const int k = std::min(topk, vocab);
+        out.assign(static_cast<size_t>(n_tokens), {});
+        std::vector<int> idx(static_cast<size_t>(vocab));
+        for (int p = 0; p < n_tokens; ++p) {
+            const float* row = Lg + static_cast<size_t>(p) * vocab;
+            for (int v = 0; v < vocab; ++v) idx[static_cast<size_t>(v)] = v;
+            std::partial_sort(idx.begin(), idx.begin() + k, idx.end(),
+                              [&](int a, int b) { return row[a] > row[b]; });
+            auto& dst = out[static_cast<size_t>(p)];
+            dst.reserve(static_cast<size_t>(k));
+            for (int j = 0; j < k; ++j) dst.emplace_back(idx[static_cast<size_t>(j)], row[idx[static_cast<size_t>(j)]]);
+        }
+        ggml_free(ctx);
+        return true;
+    }
+};
+
 // A pool of contexts over ONE shared model. Each request acquires a free context (blocking until
 // one is available), runs on it, and releases it — so N workers serve N requests concurrently
 // while the weights (the bulk of VRAM) are loaded once. RAII Lease guarantees release on any exit.
@@ -831,7 +1006,7 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <model.gguf> [--port N] [--host H] [--gpu-layers N] "
                              "[--mask-token ID] [--eos ID] [--ctx N] [--workers N] "
-                             "[--sae <dir>] [--sae-k N]\n", argv[0]);
+                             "[--sae <dir>] [--sae-k N] [--jlens <dir>]\n", argv[0]);
         return 1;
     }
     const std::string model_path = argv[1];
@@ -839,6 +1014,7 @@ int main(int argc, char** argv) {
     std::string host = "127.0.0.1";
     std::string sae_dir;  // --sae: exported SAE weight dir (tools/export_sae_weights.py); off by default
     int sae_k = 16;
+    std::string jlens_dir;  // --jlens: J-lens sidecar dir; else CLOZN_JLENS_DIR; else ~/.clozn/jlens (off if empty)
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() { return (i + 1 < argc) ? argv[++i] : ""; };
@@ -851,9 +1027,15 @@ int main(int argc, char** argv) {
         else if (a == "--workers") workers = std::atoi(next());
         else if (a == "--sae") sae_dir = next();
         else if (a == "--sae-k") sae_k = std::atoi(next());
+        else if (a == "--jlens") jlens_dir = next();
     }
     if (workers < 1) workers = 1;
     if (sae_k < 1) sae_k = 1;
+    if (jlens_dir.empty()) {                     // --jlens > $CLOZN_JLENS_DIR > ~/.clozn/jlens (the sidecar home)
+        if (const char* e = std::getenv("CLOZN_JLENS_DIR")) jlens_dir = e;
+        else if (const char* h = std::getenv("USERPROFILE")) jlens_dir = std::string(h) + "/.clozn/jlens";
+        else if (const char* h2 = std::getenv("HOME")) jlens_dir = std::string(h2) + "/.clozn/jlens";
+    }
 
     llama_log_set(quiet_log, nullptr);
     // One copy of the weights, N contexts over it — concurrent requests, one model in (V)RAM.
@@ -942,6 +1124,23 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, " (read tap %d, steer tap %d)\n", read_tap, steer_tap);
     }
 
+    // J-lens (JLENS_ENGINE_PLAN.md J2): load the fitted J_l sidecars + the GGUF's own final_norm/head once,
+    // so POST /jlens can read each position's "disposed to say" tokens. Off (route 400s) if the dir is
+    // absent/incomplete -- a research feature, never required for chat/harvest/score to serve.
+    JlensServe jlens;
+    if (!jlens_dir.empty()) {
+        int jl_n_embd = 0;
+        { ContextPool::Lease lease = pool.acquire(); jl_n_embd = (*lease).n_embd(); }
+        if (jlens.load(jlens_dir, model_path, jl_n_embd, model->config().vocab_size)) {
+            std::fprintf(stderr, "[cloze-server] J-lens ready: d_model %d, vocab %d, eps %.1e, layers",
+                         jlens.d_model, jlens.vocab, jlens.eps);
+            for (int L : jlens.layers()) std::fprintf(stderr, " %d", L);
+            std::fprintf(stderr, " (default %d) from %s\n", jlens.default_layer, jlens_dir.c_str());
+        } else {
+            std::fprintf(stderr, "[cloze-server] J-lens off: %s\n", jlens.err.c_str());
+        }
+    }
+
     httplib::Server svr;
 
     svr.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
@@ -954,6 +1153,9 @@ int main(int argc, char** argv) {
         if (sae_serve.on)
             h["sae"] = {{"d_sae", sae_serve.enc.d_sae()}, {"layer", sae_serve.layer}, {"k", sae_serve.k}};
 #endif
+        if (jlens.on)
+            h["jlens"] = {{"layers", jlens.layers()}, {"default_layer", jlens.default_layer},
+                          {"d_model", jlens.d_model}, {"vocab", jlens.vocab}};
         res.set_content(h.dump(), "application/json");
     });
 
@@ -1244,6 +1446,108 @@ int main(int argc, char** argv) {
                     {static_cast<int>(tokens.size()), fwd.n_embd})},
             };
             res.set_content(resp.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
+    // POST /jlens — the J-lens readout (JLENS_ENGINE_PLAN.md J2). Body {text, layer?, topk?=5}: tap the
+    // residual `h` at `layer` (the /harvest machinery), transport it into the final-layer basis with the
+    // fitted J_l, then unembed through the model's OWN final RMSNorm + output head -> each position's top-k
+    // "disposed to say" tokens. NOT generation, NO sampling: a deterministic linear read. Response
+    // {layer, n_tokens, tokens:[piece...], readouts:[[{id,piece,score}...k]...n]} (score = the raw lens
+    // logit). Guards mirror /harvest: missing sidecar -> 400 + available layers; empty/over-n_ctx -> 400;
+    // malformed JSON -> 400; the pooled context's tap/emit flags are restored on EVERY exit.
+    svr.Post("/jlens", [&](const httplib::Request& req, httplib::Response& res) {
+        if (!jlens.on) {
+            res.status = 400;
+            res.set_content(json{{"error", "J-lens not loaded (start with --jlens <dir> or set CLOZN_JLENS_DIR)"}}.dump(),
+                            "application/json");
+            return;
+        }
+        json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+        if (body.is_discarded()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON body"}}.dump(), "application/json");
+            return;
+        }
+        const std::string text = body.value("text", std::string());
+        if (text.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "empty text"}}.dump(), "application/json");
+            return;
+        }
+        int topk = body.value("topk", 5);
+        if (topk < 1) topk = 1;
+        const int layer = body.value("layer", jlens.default_layer);
+        if (!jlens.has(layer)) {
+            res.status = 400;
+            res.set_content(json{{"error", "no J-lens sidecar for that layer"},
+                                 {"layer", layer}, {"available", jlens.layers()}}.dump(), "application/json");
+            return;
+        }
+        const std::vector<int> tokens = model->encode(text);
+        if (tokens.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "text tokenized to zero tokens"}}.dump(), "application/json");
+            return;
+        }
+        if (static_cast<int>(tokens.size()) > n_ctx) {
+            res.status = 400;
+            res.set_content(json{{"error", "text too long for one forward"},
+                                 {"n_tokens", static_cast<int>(tokens.size())}, {"n_ctx", n_ctx}}.dump(),
+                            "application/json");
+            return;
+        }
+        try {
+            ForwardResult fwd;
+            {   // tap `h` at `layer` via the harvest path; restore the pooled context's tap/emit on all exits.
+                ContextPool::Lease lease = pool.acquire();
+                GgmlAdapter& ad = *lease;
+                const int default_tap = ad.tap_layer();
+                ad.set_causal(true);            // harvest under causal attention (also clears the KV)
+                ad.set_emit_activations(true);
+                ad.set_tap_layer(layer);
+                try {
+                    fwd = ad.harvest(tokens);
+                    ad.set_emit_activations(false);
+                    ad.set_tap_layer(default_tap);
+                } catch (...) {
+                    ad.set_emit_activations(false);
+                    ad.set_tap_layer(default_tap);
+                    throw;
+                }
+            }
+            if (fwd.n_embd != jlens.d_model ||
+                fwd.activations.size() != static_cast<size_t>(tokens.size()) * jlens.d_model) {
+                res.status = 400;
+                res.set_content(json{{"error", "harvest returned no/mismatched activations for this layer"}}.dump(),
+                                "application/json");
+                return;
+            }
+            std::vector<std::vector<std::pair<int, float>>> tk;
+            std::string e;
+            if (!jlens.readout(fwd.activations.data(), static_cast<int>(tokens.size()), layer, topk, tk, e)) {
+                res.status = 400;
+                res.set_content(json{{"error", e}}.dump(), "application/json");
+                return;
+            }
+            json pieces = json::array();
+            for (int id : tokens) pieces.push_back(model->decode({id}));
+            json readouts = json::array();
+            for (const auto& row : tk) {
+                json rr = json::array();
+                for (const auto& pr : row)
+                    rr.push_back({{"id", pr.first}, {"piece", model->decode({pr.first})}, {"score", pr.second}});
+                readouts.push_back(rr);
+            }
+            json resp = {{"layer", layer}, {"n_tokens", static_cast<int>(tokens.size())},
+                         {"tokens", pieces}, {"readouts", readouts}};
+            // dump_json (replace handler): token/readout pieces can be a PARTIAL multi-byte UTF-8 sequence
+            // (byte-fallback tokens split a codepoint) -- strict dump() would throw on those; replace emits
+            // U+FFFD instead, same as the streaming path. Determinism holds (identical inputs -> identical bytes).
+            res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json{{"error", e.what()}}.dump(), "application/json");

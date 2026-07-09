@@ -1,6 +1,6 @@
 # Clozn Roadmap — consolidated map
 
-**Updated 2026-07-08.** Single source of truth for *done / v1 / later*. This supersedes the old phased
+**Updated 2026-07-09.** Single source of truth for *done / v1 / later*. This supersedes the old phased
 "monorepo migration" roadmap (Phase 0 = the reorg, now done). It **indexes** the detailed planning docs
 rather than duplicating them — go to the linked doc for execution detail.
 
@@ -11,7 +11,7 @@ rather than duplicating them — go to the linked doc for execution detail.
 | Doc | Covers | Status |
 |---|---|---|
 | `notes/REPRODUCE_AND_PROVE_PLAN.md` | **#114** — `/score`, forced receipts, rederive (S0–S6) | S0–S4 ✅, S5/S6 left |
-| `notes/JLENS_ENGINE_PLAN.md` | **#115** — engine-native J-lens (J0–J5) | not started (the v1 headline) |
+| `notes/JLENS_ENGINE_PLAN.md` | **#115** — engine-native J-lens (J0–J5) | J0–J2 ✅ (route live); J3 next (the v1 headline) |
 | `notes/INTROSPECTION_EXPERIMENTS.md` | **X1–X8** — introspection science (needs J-lens) | designs ready, none run |
 | `notes/FRONTIER_BETS.md` | strategic bets: perf stack, AR×diffusion (H1–H7), honesty ledger | idea inventory + ranked order |
 | `notes/MEMORY_MODE_SWAP_SPEC.md` | prompt-mode memory | ✅ built (this is what ships today) |
@@ -32,10 +32,10 @@ rather than duplicating them — go to the linked doc for execution detail.
 *Headline (JLENS_ENGINE_PLAN): "the local runtime with causal receipts and J-lens readouts — see what your GGUF is disposed to say, per token, and prove what changed its answer."*
 
 - **#114 leftovers** — **S5** (turn on engine sampling; gated on a human go/no-go) · **S6** (docs/claims refresh).
-- **#115 — engine-native J-lens (J0→J4).** *Not started; the headline. RACE posture (Anthropic published 2026-07-06; nobody has it in a product).*
+- **#115 — engine-native J-lens (J0→J4).** *J0–J2 done — the engine serves it. J3 (studio panel) next. RACE posture (Anthropic published 2026-07-06; nobody has it in a product).*
   - **J0** — fit the lens in the lab (PyTorch, autograd, nf4 + checkpointing on the 16 GB card; ~100 prompts saturates), export per-layer matrices + manifest. ~1–2 days.
   - **J0 fit + J1 transfer gate — ✅ PASS (2026-07-09).** The HF-fitted lens (nf4, 100 prompts) transfers to the engine's GGUF `/harvest` activations **essentially losslessly** — GGUF ≈ HF on cross-position consistency (margins 0.68–0.82) *and* semantic recovery (hit@5 0.72 == 0.72), both ≫ a proper null. *(The first gate FAILed on a flawed row-shuffled-`J` null — unembedding-dominated, an invalid high floor; corrected with a cross-position null + semantic test. **Don't rebuild the shuffled-J null.**)* Engine-native J-lens is validated → **J2 greenlit.**
-  - **J2** — C++ `/jlens` route (apply = `unembed(J_l @ h)`, reusing the GGUF's own head; no `W_U` sidecar; forward-only). ~3–5 days.
+  - **J2 — ✅ done (2026-07-09).** C++ `POST /jlens` route (`unembed(J_l @ h)` on the GGUF's own final-norm + q6_K head; no `W_U` sidecar; forward-only, deterministic, byte-identical). Layers 2/14/21/25; ~0.8 s for 512 tokens (CPU on-demand). Sanity: "…country shaped like a boot is" @L25 → " Italy"; "…a spider has" @L21 → counting tokens. **Parity vs the J1 numpy oracle: apply validated FAITHFUL** — 96–99% top-1, and *every* disagreement is a near-tie inside q6_K head-quantization noise (oracle margin 0.008–0.07 at disagreements vs 0.9–1.7 at agreements). The literal ≥99% exact-set target is bounded by the model's own quantized head, exactly the "tolerance, not bitwise" the plan anticipated — not an apply bug. Matrices stay out of git (`~/.clozn/jlens/`).
   - **J3** — studio panel: per-token "disposed-to-say" chips (finally *earns* the workspace name `workspace_lens.py` overclaimed). Honest provenance label from the manifest.
   - **J4** — "does a 7B even have a J-space?" (spider test) — launch content either way; also the existence gate for X6.
 
@@ -66,7 +66,7 @@ Research with product tie-ins; house rule: every rung ships a null control, and 
 ### Inspector / UI leftovers (CURRENT_UI_BACKLOG.md)
 - ✅ **branch-lineage-tree** (shipped `810539b` — client-side tree from parent_run_id) · ✅ **capture-final-prompt** (shipped `fc3b2ec` — persists the exact rendered prompt).
 - *In flight:* final-prompt **display** in the inspector + a full-family **`/runs/<id>/lineage`** endpoint (past the 80-run cap).
-- Remaining: persist-concept-spans, studio-lab-mode, tiny-test-harness.
+- Remaining: persist-concept-spans, studio-lab-mode. **tiny-test-harness — 🔨 in flight (this session):** `clozn test <file.json>` = user-authored run-level assertions over the receipt/replay seams (static + causal `leans_on`); results ride the `tiny_tests` slot `receipt_bundle` already reserves.
 
 ### Housekeeping
 - Push `../clozn-research` (local, yours to push). · Engine-rebuild validation on the GPU box after CMake changes.
