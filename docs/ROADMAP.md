@@ -1,117 +1,82 @@
-# Roadmap — Clozn
+# Clozn Roadmap — consolidated map
 
-From where we are now (a fresh monorepo with the [blueprint](ARCHITECTURE.md) committed)
-to the full vision: **a local runtime where you view and steer a model's memory — at
-scale.** Phases are roughly sequential; each gates on tests/validation before the next.
+**Updated 2026-07-08.** Single source of truth for *done / v1 / later*. This supersedes the old phased
+"monorepo migration" roadmap (Phase 0 = the reorg, now done). It **indexes** the detailed planning docs
+rather than duplicating them — go to the linked doc for execution detail.
 
-**Honest effort framing.** Phases 0–2 are *engineering* (weeks): consolidate, unify the
-protocol, one inspector over every substrate. Phases 3–4 are the *research frontier*
-(months, and some rungs may not pan out — that's the method: build the smallest thing that
-could kill the idea, let the result decide). Phase 5 is productization, parallelizable.
+> **The thesis** (FRONTIER_BETS §0): as hardware commoditizes capability, **control becomes the product** —
+> trust, steer, version, debug. Clozn's wedge is what a text-in/text-out runtime structurally can't do.
 
-Status legend: ⬜ todo · 🟡 in progress · ✅ done. The engine's diffusion+AR white-box,
-the confidence-select kernel, and the inspector's toy SAE/transcoder already exist (see the
-[maturity ladder](ARCHITECTURE.md#where-the-depth-lives--the-interp-maturity-ladder)) — this
-roadmap is about wiring them into one tree and then pushing the interp from *toy* to *real*.
+## The planning docs this map indexes
+| Doc | Covers | Status |
+|---|---|---|
+| `notes/REPRODUCE_AND_PROVE_PLAN.md` | **#114** — `/score`, forced receipts, rederive (S0–S6) | S0–S4 ✅, S5/S6 left |
+| `notes/JLENS_ENGINE_PLAN.md` | **#115** — engine-native J-lens (J0–J5) | not started (the v1 headline) |
+| `notes/INTROSPECTION_EXPERIMENTS.md` | **X1–X8** — introspection science (needs J-lens) | designs ready, none run |
+| `notes/FRONTIER_BETS.md` | strategic bets: perf stack, AR×diffusion (H1–H7), honesty ledger | idea inventory + ranked order |
+| `notes/MEMORY_MODE_SWAP_SPEC.md` | prompt-mode memory | ✅ built (this is what ships today) |
+| `docs/MODEL_SUPPORT.md` | model-agnosticism tiers, roster, J-lens as the brain-viz path | Tier-0 ✅; Tier-1/2 scoped |
+| `docs/CURRENT_UI_BACKLOG.md` | inspector/UI item-level backlog | reconciled 2026-07-08 |
 
----
-
-## Phase 0 — Consolidate (the monorepo migration) 🟡
-
-Mechanical: no new capability, just one coherent tree with green tests. Fresh history;
-the three old repos (`cloze`, `clozn-archive`, `legible-interior`) stay as archives.
-
-- **0.1** Scaffold the tree (`engine/ kernels/ inspector/ research/ protocol/ docs/`), a
-  top-level README, and a unified `.gitignore` (Python + C++ build trees + models + the
-  local-only files).
-- **0.2** **Engine** → `engine/core` (was `cloze/core`). Wire `llama.cpp` as a fresh
-  submodule at the pinned commit + re-apply the CLOZE patches from `PATCHES.md` (link,
-  don't fork). Fix CMake paths (kernels moved). Gate: backend-free `ctest` 8/8 + the GPU
-  build green.
-- **0.3** **Lab** → `engine/lab` (was `cloze/lab`). Fix `pyproject`/paths. Gate: `pytest`
-  (the 237 goldens) green.
-- **0.4** **Kernels** → `kernels/` (was `cloze/kernels`). Gate: the CUDA parity test green.
-- **0.5** **Inspector** → `inspector/` (was `clozn-archive`'s package). Rewire its diffusion
-  `StateSource` onto `engine/lab`. Gate: `pytest -m "not model"` green.
-- **0.6** **Research** → `research/` (was `legible-interior`).
-- **0.7** **Docs** → `docs/`: merge `DESIGN.md` + `TECHNICAL.md` + clozn's `DESIGN.md` into
-  one architecture; a single product README.
-- **0.8** CI for the monorepo (CPU lane: ctest + pytest + parity). Mark the old repos
-  archived.
-
-## Phase 1 — The protocol (the keystone) ⬜
-
-One state-stream the engine emits and the inspector consumes — collapses the two spines.
-
-- **1.1** Spec `protocol/`: `StateStep / Intervention / StateSource / Spine` — one schema +
-  JSON wire. Reconcile the engine's §5.1 events ↔ the inspector's `StateStep`.
-- **1.2** Engine **emits** the protocol over SSE for every substrate (diffusion, AR),
-  substrate-tagged.
-- **1.3** Inspector: an `EngineStateSource` that **consumes** the engine stream — the
-  inspector ops run over the wire, not just in-process.
-- **1.4** Round-trip gate: engine → protocol → inspector `snapshot/restore/steer` on a real
-  model, validated end-to-end.
-
-## Phase 2 — One inspector, every substrate ⬜
-
-- **2.1** **AR** as a first-class inspector substrate (drive `engine.ar_forward` via the
-  protocol) — clozn's long-planned "Phase 4 AR residual-stream taps," now that the engine
-  side exists.
-- **2.2** **RWKV** recurrent-state through the engine (llama.cpp converts RWKV-7) — or keep
-  the `transformers` source behind the same spine; pick the one that scales.
-- **2.3** **Diffusion** through the engine (inspector drives the C++ server, not just the
-  Python lab).
-- **2.4** One dashboard across all three substrates.
-
-## Phase 3 — Interp at scale (the heavy engine/kernel work) ⬜ — *the unbuilt meat*
-
-Push SAEs/transcoders from toy (RWKV-169m, collapses) to real local models.
-
-- **3.1** **Activation harvesting at scale**: batched, multi-layer tap in the engine, kept
-  on-device, streamed out. (The foundation everything below stands on.)
-- **3.2** **SAE inference** in the engine, CPU reference first: load a dictionary → encoder
-  → top-k → decoder over harvested activations.
-- **3.3** **Interp top-k kernel**: extend/repoint the confidence-select kernel for SAE
-  sparsify (sparse top-k over the feature dim). GPU, validated vs the CPU reference.
-- **3.4** **Pretrained dictionaries** (Gemma Scope / Llama Scope SAEs) as optional plug-ins
-  — never the foundation, a per-model add-on.
-- **3.5** **Transcoder inference** (sparse MLP stand-in) hooked at a component (the current
-  SOTA substrate).
-- **3.6** **Scale honesty**: does discovery hold where the toy collapsed? Real metrics +
-  dose-response, the caveats louder than the wins.
-- **3.7** **Feature steering at scale**: steer a discovered/loaded feature; causal
-  dose-response curve.
-
-## Phase 4 — The frontier: legible, editable in-model memory (fast-weights) ⬜ — *research*
-
-The "legible local editable in-model memory" gap — capability that stays legible by
-construction (the `research/` thesis applied).
-
-- **4.1** **The 1-slot experiment**: a minimal surprise-gated fast-weight slot in the
-  engine (smallest thing that could kill the idea).
-- **4.2** **Test-time weight-delta** integration into the forward pass (engine-deep; the
-  genuinely kernel-novel part).
-- **4.3** **Legibility**: can you *read and edit* what the memory stored? Sparse, nameable
-  by construction, or inscrutable? (the open crux from the research handoff).
-- **4.4** **Persistence** across sessions — the fast-weight memory rehydrates cold (ties to
-  the inspector's `store`/`memory`).
-- **4.5** **Honest eval**: associative recall / needle-in-haystack with the persistent
-  sparse state — can a compressed memory be both sparse *and* high-capacity?
-
-## Phase 5 — Daily driver / product ⬜ (parallelizable)
-
-- **5.1** Unified served viz across substrates + a live feature atlas.
-- **5.2** Packaging / distribution — the "Ollama for white-box."
-- **5.3** Automated honesty harnesses: every shipped claim carries its causal test +
-  dose-response.
+*(`notes/` is local/gitignored; the tracked map lives here.)*
 
 ---
 
-## How this gets executed
+## ✅ Done
+- **Repo reorg** — product-only tree (`clozn/` package, `studio/`, `engine/kernels/`); research split to `../clozn-research`. *(old roadmap "Phase 0")*
+- **Engine white-box runtime** — AR + diffusion GGUF on the C++ `cloze-server`: `/harvest`, `/score`, `/apply_template`, steer taps, prompt-mode memory.
+- **#114 S0–S4 (reproduce & prove)** — teacher-forced `/score`, the SDK/substrate seam, rich per-token trace (`token_id`/`logprob`/top-k-entropy) + repro `meta.decode`, forced-mode receipts + rederive, and the graded-leaning inspector UI. *The null-floor experiment killed the "silent influence" badge (principled — filler-swap can't discriminate, Pearson 0.9985); shipped graded per-card leaning via co-present leave-one-out instead.*
+- **Tier-0 model-agnosticism** — clozn runs **any AR GGUF** across the whole white-box stack (proven tap-by-tap on Llama-1B). Engine-side templating + derive-model-from-`/health`. *(Bonus beyond the plan docs — and it's what makes the J-lens portable.)*
 
-Top-down, **tests gate every task**. I work through a phase, report at its boundary
-(not per task, not asking permission to proceed), and only promote the next phase's tasks
-into the live tracker when the current one is green. The frontier phases (3–4) are where a
-*result*, not the plan, decides the next rung — expect some rungs to get cut, loudly and on
-purpose. The four [carried-over invariants](ARCHITECTURE.md#carried-over-invariants-non-negotiable)
-(honesty-first, the seam, tests-as-oracle, substrate-agnostic) hold throughout.
+## 🎯 v1 target — "causal receipts + J-lens readouts"
+*Headline (JLENS_ENGINE_PLAN): "the local runtime with causal receipts and J-lens readouts — see what your GGUF is disposed to say, per token, and prove what changed its answer."*
+
+- **#114 leftovers** — **S5** (turn on engine sampling; gated on a human go/no-go) · **S6** (docs/claims refresh).
+- **#115 — engine-native J-lens (J0→J4).** *Not started; the headline. RACE posture (Anthropic published 2026-07-06; nobody has it in a product).*
+  - **J0** — fit the lens in the lab (PyTorch, autograd, nf4 + checkpointing on the 16 GB card; ~100 prompts saturates), export per-layer matrices + manifest. ~1–2 days.
+  - **J1** — **transfer gate (blocks J2).** ~20-line numpy oracle: does the HF-fitted lens survive on GGUF `/harvest` activations? top-1/5 agreement vs a shuffled-`J` null. **If it fails, the headline dies here — before any C++ — and the negative is publishable.**
+  - **J2** — C++ `/jlens` route (apply = `unembed(J_l @ h)`, reusing the GGUF's own head; no `W_U` sidecar; forward-only). ~3–5 days.
+  - **J3** — studio panel: per-token "disposed-to-say" chips (finally *earns* the workspace name `workspace_lens.py` overclaimed). Honest provenance label from the manifest.
+  - **J4** — "does a 7B even have a J-space?" (spider test) — launch content either way; also the existence gate for X6.
+
+## 🔭 Post-v1 backlog
+
+### Performance stack — *all reuse the `/score` keystone* ("the debugger IS the speedup", FRONTIER §5)
+1. **Prefix/KV reuse** — top daily-feel ROI; also makes prove-all/branch *interactive*.
+2. **Fit planner** — range-request a GGUF header + a 30 s microbench → "runs ~22 tok/s at 32k" *before* the download.
+3. **Quant-ladder receipts** — "did Q4 lobotomize your model?" measured on *your* runs (two model files, `/score` unchanged).
+4. **Trust as an API field** — per-claim confidence/support spans on the wire so agents can branch on trust (ship labeled-uncalibrated first).
+5. **Verify-then-escalate routing** — the big model *scores* the small model's answer (one prefill, no gen); escalate only on a bad score.
+
+### AR × diffusion (H1–H7) — the both-substrates advantage
+- **Start with §3.4** (cheap, decisive): measure **Dream→Qwen draft-acceptance rates** (`/score` already there, one afternoon). ≥~8/32 accepted → H1 (diffusion drafts, AR verifies) is real; low → H1 dies cheaply, H2–H7 survive.
+- H2 AR-writes/diffusion-repairs (score-gated self-repair), H3 substrate routing, H5 span-level counterfactual patches (a new receipt type), H7 divergence atlas.
+
+### Introspection science (X1–X8) — *gated on J-lens (J0) existing*
+Research with product tie-ins; house rule: every rung ships a null control, and negative results ship as honest labels.
+- **X1 — introspection receipts** (top product tie-in): score self-report vs J-lens readouts with the existing NLI judge → a per-model "self-report reliability" score. High = a trust feature; low = the honest "trust the receipts, not the story" label.
+- **X7 — J-anchored legible memory** (biggest transformation): memory as a sparse bag of nameable J-directions → "what did you learn?" becomes a *lookup*, confabulation structurally impossible. Measures the interpretability tax on a real 7B memory. Lab-only, parallelizable.
+- X3 (injected-thought detection → free legible concept dials), X6 (CoT-as-paging / workspace-occupancy meter, gated on J4=yes), X4/X2/X8, and **X5 (convergence archaeology — ⚠️ time-sensitive**: pre-July-2026-cutoff models age out; needs no lens).
+
+### Model portability (MODEL_SUPPORT.md)
+- **Tier-1 dial sweeps** per hero (Qwen3-14B, Gemma-3-12B) — automated sweep + an LLM-judge curation pass.
+- **J-lens as the model-agnostic Tier-2 brain viz** — fit a lens per model (cheap), replacing the SAE gate. Gemma-3 also gets free GemmaScope SAEs.
+- Pull the hero models (Gemma-3-12B / Qwen3-14B) and smoke-test — the victory lap now that Tier-0 is done.
+
+### Inspector / UI leftovers (CURRENT_UI_BACKLOG.md)
+- **branch-lineage-tree** (backend lineage helpers exist; UI renderer only), **capture-final-prompt**, persist-concept-spans, studio-lab-mode, tiny-test-harness.
+
+### Housekeeping
+- Push `../clozn-research` (local, yours to push). · Engine-rebuild validation on the GPU box after CMake changes.
+
+---
+
+## Two keystones (why the ordering)
+1. **`/score` is the performance keystone, not just a receipts primitive.** The same teacher-forced batch scoring is the spec-decode verifier, the routing judge, the quant-sensitivity meter, and the context-receipt prober. We built it for honesty; it doubles as the perf roadmap's foundation.
+2. **J-lens completes the model-agnostic brain viz.** Fit-in-lab / apply-forward matches clozn's substrate split; with Tier-0 done it runs on *any* GGUF. It's the read half of read-(J-lens)-plus-prove-(receipts), and it's a RACE.
+
+## Honesty invariants (non-negotiable — the house style)
+- **Lens-blind ≠ absent; agreement ≠ introspection; a linear lens always outputs something** — every readout rung carries a null (shuffled lens / shuffled pairing).
+- **Negative results ship as labels or scope-bounds**, never buried. Report the whole eval set, no cherry-picking.
+- **No claim outruns its evidence** — see FRONTIER_BETS §6 (the honesty ledger of claims we must NOT make yet: uncalibrated "confidence", cross-model counterfactuals as the model's own, speedup numbers before the experiment, "only runtime that CAN", etc.).
+- Discrimination/detection framing only — never "awareness", never "consciousness".
