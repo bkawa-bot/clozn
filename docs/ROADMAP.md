@@ -64,7 +64,9 @@ Research with product tie-ins; house rule: every rung ships a null control, and 
 - Pull the hero models (Gemma-3-12B / Qwen3-14B) and smoke-test — the victory lap now that Tier-0 is done.
 
 ### Inspector / UI leftovers (CURRENT_UI_BACKLOG.md)
-- **branch-lineage-tree** (backend lineage helpers exist; UI renderer only), **capture-final-prompt**, persist-concept-spans, studio-lab-mode, tiny-test-harness.
+- ✅ **branch-lineage-tree** (shipped `810539b` — client-side tree from parent_run_id) · ✅ **capture-final-prompt** (shipped `fc3b2ec` — persists the exact rendered prompt).
+- *In flight:* final-prompt **display** in the inspector + a full-family **`/runs/<id>/lineage`** endpoint (past the 80-run cap).
+- Remaining: persist-concept-spans, studio-lab-mode, tiny-test-harness.
 
 ### Housekeeping
 - Push `../clozn-research` (local, yours to push). · Engine-rebuild validation on the GPU box after CMake changes.
