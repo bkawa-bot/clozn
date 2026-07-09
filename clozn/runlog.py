@@ -479,13 +479,19 @@ def _prune():
             pass
 
 
+def _summary(r: dict) -> dict:
+    """One run dict -> the compact SUMMARY_FIELDS view (the GET /runs list-entry shape). Shared by
+    list_runs and lineage_family so the two can never drift out of shape."""
+    return {k: r.get(k) for k in SUMMARY_FIELDS}
+
+
 def list_runs(limit: int = 50) -> list[dict]:
     _ensure()
     out = []
     for f in sorted(_files(), reverse=True)[:limit]:    # newest first
         try:
             r = json.load(open(f, encoding="utf-8"))
-            out.append({k: r.get(k) for k in SUMMARY_FIELDS})
+            out.append(_summary(r))
         except Exception:
             pass
     return out
@@ -656,3 +662,42 @@ def lineage(rid: str, limit: int = 500) -> dict | None:
         "siblings": [_lineage_summary(r, rid) for r in siblings],
         "tree": build_tree(root, set()),
     }
+
+
+def lineage_family(rid: str, limit: int = 2000) -> list[dict] | None:
+    """The WHOLE branch family of `rid` -- every run in its connected parent<->child component -- as GET
+    /runs-shaped summaries (SUMMARY_FIELDS via _summary, newest-first), or None if `rid` is unknown.
+
+    Unlike list_runs() (which windows only the most-recent N runs), this walks the parent_run_id graph
+    across ALL persisted runs, so a client's lineage tree-builder (studio buildLineageFromRuns) can render
+    a run's COMPLETE family even when older ancestors or sibling branches fell outside the recent-runs
+    window. The family is the UNDIRECTED connected component of the parent graph: `rid`, its chain of
+    ancestors up to the root, and every descendant/sibling reachable through the tree. Cycle-safe (a seen
+    set) and bounded (`limit` caps a pathological record). Summaries are the EXACT same shape as GET /runs
+    entries, so the client consumes the family identically to the 80-run window."""
+    runs = _load_runs()
+    by_id = {r.get("id"): r for r in runs if r.get("id")}
+    if rid not in by_id:
+        return None
+    children_by_parent: dict[str, list[str]] = {}
+    for r in runs:
+        parent, cid = r.get("parent_run_id"), r.get("id")
+        if parent and cid:
+            children_by_parent.setdefault(parent, []).append(cid)
+    # BFS/DFS over UNDIRECTED parent<->child edges from rid -> the connected component (the whole family).
+    seen: set[str] = set()
+    stack = [rid]
+    while stack and len(seen) < limit:
+        cur = stack.pop()
+        if cur in seen or cur not in by_id:
+            continue
+        seen.add(cur)
+        parent = by_id[cur].get("parent_run_id")
+        if parent and parent in by_id and parent not in seen:
+            stack.append(parent)
+        for child in children_by_parent.get(cur, []):
+            if child not in seen:
+                stack.append(child)
+    fam = [by_id[i] for i in seen]
+    fam.sort(key=lambda r: (r.get("created_ts") or 0, r.get("id") or ""), reverse=True)  # newest-first, like /runs
+    return [_summary(r) for r in fam]

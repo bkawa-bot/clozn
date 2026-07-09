@@ -2357,6 +2357,16 @@ def make_handler():
                 if not out:
                     return self._json(404, {"error": "run not found"})
                 return self._json(200, out)
+            if p.startswith("/runs/") and p.endswith("/family"):   # the WHOLE branch family as GET /runs-shaped
+                # summaries -- the full lineage past the /runs 80-window, so the client's buildLineageFromRuns
+                # builds the complete tree instead of the recent-runs slice. (Distinct from /lineage, which
+                # returns the server-built ancestors/children/tree object.)
+                from clozn import runlog
+                rid = p[len("/runs/"):-len("/family")]
+                fam = runlog.lineage_family(rid)
+                if fam is None:
+                    return self._json(404, {"error": "run not found"})
+                return self._json(200, {"runs": fam})
             if p.startswith("/runs/") and p.endswith("/spans"):   # confidence spans -- the shape of the reply's certainty
                 from clozn import runlog
                 rid = p[len("/runs/"):-len("/spans")]
