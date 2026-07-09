@@ -1582,6 +1582,21 @@ class EngineSubstrate(Substrate):
         self._steer_info = {}
         self._steer_lock = threading.Lock()
         self.brain = None                       # no SAE/brain on the pure-engine substrate (concepts 409 cleanly)
+        # T0.2: reflect the ACTUALLY-LOADED GGUF, not a hardcoded Qwen assumption. Derive the family from
+        # the engine's /health model file (best-effort -- never blocks boot if the engine isn't up yet)
+        # and pin the tone-dial steer tap to THIS model's mid-depth: Qwen-7B -> 14 (unchanged), Llama-3.2-1B
+        # -> 8, an unrecognized GGUF keeps EngineSteer's generic default. run_meta() re-derives this lazily
+        # too, so the run record is correct even when the engine comes up after the substrate.
+        self.model_family = None
+        self.model_id = None
+        try:
+            h = self.engine.health() if (self.engine and hasattr(self.engine, "health")) else {}
+            self.model_family, _info = _engine_model_info((h or {}).get("model", ""))
+            self.model_id = _info["model_id"]
+            if self.steer is not None and _info["steer_layer"] is not None:
+                self.steer.layer = _info["steer_layer"]
+        except Exception:
+            pass
         if self.steer is not None:              # restore persisted dial values (shared personality.json)
             try:
                 self.steer.load_state(self._pers_steer)
@@ -1662,7 +1677,9 @@ class EngineSubstrate(Substrate):
             sv = [a + b for a, b in zip(sv, steer_vec)] if sv else list(steer_vec)
         if sv:
             kw["steer_vec"] = sv
-            kw["steer"] = {"coef": 1.0, "layer": self.steer.layer if self.steer is not None else 14}
+            # self.steer.layer is model-aware (pinned per-family in __init__); with no steer built, pass
+            # layer 0 so the ENGINE picks its own calibrated mid-depth band -- not a hardcoded Qwen 14.
+            kw["steer"] = {"coef": 1.0, "layer": self.steer.layer if self.steer is not None else 0}
         if continuation_ids is not None:
             kw["continuation_ids"] = [int(t) for t in continuation_ids]
         elif continuation is not None:
@@ -1698,6 +1715,13 @@ class EngineSubstrate(Substrate):
                     q = _quant_from_name(health_meta["model_file"])
                     if q:
                         health_meta["quant"] = q
+                    # T0.2: which model actually produced this run (derived from the loaded GGUF, not a
+                    # hardcoded id). family is the registry key; model_id the friendly HF name when known.
+                    fam, info = _engine_model_info(mp)
+                    if fam:
+                        health_meta["family"] = fam
+                    if info.get("model_id"):
+                        health_meta["model_id"] = info["model_id"]
                 if (h or {}).get("mode"):
                     health_meta["mode"] = h["mode"]
                 for k in ("n_ctx", "device", "gpu_layers"):
@@ -1825,6 +1849,46 @@ def _quant_from_name(name):
     import re
     m = re.search(r"(IQ\d+[A-Z0-9_]*|Q\d+(?:_[A-Z0-9]+)+|Q\d+|BF16|F16|F32)", str(name), re.IGNORECASE)
     return m.group(1).upper() if m else None
+
+
+# --- engine model registry (T0.2) ---------------------------------------------------------------------
+# The engine substrate reflects the ACTUALLY-LOADED GGUF, not a hardcoded "Qwen2.5-7B" id/assumption.
+# The ONE Qwen-specific assumption the engine substrate carried was the tone-dial steer TAP LAYER
+# (mid-depth: 14 for Qwen-7B's 28 layers). This tiny registry keys that -- plus a friendly model_id for
+# run_meta -- off the loaded model's family (derived from its /health filename), with a sensible default
+# for any unrecognized GGUF (steer_layer None => don't pin a layer; let the engine use its OWN per-model
+# calibrated mid-depth steer band). Everything else the engine already calibrates per-model server-side
+# (the C++ concept/steer probe taps at startup, and the chat template via /apply_template). This is NOT a
+# framework -- it is the minimal table that removes the last hardcoded-Qwen coupling from the engine path.
+_ENGINE_MODELS = {
+    "qwen2.5-7b":   {"model_id": "Qwen/Qwen2.5-7B-Instruct",         "steer_layer": 14},  # 28L -> mid 14 (unchanged)
+    "qwen2.5-0.5b": {"model_id": "Qwen/Qwen2.5-0.5B-Instruct",       "steer_layer": 12},  # 24L -> mid 12
+    "llama-3.2-1b": {"model_id": "meta-llama/Llama-3.2-1B-Instruct", "steer_layer": 8},   # 16L -> mid 8
+    "llama-3.2-3b": {"model_id": "meta-llama/Llama-3.2-3B-Instruct", "steer_layer": 14},  # 28L -> mid 14
+}
+_ENGINE_MODEL_DEFAULT = {"model_id": None, "steer_layer": None}  # unknown GGUF: nothing pinned; engine picks
+
+
+def _model_family_from_name(name):
+    """Coarse model family key ('qwen2.5-7b', 'llama-3.2-1b', ...) from a GGUF filename, or None -- the
+    engine substrate looks up per-model assumptions in _ENGINE_MODELS by this key instead of hardcoding
+    Qwen's. Same free derive-off-/health-filename trick as _quant_from_name (no engine change needed)."""
+    import re
+    s = str(name or "").lower()
+    m = re.search(r"qwen[._]?(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)b", s)
+    if m:
+        return f"qwen{m.group(1)}-{m.group(2)}b"
+    m = re.search(r"llama[._-]?(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)b", s)
+    if m:
+        return f"llama-{m.group(1)}-{m.group(2)}b"
+    return None
+
+
+def _engine_model_info(name):
+    """(family, {model_id, steer_layer}) for the loaded GGUF -- the engine substrate's per-model
+    assumptions -- or (None, the default with nothing pinned) for an unrecognized model."""
+    fam = _model_family_from_name(name)
+    return fam, dict(_ENGINE_MODELS.get(fam, _ENGINE_MODEL_DEFAULT))
 
 
 def _engine_complete_traced(engine, prompt, max_tokens, kw):

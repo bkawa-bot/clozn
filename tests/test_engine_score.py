@@ -243,7 +243,8 @@ def test_score_tokens_steer_vec_used_alone_without_steer_strengths():
     sub = _bare_engine_substrate(fe, steer=None)
     sub.score_tokens([{"role": "user", "content": "hi"}], [1], block=None, steer_vec=[0.3, 0.4])
     assert fe.calls[-1]["steer_vec"] == [0.3, 0.4]
-    assert fe.calls[-1]["steer"] == {"coef": 1.0, "layer": 14}    # no self.steer -> the 14 fallback layer
+    # no self.steer -> layer 0 (the engine picks its OWN calibrated mid-depth band), NOT a hardcoded Qwen 14
+    assert fe.calls[-1]["steer"] == {"coef": 1.0, "layer": 0}
 
 
 def test_score_tokens_steer_vec_added_on_top_of_steer_strengths():
