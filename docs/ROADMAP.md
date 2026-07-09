@@ -34,7 +34,7 @@ rather than duplicating them — go to the linked doc for execution detail.
 - **#114 leftovers** — **S5** (turn on engine sampling; gated on a human go/no-go) · **S6** (docs/claims refresh).
 - **#115 — engine-native J-lens (J0→J4).** *Not started; the headline. RACE posture (Anthropic published 2026-07-06; nobody has it in a product).*
   - **J0** — fit the lens in the lab (PyTorch, autograd, nf4 + checkpointing on the 16 GB card; ~100 prompts saturates), export per-layer matrices + manifest. ~1–2 days.
-  - **J1** — **transfer gate (blocks J2).** ~20-line numpy oracle: does the HF-fitted lens survive on GGUF `/harvest` activations? top-1/5 agreement vs a shuffled-`J` null. **If it fails, the headline dies here — before any C++ — and the negative is publishable.**
+  - **J0 fit + J1 transfer gate — ✅ PASS (2026-07-09).** The HF-fitted lens (nf4, 100 prompts) transfers to the engine's GGUF `/harvest` activations **essentially losslessly** — GGUF ≈ HF on cross-position consistency (margins 0.68–0.82) *and* semantic recovery (hit@5 0.72 == 0.72), both ≫ a proper null. *(The first gate FAILed on a flawed row-shuffled-`J` null — unembedding-dominated, an invalid high floor; corrected with a cross-position null + semantic test. **Don't rebuild the shuffled-J null.**)* Engine-native J-lens is validated → **J2 greenlit.**
   - **J2** — C++ `/jlens` route (apply = `unembed(J_l @ h)`, reusing the GGUF's own head; no `W_U` sidecar; forward-only). ~3–5 days.
   - **J3** — studio panel: per-token "disposed-to-say" chips (finally *earns* the workspace name `workspace_lens.py` overclaimed). Honest provenance label from the manifest.
   - **J4** — "does a 7B even have a J-space?" (spider test) — launch content either way; also the existence gate for X6.
