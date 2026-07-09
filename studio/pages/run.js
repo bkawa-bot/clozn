@@ -129,6 +129,17 @@
       ".ri-card .mchip{display:inline-block;border:1px solid var(--line,#e3e6ef);border-radius:8px;padding:1px 6px;background:rgba(255,255,255,.72)}" +
       ".ri-asm{margin-top:14px;border-top:1px dashed var(--line,#e3e6ef);padding-top:10px}" +
       ".ri-asm-h{font-size:11px;color:var(--faint,#9aa0b3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}" +
+      // --- backlog: the LITERAL rendered prompt (run.final_prompt) as a collapsible <details> section. ---
+      ".ri-prompt{margin-top:14px;border-top:1px dashed var(--line,#e3e6ef);padding-top:10px}" +
+      ".ri-prompt-sum{cursor:pointer;font-size:11px;color:var(--faint,#9aa0b3);text-transform:uppercase;letter-spacing:.04em;list-style:none;outline:none}" +
+      ".ri-prompt-sum::-webkit-details-marker{display:none}" +
+      ".ri-prompt-sum::before{content:'\\25B8 ';color:var(--soft,#5a6072)}" +
+      ".ri-prompt[open] .ri-prompt-sum::before{content:'\\25BE '}" +
+      ".ri-prompt-sum:hover{color:var(--soft,#5a6072)}" +
+      ".ri-prompt-sum .sub{text-transform:none;letter-spacing:0}" +
+      ".ri-prompt-body{margin-top:8px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;line-height:1.5;color:var(--ink,#1b1f2a);background:var(--wash,#f6f8ff);border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:9px 11px;max-height:340px;overflow:auto}" +
+      ".ri-prompt-fallback{margin-top:8px}" +
+      ".ri-prompt-note{margin-top:8px;font-size:12px;color:var(--faint,#9aa0b3);line-height:1.45}" +
       ".ri-msg{display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px;border-top:1px solid var(--line,#edf0f7);padding:7px 0;font-size:12.5px;line-height:1.45}" +
       ".ri-msg:first-of-type{border-top:0}" +
       ".ri-msg .role{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint,#9aa0b3)}" +
@@ -384,6 +395,7 @@
     }
     var lastA = msgs.length && msgs[msgs.length - 1].role === "assistant";
     if (run.response && !lastA) h += '<div class="ri-turn assistant"><div class="who">assistant</div>' + esc(run.response) + "</div>";
+    h += finalPromptPanel(run);
     h += assembledPromptPanel(run);
     h += tokenTimeline(run);
     h += rederivePanel();
@@ -430,6 +442,29 @@
         '<div class="sub">memory injected as soft prefix; no literal prompt string</div></div>';
     }
     return "";
+  }
+
+  // The LITERAL rendered prompt the model actually saw: run.final_prompt is the EXACT chat-template string
+  // AFTER chat-template rendering + memory-block injection (persisted top-level by the backend). Rendered as
+  // a collapsible <details> (native, no JS), monospace, honestly labeled. Degrades: no final_prompt (old
+  // runs, or torch substrates that render the template INSIDE the HF tokenizer so no literal string exists)
+  // -> fall back to the pre-template assembled_messages when present, else a plain "not captured" note.
+  function finalPromptPanel(run) {
+    run = run || {};
+    var fp = typeof run.final_prompt === "string" ? run.final_prompt : "";
+    var assembled = Array.isArray(run.assembled_messages) ? run.assembled_messages : [];
+    var h = '<details class="ri-prompt"><summary class="ri-prompt-sum">Prompt';
+    if (fp) {
+      h += ' <span class="sub">the exact prompt fed to the model — after chat template + memory injection</span></summary>';
+      h += '<div class="ri-prompt-body">' + esc(fp) + "</div>";
+    } else if (assembled.length) {
+      h += ' <span class="sub">pre-template messages — the literal rendered prompt wasn’t captured for this run</span></summary>';
+      h += '<div class="ri-prompt-fallback">' + messageRowsHTML(assembled) + "</div>";
+    } else {
+      h += ' <span class="sub">the exact prompt fed to the model</span></summary>';
+      h += '<div class="ri-prompt-note">The literal rendered prompt was not captured for this run — an older run, or a substrate that renders the chat template inside the tokenizer (no literal string to store).</div>';
+    }
+    return h + "</details>";
   }
 
   // C2: the token timeline. When run.trace carries a non-empty tokens[] array, render the response as its
