@@ -55,8 +55,8 @@ One forward pass's events fold into one `StateStep`:
 Clozn standardizes on one persisted readout event: `workspace_readout`.
 Do not add a separate `concept_readout` event unless a future producer needs
 different lifecycle semantics. Concepts, SAE features, probes, logit-lens
-tokens, and future Jacobian Lens adapters all use `workspace_readout` and
-differentiate themselves with subtype fields.
+tokens, and the shipped Jacobian Lens adapter (#115) all use `workspace_readout`
+and differentiate themselves with subtype fields.
 
 Canonical persisted shape:
 
@@ -148,25 +148,32 @@ Examples:
 ```json
 {
   "type": "workspace_readout",
-  "provider": "future_jacobian_lens_adapter",
+  "provider": "jacobian_lens_l25",
   "provider_type": "jacobian_lens",
-  "readout_kind": "feature",
+  "readout_kind": "token",
   "run_id": "run_demo",
   "token_index": 11,
-  "token_text": " because",
-  "layer": 18,
+  "token_text": " boot",
+  "layer": 25,
   "position": 11,
   "top_readouts": [
-    { "label": "answer_support_direction", "score": 0.36 },
-    { "label": "citation_sensitivity", "score": 0.24 }
-  ],
-  "entropy": 0.49
+    { "label": " Italy", "score": 1.42 },
+    { "label": " Italian", "score": 0.87 }
+  ]
 }
 ```
 
-These are readouts over model state or logits, not private reasoning text. A
-Jacobian Lens provider should not be labeled as present until an actual adapter
-computes that readout.
+Shipped (#115 J2-J3): the engine's `POST /jlens` (`unembed(J_l @ h)` on the
+GGUF's own final-norm + head) and the studio's `POST /jlens` /
+`POST /runs/<id>/jlens` proxy it; this event form is the opt-in
+`protocol: true` shape, `provider_type: jacobian_lens`, `readout_kind: token`.
+The lens is fit offline per model (today: Qwen2.5-7B only) and applied forward
+on the engine's own GGUF -- a **disposition read off a fitted linear lens**,
+not a decode of the model's literal thought (a linear lens always emits
+*something*). These are readouts over model state or logits, not private
+reasoning text, and a `jacobian_lens` provider must carry this same honest
+framing -- never labeled as reading awareness or the model's actual thought,
+and never presented as present before an actual adapter computes the readout.
 
 ## The wire (SSE + JSON)
 

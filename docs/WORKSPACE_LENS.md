@@ -24,8 +24,19 @@ Its sample labels are:
 - `hallucination_risk`
 
 Future providers should keep the same payload shape and replace only the readout source. Good adapter
-targets include logit lens, Jacobian Lens, SAE probes, and linear probes. Do not label a provider as
-Jacobian Lens until that adapter exists.
+targets include logit lens, SAE probes, and linear probes. Do not label a provider with a `provider_type`
+it doesn't actually compute.
+
+**Jacobian Lens — shipped (#115 J2-J3, 2026-07-09).** The engine serves `POST /jlens`
+(`unembed(J_l @ h)` on the GGUF's own final-norm + head weights — forward-only, deterministic, no
+`W_U` sidecar); the Python studio backend proxies it (`POST /jlens`, `POST /runs/<id>/jlens`) and the
+Run Inspector's **"Disposed to say &middot; J-lens"** panel renders it, always alongside an unskippable
+provenance caption. The lens itself is fit offline, per model (nf4 + autograd against the HF checkpoint)
+and applied forward on the engine's own GGUF; today that fit covers Qwen2.5-7B only -- a model-agnostic
+(fit-per-model, any AR GGUF) version is scoped but not shipped. It is a **fitted linear lens** reading a
+disposition, not a decode of the model's literal thought -- a linear lens always emits *something*, so a
+readout alone is never proof the model was "thinking" that token; see the honesty note in the payload
+example below.
 
 ## Taxonomy Decision
 
@@ -133,26 +144,33 @@ Logit lens token readout:
 }
 ```
 
-Future Jacobian Lens readout:
+Jacobian Lens readout (shipped shape, `clozn/clozn_server.py`'s `_jlens_workspace_readouts`; opt-in via
+`protocol: true` on `/jlens` and `/runs/<id>/jlens` -- the Run Inspector panel itself reads the raw
+`{tokens, readouts, provenance}` response, not this event form):
 
 ```json
 {
   "type": "workspace_readout",
-  "provider": "future_jacobian_lens_adapter",
+  "provider": "jacobian_lens_l25",
   "provider_type": "jacobian_lens",
-  "readout_kind": "feature",
+  "readout_kind": "token",
   "run_id": "run_demo",
   "token_index": 11,
-  "token_text": " because",
-  "layer": 18,
+  "token_text": " boot",
+  "layer": 25,
   "position": 11,
   "top_readouts": [
-    { "label": "answer_support_direction", "score": 0.36 },
-    { "label": "citation_sensitivity", "score": 0.24 }
-  ],
-  "entropy": 0.49
+    { "label": " Italy", "score": 1.42 },
+    { "label": " Italian", "score": 0.87 }
+  ]
 }
 ```
 
+`top_readouts[].score` here is the lens's raw (unnormalized) unembed score, not a probability -- shown as
+a plain number, never a [0,1] fill bar. This provider does not currently emit `entropy`.
+
 These readouts are model-state or logit observations. They are not private reasoning text, and they do
-not imply causal proof unless a separate intervention/receipt verifies the effect.
+not imply causal proof unless a separate intervention/receipt verifies the effect. A J-lens readout is a
+**disposition read off a fitted linear lens**, not a claim about what the model is "aware of" or
+"thinking" -- the lens always emits its top-k, whether or not the readout reflects anything the model
+would itself report.
