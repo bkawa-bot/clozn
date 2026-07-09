@@ -41,7 +41,8 @@ def test_record_schema_fields(store):
     rec = store.get_run(rid)
     for k in ("id", "created_at", "created_ts", "source", "client", "model", "substrate",
               "prompt_summary", "response_summary", "messages", "response", "memory", "behavior",
-              "assembled_messages", "trace", "timing", "parent_run_id", "changes_applied", "error", "flags"):
+              "assembled_messages", "final_prompt", "trace", "timing", "parent_run_id",
+              "changes_applied", "error", "flags"):
         assert k in rec, f"missing schema field {k}"
     assert rec["source"] == "studio_chat"
     assert rec["prompt_summary"] == "what is 2+2?"        # last user message summarized
@@ -56,6 +57,59 @@ def test_record_persists_assembled_messages_when_provided(store):
                        messages=[{"role": "user", "content": "what is 2+2?"}],
                        response="4", assembled_messages=assembled)
     assert store.get_run(rid)["assembled_messages"] == assembled
+
+
+def test_record_persists_final_prompt_when_provided(store):
+    """backlog #5: the EXACT rendered chat-template string the model saw is stored on the run record."""
+    rendered = ("<|im_start|>system\nMEMORY BLOCK<|im_end|>\n"
+                "<|im_start|>user\nwhat is 2+2?<|im_end|>\n<|im_start|>assistant\n")
+    rid = store.record(source="engine_chat",
+                       messages=[{"role": "user", "content": "what is 2+2?"}],
+                       response="4", final_prompt=rendered)
+    assert store.get_run(rid)["final_prompt"] == rendered
+
+
+def test_record_final_prompt_defaults_to_none(store):
+    """No rendered string in hand (e.g. a torch substrate) -> the field is present but None; consumers
+    then fall back to assembled_messages. Present-but-None, never a KeyError."""
+    rid = store.record(source="studio_chat",
+                       messages=[{"role": "user", "content": "hi"}], response="hey")
+    rec = store.get_run(rid)
+    assert "final_prompt" in rec
+    assert rec["final_prompt"] is None
+
+
+def test_legacy_run_without_final_prompt_loads_fine(store):
+    """A run persisted BEFORE this field existed must still load; a reader uses run.get('final_prompt')."""
+    import json
+    os.makedirs(store.RUNS_DIR, exist_ok=True)
+    legacy = {"id": "run_legacy_000000", "source": "engine_chat",
+              "messages": [{"role": "user", "content": "hi"}], "response": "hey",
+              "assembled_messages": [{"role": "user", "content": "hi"}]}   # NOTE: no "final_prompt" key
+    with open(os.path.join(store.RUNS_DIR, "run_legacy_000000.json"), "w", encoding="utf-8") as f:
+        json.dump(legacy, f)
+    rec = store.get_run("run_legacy_000000")
+    assert rec is not None                                  # loads without crashing
+    assert rec.get("final_prompt") is None                 # absent -> None via .get(), the documented fallback
+    assert rec["assembled_messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_log_run_forwards_final_prompt_to_the_record(store, monkeypatch):
+    """The handler glue (backlog #5): _log_run reads mem_out['final_prompt'] and persists it as
+    run.final_prompt. Drives the REAL do_POST handler object with no socket + SUB=None (no engine, no
+    model) -- purely the forwarding logic, mirroring test_rederive_server.py's object.__new__(H) trick."""
+    import time
+    from clozn import clozn_server as cs
+    monkeypatch.setattr(cs, "SUB", None)                   # no substrate -> dials {}, run_meta skipped
+    h = object.__new__(cs.make_handler())
+    h.headers = {"User-Agent": "pytest"}
+    rendered = "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+    rid = h._log_run("engine_chat", [{"role": "user", "content": "hi"}], "hey", "clozn-engine", time.time(),
+                     mem_out={"mode": "prompt", "applied": [], "gate": 0.0,
+                              "assembled_messages": [{"role": "user", "content": "hi"}],
+                              "final_prompt": rendered})
+    assert rid is not None
+    assert store.get_run(rid)["final_prompt"] == rendered
 
 
 def test_prompt_summary_uses_last_user_message(store):

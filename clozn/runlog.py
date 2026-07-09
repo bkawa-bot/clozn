@@ -428,8 +428,17 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
            trace: dict | None = None, started: float | None = None, ended: float | None = None,
            parent_run_id: str | None = None, changes_applied: dict | None = None,
            error: str | None = None, finish_reason: str | None = None,
-           meta: dict | None = None, assembled_messages=None, workspace_provider=None) -> str | None:
-    """Persist a completed run; return its id (or None on failure -- logging must never break a request)."""
+           meta: dict | None = None, assembled_messages=None, final_prompt: str | None = None,
+           workspace_provider=None) -> str | None:
+    """Persist a completed run; return its id (or None on failure -- logging must never break a request).
+
+    final_prompt (additive; backlog #5): the EXACT rendered prompt STRING the model actually saw -- the
+    output of the engine's per-model chat template (POST /apply_template, added in T0.1), captured on the
+    engine chat paths. It is the ground truth of "what went into the model" AFTER templating, distinct
+    from `assembled_messages` (the pre-template messages, memory block already folded in). None when no
+    rendered string was in hand (e.g. the torch substrates, which template inside the HF tokenizer and
+    never surface the string) -- consumers then fall back to `assembled_messages`. Purely additive: old
+    runs simply lack the key, and every reader uses run.get("final_prompt")."""
     try:
         _ensure()
         started = started if started is not None else time.time()
@@ -446,6 +455,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
             "prompt_summary": _summ(prompt), "response_summary": _summ(response),
             "messages": msgs, "response": response,
             "assembled_messages": assembled_messages if assembled_messages is not None else None,
+            "final_prompt": final_prompt,   # the exact rendered chat-template string the model saw (or None)
             "memory": memory or {}, "behavior": behavior or {}, "trace": norm_trace,
             "timing": {"started_at": started, "ended_at": ended, "duration_ms": int((ended - started) * 1000)},
             "parent_run_id": parent_run_id, "changes_applied": changes_applied, "error": error,

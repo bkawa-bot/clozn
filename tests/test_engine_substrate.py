@@ -177,6 +177,32 @@ def test_chat_omits_the_block_when_prompt_block_for_returns_none(iso, fake_engin
     assert "loves rock climbing" not in fake_engine.calls[-1]["prompt"]
 
 
+# ==================================================================================== chat() -- final_prompt capture (backlog #5)
+
+def test_chat_records_the_rendered_final_prompt_in_mem_out(iso, fake_engine, monkeypatch):
+    """mem_out.final_prompt is the EXACT rendered string the engine templated -- the same string that
+    reached generation (fake_engine.calls[-1]['prompt']). _log_run persists it as run.final_prompt."""
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    sub = cs.EngineSubstrate()
+    mem_out = {}
+    sub.chat([{"role": "user", "content": "hi"}], mem_out=mem_out)
+    assert mem_out["final_prompt"] == fake_engine.calls[-1]["prompt"]   # exactly what generation saw
+    assert mem_out["final_prompt"]                                      # non-empty even with no memory block
+    assert "hi" in mem_out["final_prompt"]
+
+
+def test_chat_final_prompt_contains_the_memory_block(iso, fake_engine, monkeypatch):
+    block = "Here is what you know about them:\n- loves rock climbing"
+    monkeypatch.setattr(cs, "_prompt_block_for",
+                        lambda mem, last_user, strength=None: (block, [{"id": "c1", "text": "x"}], 1.0))
+    sub = cs.EngineSubstrate()
+    mem_out = {}
+    sub.chat([{"role": "user", "content": "plans?"}], mem_out=mem_out)
+    # the rendered final_prompt is the post-template form; assembled_messages is its pre-template form.
+    assert block in mem_out["final_prompt"]
+    assert mem_out["final_prompt"] == fake_engine.calls[-1]["prompt"]
+
+
 # ==================================================================================== chat() -- dials forward a steer_vec
 
 class FakeSteer:

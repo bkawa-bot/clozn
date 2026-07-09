@@ -1619,10 +1619,12 @@ class EngineSubstrate(Substrate):
         # MEMORY: the active cards as a topic-gated system block (omitted off-topic / when strength 0).
         block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
         assembled = _inject_block(messages, block)
-        if mem_out is not None:
-            mem_out.update(mode="prompt", applied=applied, gate=gate,
-                           prompt_block=block, assembled_messages=assembled)
         prompt = _engine_tmpl(self.engine, assembled)   # per-model template (the loaded GGUF's own), not Qwen ChatML
+        if mem_out is not None:
+            # final_prompt = the EXACT rendered string the model saw (backlog #5); assembled_messages is its
+            # pre-template form. Both recorded so the run is inspectable at either level.
+            mem_out.update(mode="prompt", applied=applied, gate=gate,
+                           prompt_block=block, assembled_messages=assembled, final_prompt=prompt)
         # TONE: dials from self.steer.strength (replay toggles this in place), falling back to disk.
         kw = {}
         st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or _disk_dials()
@@ -1757,10 +1759,11 @@ class EngineSubstrate(Substrate):
         # MEMORY + TONE: built EXACTLY as chat() builds them.
         block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
         assembled = _inject_block(messages, block)
-        if mem_out is not None:
-            mem_out.update(mode="prompt", applied=applied, gate=gate,
-                           prompt_block=block, assembled_messages=assembled)
         prompt = _engine_tmpl(self.engine, assembled)   # per-model template (the loaded GGUF's own), not Qwen ChatML
+        if mem_out is not None:
+            # final_prompt = the EXACT rendered string the model saw (backlog #5); kept in lockstep with chat().
+            mem_out.update(mode="prompt", applied=applied, gate=gate,
+                           prompt_block=block, assembled_messages=assembled, final_prompt=prompt)
         kw = {}
         st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or _disk_dials()
         if self.steer is not None and st and any(st.values()):
@@ -2169,11 +2172,15 @@ def make_handler():
                     pass
                 workspace_provider = self._workspace_lens_provider(messages, response, error)
                 assembled_messages = mo.get("assembled_messages") if mode == "prompt" else None
+                # backlog #5: the EXACT rendered chat-template string the engine produced (mem_out fills it
+                # on the engine chat paths). Captured in ANY memory mode -- the internalized/engine path
+                # still renders a prompt even without a block. None -> consumers fall back to assembled_messages.
+                final_prompt = mo.get("final_prompt")
                 rid = runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
                                     model=str(model), substrate=SUBNAME, messages=messages, response=response,
                                     memory=memd, behavior={"active_dials": dials}, started=started, error=error,
                                     trace=trace, finish_reason=finish_reason, meta=meta,
-                                    assembled_messages=assembled_messages,
+                                    assembled_messages=assembled_messages, final_prompt=final_prompt,
                                     workspace_provider=workspace_provider)
                 self._maybe_snapshot_turn(rid, messages, trace, error)
                 return rid                        # M5 bridge: the run id, for callers that want to surface it
@@ -2809,6 +2816,9 @@ def make_handler():
                         if prefix is not None:             # inject the trained soft prefix (dial x relevance)
                             kw = {"prefix_embd": (prefix * ms).flatten().tolist(),
                                   "prefix_rows": int(prefix.shape[0])}
+                    # backlog #5: record the EXACT rendered chat-template string the model saw (both memory
+                    # modes render one). _log_run reads memout["final_prompt"] -> the run record's final_prompt.
+                    memout["final_prompt"] = prompt
                     # TONE: live dial values if a substrate is up, else the saved values from disk
                     st = getattr(getattr(SUB, "steer", None), "strength", None) if SUB else None
                     if not st:

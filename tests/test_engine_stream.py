@@ -157,6 +157,18 @@ def test_chat_stream_yields_pieces_in_order(iso, monkeypatch, fake_urlopen):
     assert mem_out["assembled_messages"] == [{"role": "user", "content": "capital of France?"}]
 
 
+def test_chat_stream_records_the_rendered_final_prompt(iso, monkeypatch, fake_urlopen):
+    """backlog #5: chat_stream fills mem_out.final_prompt with the EXACT rendered string it POSTed to
+    /v1/completions -- kept in lockstep with chat()'s own final_prompt capture."""
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    sub = _bare_engine_substrate(FakeEngine())
+    mem_out = {}
+    list(sub.chat_stream([{"role": "user", "content": "hi"}], mem_out=mem_out))
+    body = json.loads(fake_urlopen[-1]["req"].data.decode("utf-8"))
+    assert mem_out["final_prompt"] == body["prompt"]       # the rendered string that reached generation
+    assert mem_out["final_prompt"]                         # non-empty even with no memory block
+
+
 def test_chat_stream_skips_empty_pieces(iso, monkeypatch):
     monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
     lines = [
