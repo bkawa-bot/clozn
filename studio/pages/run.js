@@ -279,7 +279,39 @@
       ".ri-nrt-flags{margin-top:5px}" +
       ".ri-nrt-flag{display:flex;gap:7px;align-items:flex-start;margin:5px 0;padding:7px 10px;border-radius:9px;font-size:12.5px;line-height:1.45;color:#8f2f2f;background:rgba(231,120,120,.12);border:1px solid rgba(231,120,120,.4)}" +
       ".ri-nrt-flags-none{margin-top:10px}" +
-      ".ri-nrt-note{margin-top:12px;font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45;font-style:italic}";
+      ".ri-nrt-note{margin-top:12px;font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45;font-style:italic}" +
+      // --- S4 (REPRODUCE_AND_PROVE_PLAN.md): receipt-mode toggle (readable regen | faithful forced), the
+      //     graded-leaning ranking (forced mean|delta| leave-one-out) + per-token dependence heat, and the
+      //     exact re-derivation. NO silent-influence badge (the S3 follow-up: filler-swap floor tracks the
+      //     real ablation ~1:1, Pearson .9985 -- never a verdict). ---
+      ".ri-rmode{display:flex;gap:6px;margin:8px 0 10px;flex-wrap:wrap}" +
+      ".ri-rmode-btn{font:inherit;font-size:11.5px;font-weight:640;border:1px solid var(--line,#e3e6ef);background:rgba(255,255,255,.7);color:var(--soft,#5a6072);border-radius:14px;padding:4px 11px;cursor:pointer;transition:background .14s,border-color .14s,color .14s}" +
+      ".ri-rmode-btn:hover{color:var(--ink,#1b1f2a);border-color:var(--halo,#7aa7ff)}" +
+      ".ri-rmode-btn.active{color:#2f4a7a;border-color:var(--halo,#7aa7ff);background:rgba(122,167,255,.14)}" +
+      ".ri-lean-sub{font-size:11.5px;color:var(--soft,#5a6072);line-height:1.45;margin:2px 0 8px}" +
+      ".ri-lean-row{border:1px solid var(--line,#e3e6ef);border-radius:10px;padding:8px 10px;margin:6px 0;cursor:pointer;transition:border-color .12s,background .12s}" +
+      ".ri-lean-row:hover{border-color:var(--halo,#7aa7ff)}" +
+      ".ri-lean-row.sel{border-color:var(--halo,#7aa7ff);background:rgba(122,167,255,.07)}" +
+      ".ri-lean-top{display:flex;align-items:baseline;gap:8px}" +
+      ".ri-lean-kind{flex:none;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint,#9aa0b3);border:1px solid var(--line,#e3e6ef);border-radius:7px;padding:0 5px}" +
+      ".ri-lean-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:var(--ink,#1b1f2a);font-weight:600}" +
+      ".ri-lean-val{flex:none;font-size:11px;color:var(--faint,#9aa0b3);font-family:ui-monospace,Consolas,monospace}" +
+      ".ri-lean-track{height:6px;border-radius:5px;background:var(--wash,#eef1fb);overflow:hidden;margin:6px 0 5px}" +
+      ".ri-lean-fill{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--halo,#7aa7ff),#5a7ad0)}" +
+      ".ri-lean-at{font-size:11px;color:var(--soft,#5a6072);line-height:1.6}" +
+      ".ri-lean-at .k{color:var(--faint,#9aa0b3)}" +
+      ".ri-lean-chip{display:inline-block;font-family:ui-monospace,Consolas,monospace;font-size:11px;background:rgba(122,167,255,.12);border:1px solid rgba(122,167,255,.3);border-radius:7px;padding:0 5px;margin:0 3px 3px 0;color:#2f4a7a}" +
+      ".ri-lean-heat-h{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint,#9aa0b3);margin:11px 0 5px}" +
+      ".ri-lean-heat{white-space:pre-wrap;word-break:break-word;line-height:1.95;font-size:13px;border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:9px 10px;background:#fff}" +
+      ".ri-lean-heat-tk{border-radius:3px;padding:0 .5px}" +
+      ".ri-lean-raw{margin-top:9px;font-size:11px;color:var(--faint,#9aa0b3);line-height:1.5}" +
+      ".ri-lean-note{font-size:11.5px;color:var(--soft,#5a6072);line-height:1.45;margin:7px 0}" +
+      ".ri-lean-caveat{margin-top:11px;padding-top:9px;border-top:1px dashed var(--line,#e3e6ef);font-size:11px;color:var(--faint,#9aa0b3);line-height:1.5;font-style:italic}" +
+      ".ri-rd{margin-top:14px}" +
+      ".ri-rd-h{font-size:11px;color:var(--faint,#9aa0b3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}" +
+      ".ri-rd-stream{white-space:pre-wrap;word-break:break-word;line-height:1.95;font-size:13.5px;border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:9px 10px;background:var(--wash,#f6f8ff)}" +
+      ".ri-rd-tk{border-radius:3px;padding:0 .5px}" +
+      ".ri-rd-note{margin-top:8px;font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45}";
     document.head.appendChild(s);
   }
 
@@ -352,8 +384,19 @@
     if (run.response && !lastA) h += '<div class="ri-turn assistant"><div class="who">assistant</div>' + esc(run.response) + "</div>";
     h += assembledPromptPanel(run);
     h += tokenTimeline(run);
+    h += rederivePanel();
     h += workspaceLensPanel(run);
     return h;
+  }
+
+  // S4: the "Re-derive (exact)" affordance -- a button + output host in the transcript column, right under
+  // the token timeline (it is about the SAME answer tokens). Lazy (a click, like narrate): /rederive makes
+  // real engine score calls. The button degrades honestly when the run lacks a scorable trace or the engine
+  // substrate is down (wireRederive below). Static markup here; the fill is wired in render().
+  function rederivePanel() {
+    return '<div class="ri-rd">' +
+      '<button class="ri-act" id="ri-rederive-go">Re-derive (exact)</button>' +
+      '<div class="ri-out" id="ri-rederive-out"></div></div>';
   }
 
   function messageRowsHTML(messages) {
@@ -626,7 +669,17 @@
     //     memory/dials do (the self-audit findings), so the ablation is the only honest receipt.
     if (cards.length || keys.length) {
       h += '<div class="ri-prove-h">Receipts — prove it</div>';
-      h += '<div class="ri-prove-sub">Re-runs this prompt with one influence off (greedy). The difference <i>is</i> that influence’s contribution — measured, not self-reported.</div>';
+      // S4: a receipt-mode toggle. "readable (regen)" is the EXISTING greedy text-diff (stays default --
+      //   it answers "would the answer have changed?"); "faithful (forced)" is the S3 graded-leaning
+      //   dependence measurement on THIS exact answer ("how much did it lean on this?"). Two questions,
+      //   shown side by side, never interchangeably.
+      h += '<div class="ri-rmode">' +
+        '<button class="ri-rmode-btn active" data-rmode="regen">readable (regen)</button>' +
+        '<button class="ri-rmode-btn" data-rmode="forced">faithful (forced)</button>' +
+        "</div>";
+      // --- regen view (default, unchanged): the greedy one-influence-off text diff. ---
+      h += '<div id="ri-rcpt-regen">';
+      h += '<div class="ri-prove-sub">Re-runs this prompt with one influence off (greedy). The difference <i>is</i> that influence’s contribution — a text-level “would the answer change?”, measured, not self-reported.</div>';
       if (cards.length) h += "<button class=\"ri-act\" data-receipt='{\"memory_off\":true,\"greedy\":true}'>Memory receipt — what did the memory change?</button>";
       // per-card receipts (prompt mode only: applied_ids come from the card store, and the replay
       // engine can really rebuild the block minus one card there -- internalized would need a retrain).
@@ -637,6 +690,13 @@
       }
       if (keys.length) h += "<button class=\"ri-act\" data-receipt='{\"behavior_off\":true,\"greedy\":true}'>Dials receipt — what did the dials change?</button>";
       h += '<div class="ri-out" id="ri-receipt-out"></div>';
+      h += "</div>";   // #ri-rcpt-regen
+      // --- forced view (hidden until toggled): the graded-leaning ranking + per-token dependence heat. ---
+      h += '<div id="ri-rcpt-forced" style="display:none">';
+      h += '<div class="ri-prove-sub">Scores <b>this exact answer</b> token-by-token, with vs without each influence — a graded “how much did it lean on this?” dependence measurement (no re-generation; needs the engine substrate).</div>';
+      h += '<button class="ri-act" id="ri-forced-go">Measure graded leaning</button>';
+      h += '<div class="ri-out" id="ri-forced-out"></div>';
+      h += "</div>";   // #ri-rcpt-forced
     }
     return h;
   }
@@ -1317,6 +1377,268 @@
     });
   }
 
+  // ---------------------------------------------------------------------------------------------------
+  // S4 (REPRODUCE_AND_PROVE_PLAN.md): forced-mode receipts (GRADED LEANING) + exact re-derivation, built
+  // on the S3 backend (receipt()/prove_all() mode=forced, /rederive). The forced view is the graded-
+  // leaning ranking validated in the S3 follow-up experiment: rank a run's fired influences by forced
+  // mean|delta| (each forced receipt's per-token deltas ARE its leave-one-out dependence signal), strongest
+  // -> faintest, with a per-token dependence heat over the exact answer.
+  //
+  // HONEST BY DESIGN -- there is NO "silent influence" badge, and the filler-swap null floor is NEVER a
+  // verdict. The follow-up found the filler swap tracks the real ablation almost 1:1 (Pearson .9985), so
+  // ratio_real_over_floor / exceeds_floor_by_order_of_magnitude are meaningless as discriminators and are
+  // never rendered as a badge; the raw null_floor mean|delta| appears only as transparent data, captioned
+  // as the known non-discriminator it is. The honest signal is the leave-one-out RANKING itself.
+  // ---------------------------------------------------------------------------------------------------
+
+  // mean |delta| over a receipt's per-token deltas -- computed CLIENT-SIDE (transparent + the ranking key),
+  // not read from the payload's mean_nats_per_token (which is the same number; we recompute to show our work).
+  function meanAbsDelta(deltas) {
+    if (!Array.isArray(deltas) || !deltas.length) return 0;
+    var s = 0, n = 0;
+    for (var i = 0; i < deltas.length; i++) { var d = +deltas[i]; if (isFinite(d)) { s += Math.abs(d); n++; } }
+    return n ? s / n : 0;
+  }
+  function maxAbsDelta(deltas) {
+    var m = 0;
+    (deltas || []).forEach(function (d) { d = Math.abs(+d); if (isFinite(d) && d > m) m = d; });
+    return m;
+  }
+
+  // card_id -> card text, from the run's own memory record (a fallback label source when a forced receipt's
+  // influence carries only a card_id, e.g. from the single /receipt endpoint; prove_all's card influences
+  // already carry `text`).
+  function cardTextByIdOf(run) {
+    var mem = run.memory || {}, cards = mem.cards_applied || [], ids = Array.isArray(mem.applied_ids) ? mem.applied_ids : [];
+    var map = {};
+    for (var i = 0; i < cards.length && i < ids.length; i++) { if (ids[i] != null) map[String(ids[i])] = cardText(cards[i]); }
+    return map;
+  }
+
+  // A {kind,name} label for a forced receipt's influence: card text preferred, then a card_id lookup, then
+  // a dial/memory/behavior label.
+  function forcedLabel(fr, cardTextById) {
+    var inf = (fr && fr.influence) || {};
+    if (inf.card_id != null) {
+      var t = inf.text != null ? String(inf.text) : (cardTextById[String(inf.card_id)] || "");
+      return { kind: "card", name: t || ("card " + inf.card_id) };
+    }
+    if (inf.dial != null) return { kind: "dial", name: "dial: " + inf.dial };
+    if (inf.memory_off) return { kind: "memory", name: "all memory" };
+    if (inf.behavior_off) return { kind: "dials", name: "all dials" };
+    return { kind: "influence", name: "influence" };
+  }
+
+  // "mostly at: <chips>" -- the receipt's top_dependent tokens (already ranked by |delta| server-side).
+  function leanTopTokens(fr) {
+    var top = Array.isArray(fr.top_dependent) ? fr.top_dependent : [];
+    if (!top.length) return "";
+    return '<div class="ri-lean-at"><span class="k">mostly at:</span> ' + top.slice(0, 5).map(function (t) {
+      return '<span class="ri-lean-chip">' + esc(labelTok(t && t.piece)) + "</span>";
+    }).join("") + "</div>";
+  }
+
+  // Per-token dependence HEAT for ONE forced receipt: the exact answer, each token washed by |delta| (how
+  // much the model's confidence in THAT token leaned on this influence), signed direction in the hover title.
+  function forcedHeatHTML(fr) {
+    var toks = Array.isArray(fr.answer_tokens) ? fr.answer_tokens : [];
+    var deltas = Array.isArray(fr.deltas) ? fr.deltas : [];
+    if (!toks.length || toks.length !== deltas.length) {
+      return '<div class="ri-lean-note">No per-token heat for this influence (the answer tokens and deltas didn’t align).</div>';
+    }
+    var peak = maxAbsDelta(deltas) || 1;
+    var h = '<div class="ri-lean-heat-h">Per-token dependence — how much each word leaned on this</div><div class="ri-lean-heat">';
+    for (var i = 0; i < toks.length; i++) {
+      var d = +deltas[i]; if (!isFinite(d)) d = 0;
+      var a = Math.min(0.6, Math.abs(d) / peak * 0.6);
+      var dir = d > 0 ? "supported (+" + d.toFixed(2) + ")" : (d < 0 ? "suppressed (" + d.toFixed(2) + ")" : "±0");
+      var title = "Δlogprob " + (d >= 0 ? "+" : "") + d.toFixed(3) + " — " + dir + " by this influence";
+      h += '<span class="ri-lean-heat-tk" style="background:rgba(122,167,255,' + a.toFixed(3) + ')" title="' + esc(title) + '">' + escTok(toks[i]) + "</span>";
+    }
+    return h + "</div>";
+  }
+
+  // The RAW null-floor numbers, transparently -- NEVER a badge/verdict. Shows this influence's mean|delta|
+  // beside the matched-length filler-swap control's mean|delta|, and says plainly that the control tracks
+  // the real ablation ~1:1 (a measured non-discriminator), so the RANKING is the signal, not this ratio.
+  // exceeds_floor_by_order_of_magnitude and ratio_real_over_floor are deliberately never rendered.
+  function leanRawFloor(fr) {
+    var nf = fr && fr.null_floor;
+    if (!nf || nf.mean_nats_per_token == null) return "";
+    var real = fr.mean_nats_per_token != null ? (+fr.mean_nats_per_token).toFixed(3) : meanAbsDelta(fr.deltas).toFixed(3);
+    var floor = (+nf.mean_nats_per_token).toFixed(3);
+    return '<div class="ri-lean-raw">Raw numbers (transparency, not a verdict): this influence mean|Δ| <b>' + esc(real) +
+      "</b> nats/token · matched-length filler-swap control <b>" + esc(floor) +
+      "</b> nats/token. The filler control tracks the real ablation almost 1:1, so it can’t discriminate — the leave-one-out ranking above (this influence vs the others) is the honest signal, not this pair.</div>";
+  }
+
+  // The pure assembler: a prove_all(mode=forced) response -> {html, ranked}. `ranked` is the sorted list of
+  // measured receipts (strongest lean first) the click handler repaints the heat from.
+  function forcedLeaningHTML(data, run) {
+    data = data || {};
+    var recs = Array.isArray(data.forced_receipts) ? data.forced_receipts : [];
+    var cardTextById = cardTextByIdOf(run);
+    var measured = [], unmeasured = [], retok = false;
+    recs.forEach(function (fr) {
+      if (!fr || typeof fr !== "object") return;
+      if (fr.retokenized) retok = true;
+      if (fr.causal_verified && Array.isArray(fr.deltas) && fr.deltas.length) {
+        measured.push({ fr: fr, mean: meanAbsDelta(fr.deltas), label: forcedLabel(fr, cardTextById) });
+      } else {
+        unmeasured.push({ fr: fr, label: forcedLabel(fr, cardTextById) });
+      }
+    });
+    measured.sort(function (a, b) { return b.mean - a.mean; });
+
+    var h = '<div class="ri-lean-sub">Ranked by how much removing each influence would change the model’s confidence in <b>this exact answer</b> — a per-token, leave-one-out dependence measurement (no re-generation). Strongest lean first.</div>';
+
+    if (!measured.length && !unmeasured.length) {
+      return { html: h + '<div class="ri-lean-note">No influences fired on this run — nothing to measure.</div>', ranked: [] };
+    }
+    if (retok) {
+      h += '<div class="ri-lean-note">⚠ This run has no stored per-token ids — the answer was re-tokenized, so token boundaries here are approximate.</div>';
+    }
+    if (!measured.length) {
+      var why = (unmeasured[0] && unmeasured[0].fr && unmeasured[0].fr.note) || "forced scoring needs the engine substrate (teacher-forced /score).";
+      return { html: h + '<div class="ri-lean-note">No forced dependence could be measured — ' + esc(why) + "</div>", ranked: [] };
+    }
+
+    var peakMean = measured[0].mean || 1;
+    measured.forEach(function (item, idx) {
+      var frac = peakMean ? Math.max(0.04, item.mean / peakMean) : 0;
+      h += '<div class="ri-lean-row' + (idx === 0 ? " sel" : "") + '" data-lean-idx="' + idx + '">' +
+        '<div class="ri-lean-top"><span class="ri-lean-kind">' + esc(item.label.kind) + "</span>" +
+        '<span class="ri-lean-name" title="' + esc(item.label.name) + '">' + esc(item.label.name) + "</span>" +
+        '<span class="ri-lean-val">' + item.mean.toFixed(3) + " nats/tok</span></div>" +
+        '<div class="ri-lean-track"><span class="ri-lean-fill" style="width:' + (frac * 100).toFixed(1) + '%"></span></div>' +
+        leanTopTokens(item.fr) + "</div>";
+    });
+
+    // the heat + raw-floor host for the currently selected influence (default: the top-ranked one).
+    h += '<div class="ri-lean-heat-host"></div>';
+    if (unmeasured.length) {
+      h += '<div class="ri-lean-note">Not measured: ' + unmeasured.map(function (u) {
+        return esc(u.label.name) + (u.fr && u.fr.ablation_note ? " (" + esc(u.fr.ablation_note) + ")" : "");
+      }).join("; ") + ".</div>";
+    }
+    // the honest caveat (the plan's, verbatim in intent): dependence is not counterfactual text.
+    h += '<div class="ri-lean-caveat">A nonzero lean means the influence changed the model’s <i>confidence</i> in the answer it gave — not that the answer would have been different without it. For “would the text change?”, use the readable (regen) receipts above.</div>';
+    return { html: h, ranked: measured };
+  }
+
+  // Paint the heat + raw-floor for a selected ranked index into `host`.
+  function renderLeanHeat(host, ranked, idx) {
+    if (!host) return;
+    var item = ranked[idx];
+    host.innerHTML = item ? (forcedHeatHTML(item.fr) + leanRawFloor(item.fr)) : "";
+  }
+
+  // The pure assembler for /rederive: {text, steps:[{piece,token_id,logprob,conf}], meta} -> the answer as
+  // a per-token stream, each token tinted by the confidence the model assigns it when forced to reproduce
+  // this exact answer. Labeled as a DETERMINISTIC re-derivation (no sampling).
+  function rederiveHTML(data) {
+    data = (data && typeof data === "object") ? data : {};
+    var steps = Array.isArray(data.steps) ? data.steps : [];
+    var meta = data.meta || {};
+    if (!steps.length) return '<div class="ri-rd-note">Nothing to re-derive — this run has no scorable answer tokens.</div>';
+    var h = '<div class="ri-rd-h">Deterministic re-derivation of this exact answer — teacher-forced, no sampling</div><div class="ri-rd-stream">';
+    steps.forEach(function (s) {
+      s = s || {};
+      var c = s.conf == null ? NaN : +s.conf;
+      var op = isFinite(c) ? confOpacity(c) : "1";
+      var lp = s.logprob == null ? "?" : fmtNum(s.logprob, 3);
+      var cf = isFinite(c) ? c.toFixed(3) : "?";
+      var title = "logprob " + lp + " · conf " + cf + (s.token_id != null ? " · id " + s.token_id : "");
+      h += '<span class="ri-rd-tk" style="opacity:' + op + '" title="' + esc(title) + '">' + escTok(s.piece) + "</span>";
+    });
+    h += "</div>";
+    var bits = [];
+    if (meta.n_tokens != null) bits.push(meta.n_tokens + " tokens");
+    if (meta.block_source) bits.push("prompt: " + meta.block_source);
+    h += '<div class="ri-rd-note">Each token tinted by the confidence the model assigns it when forced to reproduce this answer' +
+      (bits.length ? " · " + esc(bits.join(" · ")) : "") + ".";
+    if (meta.retokenized) h += " ⚠ No stored per-token ids — re-tokenized, so token boundaries are approximate.";
+    return h + "</div>";
+  }
+
+  // Wire the receipt-mode toggle + the lazy "Measure graded leaning" fetch (prove_all mode=forced), then
+  // the row-click heat repaint. Every failure path (404/503/offline/other) gets one honest line -- the same
+  // discipline as doReplay/wireNarrate; nothing here ever throws.
+  function wireForcedReceipts(root, run) {
+    var modeBtns = root.querySelectorAll(".ri-rmode-btn[data-rmode]");
+    var regenView = root.querySelector("#ri-rcpt-regen");
+    var forcedView = root.querySelector("#ri-rcpt-forced");
+    modeBtns.forEach(function (b) {
+      b.onclick = function () {
+        modeBtns.forEach(function (o) { o.classList.remove("active"); });
+        b.classList.add("active");
+        var m = b.dataset.rmode;
+        if (regenView) regenView.style.display = (m === "regen") ? "" : "none";
+        if (forcedView) forcedView.style.display = (m === "forced") ? "" : "none";
+      };
+    });
+
+    var go = root.querySelector("#ri-forced-go"), out = root.querySelector("#ri-forced-out");
+    if (!go || !out) return;
+    go.onclick = function () {
+      if (go.disabled) return;
+      var label = go.textContent;
+      go.disabled = true; go.classList.add("busy"); go.textContent = "measuring…";
+      out.innerHTML = '<span class="sub">scoring this answer token-by-token, with vs without each influence…</span>';
+      postJSON("/runs/" + run.id + "/receipts", { mode: "forced" }).then(function (r) {
+        go.disabled = false; go.classList.remove("busy"); go.textContent = label;
+        if (r.status === 404) { out.innerHTML = '<span class="sub">forced receipts aren’t on this build yet — this lights up once /runs/&lt;id&gt;/receipts (mode:forced) exists.</span>'; return; }
+        if (r.status === 503) { out.innerHTML = '<span class="sub">forced scoring needs the engine substrate (teacher-forced /score) — start it and try again.</span>'; return; }
+        if (r.status === 0) { out.innerHTML = '<span class="sub">couldn’t reach the studio (offline?) — nothing was measured.</span>'; return; }
+        if (!r.ok || !r.data || r.data.error) {
+          var msg = r.data && r.data.error ? " — " + esc(r.data.error) : "";
+          out.innerHTML = '<span class="sub">forced receipts failed (' + esc(r.status) + ")" + msg + "</span>"; return;
+        }
+        var built = forcedLeaningHTML(r.data, run);
+        out.innerHTML = built.html;
+        var host = out.querySelector(".ri-lean-heat-host");
+        renderLeanHeat(host, built.ranked, 0);
+        out.querySelectorAll(".ri-lean-row[data-lean-idx]").forEach(function (row) {
+          row.onclick = function () {
+            out.querySelectorAll(".ri-lean-row.sel").forEach(function (o) { o.classList.remove("sel"); });
+            row.classList.add("sel");
+            renderLeanHeat(host, built.ranked, +row.dataset.leanIdx);
+          };
+        });
+      }, function () {
+        go.disabled = false; go.classList.remove("busy"); go.textContent = label;
+        out.innerHTML = '<span class="sub">forced receipts failed (unexpected error) — nothing was measured.</span>';
+      });
+    };
+  }
+
+  // Wire the "Re-derive (exact)" button (transcript column). Lazy like narrate; POST /runs/<id>/rederive,
+  // render via the pure rederiveHTML() on success, one honest line on every failure path. Never throws.
+  function wireRederive(root, run) {
+    var btn = root.querySelector("#ri-rederive-go"), out = root.querySelector("#ri-rederive-out");
+    if (!btn || !out) return;
+    btn.onclick = function () {
+      if (btn.disabled) return;
+      var label = btn.textContent;
+      btn.disabled = true; btn.classList.add("busy"); btn.textContent = "re-deriving…";
+      out.innerHTML = '<span class="sub">re-deriving this exact answer token-by-token (deterministic, no sampling)…</span>';
+      postJSON("/runs/" + run.id + "/rederive", {}).then(function (r) {
+        btn.disabled = false; btn.classList.remove("busy"); btn.textContent = label;
+        if (r.status === 404) { out.innerHTML = '<span class="sub">re-derive isn’t on this build yet — this lights up once /runs/&lt;id&gt;/rederive exists.</span>'; return; }
+        if (r.status === 503) { out.innerHTML = '<span class="sub">re-derive needs the engine substrate (teacher-forced /score) — start it and try again.</span>'; return; }
+        if (r.status === 0) { out.innerHTML = '<span class="sub">couldn’t reach the studio (offline?) — nothing was re-derived.</span>'; return; }
+        if (!r.ok || !r.data || r.data.error) {
+          var msg = r.data && r.data.error ? " — " + esc(r.data.error) : "";
+          out.innerHTML = '<span class="sub">re-derive failed (' + esc(r.status) + ")" + msg + "</span>"; return;
+        }
+        out.innerHTML = rederiveHTML(r.data);
+      }, function () {
+        btn.disabled = false; btn.classList.remove("busy"); btn.textContent = label;
+        out.innerHTML = '<span class="sub">re-derive failed (unexpected error) — nothing was re-derived.</span>';
+      });
+    };
+  }
+
   // M5: the Detail/Explain tab switch -- toggle .active + show/hide the two view containers. Detail stays
   // the default (matches querySelectorAll(...).forEach usage elsewhere in this file, e.g. wireQuickRepair).
   function wireTabs(root) {
@@ -1583,6 +1905,8 @@
     wireTimeline(root, run);
     wireRepair(root, run);
     wireReceipts(root, run);
+    wireForcedReceipts(root, run);   // S4: receipt-mode toggle + graded-leaning (forced) view
+    wireRederive(root, run);         // S4: "Re-derive (exact)" in the transcript column
     wireQuickRepair(root, run);
     wireBranch(root, run);
     wirePropose(root, run, ctx);
