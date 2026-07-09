@@ -50,13 +50,26 @@ Survey (2026-07-08): 123 `Qwen` references across 13 `clozn/*.py` files, concent
      with an **LLM-judge** rating each dose. Automatable, but a real step.
   - Steering hooks must support the architecture (fine for standard + MoE transformers — the residual stream
     is there; verify on a second architecture before claiming it).
-- **Tier 2 (SAE): the only genuinely gated tier.** Needs a trained SAE. **Free where a suite exists**
-  (GemmaScope 1 → Gemma 2; GemmaScope 2 → Gemma 3). Otherwise research-grade. **Model-agnostic fallbacks**
-  that need no SAE and already have `provider_type` slots in the workspace-lens seam:
-  - **Activation MRI** — per-token residual norms, per-layer geometry (just reads `/harvest`).
-  - **Logit lens** — project the residual through the unembedding: "what token is it leaning toward at
-    layer L?" Zero training, any model.
-  - **Linear probes** — cheap per-concept directions.
+- **Tier 2 (concept / "brain" readouts).** Two paths, and the SAE path is *consumed, not trained*:
+  - **SAE atlas (model-gated).** We do NOT train SAEs — `sae7b.py` loads a *downloaded* single-layer SAE
+    (`~/hf_models/andyrdt_l15_sae.pt`, Andy Arditi's Qwen-7B layer-15). So "which models get the SAE atlas"
+    = "which have a *public* SAE": Qwen-7B (andyrdt), Gemma-2/3 (GemmaScope). Training our own is a small
+    single-layer SAE at best (feasible-with-effort on 16 GB: corpus + harvest pipeline + days) and won't
+    match a curated suite — not worth it vs. consuming a public one. GemmaScope-scale suites are flatly out
+    of reach (multi-GPU).
+  - **Jacobian lens (SELF-SERVE, model-agnostic) — the unlock.** Fit it *yourself* for *any* model: the
+    fit needs backprop (PyTorch/lab, offline) but is cheap (`~100 prompts` saturates quality; solarkyle fit
+    5 open models on a 16 GB card same-day). The fitted artifact is per-layer matrices; **application is
+    forward-only** (`unembed(J_l @ h)` — a matmul + unembed, same shape as the SAE readout), so it drops
+    into clozn's existing harvest-and-project path and the reserved `jacobian_lens` provider slot. The
+    upstream repo says "not compatible with forward-only runtimes" — but that assumes vanilla llama.cpp;
+    clozn's engine *does* expose activations via `/harvest`, so the apply IS engine-compatible (wiring, not
+    new capability). **This moves brain-viz from Tier-2-gated toward self-serve Tier-1**, and pairs with
+    Thread-A forced receipts as read-(J-lens)-plus-prove-(receipts) on any model. Caveats: fit is torch/lab
+    offline; 27B may need the repo's `merge()` slicing; a lens is a *reading*, not causal.
+  - **Other SAE-free fallbacks** (also `provider_type` slots): **activation MRI** (residual norms / layer
+    geometry, just reads `/harvest`); **logit lens** (zero-training token-leanings per layer); cheap
+    **linear probes** per concept.
 
 ---
 
