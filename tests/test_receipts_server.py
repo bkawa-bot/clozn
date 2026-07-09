@@ -208,3 +208,92 @@ def test_receipts_no_fired_influences_is_a_clean_empty_200(iso):
     out = _post(f"/runs/{rid2}/receipts", {})
     assert out["receipts"] == []
     assert out["run_id"] == rid2
+
+
+# ============================================================================================================
+# ================================================ S3: mode= (regen | forced | both) endpoint wiring =========
+# ============================================================================================================
+# regen (default/omitted) is asserted byte-identical above (those tests never pass `mode` at all -- the
+# whole pre-S3 suite is itself the regression test). Here: the new `mode` plumbing -- a bad string 400s, a
+# forced-only request needs no qwen substrate (no .chat gate), and an engine-shaped fake that ALSO exposes
+# .score_tokens can drive forced/both end to end over HTTP.
+
+class FakeEngineSub:
+    """A substrate double exposing BOTH .chat() (regen) and .score_tokens() (forced/rederive) -- what a
+    real EngineSubstrate looks like from these endpoints' point of view."""
+    name = "engine"
+
+    def __init__(self, reply="hi", tokens=None):
+        self.memory = FakeMem()
+        self.steer = FakeSteer()
+        self.reply = reply
+        self._tokens = tokens if tokens is not None else [{"id": 1, "piece": "hi", "logprob": -0.1}]
+        self.calls = 0
+
+    def chat(self, messages, max_new=256, sample=True):
+        self.calls += 1
+        return self.reply
+
+    def score_tokens(self, messages, continuation_ids, *, continuation=None, block=None,
+                     steer_strengths=None, steer_vec=None, topk=0):
+        return self._tokens
+
+
+def test_receipt_rejects_an_unrecognized_mode_with_400(iso):
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipt", {"influence": {"memory_off": True}, "mode": "bogus"})
+    assert "error" in out
+
+
+def test_receipts_rejects_an_unrecognized_mode_with_400(iso):
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipts", {"mode": "bogus"})
+    assert "error" in out
+
+
+def test_receipt_mode_forced_does_not_need_the_qwen_substrate_gate(iso, monkeypatch):
+    """forced mode never regenerates -- unlike regen/both, it must not 503 just because SUB is None."""
+    monkeypatch.setattr(cs, "SUB", None)
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipt", {"influence": {"memory_off": True}, "mode": "forced"})
+    assert "error" not in out
+    assert out["causal_verified"] is False                 # honestly degrades: no substrate to score with
+    assert "score_tokens" in out["note"]
+
+
+def test_receipts_mode_forced_does_not_need_the_qwen_substrate_gate(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", None)
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipts", {"mode": "forced"})
+    assert "error" not in out
+    assert out["mode"] == "forced"
+
+
+def test_receipt_mode_forced_happy_path_over_http(iso, monkeypatch):
+    fake = FakeEngineSub(tokens=[{"id": 1, "piece": "hi", "logprob": -0.1},
+                                {"id": 2, "piece": " there", "logprob": -0.2}])
+    monkeypatch.setattr(cs, "SUB", fake)
+    rid = runlog.record(source="studio_chat", client="studio", model="clozn-qwen", substrate="engine",
+                        messages=[{"role": "user", "content": "hi"}], response="hi there",
+                        behavior={"active_dials": {"warm": 0.5}}, trace={"token_ids": [1, 2]})
+    out = _post(f"/runs/{rid}/receipt", {"influence": {"dial": "warm"}, "mode": "forced"})
+    assert "error" not in out
+    assert out["mode"] == "forced"
+    assert out["causal_verified"] is True
+    assert out["deltas"] == [0.0, 0.0]                      # WITH == WITHOUT here (fake ignores steer args)
+    assert fake.calls == 0                                  # forced mode never called .chat()
+
+
+def test_receipt_mode_both_over_http_includes_forced_and_regen_fields(iso, monkeypatch):
+    fake = FakeEngineSub(reply="Warmly!", tokens=[{"id": 1, "piece": "Warmly", "logprob": -0.1},
+                                                  {"id": 2, "piece": "!", "logprob": -0.2}])
+    monkeypatch.setattr(cs, "SUB", fake)
+    rid = runlog.record(source="studio_chat", client="studio", model="clozn-qwen", substrate="engine",
+                        messages=[{"role": "user", "content": "hi"}], response="Warmly!",
+                        behavior={"active_dials": {"warm": 0.5}}, trace={"token_ids": [1, 2]})
+    out = _post(f"/runs/{rid}/receipt", {"influence": {"dial": "warm"}, "mode": "both"})
+    assert "error" not in out
+    assert out["mode"] == "both"
+    assert "baseline_reply" in out                          # regen fields present at the top level
+    assert "forced" in out and out["forced"]["mode"] == "forced"
+    assert "silent_influence" in out

@@ -204,3 +204,42 @@ def test_score_tokens_tolerates_a_degraded_reply():
     fe = _FakeScoreEngine(reply={})
     sub = _bare_engine_substrate(fe, steer=None)
     assert sub.score_tokens([{"role": "user", "content": "hi"}], [1], block=None) == []
+
+
+# ============================================== S3: continuation TEXT fallback + raw steer_vec passthrough
+# (notes/REPRODUCE_AND_PROVE_PLAN.md rederive.py / forced receipts -- an old/light-tier run whose trace
+# lacks per-token ids falls back to scoring the stored `response` as continuation TEXT; the S3 null-floor
+# control needs a raw steer direction with no named dial behind it.)
+
+def test_score_tokens_continuation_text_fallback_when_no_ids():
+    fe = _FakeScoreEngine()
+    sub = _bare_engine_substrate(fe, steer=None)
+    sub.score_tokens([{"role": "user", "content": "hi"}], None, continuation="hello world", block=None)
+    assert fe.calls[-1]["continuation"] == "hello world"
+    assert "continuation_ids" not in fe.calls[-1]
+
+
+def test_score_tokens_continuation_ids_take_precedence_over_continuation_text():
+    fe = _FakeScoreEngine()
+    sub = _bare_engine_substrate(fe, steer=None)
+    sub.score_tokens([{"role": "user", "content": "hi"}], [1, 2], continuation="ignored", block=None)
+    assert fe.calls[-1]["continuation_ids"] == [1, 2]
+    assert "continuation" not in fe.calls[-1]
+
+
+def test_score_tokens_steer_vec_used_alone_without_steer_strengths():
+    fe = _FakeScoreEngine()
+    sub = _bare_engine_substrate(fe, steer=None)
+    sub.score_tokens([{"role": "user", "content": "hi"}], [1], block=None, steer_vec=[0.3, 0.4])
+    assert fe.calls[-1]["steer_vec"] == [0.3, 0.4]
+    assert fe.calls[-1]["steer"] == {"coef": 1.0, "layer": 14}    # no self.steer -> the 14 fallback layer
+
+
+def test_score_tokens_steer_vec_added_on_top_of_steer_strengths():
+    fe = _FakeScoreEngine()
+    steer = _FakeScoreSteer(vec=[1.0, 2.0], layer=9)
+    sub = _bare_engine_substrate(fe, steer)
+    sub.score_tokens([{"role": "user", "content": "hi"}], [1], block=None,
+                     steer_strengths={"warm": 1.0}, steer_vec=[0.5, -0.5])
+    assert fe.calls[-1]["steer_vec"] == [1.5, 1.5]                 # elementwise sum, not a replacement
+    assert fe.calls[-1]["steer"] == {"coef": 1.0, "layer": 9}

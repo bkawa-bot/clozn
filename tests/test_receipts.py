@@ -356,3 +356,350 @@ def test_prove_all_degrades_when_substrate_is_none(iso):
     out = receipts.prove_all(REDUNDANT_RUN, None)
     assert out["receipts"] == []
     assert any("baseline" in s["reason"] for s in out["skipped"])
+
+
+# ============================================================================================================
+# ============================================ S3: forced-mode receipts (notes/REPRODUCE_AND_PROVE_PLAN.md) ==
+# ============================================================================================================
+# A GRADED, per-token DEPENDENCE measurement via teacher-forced scoring (rederive.score_arm) -- no
+# generation, no qwen substrate needed. Model-free: a ForcedFakeSub's .score_tokens is a deterministic
+# function of the (block, steer_strengths, steer_vec) it was actually called with, so a test can craft
+# EXACT with/without/control logprobs and assert on the resulting deltas/thresholds precisely -- the
+# live-hardware acceptance numbers (real engine, real GPU) are reported separately, not here.
+
+class ScoreFakeSteer:
+    """Just enough of EngineSteer's surface for _forced_ablation's dial null-floor construction:
+    .layer and a DETERMINISTIC .steer_vector() (a fixed per-axis direction scaled by the given
+    strength) -- distinct from this file's other FakeSteer (which has no .steer_vector at all)."""
+
+    def __init__(self, vecs, layer=14):
+        self.vecs = dict(vecs)
+        self.layer = layer
+        self.calls = []
+
+    def steer_vector(self, strengths):
+        self.calls.append(dict(strengths or {}))
+        active = {k: v for k, v in (strengths or {}).items() if v}
+        if not active:
+            return None
+        dim = len(next(iter(self.vecs.values())))
+        out = [0.0] * dim
+        for name, val in active.items():
+            vec = self.vecs.get(name)
+            if not vec:
+                continue
+            for i, x in enumerate(vec):
+                out[i] += x * val
+        return out
+
+
+class ForcedFakeSub:
+    """.score_tokens() is a deterministic function of (block, steer_strengths, steer_vec) -- the with/
+    without/control arms are distinguished by what's actually IN those three call args, so a test can
+    hand-craft precise logprob scenarios (a real "10x above the null floor" case, a "no active dial"
+    case, ...) without needing a live model."""
+
+    def __init__(self, pieces, logprob_fn, steer=None):
+        self.pieces = list(pieces)
+        self.logprob_fn = logprob_fn
+        self.steer = steer
+        self.calls: list = []
+
+    def score_tokens(self, messages, continuation_ids, *, continuation=None, block=None,
+                     steer_strengths=None, steer_vec=None, topk=0):
+        self.calls.append({"messages": messages, "continuation_ids": continuation_ids, "block": block,
+                          "steer_strengths": steer_strengths, "steer_vec": steer_vec})
+        lps = self.logprob_fn(block, steer_strengths, steer_vec)
+        return [{"id": i, "piece": p, "logprob": lp} for i, (p, lp) in enumerate(zip(self.pieces, lps))]
+
+
+CARD_RUN = {
+    "id": "run_card_x", "messages": [{"role": "user", "content": "weekend plans?"}],
+    "response": "sure thing",
+    "memory": {"cards_applied": ["The user loves rock climbing.", "The user has two cats."],
+              "applied_ids": ["card_x", "card_y"],
+              "prompt_block": "You are a helpful assistant talking with a returning user. Here is what "
+                              "you know about them; use it naturally to tailor how you respond:\n"
+                              "- The user loves rock climbing.\n- The user has two cats.",
+              "mode": "prompt"},
+    "behavior": {"active_dials": {}},
+    "trace": {"token_ids": [1, 2, 3]},
+}
+
+
+def test_forced_receipt_card_ablation_shows_large_effect_clearing_the_null_floor(iso):
+    """A hand-crafted scenario where removing the on-topic card crashes the answer tokens' logprob
+    (real ablation), but swapping it for register-matched filler barely moves them (the null floor) --
+    proving the MECHANISM correctly reports has_effect + a >5x floor-clearing ratio when the underlying
+    numbers actually support it (REPRODUCE_AND_PROVE_PLAN.md's "sub-threshold receipt" headline)."""
+    memory_mode.set_mode("prompt")
+
+    def lp(block, steer_strengths, steer_vec):
+        block = block or ""
+        if "rock climbing" in block:
+            return [-0.1, -0.1, -0.1]                       # WITH: the real card present
+        if receipts._FILLER_TEXT[:15] in block:
+            return [-0.15, -0.15, -0.15]                    # CONTROL: swapped for irrelevant filler
+        return [-3.0, -3.0, -3.0]                           # WITHOUT: the card genuinely gone
+
+    sub = ForcedFakeSub(["Sure", ",", " thing"], lp)
+    rec = receipts.forced_receipt(CARD_RUN, {"card_id": "card_x"}, sub)
+    assert rec["causal_verified"] is True
+    assert rec["mode"] == "forced"
+    assert rec["answer_tokens"] == ["Sure", ",", " thing"]
+    assert rec["deltas"] == [round(-0.1 - -3.0, 6)] * 3
+    assert rec["sum_nats"] == round(3 * 2.9, 6)
+    assert rec["mean_nats_per_token"] == round(2.9, 6)
+    assert rec["has_effect"] is True                       # 2.9 >> 0.05 mean AND >> 2.0 sum
+    assert rec["top_dependent"][0]["delta"] == round(2.9, 6)
+    nf = rec["null_floor"]
+    assert nf["kind"] == "card_filler"
+    assert nf["mean_nats_per_token"] == round(-0.1 - -0.15, 6)   # lp_with - lp_control == 0.05
+    assert nf["ratio_real_over_floor"] == round(2.9 / nf["mean_nats_per_token"], 3)
+    assert nf["ratio_real_over_floor"] > receipts._NULL_FLOOR_RATIO_MIN
+    assert nf["exceeds_floor_by_order_of_magnitude"] is True
+    assert rec["caveat"] == receipts._FORCED_CAVEAT
+    assert "note" in rec
+
+
+def test_forced_receipt_card_not_applied_is_an_honest_note_not_a_fabricated_zero(iso):
+    memory_mode.set_mode("prompt")
+    sub = ForcedFakeSub(["a"], lambda b, s, v: [-0.1])
+    rec = receipts.forced_receipt(CARD_RUN, {"card_id": "no_such_card"}, sub)
+    assert rec["causal_verified"] is False
+    assert "not recorded as applied" in rec["note"]
+    assert sub.calls == []                                  # never even scored -- nothing to ablate
+
+
+DIAL_RUN = {
+    "id": "run_dial_warm", "messages": [{"role": "user", "content": "hi"}], "response": "hello",
+    "behavior": {"active_dials": {"warm": 1.0}},
+    "trace": {"token_ids": [10, 11, 12]},
+}
+
+
+def _dial_lp(block, steer_strengths, steer_vec):
+    if steer_strengths and steer_strengths.get("warm"):
+        return [-0.1, -0.1, -0.1]                           # WITH: the real dial applied
+    if steer_vec is not None:
+        return [-0.2, -0.2, -0.2]                           # CONTROL: an equal-norm random direction
+    return [-3.0, -3.0, -3.0]                               # WITHOUT: dial fully zeroed, nothing standing in
+
+
+def test_forced_receipt_dial_ablation_shows_effect_and_a_small_null_floor(iso):
+    steer = ScoreFakeSteer({"warm": [1.0, 0.0, 0.0]})
+    sub = ForcedFakeSub(["a", "b", "c"], _dial_lp, steer=steer)
+    rec = receipts.forced_receipt(DIAL_RUN, {"dial": "warm"}, sub)
+    assert rec["causal_verified"] is True
+    assert rec["mean_nats_per_token"] == round(2.9, 6)
+    assert rec["has_effect"] is True
+    nf = rec["null_floor"]
+    assert nf["kind"] == "dial_random_vector"
+    assert nf["mean_nats_per_token"] == round(0.1, 6)       # -0.1 - -0.2
+    assert nf["ratio_real_over_floor"] > receipts._NULL_FLOOR_RATIO_MIN
+    assert nf["exceeds_floor_by_order_of_magnitude"] is True
+    # the control vector is a REAL raw steer_vec on the SAME (dial-zeroed) call, not a replacement of
+    # steer_strengths -- so score_tokens saw steer_strengths={} (dial popped) AND a nonzero steer_vec
+    control_calls = [c for c in sub.calls if c["steer_vec"] is not None]
+    assert len(control_calls) == 1
+    assert control_calls[0]["steer_strengths"] == {}
+    assert len(control_calls[0]["steer_vec"]) == 3
+
+
+def test_forced_receipt_dial_not_active_is_an_honest_note(iso):
+    steer = ScoreFakeSteer({"warm": [1.0, 0.0, 0.0]})
+    sub = ForcedFakeSub(["a"], lambda b, s, v: [-0.1], steer=steer)
+    run = {"id": "run_x", "messages": [], "response": "x", "behavior": {"active_dials": {}},
+          "trace": {"token_ids": [1]}}
+    rec = receipts.forced_receipt(run, {"dial": "warm"}, sub)
+    assert rec["causal_verified"] is True                   # the (no-op) ablation DID "apply" -- nothing changed
+    assert rec["ablation_note"] == "dial 'warm' was not active on this run -- nothing to ablate"
+    assert rec["mean_nats_per_token"] == 0.0                 # with == without == the same fixed logprob
+    assert "null_floor" not in rec                           # steer_strengths.get(dial) is falsy -> no control
+
+
+def test_forced_receipt_memory_off(iso):
+    def lp(block, steer_strengths, steer_vec):
+        return [-0.1, -0.1, -0.1] if block else [-3.0, -3.0, -3.0]
+    sub = ForcedFakeSub(["a", "b", "c"], lp)
+    rec = receipts.forced_receipt(CARD_RUN, {"memory_off": True}, sub)
+    assert rec["causal_verified"] is True
+    assert rec["has_effect"] is True
+    assert rec["null_floor"]["kind"] == "block_filler"
+
+
+def test_forced_receipt_memory_off_with_no_active_block_is_an_honest_note(iso):
+    run = {"id": "run_bare", "messages": [], "response": "x", "memory": {}, "trace": {"token_ids": [1]}}
+    sub = ForcedFakeSub(["a"], lambda b, s, v: [-0.1])
+    rec = receipts.forced_receipt(run, {"memory_off": True}, sub)
+    assert rec["causal_verified"] is True
+    assert rec["ablation_note"] == "no active memory block on this run -- nothing to ablate"
+    assert "null_floor" not in rec
+
+
+def test_forced_receipt_behavior_off(iso):
+    steer = ScoreFakeSteer({"warm": [1.0, 0.0, 0.0]})
+    sub = ForcedFakeSub(["a", "b", "c"], _dial_lp, steer=steer)
+    rec = receipts.forced_receipt(DIAL_RUN, {"behavior_off": True}, sub)
+    assert rec["causal_verified"] is True
+    assert rec["has_effect"] is True
+    assert rec["null_floor"]["kind"] == "behavior_off_random_vector"
+
+
+def test_forced_receipt_returns_none_on_bad_input(iso):
+    sub = ForcedFakeSub(["a"], lambda b, s, v: [-0.1])
+    assert receipts.forced_receipt(None, {"memory_off": True}, sub) is None
+    assert receipts.forced_receipt({}, {"memory_off": True}, sub) is None
+    assert receipts.forced_receipt(CARD_RUN, {}, sub) is None
+    assert receipts.forced_receipt(CARD_RUN, None, sub) is None
+    assert receipts.forced_receipt(CARD_RUN, {"nonsense": True}, sub) is None
+
+
+def test_forced_receipt_degrades_honestly_when_substrate_cannot_score(iso):
+    class NoScore:
+        pass
+    rec = receipts.forced_receipt(CARD_RUN, {"memory_off": True}, NoScore())
+    assert rec["causal_verified"] is False
+    assert "score_tokens" in rec["note"]
+
+
+def test_forced_receipt_is_deterministic_across_repeated_calls(iso):
+    steer = ScoreFakeSteer({"warm": [1.0, 0.0, 0.0]})
+    sub = ForcedFakeSub(["a", "b", "c"], _dial_lp, steer=steer)
+    a = receipts.forced_receipt(DIAL_RUN, {"dial": "warm"}, sub)
+    b = receipts.forced_receipt(DIAL_RUN, {"dial": "warm"}, sub)
+    assert a == b                                            # same seeded random control vector each time
+
+
+# --------------------------------------------------------------------------------- helper-level unit tests
+
+def test_matched_length_filler_is_deterministic_and_matches_length():
+    a = receipts._matched_length_filler(37)
+    b = receipts._matched_length_filler(37)
+    assert a == b
+    assert len(a) == 37
+
+
+def test_random_vector_of_norm_is_deterministic_per_seed_and_matches_norm():
+    v1 = receipts._random_vector_of_norm(5, 2.0, "seed-a")
+    v2 = receipts._random_vector_of_norm(5, 2.0, "seed-a")
+    assert v1 == v2
+    assert abs(receipts._vector_norm(v1) - 2.0) < 1e-9
+    v3 = receipts._random_vector_of_norm(5, 2.0, "seed-b")
+    assert v3 != v1                                          # a different seed -> a different direction
+
+
+# ============================================================================= mode dispatch (receipt/prove_all)
+
+def test_receipt_default_mode_is_byte_identical_to_the_pre_s3_regen_receipt(iso):
+    """The load-bearing regression: omitting `mode` (every pre-S3 caller) must produce EXACTLY
+    receipts._receipt_regen's dict -- no added "mode"/"forced" keys, nothing changed."""
+    sub = FakeSub(mem=FakeMem(1.0), steer=FakeSteer({"warm": 0.5}))
+    default = receipts.receipt(RUN, {"dial": "warm"}, sub)
+    explicit_regen = receipts.receipt(RUN, {"dial": "warm"}, FakeSub(mem=FakeMem(1.0),
+                                                                     steer=FakeSteer({"warm": 0.5})))
+    direct = receipts._receipt_regen(RUN, {"dial": "warm"}, FakeSub(mem=FakeMem(1.0),
+                                                                    steer=FakeSteer({"warm": 0.5})))
+    assert default == direct
+    assert explicit_regen == direct
+    assert "mode" not in default
+    assert "forced" not in default
+    assert "silent_influence" not in default
+
+
+def test_prove_all_default_mode_is_byte_identical_to_the_pre_s3_function(iso):
+    memory_mode.set_mode("prompt")
+    sub = FakeSub(mem=FakeMem(1.0), steer=FakeSteer({"warm": 0.4}), concise_card_ids=[CARD_A, CARD_B])
+    default = receipts.prove_all(REDUNDANT_RUN, sub)
+    direct = receipts._prove_all_regen(REDUNDANT_RUN,
+                                       FakeSub(mem=FakeMem(1.0), steer=FakeSteer({"warm": 0.4}),
+                                              concise_card_ids=[CARD_A, CARD_B]))
+    assert default == direct
+    assert "mode" not in default
+    assert "forced_receipts" not in default
+
+
+def test_receipt_mode_forced_returns_just_the_forced_receipt(iso):
+    steer = ScoreFakeSteer({"warm": [1.0, 0.0, 0.0]})
+    sub = ForcedFakeSub(["a", "b", "c"], _dial_lp, steer=steer)
+    out = receipts.receipt(DIAL_RUN, {"dial": "warm"}, sub, mode="forced")
+    assert out == receipts.forced_receipt(DIAL_RUN, {"dial": "warm"},
+                                          ForcedFakeSub(["a", "b", "c"], _dial_lp,
+                                                       steer=ScoreFakeSteer({"warm": [1.0, 0.0, 0.0]})))
+    assert "baseline_reply" not in out                      # no regen fields at all in forced-only mode
+
+
+def test_receipt_mode_both_combines_regen_and_forced_and_flags_silent_influence(iso):
+    """The sub-threshold badge: regen shows NO text change (has_effect False) while forced clears the
+    null floor by >5x -- exactly REPRODUCE_AND_PROVE_PLAN.md's headline scenario."""
+    memory_mode.set_mode("prompt")
+    regen_sub = FakeSub(mem=FakeMem(1.0), steer=FakeSteer({}), concise_card_ids=[])   # no text-diff signal
+    forced_sub = ForcedFakeSub(["Sure", ",", " thing"],
+                               lambda block, s, v: (
+                                   [-0.1, -0.1, -0.1] if block and "rock climbing" in block else
+                                   [-0.15, -0.15, -0.15] if block and receipts._FILLER_TEXT[:15] in block else
+                                   [-3.0, -3.0, -3.0]))
+
+    class BothSub:
+        """One object that answers BOTH .chat() (regen) and .score_tokens() (forced) -- receipt(mode="both")
+        drives each arm through the SAME `sub`."""
+        def __init__(self):
+            self.memory = regen_sub.memory
+            self.steer = regen_sub.steer
+        def chat(self, *a, **k):
+            return regen_sub.chat(*a, **k)
+        def score_tokens(self, *a, **k):
+            return forced_sub.score_tokens(*a, **k)
+
+    out = receipts.receipt(CARD_RUN, {"card_id": "card_x"}, BothSub(), mode="both")
+    assert out["mode"] == "both"
+    assert out["has_effect"] is False                        # regen: identical baseline/ablated text
+    assert out["forced"]["has_effect"] is True
+    assert out["forced"]["null_floor"]["exceeds_floor_by_order_of_magnitude"] is True
+    assert out["silent_influence"] is True
+
+
+def test_prove_all_mode_forced_never_touches_chat(iso):
+    """mode="forced" needs no qwen substrate at all -- prove_all(mode="forced") must never call .chat()."""
+    class ChatBoom:
+        def chat(self, *a, **k):
+            raise AssertionError("forced-only prove_all must never regenerate")
+    manifest = {"influences_active": {"cards": [], "dials": [{"name": "warm", "value": 1.0}]}}
+    steer = ScoreFakeSteer({"warm": [1.0, 0.0, 0.0]})
+
+    class ForcedOnlySub(ChatBoom):
+        def __init__(self):
+            self.steer = steer
+        def score_tokens(self, *a, **k):
+            return ForcedFakeSub(["a", "b", "c"], _dial_lp, steer=steer).score_tokens(*a, **k)
+
+    out = receipts.prove_all(DIAL_RUN, ForcedOnlySub(), manifest=manifest, mode="forced")
+    assert out["mode"] == "forced"
+    assert len(out["forced_receipts"]) == 1
+    assert out["forced_receipts"][0]["influence"] == {"dial": "warm", "value": 1.0}
+
+
+def test_prove_all_mode_both_includes_forced_receipts_alongside_regen(iso):
+    memory_mode.set_mode("prompt")
+    card_a, card_b = CARD_A, CARD_B
+    steer = ScoreFakeSteer({"warm": [1.0, 0.0, 0.0]})
+
+    class BothSub:
+        def __init__(self):
+            self.memory = FakeMem(1.0)
+            self.steer = FakeSteer({"warm": 0.4})
+            self.concise_card_ids = {card_a, card_b}
+            self.seen = []
+        @property
+        def calls(self):
+            return len(self.seen)
+        def chat(self, messages, max_new=256, sample=True):
+            return FakeSub(mem=self.memory, steer=self.steer,
+                           concise_card_ids=self.concise_card_ids).chat(messages, max_new, sample)
+        def score_tokens(self, *a, **k):
+            return ForcedFakeSub(["a", "b", "c"], _dial_lp, steer=steer).score_tokens(*a, **k)
+
+    out = receipts.prove_all(REDUNDANT_RUN, BothSub(), mode="both")
+    assert out["mode"] == "both"
+    assert len(out["receipts"]) == 3                         # unchanged regen leave-one-out
+    assert len(out["forced_receipts"]) == 3                  # card_a, card_b, warm -- same fired influences

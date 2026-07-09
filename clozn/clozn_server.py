@@ -1607,8 +1607,9 @@ class EngineSubstrate(Substrate):
             trace_out.extend(steps)
         return reply_raw.strip()
 
-    def score_tokens(self, messages, continuation_ids, *, block=None, steer_strengths=None, topk=0):
-        """Teacher-forced per-token logprob of `continuation_ids` under EXPLICIT (block,
+    def score_tokens(self, messages, continuation_ids=None, *, continuation=None, block=None,
+                     steer_strengths=None, steer_vec=None, topk=0):
+        """Teacher-forced per-token logprob of a continuation under EXPLICIT (block,
         steer_strengths) conditions -- the S1 seam notes/REPRODUCE_AND_PROVE_PLAN.md's forced-scoring
         stack (rederive.py, forced receipts) builds on. Assembles the prompt EXACTLY like chat()
         (_inject_block + _qwen_tmpl) and the steer_vec EXACTLY like chat() (self.steer.steer_vector),
@@ -1621,20 +1622,36 @@ class EngineSubstrate(Substrate):
 
         `block`: a prompt-mode memory block string (or None to omit it), e.g. run.memory.prompt_block.
         `steer_strengths`: a {dial_name: strength} dict (or None for no steer), e.g. run.behavior.dials.
+        `continuation_ids`: the PRIMARY continuation form (token ids, e.g. from a stored trace) --
+        takes precedence over `continuation` when both are given (mirrors EngineClient.score).
+        `continuation`: a TEXT fallback (S3's rederive.py, for a run whose trace lacks per-token ids) --
+        the engine retokenizes it independently of the prompt, which can drift at the prompt/
+        continuation BPE boundary (flagged `boundary_approximate` by /score itself; see
+        REPRODUCE_AND_PROVE_PLAN.md's tokenization-boundary caveat).
+        `steer_vec`: an explicit RAW steer direction, ADDED on top of whatever `steer_strengths`
+        produces (or used alone if `steer_strengths` is falsy) -- the S3 null-floor control needs a
+        direction with no named dial behind it ("a random vector of equal norm at the same layer").
 
         Returns [{"id", "piece", "logprob"}, ...] (+ "topk" per token when topk>0), one entry per
-        continuation token, in the SAME order as continuation_ids.
+        continuation token, in the SAME order as continuation_ids (or the engine's own retokenization
+        of `continuation` text).
         """
         assembled = _inject_block(messages, block)
         prompt = _qwen_tmpl(assembled)
         kw = {}
+        sv = None
         if self.steer is not None and steer_strengths and any(steer_strengths.values()):
             sv = self.steer.steer_vector(steer_strengths)
-            if sv:
-                kw["steer_vec"] = sv
-                kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
-        r = self.engine.score(prompt=prompt, continuation_ids=[int(t) for t in continuation_ids],
-                              topk=int(topk), **kw)
+        if steer_vec is not None:
+            sv = [a + b for a, b in zip(sv, steer_vec)] if sv else list(steer_vec)
+        if sv:
+            kw["steer_vec"] = sv
+            kw["steer"] = {"coef": 1.0, "layer": self.steer.layer if self.steer is not None else 14}
+        if continuation_ids is not None:
+            kw["continuation_ids"] = [int(t) for t in continuation_ids]
+        elif continuation is not None:
+            kw["continuation"] = str(continuation)
+        r = self.engine.score(prompt=prompt, topk=int(topk), **kw)
         return r.get("tokens", [])
 
     def last_stream_trace(self):
@@ -2511,11 +2528,16 @@ def make_handler():
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
-                if not (SUB and getattr(SUB, "chat", None)):   # both arms regenerate -> needs the qwen substrate
+                mode = str(body.get("mode") or "regen")
+                if mode not in ("regen", "forced", "both"):
+                    return self._json(400, {"error": "mode must be one of regen|forced|both"})
+                # regen/both regenerate both arms -> needs the qwen substrate; forced-only never
+                # generates (S3: teacher-forced /score on the engine substrate) -- no chat needed.
+                if mode in ("regen", "both") and not (SUB and getattr(SUB, "chat", None)):
                     return self._json(503, {"error": "receipts need the qwen substrate"})
                 from clozn import receipts
                 try:
-                    return self._json(200, receipts.prove_all(run, SUB))
+                    return self._json(200, receipts.prove_all(run, SUB, mode=mode))
                 except Exception as e:
                     return self._json(500, {"error": f"receipts failed: {type(e).__name__}: {e}"})
             if p.startswith("/runs/") and p.endswith("/receipt"):   # M2: one rigorous both-arms-greedy causal receipt
@@ -2524,7 +2546,10 @@ def make_handler():
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
-                if not (SUB and getattr(SUB, "chat", None)):   # both arms regenerate -> needs the qwen substrate
+                mode = str(body.get("mode") or "regen")
+                if mode not in ("regen", "forced", "both"):
+                    return self._json(400, {"error": "mode must be one of regen|forced|both"})
+                if mode in ("regen", "both") and not (SUB and getattr(SUB, "chat", None)):
                     return self._json(503, {"error": "receipt needs the qwen substrate"})
                 influence = body.get("influence")
                 if not isinstance(influence, dict) or not influence:
@@ -2532,12 +2557,29 @@ def make_handler():
                                             "{card_id|dial|memory_off|behavior_off}"})
                 from clozn import receipts
                 try:
-                    out = receipts.receipt(run, influence, SUB)
+                    out = receipts.receipt(run, influence, SUB, mode=mode)
                 except Exception as e:
                     return self._json(500, {"error": f"receipt failed: {type(e).__name__}: {e}"})
                 if out is None:
                     return self._json(500, {"error": "receipt failed (bad influence spec, or the replay "
                                                       "could not be generated)"})
+                return self._json(200, out)
+            if p.startswith("/runs/") and p.endswith("/rederive"):   # S3: deterministic teacher-forced re-derivation
+                rid = p[len("/runs/"):-len("/rederive")]
+                from clozn import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(404, {"error": "run not found"})
+                if not (SUB and getattr(SUB, "score_tokens", None)):
+                    return self._json(503, {"error": "rederive needs the engine substrate (score_tokens)"})
+                from clozn import rederive
+                try:
+                    out = rederive.rederive(run, SUB)
+                except Exception as e:
+                    return self._json(500, {"error": f"rederive failed: {type(e).__name__}: {e}"})
+                if out is None:
+                    return self._json(500, {"error": "rederive failed (no continuation to score, or the "
+                                                      "engine score call failed)"})
                 return self._json(200, out)
             if p.startswith("/runs/") and p.endswith("/counterfactual"):   # M3: one counterfactual dial re-gen
                 rid = p[len("/runs/"):-len("/counterfactual")]
