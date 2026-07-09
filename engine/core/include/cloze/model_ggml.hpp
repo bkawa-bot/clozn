@@ -144,6 +144,7 @@ public:
     void clear_write();
     int n_layer() const { return n_layer_; }
     int n_embd() const { return n_embd_; }  // hidden size (e.g. the --sae dim check at startup)
+    int n_ctx() const { return n_ctx_; }    // hard context window: absolute positions [0, n_ctx) fit the KV
 
     // Diffusion soft-PREFIX injection (train-on-HF / serve-on-engine hybrid, diffusion side): lay a
     // continuous prefix (m x n_embd, row-major) as a FROZEN block at positions [0,m) that the whole board

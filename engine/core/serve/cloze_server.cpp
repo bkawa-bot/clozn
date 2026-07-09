@@ -1322,7 +1322,7 @@ int main(int argc, char** argv) {
                                             {"text", r.text}, {"finish_reason", finish_reason(r.reason)},
                                             {"board", r.board},
                                             {"layout", board_layout_json(*model, r.board, mask_token)}};
-                        write("data: " + final_frame.dump() + "\n\n");
+                        write("data: " + dump_json(final_frame) + "\n\n");
                         write("data: [DONE]\n\n");
                         sink.done();
                         return true;
@@ -1335,7 +1335,7 @@ int main(int argc, char** argv) {
                     json final_frame = {{"id", id}, {"object", object},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
                                                      {"finish_reason", finish_reason(r.reason)}}})}};
-                    write("data: " + final_frame.dump() + "\n\n");
+                    write("data: " + dump_json(final_frame) + "\n\n");
                     write("data: [DONE]\n\n");
                     sink.done();
                     return true;
@@ -1357,16 +1357,27 @@ int main(int argc, char** argv) {
             return;
         }
 
-        GenerateResult r = run({});
-        json resp = {
-            {"id", id}, {"object", object},
-            {"choices", json::array({{{"text", r.text}, {"index", 0},
-                         {"finish_reason", finish_reason(r.reason)}}})},
-            {"board", r.board},  // white-box SNAPSHOT: the full final board (save + POST to /v1/board)
-            {"layout", board_layout_json(*model, r.board, mask_token)},
-            {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
-        };
-        res.set_content(resp.dump(), "application/json");
+        // Non-streaming: run() can throw on a genuinely exceptional decode state (a prompt that exceeds
+        // n_ctx, a llama_decode failure). Catch it here so it becomes a clean 400 JSON error, NEVER an
+        // uncaught throw that cpp-httplib turns into an empty-body 500 (the streaming path above has the
+        // same guard). A generation that merely reaches the context window is NOT exceptional -- it stops
+        // gracefully with finish_reason "length" inside generate_ar; this catch is for the real failures.
+        try {
+            GenerateResult r = run({});
+            json resp = {
+                {"id", id}, {"object", object},
+                {"choices", json::array({{{"text", r.text}, {"index", 0},
+                             {"finish_reason", finish_reason(r.reason)}}})},
+                {"board", r.board},  // white-box SNAPSHOT: the full final board (save + POST to /v1/board)
+                {"layout", board_layout_json(*model, r.board, mask_token)},
+                {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
+            };
+            res.set_content(dump_json(resp), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(dump_json(json{{"error", std::string("generation failed: ") + e.what()}}),
+                            "application/json");
+        }
     };
 
     // POST /harvest — the §3.1 "activation harvesting at scale" READ endpoint. Body {text, layer?}:
@@ -1445,7 +1456,7 @@ int main(int argc, char** argv) {
                     fwd.activations,
                     {static_cast<int>(tokens.size()), fwd.n_embd})},
             };
-            res.set_content(resp.dump(), "application/json");
+            res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json{{"error", e.what()}}.dump(), "application/json");
@@ -1610,7 +1621,7 @@ int main(int argc, char** argv) {
                 {"norms", norms},           // [n_layer][n_tokens]: |residual| per token per layer
                 {"layer_mean", layer_mean}, // [n_layer]: mean token norm at each layer
             };
-            res.set_content(resp.dump(), "application/json");
+            res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json{{"error", e.what()}}.dump(), "application/json");
@@ -1705,7 +1716,7 @@ int main(int argc, char** argv) {
             if (!applied)
                 resp["error"] = "write_state rejected (layer must be in [1, n_layer); "
                                 "values.size must equal positions.size * n_embd)";
-            res.set_content(resp.dump(), "application/json");
+            res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json{{"error", e.what()}}.dump(), "application/json");
@@ -1811,7 +1822,7 @@ int main(int argc, char** argv) {
             }
             json resp = {{"prompt", prompt}, {"template_source", "model"},
                          {"bos_prepended", bos_prepended}};
-            res.set_content(resp.dump(), "application/json");
+            res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json{{"error", e.what()}}.dump(), "application/json");
@@ -2001,7 +2012,7 @@ int main(int argc, char** argv) {
                 {"tokens", tok_json}, {"sum_logprob", sum_logprob},
             };
             if (boundary_approximate) resp["boundary_approximate"] = true;
-            res.set_content(resp.dump(), "application/json");
+            res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json{{"error", e.what()}}.dump(), "application/json");
@@ -2110,7 +2121,7 @@ int main(int argc, char** argv) {
                     json final_frame = {{"id", id}, {"object", "revise"},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
                                                      {"finish_reason", finish_reason(r.reason)}}})}};
-                    write("data: " + final_frame.dump() + "\n\n");
+                    write("data: " + dump_json(final_frame) + "\n\n");
                     write("data: [DONE]\n\n");
                     sink.done();
                     return true;
@@ -2139,7 +2150,7 @@ int main(int argc, char** argv) {
                          {"finish_reason", finish_reason(r.reason)}}})},
             {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
         };
-        res.set_content(resp.dump(), "application/json");
+        res.set_content(dump_json(resp), "application/json");
     });
 
     // /v1/board — restore/branch a board SNAPSHOT. Accepts a raw board (token ids; mask_token marks
@@ -2232,7 +2243,7 @@ int main(int argc, char** argv) {
                                         {"layout", board_layout_json(*model, r.board, mask_token)},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
                                                      {"finish_reason", finish_reason(r.reason)}}})}};
-                    write("data: " + final_frame.dump() + "\n\n");
+                    write("data: " + dump_json(final_frame) + "\n\n");
                     write("data: [DONE]\n\n");
                     sink.done();
                     return true;
@@ -2262,7 +2273,7 @@ int main(int argc, char** argv) {
                          {"finish_reason", finish_reason(r.reason)}}})},
             {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
         };
-        res.set_content(resp.dump(), "application/json");
+        res.set_content(dump_json(resp), "application/json");
     });
 
     // POST /intervene — the state-stream protocol's WRITE channel (SPEC.md "Intervene"). Accepts an
@@ -2419,7 +2430,7 @@ int main(int argc, char** argv) {
                                         {"text", r.text}, {"finish_reason", finish_reason(r.reason)},
                                         {"board", r.board},
                                         {"layout", board_layout_json(*model, r.board, mask_token)}};
-                    write("data: " + final_frame.dump() + "\n\n");
+                    write("data: " + dump_json(final_frame) + "\n\n");
                     write("data: [DONE]\n\n");
                     sink.done();
                     return true;
@@ -2451,7 +2462,7 @@ int main(int argc, char** argv) {
             {"layout", board_layout_json(*model, r.board, mask_token)},
             {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
         };
-        res.set_content(resp.dump(), "application/json");
+        res.set_content(dump_json(resp), "application/json");
     });
 
     std::fprintf(stderr, "[cloze-server] %s %s, %d worker(s) on http://%s:%d  (model: %s)\n",

@@ -63,12 +63,25 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     generated.reserve(config.max_new);
     std::string reason = "length";
 
+    // Hard context window: absolute positions [0, n_ctx) fit the KV cache. The prompt (+ any soft prefix)
+    // must fit it; a prompt that exceeds it is a client error surfaced cleanly (the handler turns it into a
+    // 400), never a silent truncation and never an uncaught 500.
+    const int n_ctx = adapter.n_ctx();
+    if (base + p > n_ctx)
+        throw std::invalid_argument("prompt exceeds context window (n_ctx): reduce the prompt or raise --ctx");
+
     // Prefill: the last prompt row's logits are the distribution for the first generated token.
     ForwardResult fwd = adapter.ar_forward(prompt_ids, base);
     int n_past = base + p;
     int t = 0;
 
     for (int k = 0; k < config.max_new; ++k) {
+        // Stop GRACEFULLY at the context limit: a token committed at position n_past must be decoded back
+        // into the KV (ar_forward at n_past), which needs n_past < n_ctx. When there's no room left, this is
+        // a "length" stop (finish_reason "length", a clean 200) -- NOT an ar_forward "exceeds n_ctx" throw,
+        // which the non-streaming handler would surface as an empty 500. THE root fix for the long-generation
+        // 500: a generation that reaches the context window stops, it never overflows.
+        if (n_past >= n_ctx) { reason = "length"; break; }
         const std::vector<int> want = {n_past};  // the position about to be generated
         const std::vector<Candidate> cand = sample_candidates(fwd, want, sopts);
         if (cand.empty()) break;
