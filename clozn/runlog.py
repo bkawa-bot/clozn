@@ -507,6 +507,28 @@ def get_run(rid: str) -> dict | None:
         return None
 
 
+def update_tiny_tests(rid: str, tiny_tests: list) -> bool:
+    """Attach tiny-test harness results (clozn/testkit.py) to a stored run's `tiny_tests` field in place,
+    so `clozn test --attach` rides them into the export bundle for free (receipt_bundle._tiny_tests reads
+    exactly this field). Overwrites any previously attached results for this run -- the latest `clozn test`
+    run is the one that counts, not an ever-growing log. Never raises: returns False on a missing run, a
+    corrupt file, or any write failure, mirroring get_run/record's own never-break-the-caller contract."""
+    p = os.path.join(RUNS_DIR, rid + ".json")
+    if not os.path.isfile(p):
+        return False
+    try:
+        with open(p, encoding="utf-8") as f:
+            rec = json.load(f)
+        if not isinstance(rec, dict):
+            return False
+        rec["tiny_tests"] = list(tiny_tests) if isinstance(tiny_tests, list) else []
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+        return True
+    except Exception:
+        return False
+
+
 def _load_runs() -> list[dict]:
     """Best-effort load of every persisted run; corrupt files are ignored like list_runs()."""
     _ensure()

@@ -66,7 +66,8 @@ Research with product tie-ins; house rule: every rung ships a null control, and 
 ### Inspector / UI leftovers (CURRENT_UI_BACKLOG.md)
 - ✅ **branch-lineage-tree** (shipped `810539b` — client-side tree from parent_run_id) · ✅ **capture-final-prompt** (shipped `fc3b2ec` — persists the exact rendered prompt).
 - *In flight:* final-prompt **display** in the inspector + a full-family **`/runs/<id>/lineage`** endpoint (past the 80-run cap).
-- Remaining: persist-concept-spans, studio-lab-mode. **tiny-test-harness — 🔨 in flight (this session):** `clozn test <file.json>` = user-authored run-level assertions over the receipt/replay seams (static + causal `leans_on`); results ride the `tiny_tests` slot `receipt_bundle` already reserves.
+- ✅ **tiny-test-harness** (shipped this session) — `clozn test <file.json>` = user-authored run-level assertions over the receipt/replay seams. Static checks (contains / finish_reason / min_confidence@token / card_applied / relevance / …) read the stored run alone; the causal `leans_on` check runs receipts.py's leave-one-out ablation and is *honestly skipped* (never a silent pass) without `--live`. Results ride the `tiny_tests` slot `receipt_bundle` already reserves. 78 harness tests + full suite green.
+- Remaining: persist-concept-spans, studio-lab-mode.
 
 ### Housekeeping
 - Push `../clozn-research` (local, yours to push). · Engine-rebuild validation on the GPU box after CMake changes.

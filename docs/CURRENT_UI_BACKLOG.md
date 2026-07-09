@@ -23,7 +23,7 @@ Engine-first forced-scoring receipts. S2 done; remaining:
 - **#5 capture-final-prompt** — persist the assembled/injected system block for prompt-mode runs.
 - **#4 persist-concept-spans** — decide whether raw concept/SAE spans join runs alongside `workspace_readout`.
 - **#6 studio-lab-mode** — Studio-native Lab entry point + capture-tier control; make brain/engine pages reachable; layer-summary "model-MRI" panel.
-- **tiny-test-harness** — user-authored run-level assertions on the receipt/replay seams.
+- ✅ **tiny-test-harness** (shipped) — `clozn test <file.json>`: user-authored run-level assertions on the receipt/replay seams (`clozn/testkit.py`). Static (read-only) + causal `leans_on` (honestly skipped without `--live`); results attach to the run's `tiny_tests` slot for the export bundle.
 - **finish-reason** — drop the last `"stop"` fallback once every substrate reports it.
 - **J-lens adapter (NEW)** — `docs/WORKSPACE_LENS.md` reserves a `provider_type: jacobian_lens` slot (future-payload example) but forbids labelling anything J-lens until a real adapter exists. Build one — read the workspace via a Jacobian-lens provider, then **causally verify its readouts with Thread-A forced receipts** — as the "wrap the scoop" answer to the open-weight J-space work. No adapter exists yet.
 
