@@ -30,11 +30,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E4
 sys.path.insert(0, os.path.join(HERE, "..", "engine", "client"))     # the engine white-box SDK
 import numpy as np                                                   # noqa: E402
 try:
-    from cloze_engine import EngineClient
+    from cloze_engine import EngineClient, EngineError
     ENGINE = EngineClient(port=int(os.environ.get("CLOZN_ENGINE_PORT", "8091")))            # the live C++ runtime
     ENGINE_QWEN = EngineClient(port=int(os.environ.get("CLOZN_ENGINE_QWEN_PORT", "8092")))  # a Qwen GGUF engine -> concepts
 except Exception:
     ENGINE = ENGINE_QWEN = None
+    class EngineError(RuntimeError):   # fallback so `except EngineError` resolves even if the SDK import failed
+        pass
 
 CLOZN_DIR = os.path.join(os.path.expanduser("~"), ".clozn")   # studio memory + personality persist here
 REPO_ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -105,6 +107,90 @@ def _engine_generation_meta(max_new=None, stream=None):
 
 def _pers(name):
     return os.path.join(CLOZN_DIR, name)
+
+
+# The honest J-lens provenance for the Run Inspector panel (J3), sourced from ~/.clozn/jlens/manifest.json
+# (the sidecar the engine loaded). The `note` is verbatim from JLENS_ENGINE_PLAN.md -- a disposition, not a
+# verified thought; a linear lens always emits something. Read once (cached); missing/broken manifest still
+# yields the honest note (fit_model/layers just stay unfilled). Never raises.
+_JLENS_NOTE = ("fitted linear Jacobian lens, transferred to this GGUF; a per-token 'disposed to say' read, "
+               "NOT the model's literal thought — a linear lens always emits something.")
+
+
+def _jlens_provenance():
+    cached = getattr(_jlens_provenance, "_cached", None)
+    if cached is not None:
+        return dict(cached)
+    prov = {"kind": "jacobian_lens", "fit_model": None, "layers": [], "note": _JLENS_NOTE}
+    try:
+        with open(os.path.join(_pers("jlens"), "manifest.json"), encoding="utf-8") as f:
+            m = json.load(f)
+        prov["layers"] = [int(x) for x in (m.get("layers") or [])]
+        model = str(m.get("model", "")).split("/")[-1].replace("-Instruct", "")
+        fo = m.get("fitted_on") or {}
+        bits = [b for b in ["HF", fo.get("quant"),
+                            (f"{fo.get('n_prompts')} prompts" if fo.get("n_prompts") else None)] if b]
+        if model:
+            prov["fit_model"] = f"{model} ({', '.join(bits)})" if bits else model
+    except Exception:
+        pass
+    _jlens_provenance._cached = dict(prov)
+    return dict(prov)
+
+
+def _jlens_run_text(run):
+    """The text a run's J-lens should read + a source label the panel shows so it's honest about WHAT was
+    read. Prefer the stored `response` (the reply whose tokens the chips annotate); else the last user
+    message (a prompt-only run). ('' , 'none') when there's nothing to read."""
+    if not isinstance(run, dict):
+        return "", "none"
+    resp = run.get("response")
+    if isinstance(resp, str) and resp.strip():
+        return resp, "response"
+    msgs = run.get("messages") if isinstance(run.get("messages"), list) else []
+    for m in reversed(msgs):
+        if isinstance(m, dict) and m.get("role") == "user" and str(m.get("content", "")).strip():
+            return str(m["content"]), "last_user_message"
+    return "", "none"
+
+
+def _jlens_workspace_readouts(res, run_id):
+    """Map a J-lens readout into the protocol's workspace_readout shape (SPEC.md / WORKSPACE_LENS.md),
+    provider_type 'jacobian_lens', readout_kind 'token' -- one event per position, so the same readout can
+    ride the existing event spine. Additive/opt-in (request `protocol:true`); the panel uses tokens+readouts."""
+    layer = res.get("layer")
+    toks = res.get("tokens") or []
+    rows = res.get("readouts") or []
+    out = []
+    for i, row in enumerate(rows):
+        out.append({
+            "type": "workspace_readout", "run_id": run_id,
+            "token_index": i, "token_text": (toks[i] if i < len(toks) else None),
+            "layer": layer, "position": i,
+            "provider": f"jacobian_lens_l{layer}", "provider_type": "jacobian_lens",
+            "readout_kind": "token",
+            "top_readouts": [{"label": r.get("piece"), "score": r.get("score")} for r in (row or [])],
+        })
+    return out
+
+
+def _jlens_envelope(res, run_id, text_source, want_protocol=False):
+    """Shape EngineSubstrate.jlens's normalized dict into the J3 frontend contract. `res` is either
+    {available:False, reason} or {available:True, layer, available_layers, n_tokens, tokens, readouts}
+    (+ an `error` string when the layer was unknown). Carries the honest provenance block when available.
+    HTTP is always 200 -- absence is a clean, renderable state, never an error."""
+    if not res.get("available"):
+        return {"available": False, "run_id": run_id, "reason": res.get("reason", "J-lens unavailable")}
+    out = {"available": True, "run_id": run_id,
+           "layer": res.get("layer"), "available_layers": res.get("available_layers", []),
+           "text_source": text_source, "n_tokens": int(res.get("n_tokens", 0) or 0),
+           "tokens": res.get("tokens", []), "readouts": res.get("readouts", []),
+           "provenance": _jlens_provenance()}
+    if res.get("error"):                       # unknown layer etc. -- surfaced cleanly (layers already listed)
+        out["error"] = res["error"]
+    if want_protocol:                          # bonus: also ride the workspace_readout protocol shape
+        out["workspace_readouts"] = _jlens_workspace_readouts(res, run_id)
+    return out
 
 
 ENGINE_STEER = None        # lazy EngineSteer on the Qwen GGUF engine -- tone dials on the C++ runtime, any GGUF
@@ -1689,6 +1775,32 @@ class EngineSubstrate(Substrate):
         r = self.engine.score(prompt=prompt, topk=int(topk), **kw)
         return r.get("tokens", [])
 
+    def jlens(self, text, layer=None, topk=5):
+        """Proxy the engine's /jlens for the Run Inspector J-lens panel -- mirrors score_tokens' /score
+        proxy. Returns a NORMALIZED dict (never raises): the engine's {layer, n_tokens, tokens, readouts}
+        plus available_layers (from /health's jlens.layers). Graceful absence: if the engine was started
+        WITHOUT --jlens (no jlens block in /health), returns {available:False, reason:...} so the panel
+        shows a clean 'lens not loaded' instead of an error. An unknown layer surfaces the engine's 400
+        body (the available layers) cleanly rather than throwing."""
+        try:
+            h = self.engine.health() if (self.engine and hasattr(self.engine, "health")) else {}
+            jl = (h or {}).get("jlens") or {}
+            avail = [int(x) for x in (jl.get("layers") or [])]
+        except Exception:
+            avail = []
+        if not avail:
+            return {"available": False, "reason": "the engine was started without --jlens"}
+        try:
+            r = self.engine.jlens(text, layer=layer, topk=int(topk))
+        except EngineError as e:
+            # e.g. an unknown layer -> the engine's 400 {error, available}. Surface it cleanly (the panel
+            # can offer the loaded layers); available_layers already comes from /health above.
+            return {"available": True, "error": str(e), "available_layers": avail,
+                    "layer": layer, "n_tokens": 0, "tokens": [], "readouts": []}
+        return {"available": True, "layer": r.get("layer"), "available_layers": avail,
+                "n_tokens": int(r.get("n_tokens", 0) or 0),
+                "tokens": r.get("tokens", []), "readouts": r.get("readouts", [])}
+
     def last_stream_trace(self):
         """The per-token trace captured during the most recent chat_stream (raw step list, or []) --
         same contract as QwenSubstrate.last_stream_trace: the SSE handler reads this AFTER the generator
@@ -2678,6 +2790,38 @@ def make_handler():
                     return self._json(500, {"error": "rederive failed (no continuation to score, or the "
                                                       "engine score call failed)"})
                 return self._json(200, out)
+            if p == "/jlens":   # J3: general J-lens passthrough (brain/lab page) -- per-token "disposed to say"
+                text = str(body.get("text", ""))
+                if not text:
+                    return self._json(400, {"error": "need a 'text' to read"})
+                layer = body.get("layer")
+                topk = int(body.get("topk", 5) or 5)
+                want_protocol = bool(body.get("protocol", False))
+                if not (SUB and getattr(SUB, "jlens", None)):   # non-engine substrate -> clean 200 absence
+                    return self._json(200, {"available": False, "run_id": None,
+                                            "reason": "the active substrate has no J-lens (needs the engine substrate)"})
+                res = SUB.jlens(text, layer=layer, topk=topk)
+                return self._json(200, _jlens_envelope(res, run_id=None, text_source="input",
+                                                       want_protocol=want_protocol))
+            if p.startswith("/runs/") and p.endswith("/jlens"):   # J3: the Run Inspector J-lens feed for a run
+                rid = p[len("/runs/"):-len("/jlens")]
+                from clozn import runlog
+                run = runlog.get_run(rid)
+                if run is None:
+                    return self._json(404, {"error": "run not found"})
+                if not (SUB and getattr(SUB, "jlens", None)):
+                    return self._json(200, {"available": False, "run_id": rid,
+                                            "reason": "the active substrate has no J-lens (needs the engine substrate)"})
+                text, text_source = _jlens_run_text(run)          # prefer the stored response; note the source
+                if not text:
+                    return self._json(200, {"available": False, "run_id": rid,
+                                            "reason": "this run has no response/text to read"})
+                layer = body.get("layer")
+                topk = int(body.get("topk", 5) or 5)
+                want_protocol = bool(body.get("protocol", False))
+                res = SUB.jlens(text, layer=layer, topk=topk)
+                return self._json(200, _jlens_envelope(res, run_id=rid, text_source=text_source,
+                                                       want_protocol=want_protocol))
             if p.startswith("/runs/") and p.endswith("/counterfactual"):   # M3: one counterfactual dial re-gen
                 rid = p[len("/runs/"):-len("/counterfactual")]
                 from clozn import runlog

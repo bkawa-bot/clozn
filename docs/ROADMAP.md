@@ -11,7 +11,7 @@ rather than duplicating them — go to the linked doc for execution detail.
 | Doc | Covers | Status |
 |---|---|---|
 | `notes/REPRODUCE_AND_PROVE_PLAN.md` | **#114** — `/score`, forced receipts, rederive (S0–S6) | S0–S4 ✅, S5/S6 left |
-| `notes/JLENS_ENGINE_PLAN.md` | **#115** — engine-native J-lens (J0–J5) | J0–J2 ✅ (route live); J3 next (the v1 headline) |
+| `notes/JLENS_ENGINE_PLAN.md` | **#115** — engine-native J-lens (J0–J5) | J0–J3 ✅ (route + studio panel live); J4 next (the v1 headline) |
 | `notes/INTROSPECTION_EXPERIMENTS.md` | **X1–X8** — introspection science (needs J-lens) | designs ready, none run |
 | `notes/FRONTIER_BETS.md` | strategic bets: perf stack, AR×diffusion (H1–H7), honesty ledger | idea inventory + ranked order |
 | `notes/MEMORY_MODE_SWAP_SPEC.md` | prompt-mode memory | ✅ built (this is what ships today) |
@@ -32,11 +32,11 @@ rather than duplicating them — go to the linked doc for execution detail.
 *Headline (JLENS_ENGINE_PLAN): "the local runtime with causal receipts and J-lens readouts — see what your GGUF is disposed to say, per token, and prove what changed its answer."*
 
 - **#114 leftovers** — **S5** (turn on engine sampling; gated on a human go/no-go) · **S6** (docs/claims refresh).
-- **#115 — engine-native J-lens (J0→J4).** *J0–J2 done — the engine serves it. J3 (studio panel) next. RACE posture (Anthropic published 2026-07-06; nobody has it in a product).*
+- **#115 — engine-native J-lens (J0→J4).** *J0–J3 done — the engine serves it AND the studio shows it (per-token "disposed-to-say" chips in the Run Inspector). J4 next. RACE posture (Anthropic published 2026-07-06; nobody has it in a product).*
   - **J0** — fit the lens in the lab (PyTorch, autograd, nf4 + checkpointing on the 16 GB card; ~100 prompts saturates), export per-layer matrices + manifest. ~1–2 days.
   - **J0 fit + J1 transfer gate — ✅ PASS (2026-07-09).** The HF-fitted lens (nf4, 100 prompts) transfers to the engine's GGUF `/harvest` activations **essentially losslessly** — GGUF ≈ HF on cross-position consistency (margins 0.68–0.82) *and* semantic recovery (hit@5 0.72 == 0.72), both ≫ a proper null. *(The first gate FAILed on a flawed row-shuffled-`J` null — unembedding-dominated, an invalid high floor; corrected with a cross-position null + semantic test. **Don't rebuild the shuffled-J null.**)* Engine-native J-lens is validated → **J2 greenlit.**
   - **J2 — ✅ done (2026-07-09).** C++ `POST /jlens` route (`unembed(J_l @ h)` on the GGUF's own final-norm + q6_K head; no `W_U` sidecar; forward-only, deterministic, byte-identical). Layers 2/14/21/25; ~0.8 s for 512 tokens (CPU on-demand). Sanity: "…country shaped like a boot is" @L25 → " Italy"; "…a spider has" @L21 → counting tokens. **Parity vs the J1 numpy oracle: apply validated FAITHFUL** — 96–99% top-1, and *every* disagreement is a near-tie inside q6_K head-quantization noise (oracle margin 0.008–0.07 at disagreements vs 0.9–1.7 at agreements). The literal ≥99% exact-set target is bounded by the model's own quantized head, exactly the "tolerance, not bitwise" the plan anticipated — not an apply bug. Matrices stay out of git (`~/.clozn/jlens/`).
-  - **J3** — studio panel: per-token "disposed-to-say" chips (finally *earns* the workspace name `workspace_lens.py` overclaimed). Honest provenance label from the manifest.
+  - **J3 — ✅ done (2026-07-09).** Python studio seam (`EngineSubstrate.jlens` + `POST /jlens` and `POST /runs/<id>/jlens`, contract with an honest `provenance` block from the manifest; graceful HTTP-200 absence) + the Run Inspector **"Disposed to say · J-lens"** panel (per-token chips aligned to the run's own answer tokens, layer selector 2/14/21/25, unskippable provenance caption — finally *earns* the workspace name `workspace_lens.py` overclaimed). Validated live: boot@L25 → " Italy"; readouts genuinely vary per position. **Bonus:** the same live pass closed tiny-test's open gap — `clozn test --live` `leans_on` verified the causal-receipt HTTP path against a real model (effect 0.77), and honestly skips without `--live`. Optional `protocol:true` also emits the readout in the SPEC `workspace_readout` / `provider_type: jacobian_lens` shape.
   - **J4** — "does a 7B even have a J-space?" (spider test) — launch content either way; also the existence gate for X6.
 
 ## 🔭 Post-v1 backlog

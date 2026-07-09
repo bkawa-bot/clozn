@@ -324,7 +324,37 @@
       ".ri-rd-h{font-size:11px;color:var(--faint,#9aa0b3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}" +
       ".ri-rd-stream{white-space:pre-wrap;word-break:break-word;line-height:1.95;font-size:13.5px;border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:9px 10px;background:var(--wash,#f6f8ff)}" +
       ".ri-rd-tk{border-radius:3px;padding:0 .5px}" +
-      ".ri-rd-note{margin-top:8px;font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45}";
+      ".ri-rd-note{margin-top:8px;font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45}" +
+      // --- J3b: "Disposed to say" J-lens panel -- a per-token, per-layer top-k readout from a linear
+      //     Jacobian lens fitted offline and applied forward on this run's own answer tokens. On-demand
+      //     (a button, like Re-derive above); the provenance box is the load-bearing honesty caption --
+      //     it must always render alongside the readout, never omitted. ---
+      ".ri-jl{margin-top:14px;border-top:1px dashed var(--line,#e3e6ef);padding-top:10px}" +
+      ".ri-jl-h{font-size:11px;color:var(--faint,#9aa0b3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}" +
+      ".ri-jl-sub{font-size:11.5px;color:var(--soft,#5a6072);line-height:1.45;margin-bottom:8px}" +
+      ".ri-jl-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0 8px}" +
+      ".ri-jl-layers{display:flex;flex-wrap:wrap;gap:6px}" +
+      ".ri-jl-layer-btn{font:inherit;font-size:11.5px;font-weight:640;border:1px solid var(--line,#e3e6ef);background:rgba(255,255,255,.7);color:var(--soft,#5a6072);border-radius:14px;padding:4px 10px;cursor:pointer;transition:background .14s,border-color .14s,color .14s}" +
+      ".ri-jl-layer-btn:hover:not(:disabled){color:var(--ink,#1b1f2a);border-color:var(--halo,#7aa7ff)}" +
+      ".ri-jl-layer-btn.active{color:#2f4a7a;border-color:var(--halo,#7aa7ff);background:rgba(122,167,255,.14)}" +
+      ".ri-jl-layer-btn:disabled{opacity:.6;cursor:default}" +
+      ".ri-jl-topk{font-size:11.5px;color:var(--soft,#5a6072);display:flex;align-items:center;gap:5px}" +
+      ".ri-jl-topk select{font:inherit;font-size:11.5px;border:1px solid var(--line,#e3e6ef);border-radius:8px;padding:2px 6px;color:var(--ink,#1b1f2a)}" +
+      // the provenance caption: always rendered with a readout, distinct border so it reads as a label,
+      // never just ambient text a reader could miss.
+      ".ri-jl-prov{margin:6px 0 10px;padding:8px 10px;border-radius:9px;border:1px solid rgba(122,167,255,.35);background:rgba(122,167,255,.06);font-size:11px;color:var(--soft,#5a6072);line-height:1.5}" +
+      ".ri-jl-prov b{color:#2f4a7a}" +
+      ".ri-jl-prov .mono{font-family:ui-monospace,Consolas,monospace;color:var(--ink,#1b1f2a)}" +
+      ".ri-jl-meta{font-size:11px;color:var(--faint,#9aa0b3);margin-bottom:6px}" +
+      ".ri-jl-rows{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:auto;border:1px solid var(--line,#e3e6ef);border-radius:9px;padding:8px 9px;background:#fff}" +
+      ".ri-jl-row{display:grid;grid-template-columns:26px 88px 1fr;gap:8px;align-items:start;font-size:12px;padding:4px 0;border-bottom:1px solid var(--line,#edf0f7)}" +
+      ".ri-jl-row:last-child{border-bottom:0}" +
+      ".ri-jl-idx{font-family:ui-monospace,Consolas,monospace;color:var(--faint,#9aa0b3);font-size:10.5px;padding-top:2px}" +
+      ".ri-jl-own{font-family:ui-monospace,Consolas,monospace;color:var(--ink,#1b1f2a);font-weight:640;white-space:pre-wrap;word-break:break-word;padding-top:1px}" +
+      ".ri-jl-chips{display:flex;flex-wrap:wrap;gap:4px}" +
+      ".ri-jl-chip{display:inline-block;font-family:ui-monospace,Consolas,monospace;font-size:10.5px;background:rgba(122,167,255,.10);border:1px solid rgba(122,167,255,.3);border-radius:7px;padding:1px 6px;color:#2f4a7a;white-space:pre}" +
+      ".ri-jl-chip b{font-weight:640;color:#2f4a7a}" +
+      ".ri-jl-note{font-size:11.5px;color:var(--faint,#9aa0b3);line-height:1.45;margin:8px 0}";
     document.head.appendChild(s);
   }
 
@@ -400,7 +430,23 @@
     h += tokenTimeline(run);
     h += rederivePanel();
     h += workspaceLensPanel(run);
+    h += jlensPanel(run);
     return h;
+  }
+
+  // J3b (JLENS_ENGINE_PLAN #115, docs/WORKSPACE_LENS.md): the "Disposed to say" J-lens panel -- static
+  // markup only (a button + output host, like rederivePanel above); the fetch + render live in wireJlens
+  // near the other lazy panels below. On-demand on purpose: unlike the free /explain read, this calls the
+  // engine's forward J-lens pass, so it never auto-fetches on run open.
+  function jlensPanel(run) {
+    return '<div class="ri-jl">' +
+      '<div class="ri-jl-h">Disposed to say &middot; J-lens</div>' +
+      '<div class="ri-jl-sub">A linear Jacobian-lens read of what the model was disposed to say at each ' +
+      'position of its own answer — fitted offline, applied forward on this run. Not a decode of its ' +
+      'literal thought: a linear lens always emits <i>something</i>.</div>' +
+      '<button class="ri-act" id="ri-jlens-go">Read J-lens</button>' +
+      '<div class="ri-out" id="ri-jlens-out"></div>' +
+      "</div>";
   }
 
   // S4: the "Re-derive (exact)" affordance -- a button + output host in the transcript column, right under
@@ -1779,6 +1825,148 @@
     };
   }
 
+  // ---------------------------------------------------------------------------------------------------
+  // J3b: the "Disposed to say" J-lens panel. POST /runs/<id>/jlens {layer?, topk?} reads a per-token,
+  // per-layer top-k readout from a linear Jacobian lens fitted offline (HF Qwen2.5-7B) and applied forward
+  // on the running GGUF -- at each position of the run's OWN answer, what the model was "disposed to say"
+  // there. This is a LENS, not a decode: a linear lens always emits *something*, so every readout carries
+  // its provenance caption verbatim (fit_model + the honesty note) -- that caption is load-bearing and
+  // must render with any data, never be omittable. Graceful absence (available:false, e.g. the engine
+  // started without --jlens) gets a clean note, never an error or a forever spinner. Lazy/on-demand, same
+  // discipline as wireRederive/wireForcedReceipts above: nothing here ever throws.
+  // ---------------------------------------------------------------------------------------------------
+
+  // The provenance caption -- rendered verbatim from the response, never paraphrased into a stronger claim.
+  function jlensProvenanceHTML(prov) {
+    prov = (prov && typeof prov === "object") ? prov : {};
+    var note = prov.note || "fitted linear Jacobian lens, transferred to this GGUF; a per-token “disposed to say” read, not the model’s literal thought — a linear lens always emits something.";
+    var h = '<div class="ri-jl-prov"><b>Provenance</b>';
+    if (prov.fit_model) h += ' &middot; fit model <span class="mono">' + esc(prov.fit_model) + "</span>";
+    if (Array.isArray(prov.layers) && prov.layers.length) h += ' &middot; layers fit <span class="mono">' + esc(prov.layers.join(", ")) + "</span>";
+    h += "<br>" + esc(note) + "</div>";
+    return h;
+  }
+
+  // The layer-switch + top-k controls. `curLayer` is the layer the LAST response actually used (the
+  // backend is authoritative -- there is no client-guessed default); `curTopk` is what we last requested.
+  function jlensControlsHTML(layers, curLayer, curTopk) {
+    var h = '<div class="ri-jl-controls"><div class="ri-jl-layers">';
+    layers.forEach(function (L) {
+      h += '<button class="ri-jl-layer-btn' + (L === curLayer ? " active" : "") + '" data-jl-layer="' + esc(L) + '">layer ' + esc(L) + "</button>";
+    });
+    h += '</div><label class="ri-jl-topk">top-k <select id="ri-jlens-topk">';
+    [3, 5, 8].forEach(function (k) {
+      h += '<option value="' + k + '"' + (k === curTopk ? " selected" : "") + '>' + k + "</option>";
+    });
+    h += "</select></label></div>";
+    return h;
+  }
+
+  // One row: this run's OWN token at position i, beside the lens's top-k "disposed to say" chips for that
+  // SAME position -- the compelling alignment the panel exists to make legible. Chip scores are the raw
+  // lens scores (not probabilities), so they're shown as plain numbers, never a [0,1] fill bar.
+  function jlensRowHTML(ownPiece, idx, topkList) {
+    var list = Array.isArray(topkList) ? topkList : [];
+    var chips = list.map(function (r) {
+      r = (r && typeof r === "object") ? r : {};
+      var title = r.id != null ? "token id " + r.id : "";
+      return '<span class="ri-jl-chip"' + (title ? ' title="' + esc(title) + '"' : "") + ">" +
+        esc(labelTok(r.piece)) + " <b>" + fmtNum(r.score, 1) + "</b></span>";
+    }).join("");
+    return '<div class="ri-jl-row"><span class="ri-jl-idx">' + idx + "</span>" +
+      '<span class="ri-jl-own">' + esc(labelTok(ownPiece)) + "</span>" +
+      '<span class="ri-jl-chips">' + (chips || '<span class="sub">(no readouts)</span>') + "</span></div>";
+  }
+
+  // The pure assembler for a successful (or available:false) /jlens response -> an HTML string. Never
+  // renders per-token rows without the provenance caption alongside them (available:true path).
+  function jlensResultHTML(data, requestedTopk) {
+    data = (data && typeof data === "object") ? data : {};
+    if (data.available === false) {
+      return '<div class="ri-jl-note">J-lens not loaded — ' + esc(data.reason || "start the engine with --jlens") + ".</div>";
+    }
+    if (data.error) {
+      return jlensProvenanceHTML(data.provenance) + '<div class="ri-jl-note">J-lens read failed — ' + esc(data.error) + "</div>";
+    }
+    var tokens = Array.isArray(data.tokens) ? data.tokens : [];
+    var readouts = Array.isArray(data.readouts) ? data.readouts : [];
+    var layers = Array.isArray(data.available_layers) ? data.available_layers : [];
+    if (!tokens.length || !readouts.length) {
+      return jlensProvenanceHTML(data.provenance) + '<div class="ri-jl-note">No scorable tokens for a J-lens read on this run.</div>';
+    }
+    var h = jlensControlsHTML(layers, data.layer, requestedTopk);
+    h += jlensProvenanceHTML(data.provenance);
+    var meta = [];
+    if (data.text_source) meta.push("source: " + data.text_source);
+    meta.push(tokens.length + " tokens");
+    h += '<div class="ri-jl-meta">' + esc(meta.join(" · ")) + "</div>";
+    h += '<div class="ri-jl-rows">';
+    for (var i = 0; i < tokens.length; i++) h += jlensRowHTML(tokens[i], i, readouts[i]);
+    h += "</div>";
+    return h;
+  }
+
+  // Wire the layer-switch buttons + top-k select painted INSIDE `out` by the last render. Re-fetches
+  // through the same `fetchAndRender` closure the main button uses, so every trigger shows the same
+  // provenance-captioned result. Re-wired fresh every render (the controls are replaced each time).
+  function wireJlensControls(out, curTopk, fetchAndRender) {
+    out.querySelectorAll(".ri-jl-layer-btn[data-jl-layer]").forEach(function (b) {
+      b.onclick = function () {
+        if (b.disabled) return;
+        var topkSel = out.querySelector("#ri-jlens-topk");
+        fetchAndRender(+b.dataset.jlLayer, topkSel ? +topkSel.value : curTopk);
+      };
+    });
+    var topkSel = out.querySelector("#ri-jlens-topk");
+    if (topkSel) {
+      topkSel.onchange = function () {
+        var activeBtn = out.querySelector(".ri-jl-layer-btn.active[data-jl-layer]");
+        var layer = activeBtn ? +activeBtn.dataset.jlLayer : null;
+        fetchAndRender(layer, +topkSel.value);
+      };
+    }
+  }
+
+  // Wire the "Read J-lens" button (transcript column). Lazy on purpose (see the section header above) --
+  // fires only on click/control-change, shows a loading note while the engine's forward pass runs, and
+  // renders via the pure jlensResultHTML() assembler on success. Every failure path (404/503/offline/other)
+  // gets one honest line, same discipline as wireRederive/wireForcedReceipts; nothing here ever throws.
+  function wireJlens(root, run) {
+    var btn = root.querySelector("#ri-jlens-go"), out = root.querySelector("#ri-jlens-out");
+    if (!btn || !out) return;
+    var curTopk = 5;   // curLayer starts unset -- the FIRST fetch omits it so the backend picks its default.
+
+    function fetchAndRender(layer, topk) {
+      var label = btn.textContent;
+      btn.disabled = true; btn.classList.add("busy");
+      out.innerHTML = '<span class="sub">reading the J-lens (disposed-to-say) at each position…</span>';
+      var body = { topk: topk };
+      if (layer != null && isFinite(layer)) body.layer = layer;
+      postJSON("/runs/" + run.id + "/jlens", body).then(function (r) {
+        btn.disabled = false; btn.classList.remove("busy"); btn.textContent = label;
+        if (r.status === 404) { out.innerHTML = '<span class="sub">J-lens isn’t on this build yet — this lights up once /runs/&lt;id&gt;/jlens exists.</span>'; return; }
+        if (r.status === 503) { out.innerHTML = '<span class="sub">J-lens needs the engine substrate running — start it and try again.</span>'; return; }
+        if (r.status === 0) { out.innerHTML = '<span class="sub">couldn’t reach the studio (offline?) — nothing was read.</span>'; return; }
+        if (!r.ok || !r.data) {
+          out.innerHTML = '<span class="sub">J-lens read failed (' + esc(r.status) + ")</span>";
+          return;
+        }
+        curTopk = topk;
+        out.innerHTML = jlensResultHTML(r.data, curTopk);
+        wireJlensControls(out, curTopk, fetchAndRender);
+      }, function () {
+        btn.disabled = false; btn.classList.remove("busy"); btn.textContent = label;
+        out.innerHTML = '<span class="sub">J-lens read failed (unexpected error) — nothing was read.</span>';
+      });
+    }
+
+    btn.onclick = function () {
+      if (btn.disabled) return;
+      var activeBtn = out.querySelector(".ri-jl-layer-btn.active[data-jl-layer]");
+      fetchAndRender(activeBtn ? +activeBtn.dataset.jlLayer : null, curTopk);
+    };
+  }
+
   // M5: the Detail/Explain tab switch -- toggle .active + show/hide the two view containers. Detail stays
   // the default (matches querySelectorAll(...).forEach usage elsewhere in this file, e.g. wireQuickRepair).
   function wireTabs(root) {
@@ -2053,6 +2241,7 @@
     wireReceipts(root, run);
     wireForcedReceipts(root, run);   // S4: receipt-mode toggle + graded-leaning (forced) view
     wireRederive(root, run);         // S4: "Re-derive (exact)" in the transcript column
+    wireJlens(root, run);            // J3b: "Disposed to say" J-lens panel in the transcript column
     wireQuickRepair(root, run);
     wireBranch(root, run);
     wirePropose(root, run, ctx);
