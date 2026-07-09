@@ -2013,15 +2013,17 @@
     // M1 is free (zero generation -- a read + reshape of the run already being fetched): fire it alongside
     // the run fetch, not lazily after an Explain-tab click, so opening the tab is instant.
     var explainP = postJSON("/runs/" + runId + "/explain");
-    // Backlog #3: the branch lineage is assembled CLIENT-SIDE from the /runs list (each summary carries
-    // parent_run_id) -- no server lineage endpoint needed. The list is the 80 most-recent runs; buildLineage-
-    // FromRuns degrades gracefully (flags "parent outside window") when a family member falls outside it.
+    // Backlog #3: the branch lineage tree is assembled CLIENT-SIDE by buildLineageFromRuns from a list of run
+    // summaries (each carries parent_run_id). Prefer GET /runs/<id>/family -- the FULL connected family across
+    // ALL persisted runs -- so families past the 80-run /runs cap render whole; fall back to the /runs window
+    // (buildLineageFromRuns still degrades gracefully, flagging "parent outside window") when /family is absent.
+    var familyP = getJSON("/runs/" + runId + "/family").catch(function () { return null; });
     var runsListP = getJSON("/runs").catch(function () { return null; });
     try { run = await getJSON("/runs/" + runId); }
     catch (e) { root.innerHTML = '<div class="sub">run not found (' + esc(e.message) + ")</div>"; return; }
     var explainR = await explainP;
-    var runsListR = await runsListP;
-    var lineageR = buildLineageFromRuns(runsListR && runsListR.runs, runId);
+    var familyR = await familyP, runsListR = await runsListP;
+    var lineageR = buildLineageFromRuns((familyR && familyR.runs) || (runsListR && runsListR.runs), runId);
     var flags = run.flags || [];
     root.innerHTML =
       '<div class="ri-head"><b>' + esc(run.prompt_summary || "(run)") + "</b>" +
