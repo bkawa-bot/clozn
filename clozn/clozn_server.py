@@ -119,8 +119,10 @@ def _engine_steer():
 
 
 def _qwen_tmpl(messages):
-    """Render chat messages into Qwen's chat-template STRING for the engine's raw /v1/completions -- the
-    same template the HF memory prefix was trained against, so the injected prefix lands in the right context."""
+    """Render chat messages into Qwen's chat-template STRING (ChatML). LEGACY: kept only as a documented
+    reference / last-ditch fallback -- the engine generation paths now template PER-MODEL via
+    _engine_tmpl (the GGUF's own embedded chat template), so a non-Qwen model gets its correct format.
+    The torch QwenSubstrate never used this (it applies the HF tokenizer's template internally)."""
     sysmsg = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
     for m in messages:
         if m.get("role") == "system" and m.get("content"):
@@ -130,6 +132,19 @@ def _qwen_tmpl(messages):
         if m.get("role") in ("user", "assistant"):
             s += f"<|im_start|>{m['role']}\n{m.get('content', '')}<|im_end|>\n"
     return s + "<|im_start|>assistant\n"
+
+
+def _engine_tmpl(engine, messages):
+    """Render chat `messages` to a prompt string using the ENGINE-LOADED MODEL'S OWN chat template
+    (POST /apply_template -> llama_chat_apply_template over the GGUF's tokenizer.chat_template). THIS is
+    what makes the engine paths model-agnostic: whatever GGUF the engine has loaded, its messages are
+    formatted in that model's native template (Qwen ChatML, Llama-3 headers, Gemma turns, ...), instead
+    of a hardcoded Qwen string. Replaces _qwen_tmpl on every EngineSubstrate generation path.
+
+    Errors propagate deliberately (no silent Qwen fallback): a model with no embedded template, or an
+    engine too old to expose /apply_template, must surface -- silently mis-formatting the prompt is the
+    exact bug this removes. Callers that need a soft degrade catch EngineError themselves."""
+    return engine.apply_template(messages)
 
 
 def _disk_memory():
@@ -1592,7 +1607,7 @@ class EngineSubstrate(Substrate):
         if mem_out is not None:
             mem_out.update(mode="prompt", applied=applied, gate=gate,
                            prompt_block=block, assembled_messages=assembled)
-        prompt = _qwen_tmpl(assembled)
+        prompt = _engine_tmpl(self.engine, assembled)   # per-model template (the loaded GGUF's own), not Qwen ChatML
         # TONE: dials from self.steer.strength (replay toggles this in place), falling back to disk.
         kw = {}
         st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or _disk_dials()
@@ -1612,7 +1627,8 @@ class EngineSubstrate(Substrate):
         """Teacher-forced per-token logprob of a continuation under EXPLICIT (block,
         steer_strengths) conditions -- the S1 seam notes/REPRODUCE_AND_PROVE_PLAN.md's forced-scoring
         stack (rederive.py, forced receipts) builds on. Assembles the prompt EXACTLY like chat()
-        (_inject_block + _qwen_tmpl) and the steer_vec EXACTLY like chat() (self.steer.steer_vector),
+        (_inject_block + _engine_tmpl -- the loaded model's own chat template) and the steer_vec EXACTLY
+        like chat() (self.steer.steer_vector),
         but from the CALLER's `block`/`steer_strengths` -- NEVER from live self.memory/self.steer.strength
         -- so a with/without arm is reconstructed purely from a run record (memory ablation = recompile
         the block without a card; dial ablation = zero a strength and recompute) rather than from
@@ -1637,7 +1653,7 @@ class EngineSubstrate(Substrate):
         of `continuation` text).
         """
         assembled = _inject_block(messages, block)
-        prompt = _qwen_tmpl(assembled)
+        prompt = _engine_tmpl(self.engine, assembled)   # per-model template (the loaded GGUF's own), not Qwen ChatML
         kw = {}
         sv = None
         if self.steer is not None and steer_strengths and any(steer_strengths.values()):
@@ -1720,7 +1736,7 @@ class EngineSubstrate(Substrate):
         if mem_out is not None:
             mem_out.update(mode="prompt", applied=applied, gate=gate,
                            prompt_block=block, assembled_messages=assembled)
-        prompt = _qwen_tmpl(assembled)
+        prompt = _engine_tmpl(self.engine, assembled)   # per-model template (the loaded GGUF's own), not Qwen ChatML
         kw = {}
         st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or _disk_dials()
         if self.steer is not None and st and any(st.values()):
@@ -2705,9 +2721,10 @@ def make_handler():
                         assembled = _inject_block(msgs, block)
                         memout.update(mode="prompt", applied=applied, gate=gate, strength=ms,
                                       prompt_block=block, assembled_messages=assembled)
-                        prompt = _qwen_tmpl(assembled)
+                        prompt = _engine_tmpl(ENGINE_QWEN, assembled)   # the loaded GGUF's own template, not Qwen ChatML
                     else:
-                        prompt = _qwen_tmpl(msgs)
+                        prompt = _engine_tmpl(ENGINE_QWEN, msgs)        # (the internalized-prefix path is Qwen-trained,
+                        #                                                  but the CHAT TEMPLATE is still the model's own)
                         # MEMORY: the live HF prefix if a qwen substrate is loaded, else the SAVED prefix from
                         # disk -- so engine-chat works with NO HF model resident (the pure-engine substrate).
                         if mem is not None and getattr(mem, "prefix", None) is not None:

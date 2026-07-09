@@ -99,11 +99,19 @@ def test_score_returns_the_raw_engine_reply(monkeypatch):
 # ==================================================================================== EngineSubstrate.score_tokens
 
 class _FakeScoreEngine:
-    """Stands in for cloze_engine.EngineClient inside EngineSubstrate.score_tokens: just .score()."""
+    """Stands in for cloze_engine.EngineClient inside EngineSubstrate.score_tokens: .score() plus
+    .apply_template() (score_tokens now templates the prompt via the engine's per-model chat template,
+    not a hardcoded Qwen string). This fake mimics a ChatML model, so the rendered prompt carries ChatML
+    markers here; on a real engine the FORMAT follows the loaded GGUF (see the live cross-model proof)."""
 
     def __init__(self, reply=None):
         self.calls = []
+        self.template_calls = []
         self._reply = reply if reply is not None else {"tokens": []}
+
+    def apply_template(self, messages, add_assistant=True):
+        self.template_calls.append([dict(m) for m in messages])
+        return cs._qwen_tmpl(messages)
 
     def score(self, **kw):
         self.calls.append(kw)
@@ -142,6 +150,9 @@ def test_score_tokens_assembles_prompt_from_explicit_block_not_live_memory(monke
     block = "Here is what you know about them:\n- loves rock climbing"
     sub.score_tokens([{"role": "user", "content": "hi"}], [1, 2, 3], block=block)
 
+    # the block was folded into the system message and handed to the ENGINE to template (per-model);
+    # the fake mimics a ChatML engine, so ChatML markers appear here.
+    assert fe.template_calls[-1][0] == {"role": "system", "content": block}
     sent_prompt = fe.calls[-1]["prompt"]
     assert block in sent_prompt
     assert "<|im_start|>system" in sent_prompt

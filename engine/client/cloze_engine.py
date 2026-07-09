@@ -261,6 +261,17 @@ class EngineClient:
         body["prompt"] = prompt
         return self._post("/v1/completions", body)
 
+    def apply_template(self, messages: Sequence[dict], add_assistant: bool = True) -> str:
+        """POST /apply_template: render chat `messages` into a prompt string using THE MODEL'S OWN
+        embedded chat template (the GGUF's tokenizer.chat_template), applied server-side. This is what
+        makes clozn model-agnostic -- Qwen gets ChatML, Llama-3 gets its header format, Gemma gets
+        <start_of_turn>, etc. -- instead of a hardcoded Qwen string. `messages` is [{role, content}];
+        `add_assistant` ends the prompt with the assistant-turn opener (the generation cue). Raises
+        EngineError if the model has no embedded template (never silently mis-formats). Returns the
+        rendered prompt string."""
+        r = self._post("/apply_template", {"messages": list(messages), "add_assistant": bool(add_assistant)})
+        return r["prompt"]
+
     def score(self, prompt: Optional[str] = None, prompt_ids: Optional[Sequence[int]] = None,
               continuation_ids: Optional[Sequence[int]] = None, continuation: Optional[str] = None,
               topk: int = 0, steer: Optional[dict] = None, steer_vec: Optional[ArrayLike] = None) -> dict:

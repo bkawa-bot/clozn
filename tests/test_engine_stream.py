@@ -52,13 +52,19 @@ def _no_block(mem, last_user, strength=None):
 
 
 class FakeEngine:
-    """Just enough of cloze_engine.EngineClient's surface for chat_stream: .base (the URL it POSTs to)
-    and .timeout (the urlopen timeout). chat_stream has no .complete() fallback, so unlike
-    test_engine_substrate.py's FakeEngine, that method is never exercised here."""
+    """Just enough of cloze_engine.EngineClient's surface for chat_stream: .base (the URL it POSTs to),
+    .timeout (the urlopen timeout), and .apply_template (chat_stream now templates the prompt via the
+    engine's per-model chat template, not a hardcoded Qwen string). chat_stream has no .complete()
+    fallback, so unlike test_engine_substrate.py's FakeEngine, that method is never exercised here. This
+    fake mimics a ChatML model, so the rendered prompt carries ChatML markers here; on a real engine the
+    FORMAT follows the loaded GGUF (see the live cross-model proof, not this model-free unit test)."""
 
     def __init__(self):
         self.base = "http://127.0.0.1:1"
         self.timeout = 0.2
+
+    def apply_template(self, messages, add_assistant=True):
+        return cs._qwen_tmpl(messages)
 
 
 def _bare_engine_substrate(engine, steer=None, mem=None):
@@ -247,7 +253,7 @@ def test_chat_stream_request_body_mirrors_engine_complete_traced(iso, monkeypatc
     assert body["temperature"] == 0.0
     assert body["max_tokens"] == 64
     assert "capital of France?" in body["prompt"]
-    assert "<|im_start|>assistant" in body["prompt"]        # rendered via the real _qwen_tmpl
+    assert "<|im_start|>assistant" in body["prompt"]        # rendered via the engine's apply_template (fake mimics ChatML)
     assert fake_urlopen[-1]["timeout"] == 0.2                # FakeEngine.timeout, via getattr fallback
 
 

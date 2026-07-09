@@ -1,0 +1,84 @@
+"""Engine-side chat templating seam (T0.1): the engine applies the LOADED MODEL'S OWN chat template
+(GGUF tokenizer.chat_template via llama_chat_apply_template) so clozn formats prompts per-model -- Qwen
+ChatML, Llama-3 headers, Gemma turns, ... -- instead of a hardcoded Qwen string. Two model-free layers:
+
+  * cloze_engine.EngineClient.apply_template -- the thin SDK wrapper (POST /apply_template body shape,
+    add_assistant default, return value).
+  * clozn_server._engine_tmpl -- the module helper the EngineSubstrate generation paths call in place of
+    the old _qwen_tmpl; it just delegates to engine.apply_template (errors propagate, no silent Qwen
+    fallback).
+
+The C++ /apply_template route itself (engine/core/serve/cloze_server.cpp) and the actual per-model
+formatting (Qwen ChatML byte-identical to the old _qwen_tmpl; Llama-3 <|begin_of_text|><|start_header_id|>)
+are proved LIVE against a running cloze-server on both models -- not exercised by this offline suite.
+"""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(HERE)
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "client"))
+
+from cloze_engine import EngineClient          # noqa: E402
+from clozn import clozn_server as cs           # noqa: E402
+
+
+# ==================================================================================== EngineClient.apply_template
+
+def test_apply_template_sends_messages_and_add_assistant(monkeypatch):
+    seen = {}
+    ec = EngineClient(port=1)
+    monkeypatch.setattr(ec, "_post", lambda path, body: seen.update(path=path, body=body) or {"prompt": "P"})
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    out = ec.apply_template(msgs)
+    assert seen["path"] == "/apply_template"
+    assert seen["body"] == {"messages": msgs, "add_assistant": True}
+    assert out == "P"
+
+
+def test_apply_template_add_assistant_false(monkeypatch):
+    seen = {}
+    ec = EngineClient(port=1)
+    monkeypatch.setattr(ec, "_post", lambda path, body: seen.update(path=path, body=body) or {"prompt": ""})
+    ec.apply_template([{"role": "user", "content": "hi"}], add_assistant=False)
+    assert seen["body"]["add_assistant"] is False
+
+
+def test_apply_template_returns_the_prompt_field(monkeypatch):
+    ec = EngineClient(port=1)
+    monkeypatch.setattr(ec, "_post",
+                        lambda path, body: {"prompt": "<|im_start|>user\nhi<|im_end|>\n", "template_source": "model"})
+    assert ec.apply_template([{"role": "user", "content": "hi"}]) == "<|im_start|>user\nhi<|im_end|>\n"
+
+
+# ==================================================================================== _engine_tmpl helper
+
+class _RecordingEngine:
+    def __init__(self, rendered="RENDERED"):
+        self.rendered = rendered
+        self.calls = []
+
+    def apply_template(self, messages, add_assistant=True):
+        self.calls.append([dict(m) for m in messages])
+        return self.rendered
+
+
+def test_engine_tmpl_delegates_to_engine_apply_template():
+    eng = _RecordingEngine(rendered="THE PROMPT")
+    msgs = [{"role": "user", "content": "hello"}]
+    assert cs._engine_tmpl(eng, msgs) == "THE PROMPT"
+    assert eng.calls == [msgs]
+
+
+def test_engine_tmpl_propagates_errors_no_silent_fallback():
+    """A model with no embedded template (or an engine too old to expose /apply_template) must SURFACE --
+    _engine_tmpl deliberately does not fall back to the hardcoded Qwen _qwen_tmpl (that silent
+    mis-format is exactly the bug this seam removes)."""
+    class _BoomEngine:
+        def apply_template(self, messages, add_assistant=True):
+            raise RuntimeError("model has no embedded chat template")
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        cs._engine_tmpl(_BoomEngine(), [{"role": "user", "content": "hi"}])

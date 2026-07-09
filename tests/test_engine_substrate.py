@@ -54,6 +54,15 @@ class FakeEngine:
         self.timeout = 0.2
         self.text = text
         self.calls = []            # [{"prompt": ..., "params": {...}}, ...] -- every .complete() call seen
+        self.template_calls = []   # [messages, ...] -- every .apply_template() call seen
+
+    def apply_template(self, messages, add_assistant=True):
+        # Stand in for the engine's per-model templating (chat() now renders via the loaded GGUF's own
+        # chat template, not a hardcoded Qwen string). This fake mimics a ChatML model (Qwen), so ChatML
+        # markers appear here; on a real engine the FORMAT follows the loaded GGUF (Llama-3 headers,
+        # Gemma turns, ...), which the live cross-model proof covers -- not this model-free unit test.
+        self.template_calls.append([dict(m) for m in messages])
+        return cs._qwen_tmpl(messages)
 
     def complete(self, prompt, **params):
         self.calls.append({"prompt": prompt, "params": dict(params)})
@@ -152,9 +161,12 @@ def test_chat_folds_the_memory_block_into_the_rendered_prompt(iso, fake_engine, 
         {"role": "system", "content": block},
         {"role": "user", "content": "what should I do this weekend?"},
     ]
+    # the block-bearing assembled messages were handed to the ENGINE to template (per-model), NOT
+    # pre-rendered as Qwen ChatML in Python -- the model-agnostic seam.
+    assert fake_engine.template_calls[-1] == mem_out["assembled_messages"]
     sent_prompt = fake_engine.calls[-1]["prompt"]
     assert block in sent_prompt                    # the block actually reached the engine's prompt
-    assert "<|im_start|>system" in sent_prompt      # folded in via the real _qwen_tmpl rendering
+    assert "<|im_start|>system" in sent_prompt      # fake mimics a ChatML engine (a Llama engine would emit headers)
     assert "what should I do this weekend?" in sent_prompt
 
 
@@ -372,6 +384,9 @@ class _HealthEngine:
 
     def health(self):
         return dict(self._h)
+
+    def apply_template(self, messages, add_assistant=True):
+        return cs._qwen_tmpl(messages)   # chat() templates via the engine now (fake mimics a ChatML model)
 
     def complete(self, prompt, **params):
         return {"choices": [{"text": "ok", "finish_reason": "stop"}]}

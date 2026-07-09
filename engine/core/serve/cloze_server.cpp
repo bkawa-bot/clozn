@@ -1408,6 +1408,112 @@ int main(int argc, char** argv) {
         }
     });
 
+    // POST /apply_template — render chat messages into a prompt string using THE MODEL'S OWN embedded
+    // chat template (from the GGUF's tokenizer.chat_template metadata), so every model gets its correct
+    // format instead of a hardcoded ChatML. This is the seam that makes clozn model-agnostic: the Python
+    // substrate sends {messages:[{role,content}]}, the engine templates per-model (Qwen -> ChatML
+    // <|im_start|>, Llama-3 -> <|start_header_id|>, Gemma -> <start_of_turn>, ...) via
+    // llama_chat_apply_template (which detects the template family from the jinja source). No context/KV
+    // and no sampling: pure model-metadata + string work, so NO pool lease is taken (nothing to leak,
+    // fully concurrent with generation). No-embedded-template is surfaced as a clean 400, never silently
+    // mis-formatted. Body: {messages:[{role,content}], add_assistant?:bool=true} -> {prompt, template_source}.
+    svr.Post("/apply_template", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+        if (body.is_discarded()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON body"}}.dump(), "application/json");
+            return;
+        }
+        if (!body.contains("messages") || !body["messages"].is_array() || body["messages"].empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "'messages' must be a non-empty array of {role, content}"}}.dump(),
+                            "application/json");
+            return;
+        }
+        // The model's OWN embedded chat template (nullptr name => the default tokenizer.chat_template).
+        const char* tmpl = llama_model_chat_template(model->handle(), /*name=*/nullptr);
+        if (tmpl == nullptr) {
+            res.status = 400;
+            res.set_content(json{{"error", "model has no embedded chat template; cannot format messages "
+                                           "per-model (re-convert the GGUF with its tokenizer.chat_template, "
+                                           "or send a pre-rendered prompt to /v1/completions)"}}.dump(),
+                            "application/json");
+            return;
+        }
+        // Own the role/content strings for the lifetime of the call: llama_chat_message holds raw
+        // const char* into these, so the backing std::strings must outlive the apply call.
+        std::vector<std::string> roles, contents;
+        roles.reserve(body["messages"].size());
+        contents.reserve(body["messages"].size());
+        for (const auto& m : body["messages"]) {
+            if (!m.is_object()) {
+                res.status = 400;
+                res.set_content(json{{"error", "each message must be an object with role + content"}}.dump(),
+                                "application/json");
+                return;
+            }
+            roles.push_back(m.value("role", std::string()));
+            contents.push_back(m.value("content", std::string()));
+        }
+        const bool add_ass = body.value("add_assistant", true);
+        try {
+            std::vector<llama_chat_message> chat;
+            chat.reserve(roles.size());
+            size_t total = 0;
+            for (size_t i = 0; i < roles.size(); ++i) {
+                chat.push_back(llama_chat_message{roles[i].c_str(), contents[i].c_str()});
+                total += roles[i].size() + contents[i].size();
+            }
+            // Recommended alloc is 2 * total chars; grow-and-retry if the template expands past it
+            // (llama_chat_apply_template returns the TRUE formatted length even when the buffer is short).
+            std::vector<char> buf(2 * total + 1024);
+            int32_t n = llama_chat_apply_template(tmpl, chat.data(), chat.size(), add_ass,
+                                                  buf.data(), static_cast<int32_t>(buf.size()));
+            if (n > static_cast<int32_t>(buf.size())) {
+                buf.resize(static_cast<size_t>(n));
+                n = llama_chat_apply_template(tmpl, chat.data(), chat.size(), add_ass,
+                                              buf.data(), static_cast<int32_t>(buf.size()));
+            }
+            if (n < 0) {
+                res.status = 400;
+                res.set_content(json{{"error", "chat template application failed (template family not "
+                                               "supported by llama_chat_apply_template)"}}.dump(),
+                                "application/json");
+                return;
+            }
+            std::string prompt(buf.data(), static_cast<size_t>(n));
+            // llama.cpp's chat-template formatters emit only the turn structure, NOT the leading BOS --
+            // HF templates rely on the tokenizer to prepend it. But clozn tokenizes this prompt
+            // downstream with add_special=false, so a model whose tokenizer prepends BOS (Llama-3: yes;
+            // Qwen2.5: no) would otherwise lose it. Prepend the BOS as its special-token PIECE when the
+            // model wants one and it's not already there; the downstream parse_special tokenization folds
+            // it back into the single BOS id. Guarded on add_bos, so non-BOS models (Qwen ChatML) stay
+            // byte-identical to before this route existed.
+            const llama_vocab* vocab = model->vocab();
+            bool bos_prepended = false;
+            if (llama_vocab_get_add_bos(vocab)) {
+                const llama_token bos = llama_vocab_bos(vocab);
+                if (bos >= 0) {
+                    char pbuf[64];
+                    const int pn = llama_token_to_piece(vocab, bos, pbuf, sizeof(pbuf), 0, /*special=*/true);
+                    if (pn > 0) {
+                        const std::string bos_piece(pbuf, static_cast<size_t>(pn));
+                        if (prompt.compare(0, bos_piece.size(), bos_piece) != 0) {
+                            prompt = bos_piece + prompt;
+                            bos_prepended = true;
+                        }
+                    }
+                }
+            }
+            json resp = {{"prompt", prompt}, {"template_source", "model"},
+                         {"bos_prepended", bos_prepended}};
+            res.set_content(resp.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
     // POST /score — teacher-forced per-token logprob of a continuation, AR-only (the
     // reproduce-and-prove foundation). No sampling: ONE causal decode of prompt++continuation
     // (GgmlAdapter::ar_forward_score) reads back, for each continuation token, what the model
