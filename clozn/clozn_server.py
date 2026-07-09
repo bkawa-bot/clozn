@@ -1607,6 +1607,36 @@ class EngineSubstrate(Substrate):
             trace_out.extend(steps)
         return reply_raw.strip()
 
+    def score_tokens(self, messages, continuation_ids, *, block=None, steer_strengths=None, topk=0):
+        """Teacher-forced per-token logprob of `continuation_ids` under EXPLICIT (block,
+        steer_strengths) conditions -- the S1 seam notes/REPRODUCE_AND_PROVE_PLAN.md's forced-scoring
+        stack (rederive.py, forced receipts) builds on. Assembles the prompt EXACTLY like chat()
+        (_inject_block + _qwen_tmpl) and the steer_vec EXACTLY like chat() (self.steer.steer_vector),
+        but from the CALLER's `block`/`steer_strengths` -- NEVER from live self.memory/self.steer.strength
+        -- so a with/without arm is reconstructed purely from a run record (memory ablation = recompile
+        the block without a card; dial ablation = zero a strength and recompute) rather than from
+        whatever the live substrate happens to be doing right now. That's what makes receipt arms
+        reconstructable: two calls with different explicit `block`/`steer_strengths`, same messages
+        and continuation_ids, are directly comparable. No sampling anywhere; deterministic.
+
+        `block`: a prompt-mode memory block string (or None to omit it), e.g. run.memory.prompt_block.
+        `steer_strengths`: a {dial_name: strength} dict (or None for no steer), e.g. run.behavior.dials.
+
+        Returns [{"id", "piece", "logprob"}, ...] (+ "topk" per token when topk>0), one entry per
+        continuation token, in the SAME order as continuation_ids.
+        """
+        assembled = _inject_block(messages, block)
+        prompt = _qwen_tmpl(assembled)
+        kw = {}
+        if self.steer is not None and steer_strengths and any(steer_strengths.values()):
+            sv = self.steer.steer_vector(steer_strengths)
+            if sv:
+                kw["steer_vec"] = sv
+                kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
+        r = self.engine.score(prompt=prompt, continuation_ids=[int(t) for t in continuation_ids],
+                              topk=int(topk), **kw)
+        return r.get("tokens", [])
+
     def last_stream_trace(self):
         """The per-token trace captured during the most recent chat_stream (raw step list, or []) --
         same contract as QwenSubstrate.last_stream_trace: the SSE handler reads this AFTER the generator

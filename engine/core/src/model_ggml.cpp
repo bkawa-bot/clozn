@@ -292,6 +292,58 @@ ForwardResult GgmlAdapter::ar_forward_embd(const std::vector<float>& embd, int n
     return out;
 }
 
+ForwardResult GgmlAdapter::ar_forward_score(const std::vector<int>& tokens,
+                                            const std::vector<int>& logits_for) {
+    const int len = static_cast<int>(tokens.size());
+    if (len <= 0) throw std::invalid_argument("ar_forward_score: empty tokens");
+    if (len > n_ctx_) throw std::invalid_argument("ar_forward_score: exceeds n_ctx");
+    for (int p : logits_for)
+        if (p < 0 || p >= len)
+            throw std::invalid_argument("ar_forward_score: logits_for position out of range");
+
+    // Score from a clean KV (position 0): teacher-forcing is a one-shot stateless read over the WHOLE
+    // sequence, never incremental, so nothing from a prior request's cache may leak in.
+    llama_memory_clear(llama_get_memory(ctx_), true);
+    frozen_end_ = 0;
+    boundary_row_.clear();
+    write_from_ = 0;
+    decoded_tokens_ += len;
+
+    // Mark ONLY the requested positions for logits output -- everything else (typically most of the
+    // prompt) costs no unembedding matmul, just the KV it contributes.
+    std::vector<char> want(static_cast<size_t>(len), 0);
+    for (int p : logits_for) want[static_cast<size_t>(p)] = 1;
+
+    llama_batch batch = llama_batch_init(len, 0, 1);
+    batch.n_tokens = len;
+    for (int i = 0; i < len; ++i) {
+        batch.token[i] = static_cast<llama_token>(tokens[i]);
+        batch.pos[i] = i;                 // absolute positions from a clean cache: pos == index
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = want[static_cast<size_t>(i)];
+    }
+    const int rc = llama_decode(ctx_, batch);
+    llama_batch_free(batch);
+    if (rc != 0) throw std::runtime_error("ar_forward_score: llama_decode failed");
+
+    const int vocab = cfg_.vocab_size;
+    ForwardResult out;
+    out.n_requested = static_cast<int>(logits_for.size());
+    out.vocab = vocab;
+    out.kv = std::make_shared<GgmlKV>(len);
+    out.logits.resize(static_cast<size_t>(out.n_requested) * vocab);
+    for (int r = 0; r < out.n_requested; ++r) {
+        // logits_for[r] is the BATCH token index (position in `tokens`); llama_get_logits_ith resolves
+        // it to the compacted output row via output_ids (valid for any i with batch.logits[i] set).
+        const float* row = llama_get_logits_ith(ctx_, logits_for[r]);
+        if (!row) throw std::runtime_error("ar_forward_score: missing logits row");
+        std::memcpy(out.logits.data() + static_cast<size_t>(r) * vocab, row,
+                    static_cast<size_t>(vocab) * sizeof(float));
+    }
+    return out;
+}
+
 ForwardResult GgmlAdapter::harvest(const std::vector<int>& tokens) {
     const int len = static_cast<int>(tokens.size());
     if (len <= 0) throw std::invalid_argument("harvest: empty tokens");

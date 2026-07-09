@@ -261,6 +261,40 @@ class EngineClient:
         body["prompt"] = prompt
         return self._post("/v1/completions", body)
 
+    def score(self, prompt: Optional[str] = None, prompt_ids: Optional[Sequence[int]] = None,
+              continuation_ids: Optional[Sequence[int]] = None, continuation: Optional[str] = None,
+              topk: int = 0, steer: Optional[dict] = None, steer_vec: Optional[ArrayLike] = None) -> dict:
+        """POST /score: teacher-forced per-token logprob of a continuation under given conditions --
+        NEVER sampling (the reproduce-and-prove foundation; see notes/REPRODUCE_AND_PROVE_PLAN.md).
+        One causal decode of prompt++continuation on the engine reads back, for each continuation
+        token, the log-softmax probability the model assigned to the token it was actually forced to
+        see next -- usable both to verify a generated reply (self-consistency) and to measure how
+        much an influence (memory block / tone dial) shaped an answer (score WITH vs WITHOUT it).
+
+        `prompt_ids` (exact token ids, e.g. from a stored trace) take precedence over `prompt` text;
+        likewise `continuation_ids` is the PRIMARY continuation form -- `continuation` text is a
+        fallback that retokenizes independently and can drift at the prompt/continuation BPE boundary
+        (the server flags this `boundary_approximate` in the response; treat it as approximate).
+        `steer`/`steer_vec` mirror /v1/completions' dial path (a raw n_embd direction + {coef, layer}),
+        so a scored call can reproduce a steered run's conditions.
+
+        Returns {n_prompt, n_cont, tokens:[{id, piece, logprob, topk?}], sum_logprob}.
+        """
+        body: dict = {"topk": int(topk)}
+        if prompt_ids is not None:
+            body["prompt_ids"] = [int(x) for x in prompt_ids]
+        elif prompt is not None:
+            body["prompt"] = prompt
+        if continuation_ids is not None:
+            body["continuation_ids"] = [int(x) for x in continuation_ids]
+        elif continuation is not None:
+            body["continuation"] = continuation
+        if steer is not None:
+            body["steer"] = steer
+        if steer_vec is not None:
+            body["steer_vec"] = flatten_values(steer_vec)
+        return self._post("/score", body)
+
 
 # --------------------------------------------------------------------------- CLI / selftest
 

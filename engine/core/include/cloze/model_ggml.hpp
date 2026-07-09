@@ -170,6 +170,20 @@ public:
     // the ggml runtime: train-on-HF, serve-on-llama.cpp. Returns the last row's next-token logits.
     ForwardResult ar_forward_embd(const std::vector<float>& embd, int n_rows, int n_past);
 
+    // Teacher-forced SCORE forward (AR only; /score route): ONE causal decode of the whole sequence
+    // `tokens` from a clean KV cache (absolute position 0), with per-token logits enabled ONLY at
+    // `logits_for` (0-based positions within `tokens`) -- so a long prompt prefix that isn't being
+    // scored costs no unembedding work, only the requested rows do. `logits_for` values are BATCH
+    // token indices (not compacted output-row indices); llama_get_logits_ith translates each via the
+    // context's output_ids, so scoring a scattered/non-contiguous set of positions is still correct
+    // (though /score's own caller always requests a contiguous run). No head shift is applied (the
+    // in-place causal head, same convention as ar_forward: row i's logits already predict token i+1).
+    // n_batch == n_ctx by construction (init_context), so any sequence that already passed the
+    // n_p+n_a <= n_ctx guard decodes in this ONE llama_decode call -- no extra chunking needed here.
+    // Always scores from a cold KV (never reuses another request's cache): teacher-forcing is a
+    // one-shot, stateless read, and the pooled context is shared across requests.
+    ForwardResult ar_forward_score(const std::vector<int>& tokens, const std::vector<int>& logits_for);
+
     // Forward-HARVEST (the §3.1 "activation harvesting at scale" path): one causal forward over a
     // whole text and ALL its per-token residuals at the tap layer — NOT just the last row like
     // ar_forward. Decodes `tokens` at absolute positions [0, n) under causal attention with the tap
