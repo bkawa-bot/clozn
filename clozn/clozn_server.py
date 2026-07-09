@@ -2885,6 +2885,23 @@ def make_handler():
                 extra_headers = {"X-Clozn-Run-Id": rid} if rid else None
                 if rid:
                     resp["clozn_run_id"] = rid
+                # FRONTIER §1.1 "trust as an API field": when the caller OPTS IN (clozn_trust:true -- default
+                # OFF, so a standard OpenAI response stays byte-unchanged / fully compatible), attach
+                # claim-level confidence spans over the reply. Built by the SAME producer as
+                # GET /runs/<id>/spans (confidence_spans.spans over the normalized token trace), from THIS
+                # turn's trace -- so an agent can branch on per-claim confidence inline, without a second call.
+                # HONESTY (FRONTIER §6 ledger): these are RAW, UNCALIBRATED model probabilities. clozn_spans_note
+                # says so verbatim -- self-confidence != correctness; NO calibration is done here, and nothing
+                # implies confidence == correctness.
+                if body.get("clozn_trust"):
+                    try:
+                        from clozn import confidence_spans, runlog as _runlog
+                        _run_for_spans = {"trace": _runlog.steps_to_trace(trace_steps)}
+                        resp["clozn_spans"] = confidence_spans.spans(_run_for_spans)
+                        resp["clozn_spans_note"] = ("uncalibrated raw token confidence -- "
+                                                    "self-confidence != correctness")
+                    except Exception:
+                        pass                          # trust is additive: a spans hiccup never breaks the reply
                 return self._json(200, resp, extra_headers=extra_headers)
             if p == "/say":   # studio chat (qwen memory model) -> capture it as a run
                 if not (SUB and getattr(SUB, "handle", None)):
