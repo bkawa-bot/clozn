@@ -53,4 +53,4 @@ jobs:
       - name: Inspector — model-free ops/store/spine (RWKV-gated tests skipped)
         run: pytest inspector -m "not model" -q
       - name: Kernel — CPU reference parity vs the lab
-        run: pytest kernels/confidence_select/test_reference.py -q
+        run: pytest kernels/confidence_select/test_confidence_select_reference.py -q

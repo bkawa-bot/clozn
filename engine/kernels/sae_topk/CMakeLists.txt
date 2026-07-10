@@ -2,7 +2,7 @@
 # =============================================================================
 #  The on-device primitive for SAE/transcoder inference at scale: a per-row top-k
 #  over the FEATURE dimension (the confidence-select top-k repointed at features).
-#  reference.py is the tested oracle (run test_reference.py with pytest); the CUDA
+#  reference.py is the tested oracle (run test_sae_topk_reference.py with pytest); the CUDA
 #  kernel is checked against it by validate.py. This build mirrors
 #  ../confidence_select/CMakeLists.txt:
 #    * with a CUDA compiler, builds sae_topk.cu into a static lib plus the

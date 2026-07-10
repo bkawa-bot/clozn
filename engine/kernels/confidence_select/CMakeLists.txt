@@ -1,7 +1,7 @@
 # CMakeLists.txt — confidence-select kernel (Cloze DESIGN.md §4.3)
 # =============================================================================
 #  GREEDY PATH COMPILED + VALIDATED on RTX 5080 / CUDA 13.3 (sm_120).
-#  reference.py is the tested oracle (run test_reference.py with pytest); the CUDA
+#  reference.py is the tested oracle (run test_confidence_select_reference.py with pytest); the CUDA
 #  kernel's deterministic paths are checked against it by validate.py. This build:
 #    * with a CUDA compiler, builds confidence_select.cu into a static lib plus the
 #      cs_test smoke exe and the cs_validate harness
