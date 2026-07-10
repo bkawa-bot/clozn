@@ -107,3 +107,15 @@ def test_switch_applies_everything_and_isolates():
     assert mem_w.writes[0][0] == "The user's boss is"
     assert all("dog" not in w[0] for w in mem_w.writes)      # friend facts never leak into work
     assert "bullet points" in r2["prompt_block"] and "sci-fi" not in r2["prompt_block"]
+
+
+def test_load_rejects_path_traversal(tmp_path):
+    """load()/switch/export took an unvalidated name, so `../config` escaped the profiles dir to
+    ~/.clozn/*.json. _path() now validates every name -> traversal raises ValueError (the routes turn
+    that into a clean 400/404)."""
+    st = mk(tmp_path)
+    for bad in ("../config", "/etc/passwd", "foo/../bar", "..", "a/b", "UPPER", ".hidden"):
+        with pytest.raises(ValueError):
+            st._path(bad)
+        with pytest.raises(ValueError):
+            st.load(bad)

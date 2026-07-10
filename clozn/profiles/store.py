@@ -79,6 +79,11 @@ class ProfileStore:
         self.root = root
 
     def _path(self, name: str) -> str:
+        # Validate at the choke point: save() goes through validate() but load()/switch/export did NOT,
+        # so an unguarded `name` like "../config" traversed to ~/.clozn/*.json. Every caller route already
+        # catches ValueError, so a bad name degrades to a clean 400/404 rather than a file-system escape.
+        if not _NAME_RE.match(name or ""):
+            raise ValueError(f"profile name must match {_NAME_RE.pattern!r}, got {name!r}")
         return os.path.join(self.root, name + ".json")
 
     def save(self, p: dict) -> str:
