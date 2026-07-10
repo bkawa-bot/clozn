@@ -649,7 +649,7 @@ def format_plan(name: str, header: dict, file_size_bytes: int, report: dict, vra
 
 
 def cmd_plan(args):
-    from clozn import fit_planner   # stdlib+urllib only; imported lazily like the other clozn.* siblings
+    from clozn.cli import fit_planner   # stdlib+urllib only; imported lazily like the other clozn.* siblings
 
     vram_gb = args.vram if args.vram is not None else (_detect_vram_gb() or 16.0)
     spec = args.model
@@ -737,10 +737,10 @@ def cmd_studio(args):
         if args.open:
             _open_browser(f"{base}/studio.html")
         return
-    server = os.path.join(REPO, "clozn", "clozn_server.py")
+    server = os.path.join(REPO, "clozn", "server", "app.py")
     if not os.path.isfile(server):
         raise CloznError(f"studio backend not found at {server}")
-    cmd = [_studio_python(), "-m", "clozn.clozn_server", "--port", str(port)]
+    cmd = [_studio_python(), "-m", "clozn.server.app", "--port", str(port)]
     if args.substrate:
         cmd += ["--substrate", args.substrate]
     os.makedirs(HOME, exist_ok=True)

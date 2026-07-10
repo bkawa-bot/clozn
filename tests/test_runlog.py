@@ -99,7 +99,7 @@ def test_log_run_forwards_final_prompt_to_the_record(store, monkeypatch):
     run.final_prompt. Drives the REAL do_POST handler object with no socket + SUB=None (no engine, no
     model) -- purely the forwarding logic, mirroring test_rederive_server.py's object.__new__(H) trick."""
     import time
-    from clozn import clozn_server as cs
+    from clozn.server import app as cs
     monkeypatch.setattr(cs, "SUB", None)                   # no substrate -> dials {}, run_meta skipped
     h = object.__new__(cs.make_handler())
     h.headers = {"User-Agent": "pytest"}

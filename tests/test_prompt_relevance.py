@@ -12,7 +12,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))          # research/ (clozn_server lives here)
 
-from clozn import clozn_server as cs          # noqa: E402
+from clozn.server import app as cs          # noqa: E402
 
 
 def test_prompt_relevance_reads_the_gate(monkeypatch):

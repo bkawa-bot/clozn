@@ -52,7 +52,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))   # repo root -- clozn_server/steering moved into the clozn/ package
 
-from clozn import clozn_server as cs      # noqa: E402  -- cheap: no model load at import time (mirrors test_dial_*.py)
+from clozn.server import app as cs      # noqa: E402  -- cheap: no model load at import time (mirrors test_dial_*.py)
 from clozn.behavior.steering.axes import AXES      # noqa: E402  -- AXES-only; no CUDA/model needed
 
 SHIPPED_LIBRARY_PATH = os.path.join(HERE, "..", "clozn", "data", "dial_library_shipped.json")

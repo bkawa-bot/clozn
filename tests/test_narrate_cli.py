@@ -38,7 +38,7 @@ REPO = os.path.dirname(HERE)                                 # repo root (clozn/
 sys.path.insert(0, REPO)
 
 import clozn.cli.main as clozn_cli                                            # noqa: E402
-from clozn import clozn_server as cs                                    # noqa: E402
+from clozn.server import app as cs                                    # noqa: E402
 import clozn.memory.cards as memory_cards                                          # noqa: E402
 import clozn.memory.mode as memory_mode                                            # noqa: E402
 import clozn.runs.store as runlog                                                # noqa: E402

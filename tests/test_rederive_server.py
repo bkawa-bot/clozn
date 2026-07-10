@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, REPO_ROOT)
 
-from clozn import clozn_server as cs   # noqa: E402
+from clozn.server import app as cs   # noqa: E402
 import clozn.runs.store as runlog                 # noqa: E402
 
 

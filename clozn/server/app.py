@@ -9,7 +9,7 @@ Only one 7B fits the GPU, so switching substrates re-execs the process with the 
 the instrument shows the active substrate and offers the switch. Serves the instrument + every window
 from studio, so the iframes' fetches all land here.
 
-    cloze .venv python -m clozn.clozn_server --port 8090
+    cloze .venv python -m clozn.server.app --port 8090
 """
 import argparse
 import json
@@ -22,12 +22,13 @@ import time
 sys.stdout.reconfigure(encoding="utf-8")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "engine", "lab"))   # so the dream substrate can import cloze_lab
-DEMO = os.path.join(HERE, "..", "studio")
+REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))   # clozn/server/app.py -> repo root is two levels up
+sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "lab"))   # so the dream substrate can import cloze_lab
+DEMO = os.path.join(REPO_ROOT, "studio")
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
 
-sys.path.insert(0, os.path.join(HERE, "..", "engine", "client"))     # the engine white-box SDK
+sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "client"))     # the engine white-box SDK
 import numpy as np                                                   # noqa: E402
 try:
     from cloze_engine import EngineClient, EngineError
@@ -39,7 +40,6 @@ except Exception:
         pass
 
 CLOZN_DIR = os.path.join(os.path.expanduser("~"), ".clozn")   # studio memory + personality persist here
-REPO_ROOT = os.path.abspath(os.path.join(HERE, ".."))
 
 
 def _git_commit():

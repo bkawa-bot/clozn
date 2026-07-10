@@ -34,7 +34,7 @@ def main():
         print(f"  {'PASS' if cond else 'FAIL'}  {name}", flush=True)
 
     # --- clozn_server: the substrate base + the two substrates (imports without torch) --------------
-    from clozn import clozn_server as cs
+    from clozn.server import app as cs
 
     ok("Substrate base has _memory + _steer", has_all(cs.Substrate, ("_memory", "_steer")))
     ok("QwenSubstrate(Substrate)", issubclass(cs.QwenSubstrate, cs.Substrate))

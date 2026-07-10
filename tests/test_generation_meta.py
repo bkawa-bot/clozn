@@ -20,7 +20,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from clozn import clozn_server as cs   # noqa: E402
+from clozn.server import app as cs   # noqa: E402
 
 
 def test_without_unknowns_drops_none_but_keeps_honest_falsy_values():

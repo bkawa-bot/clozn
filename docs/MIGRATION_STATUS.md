@@ -4,7 +4,7 @@ Branch: `repo-reorg-clean-break`
 
 ## Current Phase
 
-Batch A complete; Batch B started:
+Batch A complete; Batch B complete:
 
 - Phase 0: prep branch and cleanup rules
 - Phase 1: destination package skeletons
@@ -15,6 +15,7 @@ Batch A complete; Batch B started:
 - Phase 6: counterfactual and time-travel moved into `clozn.replay`
 - Phase 7: steering moved into `clozn.behavior.steering` and split into axes, catalog, HF, Dream, engine, and library modules
 - Phase 8: remaining readout/substrate modules moved into `clozn.readouts`, `clozn.substrates`, and `clozn.dev`
+- Phase 9: `clozn_server.py` moved whole (no split) into `clozn.server.app`; `fit_planner.py` moved into `clozn.cli.fit_planner` (its only consumer's package). No flat top-level `clozn/*.py` modules remain.
 
 ## Moved Modules
 
@@ -71,6 +72,8 @@ Batch A complete; Batch B started:
 - `clozn/self_teach_server.py` -> `clozn/substrates/self_teach.py`
 - Qwen/HF model loading and trace helpers -> `clozn/substrates/qwen.py`
 - standalone self-teach server -> `clozn/dev/self_teach_server.py`
+- `clozn/clozn_server.py` -> `clozn/server/app.py` (single-module move, not a split; run via `python -m clozn.server.app`)
+- `clozn/fit_planner.py` -> `clozn/cli/fit_planner.py` (its only consumer is `clozn/cli/main.py`'s `plan` command)
 
 ## Tests Currently Green
 
@@ -125,17 +128,27 @@ pytest -q tests\test_studio.py tests\test_hf_trace.py tests\test_fair_capacity.p
 
 Full root `pytest -q` is not a valid baseline yet because it collects third-party and engine test trees with missing dependencies/import collisions.
 
+Phase 9 (this move) reverified the full product suite after relocating `clozn_server.py` and `fit_planner.py`:
+
+```text
+pytest -q tests
+1204 passed, 10 skipped
+```
+
+Also reverified clean: `python -c "import clozn"`, `python -c "import clozn.server.app"`, `python -m clozn --help`, and `python -m clozn.server.app --help` (argparse help only -- no server/model/GPU started).
+
 ## Known Broken Commands
 
-None currently known through Phase 8.
+None currently known through Phase 9.
 
 ## Remaining Import Errors
 
-None currently known through Phase 8. Python sources no longer import `clozn.runlog`, `clozn.memory_cards`,
+None currently known through Phase 9. Python sources no longer import `clozn.runlog`, `clozn.memory_cards`,
 `clozn.memory_mode`, `clozn.facts_mode`, `clozn.topic_gate`, `clozn.slotmem_qwen`, `clozn.explain`,
 `clozn.narrate`, `clozn.rederive`, `clozn.receipt_bundle`, `clozn.semantic_matcher`,
-`clozn.counterfactual`, `clozn.timetravel`, the old flat readout/substrate modules, or the old flat
-steering module.
+`clozn.counterfactual`, `clozn.timetravel`, the old flat readout/substrate modules, the old flat
+steering module, `clozn.clozn_server`, or `clozn.fit_planner`. No flat `clozn/*.py` modules remain
+except `clozn/__init__.py` and `clozn/__main__.py`.
 
 ## Compatibility Policy
 

@@ -24,7 +24,7 @@ sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "client"))
 
 from cloze_engine import EngineClient          # noqa: E402
-from clozn import clozn_server as cs           # noqa: E402
+from clozn.server import app as cs           # noqa: E402
 
 
 # ==================================================================================== EngineClient.score

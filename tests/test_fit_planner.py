@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))          # tests/
 REPO = os.path.dirname(HERE)                                # repo root
 sys.path.insert(0, REPO)
 
-from clozn import fit_planner                               # noqa: E402
+from clozn.cli import fit_planner                            # noqa: E402
 import clozn.cli.main as clozn_cli                           # noqa: E402
 
 
