@@ -31,7 +31,7 @@ REPO = os.path.dirname(HERE)                                # repo root
 sys.path.insert(0, REPO)
 
 from clozn import fit_planner                               # noqa: E402
-from clozn import cli as clozn_cli                           # noqa: E402
+import clozn.cli.main as clozn_cli                           # noqa: E402
 
 
 # ---------------------------------------------------------------------------------- synthetic GGUF bytes

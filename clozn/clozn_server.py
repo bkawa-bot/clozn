@@ -199,7 +199,7 @@ ENGINE_STEER = None        # lazy EngineSteer on the Qwen GGUF engine -- tone di
 def _engine_steer():
     global ENGINE_STEER
     if ENGINE_STEER is None and ENGINE_QWEN is not None:
-        from clozn.steering import EngineSteer
+        from clozn.behavior.steering.engine_adapter import EngineSteer
         ENGINE_STEER = EngineSteer(ENGINE_QWEN)
     return ENGINE_STEER
 
@@ -358,7 +358,7 @@ def _dial_suggestion(text: str):
     missing/broken steering module (or the pure-engine substrate) can never break /memory/add or propose.
     Pure + deterministic (a lexicon match, no model) -- see steering.suggest_dial_for_preference."""
     try:
-        from clozn.steering import suggest_dial_for_preference
+        from clozn.behavior.steering.catalog import suggest_dial_for_preference
         return suggest_dial_for_preference(text)
     except Exception:
         return None
@@ -402,7 +402,7 @@ def _memory_mode():
     resolves to "internalized" -- the long-standing prefix behavior -- so a broken settings file can
     never silently swap the mechanism under a live personality."""
     try:
-        from clozn import memory_mode
+        import clozn.memory.mode as memory_mode
         return memory_mode.get_mode()
     except Exception:
         return "internalized"
@@ -417,7 +417,7 @@ def _prompt_gate(last_user, texts):
     """Topic-relevance gate for the prompt-mode block -- the SAME signal the prefix path scales by
     (topic_gate.scalar over the active texts). 1.0 (no gating) when the embedder is unavailable."""
     try:
-        from clozn.topic_gate import get_gate
+        from clozn.memory.topic_gate import get_gate
         return float(get_gate().scalar(last_user, list(texts)))
     except Exception:
         return 1.0
@@ -429,7 +429,7 @@ def _prompt_relevance(last_user, texts):
     is the per-card signal the run record needs so the inspector can show WHY each card fired, not just
     that the block as a whole did (the scalar gate)."""
     try:
-        from clozn.topic_gate import get_gate
+        from clozn.memory.topic_gate import get_gate
         return dict(get_gate().relevance(last_user, list(texts)))
     except Exception:
         return {}
@@ -441,7 +441,7 @@ def _prompt_mem_cards(mem, exclude_ids=()):
     cards ARE the memory (m.rules is bookkeeping that can lag right after boot). Falls back to
     mem.rules (id-less) only if the store module is unavailable, so a broken store degrades to the old
     rule list rather than to amnesia."""
-    from clozn import memory_mode
+    import clozn.memory.mode as memory_mode
     cards = memory_mode.active_cards(exclude_ids)
     if cards is not None:
         return cards
@@ -466,7 +466,7 @@ def _prompt_block_for(mem, last_user, strength=None):
         return None, [], g
     rel = _prompt_relevance(last_user, texts)          # {text: cosine} per card (best-effort; {} if no embedder)
     applied = [dict(c, relevance=rel.get(c["text"])) for c in cards]
-    from clozn import memory_mode
+    import clozn.memory.mode as memory_mode
     return memory_mode.compile_prompt_block(texts), applied, g
 
 
@@ -488,7 +488,7 @@ def _mem_migrate(m):
     """Seed the card store from a memory object's legacy rule-strings, ONCE. migrate_from_rules is a
     no-op when the store already has cards, and it creates them as ACTIVE -- the prefix is already trained
     on these exact rules, so we do NOT re-consolidate here. Returns the cards created (or [])."""
-    from clozn import memory_cards
+    import clozn.memory.cards as memory_cards
     try:
         return memory_cards.migrate_from_rules(list(getattr(m, "rules", []) or []))
     except Exception:
@@ -499,7 +499,7 @@ def _export_markdown(run: dict, xr: dict | None) -> str:
     """Render a run (+ its M1 explain) as a human-readable Markdown receipt: the conversation, what memory
     and which dials shaped it (with per-card relevance), why it stopped, and where it hesitated. Pure / no
     model -- the JSON export carries the full structured bundle; this is its readable companion."""
-    from clozn import receipt_bundle
+    import clozn.receipts.bundle as receipt_bundle
     return receipt_bundle.to_markdown(receipt_bundle.build(run, explain=xr))
 
 
@@ -507,8 +507,8 @@ def _runs_for_card(card_id):
     """Best-effort: the run summaries whose memory.cards_applied names this card (by id OR by text).
     cards_applied currently records the active rule TEXTS (see _log_run), so we match on text primarily
     and on id as a forward-compatible fallback. Returns [] when the card / runs are gone (never raises)."""
-    from clozn import memory_cards
-    from clozn import runlog
+    import clozn.memory.cards as memory_cards
+    import clozn.runs.store as runlog
     try:
         card = memory_cards.get(card_id)
         text = (card or {}).get("text", "")
@@ -537,7 +537,7 @@ def _mem_sync_rules(m, reconsolidate=True, force=False):
     `force` retrains even when m.rules already matches the store -- used when toggling BACK to
     internalized mode, where the rules are synced but the PREFIX may be stale (prompt-mode card edits
     never consolidate)."""
-    from clozn import memory_cards
+    import clozn.memory.cards as memory_cards
     new_rules = memory_cards.active_texts()
     changed = list(getattr(m, "rules", []) or []) != list(new_rules)
     m.rules = list(new_rules)
@@ -562,7 +562,7 @@ def _mem_sync_rules(m, reconsolidate=True, force=False):
 def _active_profile_name():
     """The name of the last-switched-to profile, or None (nothing switched yet this install). Persisted
     in studio_settings.json alongside memory_mode -- one small settings file, not a new one."""
-    from clozn import memory_mode
+    import clozn.memory.mode as memory_mode
     return memory_mode.get_setting("active_profile")
 
 
@@ -577,7 +577,7 @@ def _profiles_switch(sub, p) -> dict:
     server yet (slotmem_qwen.py is a standalone research module), so a profile's facts are saved in the
     bundle but NOT compiled anywhere yet -- reported honestly via `facts_note`, never silently dropped.
     Returns {name, prompt_block, cards:{removed,added}, dials, resync, facts_note}."""
-    from clozn import memory_cards
+    import clozn.memory.cards as memory_cards
 
     # 1) CARDS: delete the current active set, then create the profile's cards fresh as active. Deleting
     #    (not just disabling) is the isolation contract: a stale disabled card from persona A must never
@@ -609,7 +609,7 @@ def _profiles_switch(sub, p) -> dict:
     dials = {"applied": {}, "customs_added": []}
     steer = getattr(sub, "steer", None)
     if steer is not None:
-        from clozn import profiles
+        from clozn.profiles import store as profiles
         dials = profiles.apply_dials(p, steer)
         try:
             if hasattr(steer, "save_state"):
@@ -624,12 +624,12 @@ def _profiles_switch(sub, p) -> dict:
     #    ~/.clozn/profiles/<name>.slots.pt -- but ONLY when the facts tier is enabled (memory_facts on).
     #    Off (the default): facts still travel in the bundle, we just don't build the store or pay the
     #    model cost, and facts_note says so. active_profile is set FIRST so SlotBox loads the right store.
-    from clozn import memory_mode
+    import clozn.memory.mode as memory_mode
     memory_mode.set_setting("active_profile", p["name"])
 
     facts_note = None
     if p.get("facts"):
-        from clozn import facts_mode
+        import clozn.memory.facts_mode as facts_mode
         if not facts_mode.enabled():
             facts_note = (f"{len(p['facts'])} fact(s) travel in the bundle but the facts tier is off -- "
                           "enable it on the Memory page (Facts) to compile them into this profile's store.")
@@ -642,7 +642,7 @@ def _profiles_switch(sub, p) -> dict:
                     slots = box._build()                   # share SUB.memory's model; build if needed
                     if slots is not None:
                         with _TRAIN_LOCK:                  # writes run forwards on the shared model
-                            from clozn import profiles as _pf
+                            from clozn.profiles import store as _pf
                             slots.entries = []             # persona isolation: this profile's facts only
                             compiled = _pf.compile_facts(p, slots, gate=False)  # curated -> store them all
                         box._save_active()
@@ -661,7 +661,7 @@ def _profiles_switch(sub, p) -> dict:
 def prompt_block_preview(p) -> str:
     """The system block this profile WOULD inject (profiles.prompt_block) -- for the switch response's
     receipt only; the live chat path still compiles fresh from the card store every gated-in turn."""
-    from clozn import profiles
+    from clozn.profiles import store as profiles
     return profiles.prompt_block(p)
 
 
@@ -712,8 +712,8 @@ class SlotBox:
         if model is None:
             return None
         try:
-            from clozn import facts_mode
-            from clozn import slotmem_qwen
+            import clozn.memory.facts_mode as facts_mode
+            import clozn.memory.slotmem_qwen.store as slotmem_qwen
             self._slots = slotmem_qwen.SlotMem.from_shared(model, tok, facts_mode.LAYER)
         except Exception as e:
             print(f"[facts] could not build slot store: {type(e).__name__}: {e}", flush=True)
@@ -733,7 +733,7 @@ class SlotBox:
         file (a profile with no facts yet is empty, not an error); a layer mismatch is logged + skipped."""
         if self._slots is None:
             return
-        from clozn import facts_mode
+        import clozn.memory.facts_mode as facts_mode
         prof = self._active_profile()
         path = facts_mode.store_path(prof)
         self._slots.entries = []
@@ -747,7 +747,7 @@ class SlotBox:
     def _save_active(self):
         if self._slots is None:
             return
-        from clozn import facts_mode
+        import clozn.memory.facts_mode as facts_mode
         try:
             self._slots.save(facts_mode.store_path(self._profile))
         except Exception as e:
@@ -773,7 +773,7 @@ class SlotBox:
     def status(self):
         """{enabled, layer, profile, count} -- the Facts panel header. Never builds the model just to
         answer (count is 0 until the store is actually resident)."""
-        from clozn import facts_mode
+        import clozn.memory.facts_mode as facts_mode
         n = len(self._slots.entries) if self._slots is not None else 0
         return {"enabled": facts_mode.enabled(), "layer": facts_mode.LAYER,
                 "profile": self._profile or self._active_profile() or "default", "count": n}
@@ -781,7 +781,7 @@ class SlotBox:
     def list_entries(self):
         """[{cue, answer, label}] for the resident store, [] when off / unbuilt. Read-only, no model
         forward -- safe to call on every Facts-panel load."""
-        from clozn import facts_mode
+        import clozn.memory.facts_mode as facts_mode
         if not facts_mode.enabled():
             return []
         with self._lock:
@@ -794,7 +794,7 @@ class SlotBox:
     def add(self, cue: str, answer: str, gate: bool = True):
         """Explicit fact write with the SURPRISE GATE on (the refusal is the receipt: a fact the model
         already knows is SKIPPED, not stored). Persists on a real write. {ok, written, surprise, reason?}."""
-        from clozn import facts_mode
+        import clozn.memory.facts_mode as facts_mode
         cue, answer = str(cue or "").strip(), str(answer or "")
         if not cue or not answer.strip():
             return {"ok": False, "reason": "need a cue and an answer"}
@@ -817,7 +817,7 @@ class SlotBox:
     def delete(self, cue: str | None = None, index=None):
         """Surgical per-entry removal (the slotmem contract: the victim drops, every other entry stays
         bit-identical). Match by exact cue, else by index. Persists. {ok, removed, remaining}."""
-        from clozn import facts_mode
+        import clozn.memory.facts_mode as facts_mode
         if not facts_mode.enabled():
             return {"ok": False, "reason": "the facts tier is off"}
         with self._lock:
@@ -845,7 +845,7 @@ class SlotBox:
         """The honest read RECEIPT for a query: which entry the store WOULD fire (or that it abstains),
         the key similarity, the abstain floor, the answer it would inject, and the measured slot_ms. Does
         NOT alter any chat reply (v1). {enabled, hit, abstained, sim, gate_floor, cue, answer, slot_ms}."""
-        from clozn import facts_mode
+        import clozn.memory.facts_mode as facts_mode
         if not facts_mode.enabled():
             return {"enabled": False}
         query = str(query or "").strip()
@@ -875,7 +875,7 @@ class SlotBox:
         no-op (returns None) when off, when nothing mineable is found, or when the model isn't loaded.
         Best-effort + defensive -- it must never break a chat turn. Returns the write receipt when it
         actually attempted a write (for the runlog), else None."""
-        from clozn import facts_mode
+        import clozn.memory.facts_mode as facts_mode
         if not facts_mode.enabled():
             return None
         cand = _mine_fact(_last_user(messages))
@@ -916,11 +916,11 @@ def _snap_store():
     global SNAPSHOTS
     if SNAPSHOTS is None:
         try:
-            from clozn import timetravel
+            import clozn.replay.timetravel as timetravel
             cfg = timetravel.get_config()
             SNAPSHOTS = timetravel.SnapshotStore(cap=cfg["cap"], budget_mb=cfg["budget_mb"])
         except Exception:
-            from clozn import timetravel
+            import clozn.replay.timetravel as timetravel
             SNAPSHOTS = timetravel.SnapshotStore()
     return SNAPSHOTS
 
@@ -1032,7 +1032,7 @@ def _start_retrain(m, action, card_id, force=False):
     chats serialize behind it, and clears _RETRAIN on finish (success OR error) so the UI's poll always
     terminates. `force` skips the no-op pre-check AND forces the consolidate (the mode-switch catch-up:
     rules are synced but the prefix is stale)."""
-    from clozn import memory_cards
+    import clozn.memory.cards as memory_cards
     if _memory_mode() == "prompt":
         r = _mem_sync_rules(m, reconsolidate=False)          # instant: rules bookkeeping only
         return {"retraining": False, "changed": r["changed"], "mode": "prompt"}
@@ -1071,7 +1071,7 @@ class Substrate:
         """Card-backed memory (D2 + E1). Cards carry the metadata + review status; m.rules stays == the
         ACTIVE-card texts and drives the prefix via consolidate(). Status changes go through _mem_sync_rules,
         which only retrains when the active set actually moved -- so pending/no-op edits never touch the prefix."""
-        from clozn import memory_cards
+        import clozn.memory.cards as memory_cards
         m = self._mem
         self._ensure_cards_migrated()           # one-time seed of legacy rules -> active cards (no retrain)
 
@@ -1135,7 +1135,7 @@ class Substrate:
                     except Exception:
                         pass
                 try:                                         # mirror to settings so the dial survives a
-                    from clozn import memory_mode                       # restart in prompt mode (no .pt to carry it)
+                    import clozn.memory.mode as memory_mode                       # restart in prompt mode (no .pt to carry it)
                     memory_mode.set_setting("memory_strength", float(m.memory_strength))
                 except Exception:
                     pass
@@ -1149,7 +1149,7 @@ class Substrate:
             prompt = str(body.get("prompt", ""))
             rules = list(getattr(m, "rules", []) or [])
             try:
-                from clozn.topic_gate import get_gate
+                from clozn.memory.topic_gate import get_gate
                 dbg = get_gate().debug(prompt, rules)
             except Exception as e:
                 dbg = {"gate": 1.0, "topic": 0.0, "openness": 0.0, "relevance": {},
@@ -1172,7 +1172,7 @@ class Substrate:
         This is never auto-approvable; the reviewer sees why via the reason string (the Memory page also
         flags it so this should rarely even be attempted). reject/disable/enable are NOT gated -- you must
         always be able to discard or de-activate a card regardless of its provenance."""
-        from clozn import memory_cards
+        import clozn.memory.cards as memory_cards
         if not cid:
             return {"ok": False, "reason": "need a card id"}
         if action == "approve":
@@ -1205,7 +1205,7 @@ class Substrate:
                     self._steer_ready = True
 
     def _steer(self, path, body):
-        from clozn.steering import AXES
+        from clozn.behavior.steering.axes import AXES
         if path == "/steer/axes":
             calib = _dial_calibration()   # {} when uncalibrated/offline -- _with_calibration no-ops per axis
             axes = [_with_calibration(
@@ -1265,10 +1265,10 @@ class QwenSubstrate(Substrate):
     name = "qwen"
 
     def __init__(self):
-        from clozn.brain_readout import BrainReadout
-        from clozn.sae7b import GpuSAE, load7b
-        from clozn.self_teach_server import SelfTeach
-        from clozn.steering import SteeringControl
+        from clozn.readouts.brain import BrainReadout
+        from clozn.readouts.sae7b import GpuSAE, load7b
+        from clozn.substrates.self_teach import SelfTeach
+        from clozn.behavior.steering.hf_adapter import SteeringControl
         sae = GpuSAE()
         tok, model = load7b()
         self.brain = BrainReadout(model, tok, sae, DEMO, HERE)
@@ -1292,7 +1292,7 @@ class QwenSubstrate(Substrate):
             self.memory.sync_cards()
             self._cards_migrated = True
             try:                                            # in prompt mode the strength dial persists in
-                from clozn import memory_mode                          # settings (the .pt needs a prefix to save; a
+                import clozn.memory.mode as memory_mode                          # settings (the .pt needs a prefix to save; a
                 s = memory_mode.get_setting("memory_strength")            # fresh install has none)
                 if s is not None:
                     self.memory.memory_strength = max(0.0, min(2.0, float(s)))
@@ -1369,7 +1369,7 @@ class QwenSubstrate(Substrate):
         if not cards:
             return {"report": "(no active memory cards yet -- add or approve one on the Memory page)",
                     "mode": "prompt"}
-        from clozn import memory_mode
+        import clozn.memory.mode as memory_mode
         block = memory_mode.compile_prompt_block([c["text"] for c in cards])
         ask = ("What have you picked up about me so far -- my interests, anything I seem to care about, "
                "and how I like you to respond? List what you know, one item per line.")   # == what_learned's
@@ -1392,7 +1392,7 @@ class QwenSubstrate(Substrate):
                 return {"prompt": prompt, "gate": None, "baseline": base, "mode": "prompt",
                         "ungated": "(no active memory cards)", "gated": "(no active memory cards)"}
             texts = [c["text"] for c in cards]
-            from clozn import memory_mode
+            import clozn.memory.mode as memory_mode
             block = memory_mode.compile_prompt_block(texts)
             g = round(_prompt_gate(prompt, texts), 3)
             ungated = m._generate(_inject_block(msgs, block), use_prefix=False, max_new=max_new, sample=False)
@@ -1501,7 +1501,7 @@ class QwenSubstrate(Substrate):
         self._last_stream_trace = []                        # reset; filled after the stream if capture succeeds
         recorder = None
         try:                                                # observe-only trace capture (never affects output)
-            from clozn.self_teach_server import RecordingLogitsProcessor
+            from clozn.substrates.qwen import RecordingLogitsProcessor
             from transformers import LogitsProcessorList
             recorder = RecordingLogitsProcessor()
             kw["logits_processor"] = LogitsProcessorList([recorder])
@@ -1528,13 +1528,13 @@ class QwenSubstrate(Substrate):
             th.join()
             raw_ids = list(gen_out.get("ids", []) or [])
             try:
-                from clozn.self_teach_server import finish_reason_from_generated_ids
+                from clozn.substrates.qwen import finish_reason_from_generated_ids
                 self._last_finish_reason = finish_reason_from_generated_ids(raw_ids, m.eos, max_new)
             except Exception:
                 self._last_finish_reason = None
             if recorder is not None:                        # assemble the trace from rows + emitted ids
                 try:
-                    from clozn.self_teach_server import steps_from_records
+                    from clozn.substrates.qwen import steps_from_records
                     gen_ids = list(raw_ids)
                     while gen_ids and gen_ids[-1] == (m.eos or -1):
                         gen_ids.pop()
@@ -1554,9 +1554,9 @@ class DreamSubstrate(Substrate):
 
     def __init__(self):
         from cloze_lab.cli import build_adapter
-        from clozn.denoise_server import trace_for
-        from clozn.steering import DreamSteering
-        from clozn.dream_memory import DreamMemory
+        from clozn.substrates.denoise import trace_for
+        from clozn.behavior.steering.dream_adapter import DreamSteering
+        from clozn.substrates.dream_memory import DreamMemory
         self.adapter = build_adapter("dream", device="cuda", quant="nf4")
         self._trace = trace_for
         self.steer = DreamSteering(self.adapter)            # tone dials on the diffusion model
@@ -1579,7 +1579,7 @@ class DreamSubstrate(Substrate):
                     # is a raw completion window with no system slot for the block. Memory simply doesn't
                     # ride here in prompt mode (honest omission beats a stale injection).
                     if self.dmem.prefix is not None and _memory_mode() != "prompt":
-                        from clozn.dream_memory import PrefixAdapter   # memory present -> inject into the REAL scheduler
+                        from clozn.substrates.dream_memory import PrefixAdapter   # memory present -> inject into the REAL scheduler
                         ad = PrefixAdapter(self.adapter, self.dmem.prefix.detach())
                     return self._trace(ad, prompt)         # the cloze_lab scheduler (+ the steering hook)
                 finally:
@@ -1610,14 +1610,14 @@ class _EngineMemory:
         self._exclude_card_ids = None
         self.lock = threading.Lock()
         try:
-            from clozn import memory_mode                    # 0.35 == the shipped product default (commit f3e9f60, the
+            import clozn.memory.mode as memory_mode                    # 0.35 == the shipped product default (commit f3e9f60, the
             self.memory_strength = float(memory_mode.get_setting("memory_strength", 0.35))   # over-bleed fix);
         except Exception:                          # matches SelfTeach.__init__ so a fresh engine-first boot
             self.memory_strength = 0.35            # doesn't diverge. (Prompt mode treats it as on/off anyway.)
 
     @property
     def rules(self):
-        from clozn import memory_cards
+        import clozn.memory.cards as memory_cards
         return [c["text"] for c in (memory_cards.list_cards() or []) if c.get("status") == "active"]
 
     @rules.setter
@@ -1636,7 +1636,7 @@ class _EngineMemory:
         pass
 
     def state(self):
-        from clozn import memory_cards
+        import clozn.memory.cards as memory_cards
         return {"mode": "prompt", "has_prefix": False,
                 "cards": len(memory_cards.list_cards() or []), "rules": self.rules}
 
@@ -1692,7 +1692,7 @@ class EngineSubstrate(Substrate):
     def _gen(self, prompt):                     # one-shot generate for the /steer/check A/B (base _steer)
         if self.steer is not None:
             return self.steer.generate(prompt, max_new=90)
-        from clozn.steering import EngineSteer
+        from clozn.behavior.steering.engine_adapter import EngineSteer
         return EngineSteer._text(self.engine.complete(prompt, max_tokens=90))
 
     def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
@@ -1866,7 +1866,7 @@ class EngineSubstrate(Substrate):
         partial stream still logs whatever trace it managed. Wrapped so any parse hiccup just leaves it
         [], same as the non-streaming path's fallback."""
         import urllib.request
-        from clozn import runlog
+        import clozn.runs.store as runlog
         self._last_generation_meta = _engine_generation_meta(max_new, stream=True)
         # MEMORY + TONE: built EXACTLY as chat() builds them.
         block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
@@ -1935,7 +1935,7 @@ class EngineSubstrate(Substrate):
         return self._steer(path, body)
 
     def state(self):
-        from clozn import memory_cards
+        import clozn.memory.cards as memory_cards
         return {"dials": dict(getattr(self.steer, "strength", {}) or {}),
                 "cards": len(memory_cards.list_cards() or [])}
 
@@ -2041,7 +2041,7 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw):
                 ch = obj.get("choices")                     # the final OpenAI-style frame carries the full text
                 if ch and isinstance(ch, list) and ch[0].get("text"):
                     text = ch[0]["text"]
-        from clozn import runlog
+        import clozn.runs.store as runlog
         steps = runlog.accumulate_ar_events(frames)
         finish = runlog.finish_reason_from_frames(frames)   # the engine's real stop cause (else None)
         if not text:                                        # no final frame text -> reassemble from the pieces
@@ -2153,7 +2153,7 @@ def make_handler():
                 return None
 
             def provider(rid, norm_trace):
-                from clozn import workspace_lens
+                from clozn.readouts import workspace_lens
                 if not norm_trace or not norm_trace.get("tokens"):
                     return []
                 if ENGINE_QWEN is not None:
@@ -2181,7 +2181,7 @@ def make_handler():
             never raised. The M5 any-client bridge surfaces this id to the caller; None means "nothing to
             surface", not an error the request should see."""
             try:
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 mem = getattr(SUB, "_mem", None) if SUB else None
                 mo = mem_out or {}
                 mode = mo.get("mode") or _memory_mode()
@@ -2207,7 +2207,7 @@ def make_handler():
                         memd["prompt_block"] = str(mo["prompt_block"])
                     if applied:                                  # bump exactly the cards that rode this turn
                         try:
-                            from clozn import memory_cards
+                            import clozn.memory.cards as memory_cards
                             for c in applied:
                                 if c.get("id"):
                                     memory_cards.bump_usage(c["id"])
@@ -2225,7 +2225,7 @@ def make_handler():
                             "mode": mode, "proposed_cards": []}
                     if cards:                                    # record that the active cards influenced a run
                         try:
-                            from clozn import memory_cards
+                            import clozn.memory.cards as memory_cards
                             for c in memory_cards.list_cards(status="active"):
                                 memory_cards.bump_usage(c["id"])
                         except Exception:
@@ -2238,7 +2238,7 @@ def make_handler():
                 # RECEIPT (what the store would fire + slot_ms), both folded into the run's memory record
                 # so the Run Inspector shows them. Fully guarded; never breaks logging or the reply.
                 try:
-                    from clozn import facts_mode
+                    import clozn.memory.facts_mode as facts_mode
                     if facts_mode.enabled() and source in ("studio_chat", "openai_api", "engine_chat"):
                         box = _slots_box()
                         if box is not None and not error:
@@ -2275,7 +2275,7 @@ def make_handler():
                     meta.setdefault("finish_reason_source", "fallback")
                     meta.setdefault("finish_reason_fallback", finish_reason_fallback)
                 try:                                          # CAPTURE TIER: record it, and drop the trace at light
-                    from clozn import capture_mode
+                    from clozn.runs import capture_mode
                     tier = capture_mode.tier()
                     meta = {**meta, "capture_tier": tier}
                     if not capture_mode.captures_trace(tier):
@@ -2310,7 +2310,7 @@ def make_handler():
             try:
                 if not rid or error:
                     return
-                from clozn import timetravel
+                import clozn.replay.timetravel as timetravel
                 if not timetravel.enabled():
                     return
                 store = _snap_store()
@@ -2334,7 +2334,7 @@ def make_handler():
             (memory_facts) or no substrate/model is loaded -- the panel renders either way. The read/write
             operations touch the shared 7B, so they run under the SlotBox's own lock (+ _TRAIN_LOCK inside
             it) and are gated OFF the chat hot path by the setting -- the latency rule."""
-            from clozn import facts_mode
+            import clozn.memory.facts_mode as facts_mode
             if p == "/facts/mode":            # read or set the on/off gate (the latency switch)
                 if "enabled" in body:
                     on = bool(body.get("enabled"))
@@ -2370,7 +2370,7 @@ def make_handler():
             DEFAULT OFF -- the RAM rule); this endpoint reads/sets it, tunes the ring (cap / byte budget),
             and reports the honest offloaded-bytes total. Branch RECORDING (POST /runs/<id>/branch) does
             NOT depend on the gate; only holding live KV for the (future) re-prefill fast path does."""
-            from clozn import timetravel
+            import clozn.replay.timetravel as timetravel
             if p == "/timetravel/mode":       # read or set the on/off gate + ring config
                 changed = False
                 if "enabled" in body:
@@ -2412,32 +2412,32 @@ def make_handler():
                 return self._json(200, {"substrate": SUBNAME, "memory_mode": _memory_mode(),
                                         **(SUB.state() if SUB else {})})
             if p == "/memory/mode":          # which mechanism carries the cards (works on ANY substrate)
-                from clozn import memory_mode
+                import clozn.memory.mode as memory_mode
                 return self._json(200, {"mode": _memory_mode(), "modes": list(memory_mode.MODES)})
             if p == "/capture/tier":         # how much white-box data each run stores (light/standard/deep/lab)
-                from clozn import capture_mode
+                from clozn.runs import capture_mode
                 return self._json(200, {"tier": capture_mode.tier(), "tiers": list(capture_mode.TIERS)})
             if p == "/timetravel/mode":      # #6: is per-turn KV snapshotting on? + ring config + store stats
-                from clozn import timetravel
+                import clozn.replay.timetravel as timetravel
                 out = {"enabled": timetravel.enabled(), **timetravel.get_config()}
                 store = _snap_store()
                 if store is not None:
                     out["store"] = store.stats()
                 return self._json(200, out)
             if p == "/profiles/list":         # every saved persona bundle + which one is active (masthead + Settings)
-                from clozn import profiles
+                from clozn.profiles import store as profiles
                 return self._json(200, {"profiles": profiles.ProfileStore().list(),
                                         "active": _active_profile_name()})
             if p.startswith("/memory/") and p.endswith("/runs"):   # E1: which runs used this card
                 cid = p[len("/memory/"):-len("/runs")]
                 return self._json(200, {"card_id": cid, "runs": _runs_for_card(cid)})
             if p == "/runs":                 # the Run Log -- every interaction, newest first (the Studio Runs page)
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 return self._json(200, {"runs": runlog.list_runs(80)})
             if p.startswith("/runs/") and p.endswith("/export"):   # one-call download: run + M1 explain + trace
-                from clozn import runlog
-                from clozn import explain
-                from clozn import receipt_bundle
+                import clozn.runs.store as runlog
+                import clozn.receipts.explain as explain
+                import clozn.receipts.bundle as receipt_bundle
                 from urllib.parse import urlparse, parse_qs
                 rid = p[len("/runs/"):-len("/export")]
                 run = runlog.get_run(rid)
@@ -2455,15 +2455,15 @@ def make_handler():
                 return self._json(200, bundle,
                                   extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.json"'})
             if p.startswith("/runs/") and p.endswith("/timeline"):   # ordered RunEvent list -- zero generation
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 rid = p[len("/runs/"):-len("/timeline")]
                 run = runlog.get_run(rid)
                 if not run:
                     return self._json(404, {"error": "run not found"})
-                from clozn import run_timeline
+                from clozn.runs import timeline as run_timeline
                 return self._json(200, {"run_id": rid, "events": run_timeline.timeline(run)})
             if p.startswith("/runs/") and p.endswith("/lineage"):   # branch/replay ancestry + child tree
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 rid = p[len("/runs/"):-len("/lineage")]
                 out = runlog.lineage(rid)
                 if not out:
@@ -2473,23 +2473,23 @@ def make_handler():
                 # summaries -- the full lineage past the /runs 80-window, so the client's buildLineageFromRuns
                 # builds the complete tree instead of the recent-runs slice. (Distinct from /lineage, which
                 # returns the server-built ancestors/children/tree object.)
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 rid = p[len("/runs/"):-len("/family")]
                 fam = runlog.lineage_family(rid)
                 if fam is None:
                     return self._json(404, {"error": "run not found"})
                 return self._json(200, {"runs": fam})
             if p.startswith("/runs/") and p.endswith("/spans"):   # confidence spans -- the shape of the reply's certainty
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 rid = p[len("/runs/"):-len("/spans")]
                 run = runlog.get_run(rid)
                 if not run:
                     return self._json(404, {"error": "run not found"})
-                from clozn import confidence_spans
+                from clozn.runs import confidence_spans
                 sp = confidence_spans.spans(run)
                 return self._json(200, {"run_id": rid, "spans": sp, "summary": confidence_spans.summarize(sp)})
             if p.startswith("/runs/"):
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 r = runlog.get_run(p.split("/runs/", 1)[1])
                 return self._json(200, r) if r else self._json(404, {"error": "run not found"})
             if p.endswith((".html", ".css", ".js")):
@@ -2517,18 +2517,18 @@ def make_handler():
                 # (e.g. a Run Inspector "Too verbose" click) tied to the run that prompted it, so a later
                 # accumulate-and-propose step can mine "you keep asking for concise". Records only; changes
                 # nothing (agency-agnostic), and never fails the user's action over a feedback write.
-                from clozn import feedback
+                from clozn.behavior import feedback
                 sig = feedback.record(body.get("run_id"), str(body.get("kind", "quick_repair")),
                                       dial=body.get("dial"), direction=body.get("direction"),
                                       meta=body.get("meta"))
                 return self._json(200, {"ok": True, "signal": sig})
             if p == "/feedback/summary":   # the rollup a learning step reads: per-(dial,direction) counts +
-                from clozn import feedback            # the last run driving each, over an optional recent window (days)
+                from clozn.behavior import feedback            # the last run driving each, over an optional recent window (days)
                 wd = body.get("window_days")
                 ws = float(wd) * 86400 if isinstance(wd, (int, float)) else None
                 return self._json(200, feedback.summary(window_seconds=ws))
             if p == "/preferences":   # propose-and-review: fold the feedback pattern into proposals + return
-                from clozn import feedback, preferences   # the PENDING ones (a (dial,direction) lean that crossed the
+                from clozn.behavior import feedback, preferences   # the PENDING ones (a (dial,direction) lean that crossed the
                 sigs = feedback.list_signals()  # threshold). refresh() creates/updates; it NEVER sets a dial.
                 wd = body.get("window_days")
                 if isinstance(wd, (int, float)):
@@ -2538,7 +2538,7 @@ def make_handler():
                     sigs, threshold=int(body.get("threshold", preferences.DEFAULT_THRESHOLD)))
                 return self._json(200, {"pending": pending})
             if p == "/preferences/resolve":   # APPROVE (persist the dial) or DISMISS a proposal -- the review
-                from clozn import preferences            # half of propose-and-review. Approve is the ONLY place a
+                from clozn.behavior import preferences            # half of propose-and-review. Approve is the ONLY place a
                 pr = preferences.resolve(str(body.get("id", "")), str(body.get("action", "")))  # dial is set.
                 if pr is None:
                     return self._json(400, {"error": "unknown proposal id, or action not in {approve,dismiss}"})
@@ -2554,7 +2554,7 @@ def make_handler():
                         applied = {"error": f"{type(e).__name__}: {e}"}
                 return self._json(200, {"ok": True, "proposal": pr, "applied": applied})
             if p == "/capture/tier":  # set the capture tier (persisted; applies to subsequent runs)
-                from clozn import capture_mode
+                from clozn.runs import capture_mode
                 name = str(body.get("tier", "")).strip().lower()
                 if name not in capture_mode.TIERS:
                     return self._json(400, {"error": f"unknown tier (want one of {list(capture_mode.TIERS)})"})
@@ -2562,7 +2562,7 @@ def make_handler():
                     return self._json(200, {"ok": False, "reason": "could not persist the tier setting"})
                 return self._json(200, {"ok": True, "tier": name})
             if p == "/memory/mode":   # swap the memory mechanism (persisted; takes effect immediately)
-                from clozn import memory_mode
+                import clozn.memory.mode as memory_mode
                 mode = str(body.get("mode", "")).strip().lower()
                 if mode not in memory_mode.MODES:
                     return self._json(400, {"error": f"unknown mode (want one of {list(memory_mode.MODES)})"})
@@ -2577,7 +2577,7 @@ def make_handler():
                 if mode == "internalized" and SUB is not None and getattr(SUB, "_mem", None) is not None:
                     m = SUB._mem
                     try:
-                        from clozn import memory_cards
+                        import clozn.memory.cards as memory_cards
                         active = memory_cards.active_texts()
                         trained = list(getattr(m, "_trained_rules", []) or [])
                         if set(active) != set(trained) and (active or getattr(m, "prefix", None) is not None):
@@ -2586,14 +2586,14 @@ def make_handler():
                         pass
                 return self._json(200, out)
             if p == "/profiles/save":        # create/update a named persona bundle (does NOT apply it -- see switch)
-                from clozn import profiles
+                from clozn.profiles import store as profiles
                 try:
                     saved = profiles.ProfileStore().save(profiles.validate(dict(body)))
                 except (ValueError, KeyError, TypeError) as e:
                     return self._json(400, {"error": f"bad profile: {e}"})
                 return self._json(200, {"ok": True, "path": saved, "profile": profiles.ProfileStore().load(body["name"])})
             if p == "/profiles/switch":      # THE persona switch: cards replace, dials replace, instant in prompt mode
-                from clozn import profiles
+                from clozn.profiles import store as profiles
                 name = str(body.get("name", "")).strip()
                 if not name:
                     return self._json(400, {"error": "need a profile name"})
@@ -2605,7 +2605,7 @@ def make_handler():
                     return self._json(503, {"error": "no substrate loaded"})
                 return self._json(200, {"ok": True, **_profiles_switch(SUB, prof)})
             if p == "/profiles/export":       # -> the bundle's own JSON (client downloads/saves it -- the portable artifact)
-                from clozn import profiles
+                from clozn.profiles import store as profiles
                 name = str(body.get("name", "")).strip()
                 if not name:
                     return self._json(400, {"error": "need a profile name"})
@@ -2614,7 +2614,7 @@ def make_handler():
                 except (OSError, ValueError) as e:
                     return self._json(404, {"error": f"no such profile '{name}': {e}"})
             if p == "/profiles/import":       # body IS the bundle JSON (as exported); optional {rename}
-                from clozn import profiles
+                from clozn.profiles import store as profiles
                 try:
                     bundle = dict(body.get("profile", body))
                     rename = body.get("rename") or None
@@ -2632,7 +2632,7 @@ def make_handler():
                 return self._timetravel(p, body)
             if p.startswith("/runs/") and p.endswith("/replay"):   # F1: re-run a past run under changed state -> a child run
                 rid = p[len("/runs/"):-len("/replay")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
@@ -2649,7 +2649,7 @@ def make_handler():
                 return self._json(200, child)
             if p.startswith("/runs/") and p.endswith("/branch"):   # #6: rewind & branch from a turn -> a child run
                 rid = p[len("/runs/"):-len("/branch")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
@@ -2665,7 +2665,7 @@ def make_handler():
                 # greedy by default (the receipt path: a branch's future is attributable, not sampling dice).
                 sample = bool(body.get("sample", False))
                 try:
-                    from clozn import timetravel
+                    import clozn.replay.timetravel as timetravel
                     child = timetravel.branch(run, turn, SUB, alt_user=alt, sample=sample,
                                               store=_snap_store())
                 except Exception as e:
@@ -2675,7 +2675,7 @@ def make_handler():
                 return self._json(200, child)
             if p.startswith("/runs/") and p.endswith("/propose-memory"):   # E2: propose a pending card from a past run
                 rid = p[len("/runs/"):-len("/propose-memory")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(200, {"ok": False, "reason": "no such run"})
@@ -2684,7 +2684,7 @@ def make_handler():
                 mem = getattr(SUB, "memory", None) if SUB else None
                 if mem is None or not hasattr(mem, "propose_memory"):
                     return self._json(200, {"ok": False, "reason": "proposal not available for this substrate"})
-                from clozn import memory_cards
+                import clozn.memory.cards as memory_cards
                 # Neutralize tone steering during the extraction so the dials don't color the read -- snapshot
                 # SUB.steer.strength, zero it, and RESTORE in a finally (mirror replay.py; never persist this).
                 steer = getattr(SUB, "steer", None)
@@ -2725,15 +2725,15 @@ def make_handler():
                                         "dial_suggestion": _dial_suggestion(text)})
             if p.startswith("/runs/") and p.endswith("/explain"):   # M1: assemble the FREE signals -- zero generation
                 rid = p[len("/runs/"):-len("/explain")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
-                from clozn import explain
+                import clozn.receipts.explain as explain
                 return self._json(200, explain.explain(run))
             if p.startswith("/runs/") and p.endswith("/receipts"):   # M2: prove-all -- leave-one-out + redundancy guard
                 rid = p[len("/runs/"):-len("/receipts")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
@@ -2751,7 +2751,7 @@ def make_handler():
                     return self._json(500, {"error": f"receipts failed: {type(e).__name__}: {e}"})
             if p.startswith("/runs/") and p.endswith("/receipt"):   # M2: one rigorous both-arms-greedy causal receipt
                 rid = p[len("/runs/"):-len("/receipt")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
@@ -2775,13 +2775,13 @@ def make_handler():
                 return self._json(200, out)
             if p.startswith("/runs/") and p.endswith("/rederive"):   # S3: deterministic teacher-forced re-derivation
                 rid = p[len("/runs/"):-len("/rederive")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
                 if not (SUB and getattr(SUB, "score_tokens", None)):
                     return self._json(503, {"error": "rederive needs the engine substrate (score_tokens)"})
-                from clozn import rederive
+                import clozn.receipts.rederive as rederive
                 try:
                     out = rederive.rederive(run, SUB)
                 except Exception as e:
@@ -2805,7 +2805,7 @@ def make_handler():
                                                        want_protocol=want_protocol))
             if p.startswith("/runs/") and p.endswith("/jlens"):   # J3: the Run Inspector J-lens feed for a run
                 rid = p[len("/runs/"):-len("/jlens")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
@@ -2824,7 +2824,7 @@ def make_handler():
                                                        want_protocol=want_protocol))
             if p.startswith("/runs/") and p.endswith("/counterfactual"):   # M3: one counterfactual dial re-gen
                 rid = p[len("/runs/"):-len("/counterfactual")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
@@ -2833,7 +2833,7 @@ def make_handler():
                 overrides = body.get("behavior_overrides")
                 if not isinstance(overrides, dict) or not overrides:
                     return self._json(400, {"error": "need a behavior_overrides dict: {dial_name: value, ...}"})
-                from clozn import counterfactual
+                import clozn.replay.counterfactual as counterfactual
                 try:
                     out = counterfactual.counterfactual(run, overrides, SUB)
                 except Exception as e:
@@ -2844,16 +2844,16 @@ def make_handler():
                 return self._json(200, out)
             if p.startswith("/runs/") and p.endswith("/narrate"):   # M4: accountable-self narration + confabulation-diff
                 rid = p[len("/runs/"):-len("/narrate")]
-                from clozn import runlog
+                import clozn.runs.store as runlog
                 run = runlog.get_run(rid)
                 if run is None:
                     return self._json(404, {"error": "run not found"})
                 if not (SUB and getattr(SUB, "chat", None)):   # constrained + unconstrained BOTH generate -> needs qwen
                     return self._json(503, {"error": "narration needs the qwen substrate"})
-                from clozn import narrate
+                import clozn.receipts.narrate as narrate
                 matcher = narrate.lexical_default            # the weak keyword proxy -- the LABELED fallback judge
                 try:
-                    from clozn import semantic_matcher                  # the real, INDEPENDENT cross-encoder judge, if present
+                    import clozn.receipts.semantic_matcher as semantic_matcher                  # the real, INDEPENDENT cross-encoder judge, if present
                     if semantic_matcher.available():
                         matcher = semantic_matcher.nli_support_matcher
                 except Exception:
@@ -2906,7 +2906,7 @@ def make_handler():
                 except Exception as e:
                     return self._json(502, {"error": f"engine-qwen: {e}"})
             if p == "/engine/steer/axes":   # the tone dials, but they apply on the GGUF via the engine
-                from clozn.steering import AXES
+                from clozn.behavior.steering.axes import AXES
                 es = _engine_steer()
                 return self._json(200, {"axes": [{"name": k, "poles": AXES[k]["poles"]} for k in AXES],
                                         "ready": bool(es and es.ready), "engine": bool(ENGINE_QWEN)})
@@ -3039,7 +3039,8 @@ def make_handler():
                 # implies confidence == correctness.
                 if body.get("clozn_trust"):
                     try:
-                        from clozn import confidence_spans, runlog as _runlog
+                        from clozn.runs import confidence_spans
+                        import clozn.runs.store as _runlog
                         _run_for_spans = {"trace": _runlog.steps_to_trace(trace_steps)}
                         resp["clozn_spans"] = confidence_spans.spans(_run_for_spans)
                         resp["clozn_spans_note"] = ("uncalibrated raw token confidence -- "

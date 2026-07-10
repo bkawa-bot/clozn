@@ -35,8 +35,8 @@ RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
 from clozn import clozn_server as cs      # noqa: E402
-from clozn import memory_cards            # noqa: E402
-from clozn import runlog                  # noqa: E402
+import clozn.memory.cards as memory_cards            # noqa: E402
+import clozn.runs.store as runlog                  # noqa: E402
 
 
 # --- fakes: mirror the surfaces the endpoint touches (no 7B, no PyTorch) ----------------------------

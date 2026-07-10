@@ -11,7 +11,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # research/ on path
-from clozn import runlog  # noqa: E402
+import clozn.runs.store as runlog  # noqa: E402
 
 
 @pytest.fixture

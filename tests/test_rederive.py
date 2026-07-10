@@ -25,7 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, REPO_ROOT)
 
-from clozn import rederive  # noqa: E402
+import clozn.receipts.rederive as rederive  # noqa: E402
 
 
 # ==================================================================================== fakes

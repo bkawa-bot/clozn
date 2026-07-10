@@ -24,10 +24,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
 
-from clozn import memory_cards      # noqa: E402
-from clozn import memory_mode       # noqa: E402
-from clozn import receipt_bundle    # noqa: E402
-from clozn import runlog            # noqa: E402
+import clozn.memory.cards as memory_cards      # noqa: E402
+import clozn.memory.mode as memory_mode       # noqa: E402
+import clozn.receipts.bundle as receipt_bundle    # noqa: E402
+import clozn.runs.store as runlog            # noqa: E402
 from clozn import testkit           # noqa: E402
 
 

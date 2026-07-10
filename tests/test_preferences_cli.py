@@ -3,8 +3,8 @@ server/model needed. Mirrors test_explain_cli.py's canned-dict approach."""
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))   # repo root for `from clozn import cli`
-from clozn import cli as clozn_cli  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))   # repo root for `import clozn.cli.main`
+import clozn.cli.main as clozn_cli  # noqa: E402
 
 
 def test_empty_pending_is_a_friendly_hint():

@@ -32,11 +32,11 @@ RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
 from clozn import clozn_server as cs      # noqa: E402
-from clozn import memory_cards            # noqa: E402
-from clozn import memory_mode             # noqa: E402
+import clozn.memory.cards as memory_cards            # noqa: E402
+import clozn.memory.mode as memory_mode             # noqa: E402
 from clozn import replay                  # noqa: E402
-from clozn import runlog                  # noqa: E402
-from clozn import topic_gate              # noqa: E402
+import clozn.runs.store as runlog                  # noqa: E402
+import clozn.memory.topic_gate as topic_gate              # noqa: E402
 
 
 # ---- fakes (mirror test_memory_wiring / test_replay -- each suite carries its own) -----------------
@@ -211,7 +211,7 @@ def test_block_wording_is_exactly_consolidates_sys_rule(iso):
 def test_block_wording_still_matches_self_teach_source(iso):
     # drift guard from the other end: if consolidate's sys_rule literal is ever reworded, this fails and
     # forces a lockstep update of compile_prompt_block (and vice versa via the exact-output test above).
-    src = open(os.path.join(RESEARCH, "clozn", "self_teach_server.py"), encoding="utf-8").read()
+    src = open(os.path.join(RESEARCH, "clozn", "substrates", "self_teach.py"), encoding="utf-8").read()
     assert "You are a helpful assistant talking with a returning user. Here is what you know " in src
     assert "about them; use it naturally to tailor how you respond:" in src
 

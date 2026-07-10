@@ -41,7 +41,7 @@ forward pass per reply (no generation):
       (hidden_states[sc.layer + 1], the same layer/indexing convention _last_resid already uses elsewhere
       in this codebase), then take the SIGNED scalar projection of that pooled vector onto
       unit(sc.vecs[dial]). Higher = further toward the dial's POSITIVE pole. This is the piece that
-      changed; HOW the direction itself is computed (steering.py's compute/add_custom) is untouched.
+      changed; HOW the direction itself is computed (SteeringControl.compute/add_custom) is untouched.
 
   directional_effect(sc, dial, baseline_texts, steered_texts) -- THE new `effect` / `shuffled_effect` curve
       field: mean over the prompt sample of [directional_alignment(steered) - directional_alignment(that
@@ -98,7 +98,7 @@ and NOT comparable across models/layers/quantizations the way a 0-1 ratio incide
 now 2.0, PICKED (not derived) from this exact rig's own most recent real run against Qwen2.5-7B-Instruct
 nf4 at layer 14 (research/runs/dial_autocalibrate.json's recorded steer_info.resid_norm = 68.7 -- the
 average norm of a SINGLE token's layer-14 residual over the contrastive seed prompts; hidden_size for this
-model is 3584, confirmed from its config.json, so 28 layers -> mid-layer 14 matches steering.py's own
+model is 3584, confirmed from its config.json, so 28 layers -> mid-layer 14 matches SteeringControl's own
 comment). A generic, uncorrelated vector of that norm projected onto an arbitrary fixed unit direction in a
 3584-dim space would be expected to land, VERY roughly, around resid_norm / sqrt(hidden_size) =~
 68.7 / 59.9 =~ 1.15 -- the textbook scaling for an unrelated high-dimensional vector against a fixed axis, a
@@ -166,11 +166,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from clozn import steering as steering_mod
-from clozn.steering import SteeringControl
-from clozn.counterfactual import _coherence   # {"degenerate": bool, "reason": str} -- the mandatory coherence axis
+import clozn.behavior.steering.axes as steering_mod
+from clozn.behavior.steering import SteeringControl
+from clozn.replay.counterfactual import _coherence   # {"degenerate": bool, "reason": str} -- the mandatory coherence axis
 from clozn import receipts                          # receipt_metrics -- the word-type-Jaccard "%changed" DIAGNOSTIC
-from clozn import runlog
+import clozn.runs.store as runlog
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -362,7 +362,7 @@ def _free_cuda():
 
 
 # ============================================================================================ prompt sample
-# Neutral fallback -- deliberately original text, disjoint from steering.py's SEED_PROMPTS (used only to
+# Neutral fallback -- deliberately original text, disjoint from the steering SEED_PROMPTS (used only to
 # compute the diff-of-means directions themselves) and from parliament.py's CALIB_PROBES, so evaluating on
 # it is never circular with either.
 NEUTRAL_PROMPTS = [
@@ -427,7 +427,7 @@ class SingleTurnSteer(SteeringControl):
     reject a system role outright, and using the identical single-user-turn recipe UNCONDITIONALLY (not
     just when --model happens to be one of those) keeps the direction-computation recipe identical no
     matter which checkpoint --model points at. compute()/add_custom() are inherited unchanged from
-    SteeringControl and call this override polymorphically -- nothing in steering.py itself needs touching.
+    SteeringControl and call this override polymorphically -- nothing in the adapter itself needs touching.
     """
 
     @torch.no_grad()
@@ -593,7 +593,7 @@ def register_library_dials(sc, library: list[dict]) -> dict:
 
     shadows_builtin=True flags a library dial whose name ALSO exists in steering.AXES (this library
     independently invented names like "warm"/"concise"/"formal"/"playful"/"poetic"/"concrete"/"confident"
-    that collide with steering.py's own built-ins) -- add_custom overwrites sc.vecs[name] unconditionally on
+    that collide with the built-in steering axes) -- add_custom overwrites sc.vecs[name] unconditionally on
     such a collision (the library's own pos/neg wins, not the built-in's), and axis_max_of's custom-first
     precedence (see its own docstring) keeps the swept ceiling consistent with that same override. Flagged,
     not prevented: a collision is not an error, just a fact worth a human noticing (run_library prints it)."""

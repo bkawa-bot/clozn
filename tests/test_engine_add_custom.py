@@ -2,7 +2,7 @@
 substrate (steering.EngineSteer). test_engine_library_dials.py ported the 27 SHIPPED library dials to the
 engine; this suite ports the OTHER path -- a studio user typing two pole sentences of their own and getting
 back a brand-new, steerable dial, exactly as SteeringControl.add_custom already does on the PyTorch backbone
-(research/steering.py's SteeringControl, ~line 292).
+(SteeringControl.add_custom on the PyTorch/HF adapter).
 
 Before this, EngineSteer had no add_custom/remove_custom/save_custom/load_custom at all, so the generic
 handler at clozn_server.Substrate._steer's "/steer/custom" route
@@ -46,9 +46,9 @@ RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
 from clozn import clozn_server as cs          # noqa: E402
-from clozn import memory_cards                # noqa: E402
-from clozn import memory_mode                 # noqa: E402
-from clozn.steering import EngineSteer   # noqa: E402
+import clozn.memory.cards as memory_cards                # noqa: E402
+import clozn.memory.mode as memory_mode                 # noqa: E402
+from clozn.behavior.steering import EngineSteer   # noqa: E402
 
 
 # --- a stand-in for cloze_engine.EngineClient (identical to test_engine_library_dials.py's) ---------

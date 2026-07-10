@@ -37,12 +37,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))          # tests/
 REPO = os.path.dirname(HERE)                                 # repo root (clozn/cli.py lives here)
 sys.path.insert(0, REPO)
 
-from clozn import cli as clozn_cli                                            # noqa: E402
+import clozn.cli.main as clozn_cli                                            # noqa: E402
 from clozn import clozn_server as cs                                    # noqa: E402
-from clozn import memory_cards                                          # noqa: E402
-from clozn import memory_mode                                            # noqa: E402
-from clozn import runlog                                                # noqa: E402
-from clozn import semantic_matcher                                      # noqa: E402
+import clozn.memory.cards as memory_cards                                          # noqa: E402
+import clozn.memory.mode as memory_mode                                            # noqa: E402
+import clozn.runs.store as runlog                                                # noqa: E402
+import clozn.receipts.semantic_matcher as semantic_matcher                                      # noqa: E402
 
 
 # ---------------------------------------------------------------------------------- canned-dict fixtures

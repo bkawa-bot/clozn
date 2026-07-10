@@ -24,8 +24,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
-from clozn import topic_gate  # noqa: E402  (import is lazy -- no model load happens here)
-from clozn.topic_gate import OPEN_PERSONAL_REFS, TopicGate  # noqa: E402
+import clozn.memory.topic_gate as topic_gate  # noqa: E402  (import is lazy -- no model load happens here)
+from clozn.memory.topic_gate import OPEN_PERSONAL_REFS, TopicGate  # noqa: E402
 
 
 # --------------------------------------------------------------------------- fake embedder

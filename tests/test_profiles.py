@@ -5,7 +5,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from clozn import profiles as P
+from clozn.profiles import store as P
 
 
 def mk(tmp_path):

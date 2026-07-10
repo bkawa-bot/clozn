@@ -1,10 +1,10 @@
-"""Model-free tests for feedback.py -- the preference-signal capture store. No server, no model; a temp
+﻿"""Model-free tests for feedback.py -- the preference-signal capture store. No server, no model; a temp
 file stands in for ~/.clozn/feedback.json (monkeypatch the module's _PATH)."""
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from clozn import feedback  # noqa: E402
+from clozn.behavior import feedback  # noqa: E402
 
 
 def test_record_fields_and_summary(tmp_path, monkeypatch):

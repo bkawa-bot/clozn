@@ -15,8 +15,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))   # research/ (runlog lives here)
-from clozn import runlog
-from clozn import workspace_lens
+import clozn.runs.store as runlog
+from clozn.readouts import workspace_lens
 
 
 # --------------------------------------------------------------------------- fixtures

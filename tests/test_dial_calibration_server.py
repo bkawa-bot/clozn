@@ -41,7 +41,7 @@ RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
 from clozn import clozn_server as cs   # noqa: E402
-from clozn.steering import AXES   # noqa: E402
+from clozn.behavior.steering import AXES   # noqa: E402
 
 
 # --- isolate ~/.clozn (CLOZN_DIR) so a real calibration file on this machine never leaks into a test ------

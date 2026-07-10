@@ -1,11 +1,11 @@
-"""Pure-logic tests for the combined-steering headroom cap in research/steering.py.
+"""Pure-logic tests for the combined-steering headroom cap in the HF steering adapter.
 
 The bug: a stack of strong tone dials sums to a delta big enough to saturate the residual stream, shoving
 the model off-distribution and muting subtler biases (the learned-memory soft-prefix). The honest fix is
 SteeringControl._cap_delta -- it bounds ||sum-of-dials|| to MAX_DELTA_FRAC * ||residual|| PER POSITION,
 direction untouched. These tests exercise ONLY that norm math on fake tensors: no model, no tokenizer, no
 GPU. We call _cap_delta as an unbound method against a tiny stand-in that carries just MAX_DELTA_FRAC, so
-importing steering.py (which imports torch) is all that's needed.
+importing the steering package is all that's needed.
 
 Invariants asserted:
   * a SMALL delta (one moderate dial) is passed through byte-for-byte unchanged -- the cap must not bite;
@@ -19,7 +19,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # research/ on path
-from clozn import steering  # noqa: E402
+import clozn.behavior.steering as steering  # noqa: E402
 
 K = steering.SteeringControl.MAX_DELTA_FRAC
 

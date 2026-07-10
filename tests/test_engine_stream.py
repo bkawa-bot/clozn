@@ -32,8 +32,8 @@ RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
 from clozn import clozn_server as cs          # noqa: E402
-from clozn import memory_cards                # noqa: E402
-from clozn import memory_mode                 # noqa: E402
+import clozn.memory.cards as memory_cards                # noqa: E402
+import clozn.memory.mode as memory_mode                 # noqa: E402
 import urllib.request               # noqa: E402
 
 

@@ -20,8 +20,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
-from clozn import confidence_spans   # noqa: E402
-from clozn import runlog              # noqa: E402
+from clozn.runs import confidence_spans   # noqa: E402
+import clozn.runs.store as runlog              # noqa: E402
 
 
 @pytest.fixture

@@ -24,9 +24,9 @@ RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
 from clozn import clozn_server as cs   # noqa: E402
-from clozn import memory_mode          # noqa: E402
-from clozn import runlog               # noqa: E402
-from clozn import timetravel           # noqa: E402
+import clozn.memory.mode as memory_mode          # noqa: E402
+import clozn.runs.store as runlog               # noqa: E402
+import clozn.replay.timetravel as timetravel           # noqa: E402
 
 
 # --- fake substrate: .chat() echoes the transcript it saw; dials/strength are restorable ---------------

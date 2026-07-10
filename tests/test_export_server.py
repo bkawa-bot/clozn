@@ -20,8 +20,8 @@ RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
 from clozn import clozn_server as cs   # noqa: E402
-from clozn import receipt_bundle        # noqa: E402
-from clozn import runlog                # noqa: E402
+import clozn.receipts.bundle as receipt_bundle        # noqa: E402
+import clozn.runs.store as runlog                # noqa: E402
 
 
 def _get(path):

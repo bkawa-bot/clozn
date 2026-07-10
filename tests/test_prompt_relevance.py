@@ -16,7 +16,7 @@ from clozn import clozn_server as cs          # noqa: E402
 
 
 def test_prompt_relevance_reads_the_gate(monkeypatch):
-    from clozn import topic_gate
+    import clozn.memory.topic_gate as topic_gate
 
     class _FakeGate:
         def relevance(self, prompt, texts):
@@ -27,7 +27,7 @@ def test_prompt_relevance_reads_the_gate(monkeypatch):
 
 
 def test_prompt_relevance_degrades_to_empty_when_embedder_unavailable(monkeypatch):
-    from clozn import topic_gate
+    import clozn.memory.topic_gate as topic_gate
 
     def _boom():
         raise RuntimeError("no embedder")
@@ -42,7 +42,7 @@ def _fixed_cards(cards, gate, rel, monkeypatch):
     monkeypatch.setattr(cs, "_prompt_gate", lambda lu, texts: gate)
     monkeypatch.setattr(cs, "_prompt_relevance", lambda lu, texts: rel)
     monkeypatch.setattr(cs, "PROMPT_GATE_MIN", 0.1)
-    from clozn import memory_mode
+    import clozn.memory.mode as memory_mode
     monkeypatch.setattr(memory_mode, "compile_prompt_block", lambda texts: "BLOCK")
 
 

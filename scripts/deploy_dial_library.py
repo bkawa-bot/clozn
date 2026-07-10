@@ -9,7 +9,7 @@ job is that second half: REGISTER the 27 library-only dials on the live studio s
 (SteeringControl.add_custom -- the diff-of-means direction, a few forward passes per dial over
 steering.SEED_PROMPTS, hence GPU / the loaded 7B) so they actually show up as sliders.
 
-WHY CUSTOM, NOT A NEW BUILT-IN: add_custom is exactly the mechanism steering.py already exposes for a
+WHY CUSTOM, NOT A NEW BUILT-IN: add_custom is exactly the mechanism SteeringControl already exposes for a
 dial that isn't a static AXES entry (identical recipe: mean(+pole) - mean(-pole) over the seeds -> a unit
 direction; see steering.SteeringControl.add_custom, untouched by this script). The one thing a SHIPPED
 dial must not do is read as a user's OWN "make your own dial" creation on the Behavior page (that UI
@@ -19,7 +19,7 @@ file, never written by this script) -- and clozn_server.py's QwenSubstrate boot 
 (steer.load_custom), so the library survives a studio restart exactly like a user custom does.
 clozn_server.py's /steer/axes reads studio_library.json's KEYS (_library_dial_names) to flag those
 entries "library": true instead of "custom": true -- see that module for the read side; this script only
-ever WRITES studio_library.json, never steering.py itself (whose add_custom/save_custom/load_custom/
+ever WRITES studio_library.json, never the steering source itself (whose add_custom/save_custom/load_custom/
 custom-dict shape are all unmodified -- this script is just another caller of that existing recipe).
 
 IDEMPOTENT: a name already present in ~/.clozn/studio_library.json (i.e. a previous run of this exact
@@ -53,7 +53,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))   # repo root -- clozn_server/steering moved into the clozn/ package
 
 from clozn import clozn_server as cs      # noqa: E402  -- cheap: no model load at import time (mirrors test_dial_*.py)
-from clozn.steering import AXES      # noqa: E402  -- torch import only; no CUDA/model needed just to read the dict
+from clozn.behavior.steering.axes import AXES      # noqa: E402  -- AXES-only; no CUDA/model needed
 
 SHIPPED_LIBRARY_PATH = os.path.join(HERE, "..", "clozn", "data", "dial_library_shipped.json")
 

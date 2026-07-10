@@ -16,8 +16,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
-from clozn import facts_mode  # noqa: E402
-from clozn import memory_mode  # noqa: E402
+import clozn.memory.facts_mode as facts_mode  # noqa: E402
+import clozn.memory.mode as memory_mode  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

@@ -44,7 +44,7 @@ def main():
     ok("DreamSubstrate: _gen + handle", has_all(cs.DreamSubstrate, ("_gen", "handle")))
 
     # --- steering: the tone dials (AR + diffusion) -------------------------------------------------
-    from clozn import steering
+    import clozn.behavior.steering as steering
 
     ok("10 base tone axes", len(steering.AXES) == 10)
     ok("SteeringControl: compute/set/engage/save_state/load_state",
@@ -54,32 +54,32 @@ def main():
        has_all(steering.EngineSteer, ("compute", "set", "generate")))
 
     # --- memory: AR soft-prefix + diffusion soft-prefix --------------------------------------------
-    from clozn import dream_memory
+    import clozn.substrates.dream_memory as dream_memory
 
     ok("DreamMemory: consolidate/denoise/save/load/reset",
        has_all(dream_memory.DreamMemory, ("consolidate", "denoise", "save", "load", "reset")))
     ok("PrefixAdapter: forward + config", has_all(dream_memory.PrefixAdapter, ("forward", "encode", "decode")))
 
-    from clozn import self_teach_server
+    import clozn.substrates.self_teach as self_teach_server
 
     ok("SelfTeach: say/consolidate/save/load/_generate",
        has_all(self_teach_server.SelfTeach, ("say", "consolidate", "save", "load", "_generate")))
 
     # --- brain readout (concepts) + the rest -------------------------------------------------------
-    from clozn import brain_readout
+    import clozn.readouts.brain as brain_readout
 
     ok("BrainReadout: think/concepts_only/concepts_from_engine",
        has_all(brain_readout.BrainReadout, ("think", "concepts_only", "concepts_from_engine")))
 
-    from clozn import sae7b
+    from clozn.readouts import sae7b
 
     ok("sae7b: GpuSAE/load7b/feats7b", has_all(sae7b, ("GpuSAE", "load7b", "feats7b")))
 
-    from clozn import atlas_concepts
+    from clozn.readouts import atlas_concepts
 
     ok("atlas_concepts.content_word", hasattr(atlas_concepts, "content_word"))
 
-    from clozn import denoise_server
+    import clozn.substrates.denoise as denoise_server
 
     ok("denoise_server.trace_for", hasattr(denoise_server, "trace_for"))
 

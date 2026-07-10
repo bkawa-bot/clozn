@@ -16,9 +16,9 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # research/ on path
-from clozn import memory_mode  # noqa: E402
+import clozn.memory.mode as memory_mode  # noqa: E402
 from clozn import replay  # noqa: E402
-from clozn import runlog  # noqa: E402
+import clozn.runs.store as runlog  # noqa: E402
 
 
 # --- a fake substrate that mirrors the real surfaces replay() touches -------------------------------------
@@ -228,7 +228,7 @@ def test_replay_records_finish_reason_and_meta_when_available(store):
 def test_replay_at_light_tier_drops_the_trace(store, monkeypatch):
     """Light tier stores text-only -> the child run's trace is empty even though chat produced one, and the
     tier is recorded. (End-to-end proof of the capture policy through a real runlog.record, no model.)"""
-    from clozn import capture_mode
+    from clozn.runs import capture_mode
     monkeypatch.setattr(capture_mode, "tier", lambda: "light")
     child = replay.replay(RUN, {}, FakeSub())
     assert child["trace"] == {}

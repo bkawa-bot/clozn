@@ -34,8 +34,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
-from clozn import narrate                       # noqa: E402  (stdlib-only; no torch at import)
-from clozn import semantic_matcher as sm        # noqa: E402  (stdlib-only top level; cross-encoder lazy)
+import clozn.receipts.narrate as narrate                       # noqa: E402  (stdlib-only; no torch at import)
+import clozn.receipts.semantic_matcher as sm        # noqa: E402  (stdlib-only top level; cross-encoder lazy)
 
 
 # --- the seeded manifest: a "be concise" card with a real quote + a "warm" dial. NOTHING about chess. -------

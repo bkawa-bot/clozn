@@ -1,10 +1,10 @@
-"""Model-free tests for preferences.py -- the propose-and-review consumer. A temp file stands in for
+﻿"""Model-free tests for preferences.py -- the propose-and-review consumer. A temp file stands in for
 ~/.clozn/preferences.json; signals are plain dicts (no feedback store, no server, no model)."""
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from clozn import preferences  # noqa: E402
+from clozn.behavior import preferences  # noqa: E402
 
 
 def _sigs(dial, direction, n, start=0):

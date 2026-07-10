@@ -23,7 +23,7 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "engine", "client"))
 
 from clozn import clozn_server as cs   # noqa: E402
-from clozn import runlog                # noqa: E402
+import clozn.runs.store as runlog                # noqa: E402
 
 
 # =========================================================== EngineSubstrate.jlens (the /jlens proxy)

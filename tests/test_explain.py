@@ -26,9 +26,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
-from clozn import explain          # noqa: E402
-from clozn import memory_cards      # noqa: E402
-from clozn import runlog            # noqa: E402
+import clozn.receipts.explain as explain          # noqa: E402
+import clozn.memory.cards as memory_cards      # noqa: E402
+import clozn.runs.store as runlog            # noqa: E402
 
 
 # --- isolation: point both flat-file stores this module touches at tmp paths for the duration of a test --

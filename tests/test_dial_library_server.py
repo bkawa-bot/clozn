@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))           # deploy_dial_l
 
 from clozn import clozn_server as cs          # noqa: E402
 import deploy_dial_library as ddl  # noqa: E402
-from clozn.steering import AXES          # noqa: E402
+from clozn.behavior.steering import AXES          # noqa: E402
 
 
 # --- isolate ~/.clozn (CLOZN_DIR) so a real studio_library.json/studio_custom_qwen.json on this machine

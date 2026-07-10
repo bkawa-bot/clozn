@@ -1,5 +1,5 @@
 """dial_autocalibrate_engine.py -- per-dial usable-range calibration ON THE C++ ENGINE substrate
-(steering.EngineSteer), not the PyTorch/HF backbone research/dial_autocalibrate.py calibrates.
+(clozn.behavior.steering.engine_adapter.EngineSteer), not the PyTorch/HF backbone dial_autocalibrate.py calibrates.
 
 WHY THIS FILE EXISTS, SEPARATELY: the shipped calibration (research/dial_library_shipped.json's
 `ship_range`, distilled by gen_dial_calibration.py into ~/.clozn/dial_calibration.json) was measured on
@@ -11,7 +11,7 @@ quantization format from bitsandbytes nf4, and steering.EngineSteer's own base-s
 confirming the two substrates do not share a residual-activation scale even nominally serving "the same"
 checkpoint. So a dial's usable dose RANGE has to be re-measured, on the engine, from scratch -- this module
 is that measurement, built to run with no torch and no HF model at all (only numpy + the engine's own
-/harvest + /intervene HTTP surface via steering.EngineSteer), so it can run on a deployment that never
+/harvest + /intervene HTTP surface via EngineSteer), so it can run on a deployment that never
 installs PyTorch.
 
 WHAT'S REUSED FROM dial_autocalibrate.py, AND WHY IT'S COPIED HERE INSTEAD OF IMPORTED: that module does
@@ -20,11 +20,11 @@ already requires a working torch+transformers install -- exactly what an engine-
 have, and exactly what this module's own import must stay free of (`python -c "import
 dial_autocalibrate_engine"` must succeed with no torch/model on the path). Python has no way to import a
 single name out of a module without first executing that module's top-level code, so anything reused here
-that LIVES in dial_autocalibrate.py (or in steering.py, which also `import torch`s at module scope) is
+that LIVES in dial_autocalibrate.py (or in the HF steering adapter, which imports torch) is
 COPIED -- verbatim where the number/logic matters -- not imported. This mirrors this codebase's own
 precedent (dial_autocalibrate.wants_four_bit: "copied verbatim from parliament.py ... not imported: this
 codebase's own precedent is that each experiment script owns its small ... helpers rather than importing a
-sibling script"). `steering.AXES`/`steering.SEED_PROMPTS` are still read live where truly needed (the
+sibling script"). `clozn.behavior.steering.axes.AXES`/`SEED_PROMPTS` are still read live where truly needed (the
 built-in/shadow-collision handling below), via a LAZY import inside the one function that needs them --
 deferred to call time, never to bare-import time; see `_resync_shadowed_directions`. What IS imported at
 module scope: `counterfactual._coherence` and `runlog` -- both confirmed torch-free by their own docstrings
@@ -106,8 +106,8 @@ sys.path.insert(0, HERE)   # research/ on path -- so any other research-local si
 sys.path.insert(0, os.path.dirname(HERE))   # repo root -- so `from clozn import ...` resolves (counterfactual/
 #                            runlog/steering all moved into the clozn/ package).
 
-from clozn.counterfactual import _coherence   # noqa: E402  -- {"degenerate": bool, "reason": str}; torch-free.
-from clozn import runlog                           # noqa: E402  -- torch-free (see its own docstring).
+from clozn.replay.counterfactual import _coherence   # noqa: E402  -- {"degenerate": bool, "reason": str}; torch-free.
+import clozn.runs.store as runlog                           # noqa: E402  -- torch-free (see its own docstring).
 
 
 # ================================================================================================ constants
@@ -194,7 +194,7 @@ def _axis_max(steer, dial: str) -> float:
     if entry and entry.get("max") is not None:
         return float(entry["max"])
     try:
-        from clozn.steering import AXES as _AXES
+        from clozn.behavior.steering.axes import AXES as _AXES
     except Exception:
         _AXES = {}
     return float((_AXES.get(dial) or {}).get("max", 1.5))
@@ -476,25 +476,24 @@ def _resync_shadowed_directions(steer, lib_meta: dict, axes: dict | None = None,
     formal, concise, poetic, concrete -- see the module docstring's A REAL ENGINESTEER GOTCHA section), force
     a fresh diff-of-means harvest from the SHIPPED library's OWN (pos, neg) pair and overwrite
     steer.vecs[name] with it. Needed because EngineSteer.compute()'s built-in-AXES loop runs UNCONDITIONALLY
-    before its custom-dial loop on every call (always (re)writing steer.vecs[name] from steering.AXES for
+    before its custom-dial loop on every call (always (re)writing steer.vecs[name] from the built-in AXES for
     every built-in name), and its custom loop then SKIPS any name already in .vecs -- so a shadowing shipped
     dial's own pair would otherwise never get harvested, and .vecs[name] would silently stay the BUILT-IN
     direction. This restores the same "the library's own pair wins the collision, unconditionally" contract
     dial_autocalibrate.register_library_dials documents for the PyTorch side (there, add_custom's
     unconditional overwrite already gives it for free).
 
-    `axes`/`seeds` default to steering.AXES/steering.SEED_PROMPTS, imported LAZILY inside this function (see
-    _axis_max for why: steering.py imports torch at module scope, and this module must stay importable with
-    none on the path) -- both are still overridable directly, which is what makes this unit-testable without
-    ever touching the real steering module (see research/tests/test_dial_autocalibrate_engine.py).
+    `axes`/`seeds` default to clozn.behavior.steering.axes.AXES/SEED_PROMPTS, imported LAZILY inside this
+    function so this module stays importable without torch on the path -- both are still overridable
+    directly, which is what makes this unit-testable without touching real steering state.
 
     Returns the sorted list of names actually resynced (empty if this library has no built-in collisions, or
-    if steering.AXES couldn't be imported at all -- silently a no-op in that case, mirroring _axis_max's own
+    if the axes module couldn't be imported at all -- silently a no-op in that case, mirroring _axis_max's own
     defensive fallback, never a raise: a missing steering install should not break a shipped-library sweep
     over dials that don't happen to collide with anything)."""
     if axes is None or seeds is None:
         try:
-            from clozn import steering as _steering_mod
+            import clozn.behavior.steering.axes as _steering_mod
         except Exception:
             return []
         axes = _steering_mod.AXES if axes is None else axes
@@ -638,7 +637,7 @@ def main(argv=None):
 
     sys.path.insert(0, os.path.join(HERE, "..", "engine", "client"))
     from cloze_engine import EngineClient   # noqa: E402 -- deferred: keeps a bare module import client-free
-    from clozn.steering import EngineSteer        # noqa: E402 -- deferred: steering.py imports torch at module scope
+    from clozn.behavior.steering.engine_adapter import EngineSteer        # noqa: E402 -- deferred: keeps bare import engine-client-free
 
     ec = EngineClient(host=args.host, port=args.port, timeout=240)
     print(f"[engine] {ec.health()}", flush=True)

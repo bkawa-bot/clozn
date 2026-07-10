@@ -1,0 +1,530 @@
+<title>clozn · Replay Tape — D1 mock</title>
+<!--
+  D1 — THE TAPE · design mock per notes/CLOZN_UX.md §11 (sample data §11.8, verbatim)
+  Committed single-theme LIGHT (the Artificial Angels identity IS the light theme).
+  Intended fonts: UI "Space Grotesk"; mono "IBM Plex Mono"; wordmark Microgamma-adjacent
+  (approximated with letter-spaced extended caps). System fallbacks per §11.11.
+  SAMPLE DATA — not a live view. The " Italy" disposition mirrors a real engine readout.
+-->
+<style>
+  :root{
+    --heaven:#F8FAFF; --pearl:#EDF1FB; --skywash:#E2EBFB; --lavender:#ECE8FA;
+    --cyan:#36AEC4; --blue:#4C8DF0; --frost:#AEB9D2; --iris:#8B79E8;
+    --gold:#E7B24E; --seraph:#FF6A3C; /* alarm only — intentionally unused here */
+    --ink:#232A3A; --slate:#677591;
+    --line:rgba(174,185,210,.45); --line-soft:rgba(174,185,210,.25);
+    --glow:rgba(54,174,196,.22);
+    --font-ui:"Space Grotesk","Segoe UI",system-ui,sans-serif;
+    --font-mono:"IBM Plex Mono","Cascadia Mono",ui-monospace,Consolas,monospace;
+    /* the shared token grid — every lane inherits this, that's what makes it an instrument */
+    --tape-cols: 3fr 8fr 7fr 5fr 2fr 5fr 3fr 6fr 1.5fr 4fr 12fr 6fr 8fr 5fr 4fr 14fr 4fr 1.5fr;
+    color-scheme: light;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--heaven)}
+  body{font-family:var(--font-ui);color:var(--ink);font-size:13px;line-height:1.45;
+       -webkit-font-smoothing:antialiased}
+  /* NTSC grain — felt, not seen */
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;
+    background:repeating-linear-gradient(0deg,rgba(35,42,58,.014) 0 1px,transparent 1px 3px)}
+  @keyframes heartbeat{0%,100%{opacity:.55}50%{opacity:1}}
+  .beats{animation:heartbeat 4s ease-in-out infinite}
+  @media (prefers-reduced-motion:reduce){.beats{animation:none;opacity:.85}}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:3px}
+  .mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+  .num{font-variant-numeric:tabular-nums}
+
+  .console{min-width:1280px;max-width:1560px;margin:0 auto;display:grid;
+           grid-template-columns:64px 1fr 300px;min-height:100vh}
+  .console-scroll{overflow-x:auto}
+
+  /* ───────────────────────── nav rail ───────────────────────── */
+  .rail{border-right:1px solid var(--line-soft);background:var(--pearl);
+        display:flex;flex-direction:column;align-items:center;padding:14px 0 12px;gap:4px}
+  .mark{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;
+        font-family:var(--font-mono);font-weight:600;font-size:17px;color:var(--cyan);
+        border:1px solid var(--line);position:relative;margin-bottom:14px;background:var(--heaven)}
+  .mark::before{content:"";position:absolute;inset:-5px;border-radius:50%;
+        border:1px solid rgba(54,174,196,.28)} /* the halo — one ring, no more */
+  .rail nav{display:flex;flex-direction:column;gap:2px;flex:1}
+  .rail a{display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 0;width:56px;
+          border-radius:8px;color:var(--slate);text-decoration:none;font-size:8px;
+          letter-spacing:.14em;text-transform:uppercase}
+  .rail a svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.4}
+  .rail a.on{color:var(--cyan);background:var(--skywash)}
+  .rail a:hover{color:var(--ink)}
+  .rail-health{margin-top:auto;width:44px;text-align:center}
+  .rail-health .bar{height:3px;border-radius:2px;background:var(--skywash);overflow:hidden;margin-top:4px}
+  .rail-health .bar i{display:block;height:100%;width:62%;background:var(--cyan)}
+  .rail-health span{font-size:7.5px;letter-spacing:.1em;color:var(--slate)}
+
+  /* ───────────────────────── main column ───────────────────────── */
+  .main{display:flex;flex-direction:column;min-width:0}
+
+  .statusbar{height:40px;display:flex;align-items:center;gap:14px;padding:0 18px;
+             border-bottom:1px solid var(--line-soft);background:var(--pearl)}
+  .wordmark{font-family:var(--font-mono);font-weight:600;font-size:15px;letter-spacing:.22em;
+            text-transform:lowercase;color:var(--slate)}
+  .wordmark b{color:var(--cyan);font-weight:600}
+  .status-title{color:var(--ink);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .status-meta{color:var(--slate);font-size:11px;white-space:nowrap}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;
+        border:1px solid var(--line);font-size:10.5px;letter-spacing:.05em;color:var(--slate);
+        background:var(--heaven);white-space:nowrap}
+  .chip.cyan{color:var(--cyan);border-color:rgba(54,174,196,.5)}
+  .chip .dot{width:5px;height:5px;border-radius:50%;background:var(--cyan)}
+  .spacer{flex:1}
+  .vram{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--slate)}
+  .vram .bar{width:54px;height:4px;border-radius:2px;background:var(--skywash);overflow:hidden}
+  .vram .bar i{display:block;height:100%;width:62%;background:var(--cyan)}
+
+  .transport{height:56px;display:flex;align-items:center;gap:8px;padding:0 18px;
+             border-bottom:1px solid var(--line-soft)}
+  .t-btn{display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:8px;
+         border:1px solid var(--line);background:var(--heaven);color:var(--ink);
+         font-size:12px;letter-spacing:.02em}
+  .t-btn:hover{border-color:var(--blue);color:var(--blue)}
+  .t-btn .g{color:var(--cyan);font-size:13px}
+  .t-prove{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600;
+           letter-spacing:.08em;padding:7px 18px}
+  .t-prove:hover{filter:brightness(1.06);color:#fff}
+  .mode-toggle{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;
+               font-size:11px}
+  .mode-toggle button{padding:6px 12px;color:var(--slate)}
+  .mode-toggle button.on{background:var(--skywash);color:var(--cyan);font-weight:600}
+  .t-note{font-size:10px;color:var(--slate);letter-spacing:.04em}
+
+  /* ───────────────────────── the tape ───────────────────────── */
+  .tape{padding:14px 18px 8px;display:flex;flex-direction:column;gap:0;min-width:0}
+
+  details.leader{border:1px solid var(--line-soft);border-radius:8px;background:var(--pearl);
+                 margin-bottom:12px}
+  details.leader summary{list-style:none;display:flex;align-items:center;gap:10px;
+                 padding:7px 12px;cursor:pointer;font-size:11px;color:var(--slate)}
+  details.leader summary::before{content:"▸";color:var(--cyan);font-size:10px}
+  details[open].leader summary::before{content:"▾"}
+  details.leader .leader-body{padding:4px 14px 12px;font-family:var(--font-mono);font-size:11px;
+                 color:var(--slate);line-height:1.7;border-top:1px dashed var(--line-soft)}
+  details.leader .leader-body em{color:var(--cyan);font-style:normal}
+
+  .lane{display:grid;grid-template-columns:118px 1fr;align-items:stretch}
+  .lane + .lane{border-top:1px solid var(--line-soft)}
+  .lane-label{padding:8px 10px 8px 2px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+              color:var(--slate);display:flex;flex-direction:column;gap:3px;justify-content:center}
+  .lane-label .sub{letter-spacing:.02em;text-transform:none;font-size:9.5px;color:var(--frost)}
+  .cells{display:grid;grid-template-columns:var(--tape-cols);min-width:0}
+
+  /* ruler */
+  .ruler{border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line)}
+  .ruler .cells{height:30px;align-items:end}
+  .tick{border-left:1px solid var(--line-soft);height:8px;position:relative}
+  .tick.five{height:14px;border-left-color:var(--frost)}
+  .tick .idx{position:absolute;top:-15px;left:3px;font-size:8.5px;color:var(--frost);
+             font-family:var(--font-mono)}
+  .cue{position:absolute;top:-16px;left:-4px;width:9px;height:9px;border-radius:50%;
+       background:var(--gold);box-shadow:0 0 0 3px rgba(231,178,78,.25)}
+  .cue.causal{border-radius:2px;transform:rotate(45deg)}
+  .marker{position:absolute;top:-16px;left:-1px;width:2px;height:24px;background:var(--cyan);opacity:.75}
+  .marker .mtag{position:absolute;top:-2px;left:6px;font-size:8.5px;color:var(--cyan);
+                white-space:nowrap;letter-spacing:.06em;font-family:var(--font-mono)}
+
+  /* master track — confidence as luminance */
+  .track .cells{padding:30px 0 4px}
+  .tok{position:relative;display:flex;align-items:center;justify-content:center;
+       min-height:44px;border-radius:6px;margin:0 1px;
+       font-size:13.5px;font-weight:500;white-space:nowrap;overflow:hidden}
+  .tok span{opacity:var(--o,1)}
+  .tok{background:rgba(54,174,196,calc(var(--c,.5)*.10));
+       box-shadow:inset 0 -2px 0 rgba(54,174,196,calc(var(--c,.5)*.55))}
+  .tok.shaky{background:var(--lavender)}
+  .tok.sel{box-shadow:0 0 0 1.5px var(--cyan),0 4px 14px var(--glow)}
+  .tok .halo{position:absolute;inset:-3px;border-radius:8px;border:1px solid rgba(54,174,196,.5);
+             pointer-events:none}
+  /* leaning under-bars (overlay on the answer track, not a lane) */
+  .lean-row .cells{height:22px;align-items:end}
+  .lean{margin:0 4px;border-radius:2px 2px 0 0;background:var(--cyan);opacity:.5;
+        height:calc(var(--l,0)*1px)}
+  .lean-tag{display:flex;align-items:center;gap:7px;font-size:9.5px;color:var(--cyan);
+            letter-spacing:.05em;padding-bottom:3px}
+  .lean-tag i{width:8px;height:8px;border-radius:2px;background:var(--cyan);opacity:.5;font-style:normal}
+
+  /* popover ("what it almost played") — rendered open on " Italy" */
+  .pop{position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);
+       width:196px;background:var(--heaven);border:1px solid var(--line);border-radius:10px;
+       box-shadow:0 10px 26px rgba(35,42,58,.10);padding:10px 12px;z-index:5;text-align:left}
+  .pop::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);
+       border:6px solid transparent;border-top-color:var(--line)}
+  .pop h4{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--slate);
+       margin-bottom:6px;font-weight:600}
+  .pop .alt{display:flex;justify-content:space-between;font-family:var(--font-mono);
+       font-size:11px;color:var(--slate);padding:2px 0}
+  .pop .alt.win{color:var(--ink)}
+  .pop .alt.win b{color:var(--cyan);font-weight:600}
+  .pop .branch{margin-top:8px;width:100%;text-align:center;padding:5px 0;border-radius:6px;
+       border:1px solid rgba(76,141,240,.55);color:var(--blue);font-size:11px}
+  .pop .branch:hover{background:rgba(76,141,240,.08)}
+
+  /* waveform + entropy lanes */
+  .wave{height:56px}.wave svg,.ent svg{display:block;width:100%;height:100%}
+  .ent{height:34px}
+  .bandbg{background:
+     linear-gradient(90deg,transparent 0 40.9%, rgba(139,121,232,.07) 40.9% 76.2%, transparent 76.2%)}
+
+  /* j-lens lane */
+  .jlens .cells{min-height:46px;align-items:center;padding:6px 0}
+  .jcell{display:flex;flex-direction:column;gap:3px;align-items:center;justify-content:center}
+  .jchip{font-family:var(--font-mono);font-size:10px;padding:2px 7px;border-radius:10px;
+         border:1px solid rgba(54,174,196,.5);color:var(--cyan);background:rgba(54,174,196,.06);
+         white-space:nowrap}
+  .jchip.dim{opacity:.62}.jchip.dimmer{opacity:.38}
+  .layer-picker{display:inline-flex;gap:2px;margin-top:2px}
+  .layer-picker button{font-family:var(--font-mono);font-size:9px;color:var(--slate);
+         padding:1px 6px;border-radius:4px;border:1px solid transparent}
+  .layer-picker button.on{color:var(--cyan);border-color:rgba(54,174,196,.5);background:var(--heaven)}
+  .provenance{grid-column:1 / -1;padding:6px 2px 10px 118px;font-size:10px;color:var(--slate);
+         line-height:1.55}
+  .provenance b{color:var(--ink);font-weight:600}
+
+  /* influence lane */
+  .influence .body{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 0}
+  .gate{display:inline-flex;align-items:center;gap:6px;font-size:10px;color:var(--slate)}
+  .gate .g-bar{width:40px;height:5px;border-radius:3px;background:var(--skywash);overflow:hidden}
+  .gate .g-bar i{display:block;height:100%;width:62%;background:var(--cyan)}
+  .card-chip{display:inline-flex;align-items:center;gap:7px;padding:3px 10px;border-radius:16px;
+         border:1px solid var(--line);font-size:11px;background:var(--heaven)}
+  .card-chip .rel{font-family:var(--font-mono);font-size:9.5px;color:var(--slate)}
+  .dial-chip{font-size:10px;color:var(--slate)}
+  .dial-chip b{color:var(--cyan);font-weight:600;font-family:var(--font-mono)}
+
+  /* ───────────────────────── the rack ───────────────────────── */
+  .rack{margin-top:10px;border-top:1px solid var(--line);background:var(--pearl);
+        padding:12px 18px 16px}
+  .rack-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
+  .rack-head h3{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--slate);
+        font-weight:600}
+  .rack-head .hint{font-size:10px;color:var(--frost)}
+  .devices{display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:12px}
+  .device{background:var(--heaven);border:1px solid var(--line-soft);border-radius:12px;
+          padding:12px 14px;display:flex;flex-direction:column;gap:9px}
+  .device h4{display:flex;align-items:center;gap:8px;font-size:9.5px;letter-spacing:.18em;
+          text-transform:uppercase;color:var(--slate);font-weight:600}
+  .device h4 .chip{font-size:9px;padding:1px 7px}
+  .dev-row{display:flex;align-items:center;gap:10px}
+  .bypass{width:30px;height:16px;border-radius:9px;border:1px solid var(--line);position:relative;
+          flex:none;background:var(--skywash)}
+  .bypass i{position:absolute;top:1.5px;width:11px;height:11px;border-radius:50%;transition:left .2s}
+  .bypass.on{background:rgba(54,174,196,.18);border-color:rgba(54,174,196,.5)}
+  .bypass.on i{left:16px;background:var(--cyan)}
+  .bypass.off i{left:2px;background:var(--frost)}
+  .dev-row .txt{flex:1;font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .meter{width:64px;flex:none}
+  .meter .m-bar{height:5px;border-radius:3px;background:var(--skywash);overflow:hidden}
+  .meter .m-bar i{display:block;height:100%;background:var(--cyan)}
+  .meter .m-tag{font-size:8.5px;color:var(--slate);font-family:var(--font-mono);margin-top:2px;text-align:right}
+  .dev-note{font-size:9.5px;color:var(--frost);border-top:1px dashed var(--line-soft);padding-top:7px}
+  .slider{flex:1;position:relative;height:20px}
+  .slider .s-track{position:absolute;top:9px;left:0;right:0;height:3px;border-radius:2px;background:var(--skywash)}
+  .slider .s-fill{position:absolute;top:9px;left:0;height:3px;border-radius:2px;background:var(--cyan)}
+  .slider .s-thumb{position:absolute;top:4px;width:13px;height:13px;border-radius:50%;
+        background:var(--heaven);border:1.5px solid var(--cyan);box-shadow:0 1px 4px rgba(35,42,58,.15)}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-family:var(--font-mono);
+      font-size:11px}
+  .kv dt{color:var(--slate)}.kv dd{color:var(--ink);text-align:right}
+  .kv dd.cy{color:var(--cyan)}
+
+  /* ───────────────────────── sidebar ───────────────────────── */
+  .side{border-left:1px solid var(--line-soft);background:var(--pearl);padding:14px;
+        display:flex;flex-direction:column;gap:12px}
+  .panel{background:var(--heaven);border:1px solid var(--line-soft);border-radius:12px;padding:12px 14px}
+  .panel h3{font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--slate);
+        font-weight:600;margin-bottom:9px;display:flex;align-items:center;gap:8px}
+  .panel h3 .ok{margin-left:auto;font-size:9px;color:var(--cyan);letter-spacing:.08em}
+  .r-row{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:7px 0;font-size:11.5px}
+  .r-row + .r-row{border-top:1px solid var(--line-soft)}
+  .r-row .r-sub{grid-column:1 / -1;font-size:10px;color:var(--slate);display:flex;gap:12px}
+  .r-row .nats{font-family:var(--font-mono);color:var(--cyan);font-weight:600}
+  .fineprint{font-size:9.5px;color:var(--frost);margin-top:8px;line-height:1.5}
+  .tt-row{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:11px}
+  .tt-row + .tt-row{border-top:1px solid var(--line-soft)}
+  .tt-dot{width:8px;height:8px;border-radius:50%;background:var(--gold);flex:none;
+          box-shadow:0 0 0 3px rgba(231,178,78,.22)}
+  .tt-dot.causal{border-radius:2px;transform:rotate(45deg)}
+  .tt-kind{margin-left:auto;font-size:9px;color:var(--slate);letter-spacing:.08em;text-transform:uppercase}
+  .family svg{display:block;width:100%}
+  .fam-label{font-family:var(--font-mono);font-size:10px}
+
+  .honesty{padding:10px 18px 16px;font-size:9.5px;color:var(--frost);letter-spacing:.04em;
+           border-top:1px solid var(--line-soft)}
+  .honesty b{color:var(--slate)}
+</style>
+
+<div class="console-scroll">
+<div class="console">
+
+  <!-- ══════════ nav rail ══════════ -->
+  <aside class="rail">
+    <div class="mark" title="clozn">n</div>
+    <nav>
+      <a href="#"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/></svg>deck</a>
+      <a href="#"><svg viewBox="0 0 16 16"><rect x="2" y="2.5" width="5" height="4.5" rx="1"/><rect x="9" y="2.5" width="5" height="4.5" rx="1"/><rect x="2" y="9" width="5" height="4.5" rx="1"/><rect x="9" y="9" width="5" height="4.5" rx="1"/></svg>session</a>
+      <a href="#" class="on"><svg viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8" rx="1.5"/><circle cx="5.5" cy="8" r="1.6"/><circle cx="10.5" cy="8" r="1.6"/></svg>tape</a>
+      <a href="#"><svg viewBox="0 0 16 16"><path d="M2 5h12M2 11h12"/><circle cx="6" cy="5" r="1.7" fill="var(--heaven)"/><circle cx="10.5" cy="11" r="1.7" fill="var(--heaven)"/></svg>rack</a>
+      <a href="#"><svg viewBox="0 0 16 16"><path d="M8 1.8 13.5 5v6L8 14.2 2.5 11V5Z"/></svg>scope</a>
+      <a href="#"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2.4M8 12.1v2.4M1.5 8h2.4M12.1 8h2.4M3.4 3.4l1.7 1.7M10.9 10.9l1.7 1.7M12.6 3.4l-1.7 1.7M5.1 10.9l-1.7 1.7"/></svg>set</a>
+    </nav>
+    <div class="rail-health"><span>VRAM</span><div class="bar"><i class="beats"></i></div></div>
+  </aside>
+
+  <!-- ══════════ main ══════════ -->
+  <main class="main">
+
+    <div class="statusbar">
+      <span class="wordmark">cloz<b>n</b></span>
+      <span class="status-title">What country is shaped like a boot?</span>
+      <span class="status-meta mono">run_0232 · 2026-07-09 14:12</span>
+      <span class="chip">finish · stop</span>
+      <span class="spacer"></span>
+      <span class="chip mono">Qwen2.5-7B-Instruct · Q4_K_M</span>
+      <span class="chip mono num">ctx 8k</span>
+      <span class="vram"><span>9.9 / 16 GB</span><div class="bar"><i></i></div></span>
+      <span class="chip cyan"><span class="dot"></span>LOCAL — doesn't phone home</span>
+    </div>
+
+    <div class="transport">
+      <button class="t-btn"><span class="g">⏵</span> replay</button>
+      <button class="t-btn"><span class="g">⟲</span> re-derive <span class="t-note">(exact)</span></button>
+      <button class="t-btn"><span class="g">⑂</span> branch</button>
+      <span class="spacer"></span>
+      <div class="mode-toggle" role="group" aria-label="receipt mode">
+        <button class="on">regen</button><button>forced</button>
+      </div>
+      <button class="t-prove">PROVE</button>
+      <button class="t-btn"><span class="g">⤓</span> export</button>
+    </div>
+
+    <div class="tape">
+
+      <details class="leader">
+        <summary>leader — the exact prompt the model saw <span class="mono" style="margin-left:auto">final_prompt · 348 tok</span></summary>
+        <div class="leader-body">&lt;|im_start|&gt;system · <em>memory block injected · gate .62</em> — “The user enjoys geography
+        trivia. The user prefers concise factual answers.” … &lt;|im_start|&gt;user · What country is shaped like
+        a boot?&lt;|im_end|&gt; · <em>verbatim, as templated by the engine</em></div>
+      </details>
+
+      <!-- ruler -->
+      <div class="lane ruler">
+        <div class="lane-label">ruler<span class="sub">events · cues</span></div>
+        <div class="cells">
+          <div class="tick five"><span class="idx">0</span><span class="marker"><span class="mtag">memory · gate .62</span></span></div>
+          <div class="tick"></div><div class="tick"></div><div class="tick"></div><div class="tick"></div>
+          <div class="tick five"><span class="idx">5</span></div>
+          <div class="tick"></div>
+          <div class="tick"><span class="cue beats" title="tiny-test: mentions Italy — pass (static)"></span><span class="cue causal beats" style="left:9px" title="tiny-test: leans_on geography — pass (causal · effect 0.77)"></span></div>
+          <div class="tick"></div><div class="tick"></div>
+          <div class="tick five"><span class="idx">10</span></div>
+          <div class="tick"></div><div class="tick"></div><div class="tick"></div><div class="tick"></div>
+          <div class="tick five"><span class="idx">15</span></div>
+          <div class="tick"></div>
+          <div class="tick"><span class="marker" style="background:var(--frost)"><span class="mtag" style="color:var(--frost)">stop</span></span></div>
+        </div>
+      </div>
+
+      <!-- master track : confidence as luminance -->
+      <div class="lane track">
+        <div class="lane-label">answer<span class="sub">conf → luminance</span></div>
+        <div class="cells bandbg">
+          <div class="tok" style="--c:.97"><span>The</span></div>
+          <div class="tok" style="--c:.93"><span>country</span></div>
+          <div class="tok" style="--c:.95"><span>shaped</span></div>
+          <div class="tok" style="--c:.98"><span>like</span></div>
+          <div class="tok" style="--c:.99"><span>a</span></div>
+          <div class="tok" style="--c:.96"><span>boot</span></div>
+          <div class="tok" style="--c:.98"><span>is</span></div>
+          <div class="tok sel" style="--c:.91"><span>Italy</span><span class="halo beats"></span>
+            <div class="pop">
+              <h4>what it almost played</h4>
+              <div class="alt win"><span>Italy</span><b>.91</b></div>
+              <div class="alt"><span>the</span><span>.04</span></div>
+              <div class="alt"><span>Rome</span><span>.02</span></div>
+              <button class="branch">⑂ branch from here</button>
+            </div>
+          </div>
+          <div class="tok" style="--c:.99"><span>.</span></div>
+          <div class="tok shaky" style="--c:.62;--o:.75"><span>Its</span></div>
+          <div class="tok shaky" style="--c:.44;--o:.55"><span>distinctive</span></div>
+          <div class="tok shaky" style="--c:.83;--o:.85"><span>shape</span></div>
+          <div class="tok shaky" style="--c:.38;--o:.5"><span>extends</span></div>
+          <div class="tok shaky" style="--c:.74;--o:.8"><span>into</span></div>
+          <div class="tok" style="--c:.92"><span>the</span></div>
+          <div class="tok" style="--c:.88"><span>Mediterranean</span></div>
+          <div class="tok" style="--c:.95"><span>Sea</span></div>
+          <div class="tok" style="--c:.99"><span>.</span></div>
+        </div>
+      </div>
+
+      <!-- leaning overlay (graded, from PROVE) -->
+      <div class="lane lean-row">
+        <div class="lane-label"><span class="lean-tag"><i></i>leaning</span><span class="sub">geography · 2.4 nats</span></div>
+        <div class="cells">
+          <div class="lean" style="--l:2"></div><div class="lean" style="--l:4"></div>
+          <div class="lean" style="--l:2"></div><div class="lean" style="--l:1"></div>
+          <div class="lean" style="--l:1"></div><div class="lean" style="--l:6"></div>
+          <div class="lean" style="--l:3"></div><div class="lean" style="--l:18"></div>
+          <div class="lean" style="--l:1"></div><div class="lean" style="--l:2"></div>
+          <div class="lean" style="--l:3"></div><div class="lean" style="--l:2"></div>
+          <div class="lean" style="--l:2"></div><div class="lean" style="--l:1"></div>
+          <div class="lean" style="--l:2"></div><div class="lean" style="--l:10"></div>
+          <div class="lean" style="--l:8"></div><div class="lean" style="--l:1"></div>
+        </div>
+      </div>
+
+      <!-- confidence waveform -->
+      <div class="lane">
+        <div class="lane-label">confidence<span class="sub">spans: strong / okay / shaky</span></div>
+        <div class="wave bandbg">
+          <svg viewBox="0 0 99 30" preserveAspectRatio="none" aria-label="confidence waveform">
+            <path d="M0,30 L1.5,4.8 7,5.8 14.5,5.3 20.5,4.5 24,4.3 27.5,5 31.5,4.5 36,6.3 39.75,4.3 42.5,13.9 50.5,18.6 59.5,8.4 66.5,20.1 73,10.8 77.5,6.1 86.5,7.1 95.5,5.3 98.25,4.3 L99,30 Z"
+                  fill="rgba(54,174,196,.14)"/>
+            <path d="M1.5,4.8 7,5.8 14.5,5.3 20.5,4.5 24,4.3 27.5,5 31.5,4.5 36,6.3 39.75,4.3 42.5,13.9 50.5,18.6 59.5,8.4 66.5,20.1 73,10.8 77.5,6.1 86.5,7.1 95.5,5.3 98.25,4.3"
+                  fill="none" stroke="#36AEC4" stroke-width=".7"/>
+            <circle cx="98.25" cy="4.3" r="1.1" fill="#36AEC4"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- entropy -->
+      <div class="lane">
+        <div class="lane-label">entropy<span class="sub">approximation</span></div>
+        <div class="ent">
+          <svg viewBox="0 0 99 22" preserveAspectRatio="none" aria-label="entropy">
+            <path d="M1.5,20.9 7,19.5 14.5,20.2 20.5,21.3 24,21.6 27.5,20.5 31.5,21.3 36,18.7 39.75,21.6 42.5,9.6 50.5,4.4 59.5,16 66.5,2.5 73,13.5 77.5,19.1 86.5,17.7 95.5,20.2 98.25,21.6"
+                  fill="none" stroke="#677591" stroke-width=".6" opacity=".65"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- disposed to say (J-lens) -->
+      <div class="lane jlens">
+        <div class="lane-label">disposed to say
+          <span class="sub">J-lens</span>
+          <span class="layer-picker"><button>2</button><button>14</button><button>21</button><button class="on">25</button></span>
+        </div>
+        <div class="cells">
+          <div></div><div></div><div></div><div></div><div></div><div></div>
+          <div class="jcell"><span class="jchip">Italy</span><span class="jchip dim">Sicily</span><span class="jchip dimmer">boot</span></div>
+          <div></div><div></div><div></div>
+          <div class="jcell"><span class="jchip">peninsula</span><span class="jchip dim">coast</span><span class="jchip dimmer">Rome</span></div>
+          <div></div><div></div><div></div><div></div><div></div><div></div><div></div>
+        </div>
+      </div>
+      <div class="lane" style="border-top:none">
+        <div class="provenance"><b>J-lens readout (Anthropic, 2026)</b> — what each position is disposed to say
+        later. Fitted on Qwen2.5-7B nf4, 100-prompt corpus, 2026-07-09; engine-transfer hit@5 0.72.
+        A disposition, not a verified thought; blank ≠ nothing.</div>
+      </div>
+
+      <!-- influence -->
+      <div class="lane influence">
+        <div class="lane-label">influence<span class="sub">memory · dials</span></div>
+        <div class="body">
+          <span class="gate">gate<span class="g-bar"><i></i></span><span class="mono">.62</span></span>
+          <span class="card-chip">enjoys geography trivia <span class="rel">rel .66</span></span>
+          <span class="card-chip">prefers concise factual answers <span class="rel">rel .41</span></span>
+          <span class="dial-chip">dials — concise <b>.4</b> · warm <b>.2</b></span>
+        </div>
+      </div>
+
+    </div><!-- /tape -->
+
+    <!-- ══════════ the rack ══════════ -->
+    <section class="rack">
+      <div class="rack-head"><h3>the rack — influence chain</h3>
+        <span class="hint">bypass a device to run its receipt · computed on demand</span></div>
+      <div class="devices">
+
+        <div class="device">
+          <h4>memory <span class="chip">mode · prompt</span></h4>
+          <div class="dev-row">
+            <span class="bypass on" role="switch" aria-checked="true" title="bypass runs a receipt"><i></i></span>
+            <span class="txt">enjoys geography trivia</span>
+            <span class="meter"><span class="m-bar"><i style="width:78%"></i></span><span class="m-tag">2.4 nats</span></span>
+          </div>
+          <div class="dev-row">
+            <span class="bypass on" role="switch" aria-checked="true"><i></i></span>
+            <span class="txt">prefers concise factual answers</span>
+            <span class="meter"><span class="m-bar"><i style="width:30%"></i></span><span class="m-tag">0.9 nats</span></span>
+          </div>
+          <div class="dev-note">leaning = graded leave-one-out (co-present). Bypass regenerates both arms greedy.</div>
+        </div>
+
+        <div class="device">
+          <h4>dials <span class="chip">preset · balanced</span></h4>
+          <div class="dev-row"><span class="txt" style="flex:0 0 52px">concise</span>
+            <span class="slider"><span class="s-track"></span><span class="s-fill" style="width:40%"></span><span class="s-thumb" style="left:calc(40% - 6px)"></span></span>
+            <span class="mono" style="font-size:10px;color:var(--slate)">.4</span></div>
+          <div class="dev-row"><span class="txt" style="flex:0 0 52px">warm</span>
+            <span class="slider"><span class="s-track"></span><span class="s-fill" style="width:20%"></span><span class="s-thumb" style="left:calc(20% - 6px)"></span></span>
+            <span class="mono" style="font-size:10px;color:var(--slate)">.2</span></div>
+          <div class="dev-note">steer vectors, mid-depth band · per-run pressure shown on the influence lane</div>
+        </div>
+
+        <div class="device">
+          <h4>decode</h4>
+          <dl class="kv">
+            <dt>mode</dt><dd>greedy</dd>
+            <dt>temperature</dt><dd>0</dd>
+            <dt>seed</dt><dd>0</dd>
+            <dt>engine</dt><dd>cloze-server</dd>
+            <dt>quant</dt><dd>Q4_K_M</dd>
+            <dt>sampling</dt><dd class="cy">OFF · S5 pending</dd>
+          </dl>
+        </div>
+
+      </div>
+    </section>
+
+    <div class="honesty"><b>SAMPLE DATA</b> — design mock D1 of CLOZN_UX.md §11 · the “Italy” disposition
+    mirrors a real engine readout · not a live view</div>
+
+  </main>
+
+  <!-- ══════════ sidebar ══════════ -->
+  <aside class="side">
+
+    <div class="panel">
+      <h3>receipts <span class="ok">PROVE · complete</span></h3>
+      <div class="r-row"><span>enjoys geography trivia</span><span class="nats">2.4 nats</span>
+        <span class="r-sub"><span>changed the answer · no (regen)</span><span>leaning · strong</span></span></div>
+      <div class="r-row"><span>prefers concise factual answers</span><span class="nats">0.9 nats</span>
+        <span class="r-sub"><span>changed the answer · no (regen)</span><span>leaning · mild</span></span></div>
+      <div class="fineprint">leaning is graded leave-one-out against a matched null floor. Computed on
+      demand — receipts are never pre-attached to a run.</div>
+    </div>
+
+    <div class="panel">
+      <h3>tiny tests</h3>
+      <div class="tt-row"><span class="tt-dot beats"></span>mentions Italy<span class="tt-kind">static</span></div>
+      <div class="tt-row"><span class="tt-dot causal beats"></span>leans_on: geography <span class="mono" style="font-size:9.5px;color:var(--slate)">· effect .77</span><span class="tt-kind">causal</span></div>
+    </div>
+
+    <div class="panel family">
+      <h3>family</h3>
+      <svg viewBox="0 0 260 118">
+        <line x1="34" y1="24" x2="34" y2="60" stroke="#AEB9D2" stroke-width="1"/>
+        <line x1="34" y1="60" x2="34" y2="96" stroke="#AEB9D2" stroke-width="1" stroke-dasharray="3 3"/>
+        <circle cx="34" cy="22" r="6" fill="none" stroke="#AEB9D2" stroke-width="1.4"/>
+        <circle cx="34" cy="60" r="8" fill="#36AEC4"/>
+        <circle cx="34" cy="60" r="13" fill="none" stroke="rgba(54,174,196,.35)" stroke-width="1"/>
+        <circle cx="34" cy="60" r="18" fill="none" stroke="rgba(54,174,196,.15)" stroke-width="1"/>
+        <circle cx="34" cy="96" r="6" fill="none" stroke="#8B79E8" stroke-width="1.4"/>
+        <text x="52" y="26" class="fam-label" fill="#677591">run_0231 · parent</text>
+        <text x="52" y="64" class="fam-label" fill="#232A3A" font-weight="600">run_0232 · this tape</text>
+        <text x="52" y="100" class="fam-label" fill="#677591">run_0233 · branch @ 7</text>
+      </svg>
+    </div>
+
+  </aside>
+
+</div>
+</div>

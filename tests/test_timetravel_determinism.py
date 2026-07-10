@@ -34,7 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
-from clozn import timetravel as tt  # noqa: E402  (stdlib-only import; torch is lazy)
+import clozn.replay.timetravel as tt  # noqa: E402  (stdlib-only import; torch is lazy)
 
 
 def _lazy():
