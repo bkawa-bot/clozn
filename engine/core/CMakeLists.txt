@@ -236,8 +236,15 @@ if(CLOZE_BUILD_SERVE AND CLOZE_BUILD_GGML)
     set(_vendor ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/vendor)
     # cpp-httplib is the split build: compile its httplib.cpp here for the out-of-line definitions
     # (silence its 3rd-party warnings; it needs /bigobj on MSVC).
-    add_executable(cloze-server serve/cloze_server.cpp ${_vendor}/cpp-httplib/httplib.cpp)
-    target_include_directories(cloze-server PRIVATE ${_vendor}/cpp-httplib ${_vendor})
+    # Phase 12.4: the serve monolith split into server_main + route-family TUs that read shared state
+    # through ServerContext (serve/server_context.hpp) + the shared helpers/structs (serve/server_shared.hpp).
+    add_executable(cloze-server
+        serve/server_main.cpp
+        serve/routes_jlens.cpp
+        serve/routes_whitebox.cpp
+        serve/routes_state.cpp
+        ${_vendor}/cpp-httplib/httplib.cpp)
+    target_include_directories(cloze-server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/serve ${_vendor}/cpp-httplib ${_vendor})
     target_link_libraries(cloze-server PRIVATE cloze_ggml)
     if(CLOZE_BUILD_SAE)
         # --sae <dir>: the on-device SAE feature readout rides the server (cloze/sae.hpp is a
