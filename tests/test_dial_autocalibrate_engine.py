@@ -32,10 +32,10 @@ import numpy as np
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = os.path.join(os.path.dirname(HERE), "scripts")   # dial_autocalibrate_engine.py lives in scripts/
+SCRIPTS = os.path.join(os.path.dirname(HERE), "scripts", "calibration")   # engine_autocalibrate.py lives in scripts/calibration/
 sys.path.insert(0, SCRIPTS)
 
-import dial_autocalibrate_engine as dae   # noqa: E402
+import engine_autocalibrate as dae   # noqa: E402
 
 
 # ================================================================================================

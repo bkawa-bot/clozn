@@ -39,8 +39,8 @@ import torch
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)                                        # repo root, for `from clozn import ...`
-sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))               # dial_autocalibrate.py lives in scripts/
-import dial_autocalibrate as dac  # noqa: E402
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts", "calibration"))  # torch_autocalibrate.py lives in scripts/calibration/
+import torch_autocalibrate as dac  # noqa: E402
 import clozn.behavior.steering.axes as steering_mod   # noqa: E402
 import clozn.runs.store as runlog  # noqa: E402
 

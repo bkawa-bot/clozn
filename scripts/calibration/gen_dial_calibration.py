@@ -22,7 +22,7 @@ import json
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SHIPPED_LIBRARY_PATH = os.path.join(HERE, "..", "clozn", "data", "dial_library_shipped.json")
+SHIPPED_LIBRARY_PATH = os.path.join(HERE, "..", "..", "clozn", "data", "dial_library_shipped.json")
 
 
 def build_calibration(shipped_path: str = SHIPPED_LIBRARY_PATH) -> dict:

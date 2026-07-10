@@ -103,7 +103,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # research/ on path -- so any other research-local sibling still resolves
-sys.path.insert(0, os.path.dirname(HERE))   # repo root -- so `from clozn import ...` resolves (counterfactual/
+sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))   # repo root -- so `from clozn import ...` resolves (counterfactual/
 #                            runlog/steering all moved into the clozn/ package).
 
 from clozn.replay.counterfactual import _coherence   # noqa: E402  -- {"degenerate": bool, "reason": str}; torch-free.
@@ -619,7 +619,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8092")))
     ap.add_argument("--layer", type=int, default=int(os.environ.get("LAYER", "14")))
-    ap.add_argument("--shipped", default=os.path.join(HERE, "..", "clozn", "data", "dial_library_shipped.json"),
+    ap.add_argument("--shipped", default=os.path.join(HERE, "..", "..", "clozn", "data", "dial_library_shipped.json"),
                     help="path to the shipped dial library (default: clozn/data/dial_library_shipped.json)")
     ap.add_argument("--dials", nargs="+", default=None,
                     help="calibrate only these shipped dial names (default: all of them)")
@@ -635,7 +635,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
 
-    sys.path.insert(0, os.path.join(HERE, "..", "engine", "client"))
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "engine", "client"))
     from cloze_engine import EngineClient   # noqa: E402 -- deferred: keeps a bare module import client-free
     from clozn.behavior.steering.engine_adapter import EngineSteer        # noqa: E402 -- deferred: keeps bare import engine-client-free
 

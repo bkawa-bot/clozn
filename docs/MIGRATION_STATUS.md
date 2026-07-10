@@ -16,6 +16,7 @@ Batch A complete; Batch B complete:
 - Phase 7: steering moved into `clozn.behavior.steering` and split into axes, catalog, HF, Dream, engine, and library modules
 - Phase 8: remaining readout/substrate modules moved into `clozn.readouts`, `clozn.substrates`, and `clozn.dev`
 - Phase 9: `clozn_server.py` moved whole (no split) into `clozn.server.app`; `fit_planner.py` moved into `clozn.cli.fit_planner` (its only consumer's package). No flat top-level `clozn/*.py` modules remain.
+- Phase 11: flat `scripts/` reorganized into purpose-based subdirectories (`bench/`, `calibration/`, `data/`, `smoke/`, plus the pre-existing `cleanup/`); moves-only, same precedent as Phase 9 (no internal split of the two giant calibration scripts).
 
 ## Moved Modules
 
@@ -74,6 +75,35 @@ Batch A complete; Batch B complete:
 - standalone self-teach server -> `clozn/dev/self_teach_server.py`
 - `clozn/clozn_server.py` -> `clozn/server/app.py` (single-module move, not a split; run via `python -m clozn.server.app`)
 - `clozn/fit_planner.py` -> `clozn/cli/fit_planner.py` (its only consumer is `clozn/cli/main.py`'s `plan` command)
+
+### Phase 11 — `scripts/` reorg (moves-only)
+
+- `scripts/bench_batched_receipts.py` -> `scripts/bench/batched_receipts.py`
+- `scripts/bench_whitebox_tax.py` -> `scripts/bench/whitebox_tax.py`
+- `scripts/deploy_dial_library.py` -> `scripts/calibration/deploy_dial_library.py`
+- `scripts/gen_dial_calibration.py` -> `scripts/calibration/gen_dial_calibration.py`
+- `scripts/dial_autocalibrate.py` -> `scripts/calibration/torch_autocalibrate.py` (renamed to distinguish from the engine rig)
+- `scripts/dial_autocalibrate_engine.py` -> `scripts/calibration/engine_autocalibrate.py` (renamed to distinguish from the PyTorch rig)
+- `scripts/fetch_np_labels.py` -> `scripts/data/fetch_np_labels.py`
+- `scripts/fetch_np_stats.py` -> `scripts/data/fetch_np_stats.py`
+- `scripts/smoke_engine_substrate.py` -> `scripts/smoke/engine_substrate.py`
+
+Each moved script gained one extra `os.path.dirname(...)` / `".."` level in its own HERE-relative
+repo-root, `clozn/data/dial_library_shipped.json`, and `engine/client` path lookups (they now sit one
+directory deeper); these are load-bearing fixes, not gold-plating -- without them
+`deploy_dial_library.py`/`gen_dial_calibration.py`/`engine_autocalibrate.py` silently pointed at a
+directory that no longer existed, which 4 tests in `tests/test_dial_library_server.py` caught. The
+three test files that import these scripts directly (`tests/test_dial_autocalibrate.py`,
+`tests/test_dial_autocalibrate_engine.py`, `tests/test_dial_library_server.py`) had their
+`sys.path.insert`/`import` lines updated to the new `scripts/calibration/` location and module names.
+
+**Deferred (not done in Phase 11):**
+- The internal split of the two giant calibration scripts (`torch_autocalibrate.py`, ~1150 lines;
+  `engine_autocalibrate.py`, ~680 lines) into a `calibration_lib/` package. Moved+renamed whole only,
+  same precedent as the Phase 9 server/CLI moves-not-splits.
+- The Neuronpedia data-location policy (`clozn/data/neuronpedia/` + `~/.clozn/cache` for
+  `scripts/data/fetch_np_labels.py`/`fetch_np_stats.py`'s output). Touches product readout code; left
+  for a later chip.
 
 ## Tests Currently Green
 
@@ -137,18 +167,28 @@ pytest -q tests
 
 Also reverified clean: `python -c "import clozn"`, `python -c "import clozn.server.app"`, `python -m clozn --help`, and `python -m clozn.server.app --help` (argparse help only -- no server/model/GPU started).
 
+Phase 11 (scripts/ reorg) reverified the full product suite after the moves + HERE-relative path fixes:
+
+```text
+pytest -q tests
+1204 passed, 10 skipped
+```
+
+Also reverified clean by direct invocation (not just import): `python scripts/calibration/gen_dial_calibration.py --check`, `python scripts/calibration/deploy_dial_library.py --check`, `python scripts/calibration/torch_autocalibrate.py --help`, and `python scripts/calibration/engine_autocalibrate.py --help` -- all resolve `clozn/data/dial_library_shipped.json` and the repo-root `clozn` package correctly from the new one-level-deeper location.
+
 ## Known Broken Commands
 
-None currently known through Phase 9.
+None currently known through Phase 11.
 
 ## Remaining Import Errors
 
-None currently known through Phase 9. Python sources no longer import `clozn.runlog`, `clozn.memory_cards`,
+None currently known through Phase 11. Python sources no longer import `clozn.runlog`, `clozn.memory_cards`,
 `clozn.memory_mode`, `clozn.facts_mode`, `clozn.topic_gate`, `clozn.slotmem_qwen`, `clozn.explain`,
 `clozn.narrate`, `clozn.rederive`, `clozn.receipt_bundle`, `clozn.semantic_matcher`,
 `clozn.counterfactual`, `clozn.timetravel`, the old flat readout/substrate modules, the old flat
 steering module, `clozn.clozn_server`, or `clozn.fit_planner`. No flat `clozn/*.py` modules remain
-except `clozn/__init__.py` and `clozn/__main__.py`.
+except `clozn/__init__.py` and `clozn/__main__.py`. No flat `.py` files remain directly under `scripts/`
+either -- only subdirectories (`bench/`, `calibration/`, `data/`, `smoke/`, `cleanup/`).
 
 ## Compatibility Policy
 

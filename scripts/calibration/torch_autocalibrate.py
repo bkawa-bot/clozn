@@ -161,7 +161,7 @@ import argparse, gc, json, os, sys, time
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # repo root (clozn/ package)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))   # repo root (clozn/ package)
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
