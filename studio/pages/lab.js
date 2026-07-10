@@ -52,6 +52,17 @@
         "sometimes re-masking a low-confidence one (a red flash) to redo it. Captured pass by pass.",
       needs: "dream substrate",
     },
+    {
+      href: "jlens.html",
+      name: "The j-lens",
+      tagline: "paste any text, read what it's disposed to say at a layer",
+      desc: "A free-text lab for the J-lens: paste any text, pick a layer, and read a fitted linear " +
+        "Jacobian lens's per-token top-k readout — what the model was leaning toward saying at each " +
+        "position. The same panel as the Run Inspector's own-answer read, but on whatever you paste. " +
+        "Not a decode of literal thought — a linear lens always emits something, and every readout " +
+        "carries its provenance caption alongside it.",
+      needs: "engine substrate with a J-lens loaded (--jlens)",
+    },
   ];
 
   // page-scoped styles: the intro + the per-card embed slot / toolbar. Everything else reuses clozn.css

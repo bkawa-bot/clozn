@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clozn &middot; the j-lens</title>
+<link rel="stylesheet" href="clozn.css">
+<style>
+  /* window-specific; palette + shared components live in clozn.css */
+  .jl-input{width:100%;min-height:110px;resize:vertical;font:14px/1.5 ui-sans-serif,system-ui,sans-serif;
+    border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:rgba(255,255,255,.65);
+    color:var(--ink);outline:none;transition:border-color .2s,box-shadow .2s}
+  .jl-input::placeholder{color:var(--faint)}
+  .jl-input:focus{border-color:rgba(47,163,146,.5);box-shadow:0 0 0 3px rgba(47,163,146,.11)}
+  .jl-row{display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  .jl-row .hint{flex:1;min-width:180px}
+  .jl-out{margin-top:16px}
+
+  /* --- mirrors run.js's J3b "Disposed to say" J-lens panel (ri-jl-*) so a paste-any-text read here
+     looks and behaves exactly like the Run Inspector's own-answer read; see studio/pages/run.js. --- */
+  .ri-jl-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0 8px}
+  .ri-jl-layers{display:flex;flex-wrap:wrap;gap:6px}
+  .ri-jl-layer-btn{font:inherit;font-size:11.5px;font-weight:640;border:1px solid var(--line);background:rgba(255,255,255,.7);
+    color:var(--soft);border-radius:14px;padding:4px 10px;cursor:pointer;transition:background .14s,border-color .14s,color .14s}
+  .ri-jl-layer-btn:hover:not(:disabled){color:var(--ink);border-color:var(--halo,#7aa7ff)}
+  .ri-jl-layer-btn.active{color:#2f4a7a;border-color:var(--halo,#7aa7ff);background:rgba(122,167,255,.14)}
+  .ri-jl-layer-btn:disabled{opacity:.6;cursor:default}
+  .ri-jl-topk{font-size:11.5px;color:var(--soft);display:flex;align-items:center;gap:5px}
+  .ri-jl-topk select{font:inherit;font-size:11.5px;border:1px solid var(--line);border-radius:8px;padding:2px 6px;color:var(--ink)}
+  /* the provenance caption: always rendered with a readout, distinct border so it reads as a label,
+     never just ambient text a reader could miss. */
+  .ri-jl-prov{margin:6px 0 10px;padding:8px 10px;border-radius:9px;border:1px solid rgba(122,167,255,.35);
+    background:rgba(122,167,255,.06);font-size:11px;color:var(--soft);line-height:1.5}
+  .ri-jl-prov b{color:#2f4a7a}
+  .ri-jl-prov .mono{font-family:ui-monospace,Consolas,monospace;color:var(--ink)}
+  .ri-jl-meta{font-size:11px;color:var(--faint);margin-bottom:6px}
+  .ri-jl-rows{display:flex;flex-direction:column;gap:2px;max-height:520px;overflow:auto;border:1px solid var(--line);
+    border-radius:9px;padding:8px 9px;background:rgba(255,255,255,.5)}
+  .ri-jl-row{display:grid;grid-template-columns:26px 88px 1fr;gap:8px;align-items:start;font-size:12px;padding:4px 0;
+    border-bottom:1px solid var(--line)}
+  .ri-jl-row:last-child{border-bottom:0}
+  .ri-jl-idx{font-family:ui-monospace,Consolas,monospace;color:var(--faint);font-size:10.5px;padding-top:2px}
+  .ri-jl-own{font-family:ui-monospace,Consolas,monospace;color:var(--ink);font-weight:640;white-space:pre-wrap;
+    word-break:break-word;padding-top:1px}
+  .ri-jl-chips{display:flex;flex-wrap:wrap;gap:4px}
+  .ri-jl-chip{display:inline-block;font-family:ui-monospace,Consolas,monospace;font-size:10.5px;background:rgba(122,167,255,.10);
+    border:1px solid rgba(122,167,255,.3);border-radius:7px;padding:1px 6px;color:#2f4a7a;white-space:pre}
+  .ri-jl-chip b{font-weight:640;color:#2f4a7a}
+  .ri-jl-note{font-size:11.5px;color:var(--faint);line-height:1.45;margin:8px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="nav"><a href="../../index.html">&larr; clozn</a><a href="app.html#/lab">lab</a><a href="brain.html">brain</a>
+    <a href="engine.html">the runtime</a><a href="denoise.html">denoise</a><span class="here">the j-lens</span></div>
+  <h1>the j-lens — what it's disposed to say</h1>
+  <div class="sub">Paste any text, pick a layer, and read a <b>fitted linear Jacobian lens</b>'s per-token
+    top-k readout at that layer — what the model was <i>leaning toward</i> saying at each position. This is
+    the general <code>/jlens</code> route (any text you like); the Run Inspector's own panel runs the same
+    lens over a run's own answer tokens. <b>Not a decode of literal thought</b> — a linear lens always emits
+    <i>something</i>; every readout below carries its provenance so that's never lost in translation.</div>
+
+  <div class="panel" style="margin-top:16px;padding:16px 18px">
+    <textarea class="jl-input" id="jl-text" placeholder="paste or type any text — a prompt, a reply, a paragraph…">The capital of France is</textarea>
+    <div class="jl-row">
+      <span class="hint" id="jl-hint">Reads the general <code>/jlens</code> endpoint — no run, no engine state changed.</span>
+      <button class="go" id="jl-go">Read J-lens</button>
+    </div>
+  </div>
+
+  <div class="jl-out" id="jl-out"><div class="ri-jl-note">Type or paste text above, then click <b>Read J-lens</b>.</div></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var API = location.origin.startsWith('http') ? '' : 'http://127.0.0.1:8090';
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---- shared little formatters (mirrors studio/pages/run.js's jlens helpers, verbatim behavior) ----
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>]/g, function (m) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[m]; }); }
+  function labelTok(s) {
+    var t = String(s == null ? "" : s).replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+    return t === "" ? "∅" : t.replace(/ /g, "·");   // middle-dot for spaces; ∅ for a truly empty piece
+  }
+  function fmtNum(v, n) {
+    v = v == null ? NaN : +v;
+    return isFinite(v) ? v.toFixed(n == null ? 1 : n) : "?";
+  }
+
+  // Local postJSON: NEVER throws. Resolves {ok, status, data} on every outcome -- HTTP error, offline, bad
+  // JSON -- so the caller can tell 404/503 (endpoint/engine absent) from a genuine failure, always gracefully.
+  function postJSON(path, body) {
+    return fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
+      }, function () {
+        return { ok: false, status: 0, data: {} };   // offline / network error -> status 0
+      });
+  }
+
+  // ---------------------------------------------------------------------------------------------------
+  // Pure render functions -- no DOM reads inside, so they're exactly what a standalone harness can call
+  // with a fixture and diff against expected HTML. Mirrors jlensProvenanceHTML/jlensControlsHTML/
+  // jlensRowHTML/jlensResultHTML in studio/pages/run.js (the J3b Run Inspector panel) so a paste-any-text
+  // read here looks and behaves identically -- same classes, same "never omit the caption" discipline.
+  // ---------------------------------------------------------------------------------------------------
+
+  // The provenance caption -- rendered verbatim from the response, never paraphrased into a stronger claim.
+  function jlensProvenanceHTML(prov) {
+    prov = (prov && typeof prov === "object") ? prov : {};
+    var note = prov.note || "fitted linear Jacobian lens; a per-token “disposed to say” read, not the model’s literal thought — a linear lens always emits something.";
+    var h = '<div class="ri-jl-prov"><b>Provenance</b>';
+    if (prov.fit_model) h += ' &middot; fit model <span class="mono">' + esc(prov.fit_model) + "</span>";
+    if (Array.isArray(prov.layers) && prov.layers.length) h += ' &middot; layers fit <span class="mono">' + esc(prov.layers.join(", ")) + "</span>";
+    h += "<br>" + esc(note) + "</div>";
+    return h;
+  }
+
+  // Layer-switch + top-k controls. `curLayer` is the layer the LAST response actually used (the backend is
+  // authoritative -- there is no client-guessed default); `curTopk` is what was last requested.
+  function jlensControlsHTML(layers, curLayer, curTopk) {
+    var h = '<div class="ri-jl-controls"><div class="ri-jl-layers">';
+    (layers || []).forEach(function (L) {
+      h += '<button class="ri-jl-layer-btn' + (L === curLayer ? " active" : "") + '" data-jl-layer="' + esc(L) + '">layer ' + esc(L) + "</button>";
+    });
+    h += '</div><label class="ri-jl-topk">top-k <select id="jl-topk">';
+    [3, 5, 8].forEach(function (k) {
+      h += '<option value="' + k + '"' + (k === curTopk ? " selected" : "") + '>' + k + "</option>";
+    });
+    h += "</select></label></div>";
+    return h;
+  }
+
+  // One row: the input's OWN token at position i, beside the lens's top-k "disposed to say" chips for that
+  // SAME position. Chip scores are raw lens scores (not probabilities) -- plain numbers, never a [0,1] bar.
+  function jlensRowHTML(ownPiece, idx, topkList) {
+    var list = Array.isArray(topkList) ? topkList : [];
+    var chips = list.map(function (r) {
+      r = (r && typeof r === "object") ? r : {};
+      var title = r.id != null ? "token id " + r.id : "";
+      return '<span class="ri-jl-chip"' + (title ? ' title="' + esc(title) + '"' : "") + ">" +
+        esc(labelTok(r.piece)) + " <b>" + fmtNum(r.score, 1) + "</b></span>";
+    }).join("");
+    return '<div class="ri-jl-row"><span class="ri-jl-idx">' + idx + "</span>" +
+      '<span class="ri-jl-own">' + esc(labelTok(ownPiece)) + "</span>" +
+      '<span class="ri-jl-chips">' + (chips || '<span class="ri-jl-note" style="margin:0">(no readouts)</span>') + "</span></div>";
+  }
+
+  // The pure assembler for a /jlens response -> an HTML string. Never renders per-token rows without the
+  // provenance caption alongside them (the available:true path) -- that caption is load-bearing.
+  function jlensResultHTML(data, requestedTopk) {
+    data = (data && typeof data === "object") ? data : {};
+    if (data.available === false) {
+      return '<div class="ri-jl-note">J-lens not loaded — ' + esc(data.reason || "start the engine with --jlens") + ".</div>";
+    }
+    if (data.error) {
+      return jlensProvenanceHTML(data.provenance) + '<div class="ri-jl-note">J-lens read failed — ' + esc(data.error) + "</div>";
+    }
+    var tokens = Array.isArray(data.tokens) ? data.tokens : [];
+    var readouts = Array.isArray(data.readouts) ? data.readouts : [];
+    var layers = Array.isArray(data.available_layers) ? data.available_layers : [];
+    if (!tokens.length || !readouts.length) {
+      return jlensProvenanceHTML(data.provenance) + '<div class="ri-jl-note">No scorable tokens in that text for a J-lens read.</div>';
+    }
+    var h = jlensControlsHTML(layers, data.layer, requestedTopk);
+    h += jlensProvenanceHTML(data.provenance);
+    var meta = [];
+    if (data.text_source) meta.push("source: " + data.text_source);
+    meta.push(tokens.length + " tokens");
+    h += '<div class="ri-jl-meta">' + esc(meta.join(" · ")) + "</div>";
+    h += '<div class="ri-jl-rows">';
+    for (var i = 0; i < tokens.length; i++) h += jlensRowHTML(tokens[i], i, readouts[i]);
+    h += "</div>";
+    return h;
+  }
+
+  // ---------------------------------------------------------------------------------------------------
+  // Wiring: a textarea + "Read J-lens" button, POSTing the general /jlens {text, layer?, topk?}. Re-fetches
+  // on layer/top-k change using the LAST SUBMITTED text (not whatever's currently in the textarea, so
+  // switching layers reads the same text you asked about). Nothing here ever throws; every failure path
+  // (404/503/offline/other) gets one honest line, never a stuck spinner.
+  // ---------------------------------------------------------------------------------------------------
+  var goBtn = $("jl-go"), out = $("jl-out"), textEl = $("jl-text");
+  var curTopk = 5;        // curLayer starts unset -- the FIRST fetch omits it so the backend picks its default.
+  var lastText = "";
+
+  function fetchAndRender(layer, topk) {
+    var label = goBtn.textContent;
+    goBtn.disabled = true;
+    out.innerHTML = '<div class="ri-jl-note">reading the J-lens (disposed-to-say) at each position…</div>';
+    var reqBody = { text: lastText, topk: topk };
+    if (layer != null && isFinite(layer)) reqBody.layer = layer;
+    postJSON("/jlens", reqBody).then(function (r) {
+      goBtn.disabled = false; goBtn.textContent = label;
+      if (r.status === 404) { out.innerHTML = '<div class="ri-jl-note">J-lens isn’t on this build yet — this lights up once /jlens exists.</div>'; return; }
+      if (r.status === 503) { out.innerHTML = '<div class="ri-jl-note">J-lens needs the engine substrate running — start it and try again.</div>'; return; }
+      if (r.status === 0) { out.innerHTML = '<div class="ri-jl-note">couldn’t reach the studio (offline?) — nothing was read.</div>'; return; }
+      if (r.status === 400) { out.innerHTML = '<div class="ri-jl-note">' + esc((r.data && r.data.error) || "bad request") + "</div>"; return; }
+      if (!r.ok || !r.data) { out.innerHTML = '<div class="ri-jl-note">J-lens read failed (' + esc(r.status) + ")</div>"; return; }
+      curTopk = topk;
+      out.innerHTML = jlensResultHTML(r.data, curTopk);
+      wireControls();
+    }, function () {
+      goBtn.disabled = false; goBtn.textContent = label;
+      out.innerHTML = '<div class="ri-jl-note">J-lens read failed (unexpected error) — nothing was read.</div>';
+    });
+  }
+
+  // Wire the layer-switch buttons + top-k select painted INSIDE `out` by the last render. Re-wired fresh
+  // every render since the controls are replaced each time.
+  function wireControls() {
+    out.querySelectorAll(".ri-jl-layer-btn[data-jl-layer]").forEach(function (b) {
+      b.onclick = function () {
+        if (b.disabled) return;
+        var topkSel = out.querySelector("#jl-topk");
+        fetchAndRender(+b.dataset.jlLayer, topkSel ? +topkSel.value : curTopk);
+      };
+    });
+    var topkSel = out.querySelector("#jl-topk");
+    if (topkSel) {
+      topkSel.onchange = function () {
+        var activeBtn = out.querySelector(".ri-jl-layer-btn.active[data-jl-layer]");
+        var layer = activeBtn ? +activeBtn.dataset.jlLayer : null;
+        fetchAndRender(layer, +topkSel.value);
+      };
+    }
+  }
+
+  goBtn.onclick = function () {
+    var t = (textEl.value || "").trim();
+    if (!t) { out.innerHTML = '<div class="ri-jl-note">Type or paste some text above first — nothing to read yet.</div>'; return; }
+    lastText = t;
+    var activeBtn = out.querySelector(".ri-jl-layer-btn.active[data-jl-layer]");
+    fetchAndRender(activeBtn ? +activeBtn.dataset.jlLayer : null, curTopk);
+  };
+  // Ctrl+Enter submits from the textarea (plain Enter stays a newline -- this is a multi-line field).
+  textEl.addEventListener("keydown", function (e) { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) goBtn.click(); });
+})();
+</script>
+</body>
+</html>
