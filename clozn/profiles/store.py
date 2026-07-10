@@ -31,6 +31,8 @@ import os
 import re
 import time
 
+from clozn._io import atomic_write_json
+
 VERSION = 1
 DEFAULT_DIR = os.path.join(os.path.expanduser("~"), ".clozn", "profiles")
 
@@ -51,22 +53,56 @@ def new_profile(name: str, description: str = "") -> dict:
 
 
 def validate(p: dict) -> dict:
-    """Shape-check (and lightly normalize) a bundle; raises ValueError on junk. Returns the bundle."""
+    """Shape-check (and lightly normalize) a bundle; raises ValueError on junk. Returns the bundle.
+
+    Bundles are hand-editable/importable (that's the whole point -- see the module docstring), so every
+    field below is guarded the same way `cards` already was: a wrong-shaped container degrades to empty,
+    and a wrong-shaped/incomplete ENTRY within it is silently skipped rather than raising an uncaught
+    AttributeError/KeyError/TypeError out of a plain dict/list comprehension (round-2 pressure test #2)."""
     if not isinstance(p, dict) or not _NAME_RE.match(str(p.get("name") or "")):
         raise ValueError("profile needs a slug-safe 'name'")
     if int(p.get("version", 1)) > VERSION:
         raise ValueError(f"profile version {p.get('version')} is newer than supported {VERSION}")
     p.setdefault("version", VERSION)
     p.setdefault("description", "")
+    cards_in = p.get("cards")
+    cards_in = cards_in if isinstance(cards_in, list) else []   # a non-list container degrades to empty too
     p["cards"] = [{"text": str(c.get("text", c) if isinstance(c, dict) else c),
                    "status": str(c.get("status", "active")) if isinstance(c, dict) else "active"}
-                  for c in (p.get("cards") or []) if (c.get("text") if isinstance(c, dict) else c)]
-    p["dials"] = {str(k): float(v) for k, v in (p.get("dials") or {}).items()}
-    p["custom_dials"] = [{"name": str(d["name"]), "pos": str(d["pos"]), "neg": str(d["neg"]),
-                          "max": float(d.get("max", 0.5))}
-                         for d in (p.get("custom_dials") or []) if d.get("name")]
-    p["facts"] = [{"cue": str(f["cue"]), "answer": str(f["answer"])}
-                  for f in (p.get("facts") or []) if f.get("cue") and f.get("answer")]
+                  for c in cards_in if (c.get("text") if isinstance(c, dict) else c)]
+
+    dials_in = p.get("dials")
+    dials_out = {}
+    if isinstance(dials_in, dict):
+        for k, v in dials_in.items():
+            try:
+                dials_out[str(k)] = float(v)
+            except (TypeError, ValueError):
+                continue                       # a non-numeric dial value is dropped, not fatal
+    p["dials"] = dials_out
+
+    custom_in = p.get("custom_dials")
+    custom_in = custom_in if isinstance(custom_in, list) else []
+    custom_out = []
+    for d in custom_in:
+        if not isinstance(d, dict) or not d.get("name") or not d.get("pos") or not d.get("neg"):
+            continue                           # not a dict, or missing a required recipe field -> skip
+        try:
+            custom_out.append({"name": str(d["name"]), "pos": str(d["pos"]), "neg": str(d["neg"]),
+                               "max": float(d.get("max", 0.5))})
+        except (TypeError, ValueError):
+            continue
+    p["custom_dials"] = custom_out
+
+    facts_in = p.get("facts")
+    facts_in = facts_in if isinstance(facts_in, list) else []
+    facts_out = []
+    for f in facts_in:
+        if not isinstance(f, dict) or not f.get("cue") or not f.get("answer"):
+            continue                           # not a dict, or missing cue/answer -> skip
+        facts_out.append({"cue": str(f["cue"]), "answer": str(f["answer"])})
+    p["facts"] = facts_out
+
     p.setdefault("created_at", _now())
     p["updated_at"] = _now()
     return p
@@ -87,11 +123,12 @@ class ProfileStore:
         return os.path.join(self.root, name + ".json")
 
     def save(self, p: dict) -> str:
+        """Persist a bundle. Atomic (see clozn._io): validate() runs first (so a junk bundle raises
+        ValueError before any file touch), and the write itself is temp-file-then-rename, so a failure
+        partway through a save can never truncate/corrupt an existing bundle already at this path."""
         p = validate(dict(p))
-        os.makedirs(self.root, exist_ok=True)
         path = self._path(p["name"])
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(p, f, indent=2, ensure_ascii=False)
+        atomic_write_json(path, p, indent=2, ensure_ascii=False)
         return path
 
     def load(self, name: str) -> dict:

@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 
+from clozn._io import atomic_write_json
+
 from . import store
 
 
@@ -22,8 +24,9 @@ def update_tiny_tests(rid: str, tiny_tests: list) -> bool:
         if not isinstance(rec, dict):
             return False
         rec["tiny_tests"] = list(tiny_tests) if isinstance(tiny_tests, list) else []
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(rec, f)
+        # atomic (see clozn._io): a bad tiny_tests payload raises before the existing run record is
+        # touched, and the write is temp-file-then-rename -- the run record can never be truncated.
+        atomic_write_json(p, rec)
         return True
     except Exception:
         return False

@@ -109,6 +109,93 @@ def test_switch_applies_everything_and_isolates():
     assert "bullet points" in r2["prompt_block"] and "sci-fi" not in r2["prompt_block"]
 
 
+# ---- round-2 pressure test #1 (HIGH): atomic writes -- a bad save must never destroy a prior bundle ---
+
+def test_save_bad_bundle_raises_and_prior_bundle_survives_on_disk(tmp_path):
+    """profiles are user data too, same defect as memory cards / settings. `description` is NOT coerced
+    by validate() (only cards/dials/custom_dials/facts are), so a non-JSON-serializable value can reach
+    ProfileStore.save()'s write. save() is documented to propagate write failures (the server routes
+    catch ValueError/KeyError/TypeError) -- the FIX is that the failure must happen before the on-disk
+    file is touched, so a bundle already saved at that name survives a later bad save attempt intact."""
+    st = mk(tmp_path)
+    good = P.new_profile("work", "strictly business")
+    good["cards"].append({"text": "Prefers concise answers", "status": "active"})
+    st.save(good)
+
+    bad = P.new_profile("work")
+    bad["description"] = {1, 2, 3}                     # a set -- not coerced by validate(), not serializable
+    with pytest.raises(TypeError):
+        st.save(bad)
+
+    reloaded = st.load("work")                          # the prior good bundle is untouched
+    assert reloaded["description"] == "strictly business"
+    assert reloaded["cards"][0]["text"] == "Prefers concise answers"
+
+
+# ---- round-2 pressure test #2 (MEDIUM): validate() type-guards dials/custom_dials/facts consistently --
+
+def test_validate_drops_non_dict_dials_container():
+    p = P.new_profile("x")
+    p["dials"] = "not-a-dict"
+    assert P.validate(p)["dials"] == {}
+
+
+def test_validate_drops_non_numeric_dial_values():
+    p = P.new_profile("x")
+    p["dials"] = {"concise": 0.8, "warm": "not-a-number", "chatty": None}
+    assert P.validate(p)["dials"] == {"concise": 0.8}
+
+
+def test_validate_skips_malformed_custom_dials_entries():
+    p = P.new_profile("x")
+    p["custom_dials"] = [
+        {"name": "good", "pos": "p", "neg": "n", "max": 0.5},
+        {"name": "missing_pos_and_neg"},                # would have KeyError'd before the fix
+        "not-a-dict-at-all",                             # would have AttributeError'd before the fix
+        {"name": "", "pos": "p", "neg": "n"},            # falsy name
+    ]
+    out = P.validate(p)
+    assert [d["name"] for d in out["custom_dials"]] == ["good"]
+
+
+def test_validate_drops_non_list_custom_dials_container():
+    p = P.new_profile("x")
+    p["custom_dials"] = {"oops": "a dict, not a list"}
+    assert P.validate(p)["custom_dials"] == []
+
+
+def test_validate_skips_malformed_facts_entries():
+    p = P.new_profile("x")
+    p["facts"] = [
+        {"cue": "good cue", "answer": "good answer"},
+        {"cue": "missing answer"},                       # would have KeyError'd before the fix
+        "not-a-dict",                                     # would have AttributeError'd before the fix
+        42,                                                # would have AttributeError'd before the fix
+    ]
+    out = P.validate(p)
+    assert [f["cue"] for f in out["facts"]] == ["good cue"]
+
+
+def test_validate_drops_non_list_facts_container():
+    p = P.new_profile("x")
+    p["facts"] = "not-a-list"
+    assert P.validate(p)["facts"] == []
+
+
+def test_validate_never_raises_on_a_fully_hand_edited_junk_bundle():
+    """The concrete reachable path: /profiles/import and /profiles/save feed hand-editable bundle JSON
+    straight into validate(). A malformed bundle must degrade field-by-field, never raise
+    AttributeError/KeyError/TypeError (only a clean ValueError for a bad top-level name/version)."""
+    junk = {"name": "junk",
+            "dials": ["not", "a", "dict"],
+            "custom_dials": [None, 5, {"name": "ok", "pos": "p", "neg": "n"}],
+            "facts": [None, {"cue": "c"}, {"cue": "c2", "answer": "a2"}]}
+    out = P.validate(junk)
+    assert out["dials"] == {}
+    assert [d["name"] for d in out["custom_dials"]] == ["ok"]
+    assert [(f["cue"], f["answer"]) for f in out["facts"]] == [("c2", "a2")]
+
+
 def test_load_rejects_path_traversal(tmp_path):
     """load()/switch/export took an unvalidated name, so `../config` escaped the profiles dir to
     ~/.clozn/*.json. _path() now validates every name -> traversal raises ValueError (the routes turn

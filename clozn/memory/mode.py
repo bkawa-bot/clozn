@@ -34,6 +34,8 @@ from __future__ import annotations
 import json
 import os
 
+from clozn._io import atomic_write_json
+
 _CLOZN = os.path.expanduser("~/.clozn")
 SETTINGS_PATH = os.path.join(_CLOZN, "studio_settings.json")
 
@@ -106,13 +108,16 @@ def get_setting(key: str, default=None):
 
 
 def set_setting(key: str, value) -> bool:
-    """Persist one settings key (merge-write); False on IO failure (never raises)."""
+    """Persist one settings key (merge-write); False on IO failure (never raises).
+
+    Atomic (see clozn._io): a non-serializable `value` raises out of json.dumps before the real
+    SETTINGS_PATH is ever opened for writing, and the on-disk write is temp-file-then-rename, so a bad
+    call here can never truncate/corrupt the settings file -- every other already-persisted key (mode,
+    block_style, memory_facts, active_profile, ...) survives untouched."""
     try:
         settings = _load_settings()
         settings[key] = value
-        os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
-        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-            json.dump(settings, f)
+        atomic_write_json(SETTINGS_PATH, settings)
         return True
     except Exception:
         return False

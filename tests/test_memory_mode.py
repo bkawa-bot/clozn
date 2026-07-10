@@ -152,6 +152,28 @@ def test_settings_merge_preserves_other_keys(iso):
     assert memory_mode.get_setting("memory_strength") == 0.7
 
 
+def test_set_setting_bad_value_raises_cleanly_and_prior_settings_survive(iso):
+    """Round-2 pressure test #1 (HIGH): set_setting used to open(SETTINGS_PATH, "w") then json.dump,
+    truncating the file BEFORE a non-serializable value could raise -- so one bad call wiped every other
+    persisted setting (memory_mode, block_style, memory_facts, active_profile, ...). set_setting's
+    contract (False on failure, never raise) is unchanged; what must change is that the failure no
+    longer destroys anything already on disk."""
+    assert memory_mode.set_mode("internalized")
+    assert memory_mode.set_block_style("strict")
+    assert memory_mode.set_setting("memory_strength", 0.7)
+
+    ok = memory_mode.set_setting("bad_key", {1, 2, 3})       # a set -- json can't serialize it
+    assert ok is False
+
+    assert memory_mode.get_mode() == "internalized"          # every prior setting survives
+    assert memory_mode.get_block_style() == "strict"
+    assert memory_mode.get_setting("memory_strength") == 0.7
+    assert memory_mode.get_setting("bad_key") is None        # the bad write never landed
+    with open(memory_mode.SETTINGS_PATH, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert on_disk == {"memory_mode": "internalized", "block_style": "strict", "memory_strength": 0.7}
+
+
 # ---- memory_mode: block_style setting (NEXT_STEPS #9) ------------------------------------------------
 
 def test_block_style_defaults_to_soft(iso):

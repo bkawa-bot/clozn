@@ -5,6 +5,7 @@ Exercises the full card lifecycle: create -> list -> get -> update -> set_status
 pytest tmp file (the module resolves the path via that global, exactly like runlog.RUNS_DIR), so the real
 ~/.clozn is never touched.
 """
+import json
 import os
 import sys
 
@@ -218,6 +219,78 @@ def test_migrate_is_idempotent_noop_when_nonempty(store):
 def test_migrate_empty_rules(store):
     assert store.migrate_from_rules([]) == []
     assert store.list_cards() == []
+
+
+# ---- round-2 pressure test #1 (HIGH): atomic writes -- a bad save must never wipe the store -----------
+
+def test_bad_update_does_not_wipe_the_store(store):
+    """The confirmed repro: 3 cards -> 1 bad update() -> 0 cards (json.dump raised AFTER truncating the
+    file; the next load's parse-error handler returned []). update() injects a non-JSON-serializable
+    value (a set) into a card's field, forcing _save() to fail; the fix (atomic_write_json) must mean
+    the failure is clean (update() returns None, exactly as documented) AND all 3 prior cards survive."""
+    a = store.create("keep 1", status="active")
+    store.create("keep 2", status="active")
+    store.create("keep 3", status="active")
+    assert len(store.list_cards()) == 3
+
+    result = store.update(a["id"], evidence={1, 2, 3})     # a set -- json can't serialize it
+    assert result is None                                  # fails cleanly, never raises
+
+    assert len(store.list_cards()) == 3                    # all 3 prior cards survive, not 0
+    assert {c["text"] for c in store.list_cards()} == {"keep 1", "keep 2", "keep 3"}
+    # and the survival is genuinely on-disk, not just an in-memory illusion
+    with open(store.CARDS_PATH, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert len(on_disk) == 3
+
+
+def test_save_bad_cards_list_raises_and_prior_store_survives(store):
+    """Same defect at the _save() layer directly: a non-serializable card must not truncate CARDS_PATH."""
+    store.create("keeps this", status="active")
+    store.create("keeps this too", status="pending")
+    cards = store._load()
+    cards.append({"id": "mem_bad", "text": "x", "bogus": {1, 2, 3}})   # a set -- not serializable
+    assert store._save(cards) is False                     # fails cleanly (never raises)
+    assert len(store.list_cards()) == 2                     # the prior 2 valid cards are untouched
+    assert {c["text"] for c in store.list_cards()} == {"keeps this", "keeps this too"}
+
+
+# ---- round-2 pressure test #3 (MEDIUM): mixed-type created_at must not crash sorting -------------------
+
+def test_list_cards_tolerates_a_non_string_created_at(store):
+    """A hand-edited store can carry a non-string created_at (e.g. a bare number); list_cards()'s sort
+    must not raise TypeError comparing str vs int -- that would break active_texts() (the live memory-
+    prefix compile), not just this listing."""
+    store.create("first", status="active")
+    cards = store._load()
+    cards[0]["created_at"] = 12345                          # not a string
+    store._save(cards)
+    store.create("second", status="active")
+
+    listed = store.list_cards()                             # must not raise
+    assert {c["text"] for c in listed} == {"first", "second"}
+
+
+def test_active_texts_tolerates_a_non_string_created_at(store):
+    store.create("a", status="active")
+    cards = store._load()
+    cards[0]["created_at"] = 999.5                           # not a string
+    store._save(cards)
+    store.create("b", status="active")
+
+    assert set(store.active_texts()) == {"a", "b"}          # must not raise
+
+
+# ---- round-2 pressure test #4 (LOW): migrate_from_rules must skip, not abort, on a bad entry ----------
+
+def test_migrate_from_rules_skips_non_string_entries_instead_of_aborting(store):
+    """One non-string rule (e.g. a stray int/dict in a hand-edited legacy source) used to raise
+    AttributeError out of `.strip()` and abort the WHOLE seed. It must now be skipped, and every valid
+    rule around it still gets migrated."""
+    rules = ["good one", 12345, {"nested": "dict"}, None, "   ", "another good one"]
+    created = store.migrate_from_rules(rules)
+    assert {c["text"] for c in created} == {"good one", "another good one"}
+    assert set(store.active_texts()) == {"good one", "another good one"}
 
 
 def test_full_lifecycle(store):

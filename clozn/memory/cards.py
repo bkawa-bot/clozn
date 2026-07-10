@@ -25,6 +25,8 @@ import os
 import time
 import uuid
 
+from clozn._io import atomic_write_json
+
 CARDS_PATH = os.path.join(os.path.expanduser("~/.clozn"), "studio_memory_cards.json")
 
 # lifecycle states; only ACTIVE feeds the prefix (E1). Kept as a tuple so callers can validate against it.
@@ -48,11 +50,13 @@ def _load() -> list[dict]:
 
 
 def _save(cards: list[dict]) -> bool:
-    """Persist the whole store; False on any failure (never raises)."""
+    """Persist the whole store; False on any failure (never raises).
+
+    Atomic (see clozn._io): a bad/non-serializable value in `cards` raises out of json.dumps BEFORE the
+    real file is ever touched, and the on-disk write itself is a temp-file-then-rename, so a failure here
+    can never leave CARDS_PATH truncated or partially written -- the prior contents survive intact."""
     try:
-        os.makedirs(os.path.dirname(CARDS_PATH), exist_ok=True)
-        with open(CARDS_PATH, "w", encoding="utf-8") as f:
-            json.dump(cards, f)
+        atomic_write_json(CARDS_PATH, cards)
         return True
     except Exception:
         return False
@@ -124,8 +128,11 @@ def list_cards(status: str | None = None) -> list[dict]:
     cards = _load()
     if status is not None:
         cards = [c for c in cards if c.get("status") == status]
-    # newest first: created_at is ISO + monotonic enough; fall back to store order on ties
-    return sorted(cards, key=lambda c: c.get("created_at") or "", reverse=True)
+    # newest first: created_at is ISO + monotonic enough; fall back to store order on ties. str()-coerce
+    # the key so a hand-edited store with a non-string created_at (e.g. a number) can't make `sorted`
+    # raise TypeError from comparing mixed types -- that would break active_texts() (the live memory-
+    # prefix compile), not just this listing (round-2 pressure test #3).
+    return sorted(cards, key=lambda c: str(c.get("created_at") or ""), reverse=True)
 
 
 def get(card_id: str) -> dict | None:
@@ -197,12 +204,20 @@ def migrate_from_rules(rules: list[str]) -> list[dict]:
     """One-time seed: turn legacy trait strings into 'active' cards, but only if the store is EMPTY.
 
     Idempotent -- once any card exists this is a no-op and returns [] (so it can run on every load without
-    duplicating). Existing card stores are left untouched."""
+    duplicating). Existing card stores are left untouched.
+
+    Guarded per-entry (round-2 pressure test #4): unlike its siblings (create/_save/_load), this used to
+    have no try/except at all, so one non-string rule (e.g. a stray int/dict in a hand-edited legacy
+    source) would raise AttributeError out of `.strip()` and abort the ENTIRE seed, not just that one
+    entry. A bad entry is now skipped, matching the guarded-degradation ethos everywhere else here."""
     if _load():                                          # already migrated / has cards -> no-op
         return []
     created = []
     for text in rules or []:
-        text = (text or "").strip()
+        try:
+            text = (text or "").strip()
+        except AttributeError:
+            continue                                     # not a string-like value -- skip, don't abort the seed
         if not text:
             continue
         card = create(text, status="active", kind="preference")

@@ -12,6 +12,8 @@ import re
 import time
 import uuid
 
+from clozn._io import atomic_write_json
+
 from .summaries import SUMMARY_FIELDS, _flags, _summ, _summary
 from .trace import (
     TRACE_KEYS,
@@ -113,8 +115,10 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
             "meta": meta or {},
         }
         rec["flags"] = _flags(rec)
-        with open(os.path.join(RUNS_DIR, rid + ".json"), "w", encoding="utf-8") as f:
-            json.dump(rec, f)
+        # atomic (see clozn._io): a non-serializable value anywhere in this record (e.g. a stray object
+        # in `trace`/`behavior`/`meta`) raises before the file is touched, and the write itself is
+        # temp-file-then-rename -- a bad run record can never corrupt/truncate a file on disk.
+        atomic_write_json(os.path.join(RUNS_DIR, rid + ".json"), rec)
         _prune()
         return rid
     except Exception:

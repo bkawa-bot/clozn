@@ -237,6 +237,40 @@ def test_update_tiny_tests_rejects_traversal_and_writes_nothing_outside_runs_dir
     assert not os.path.isfile(os.path.join(store.RUNS_DIR, "config.json"))       # nothing spilled inside either
 
 
+# -------------------------------------------------------------- round-2 pressure test #1 (HIGH): atomic writes
+# record() and update_tiny_tests() are the other two user-data JSON writers sharing the same defect memory
+# cards / settings had: open(path, "w") then json.dump(obj, f) truncates the target BEFORE a non-
+# serializable value can raise. Both already swallow exceptions and return None/False (never raise out to
+# the caller) -- the fix is that a bad write must never destroy/corrupt an existing run record, and must
+# never leave a stray truncated file behind for a run that never really completed.
+
+def test_record_bad_meta_fails_cleanly_and_leaves_other_runs_untouched(store):
+    good_rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="ok")
+    assert store.get_run(good_rid) is not None
+    before = set(os.listdir(store.RUNS_DIR))
+
+    bad_rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="ok",
+                           meta={"bad": {1, 2, 3}})          # a set -- json can't serialize it
+    assert bad_rid is None                                    # documented contract: None on failure
+
+    after = set(os.listdir(store.RUNS_DIR))
+    assert after == before                                    # no stray/truncated file left behind
+    assert store.get_run(good_rid)["response"] == "ok"        # the earlier good run is untouched
+
+
+def test_update_tiny_tests_bad_payload_fails_cleanly_and_leaves_the_run_record_untouched(store):
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="ok")
+    assert store.update_tiny_tests(rid, [{"name": "t1", "passed": True}]) is True
+    assert store.get_run(rid)["tiny_tests"] == [{"name": "t1", "passed": True}]
+
+    # a nested set inside the list -- update_tiny_tests coerces the outer value with list(), but a
+    # non-serializable value nested inside an entry still reaches json.dumps
+    ok = store.update_tiny_tests(rid, [{"name": "t2", "detail": {1, 2, 3}}])
+    assert ok is False
+
+    assert store.get_run(rid)["tiny_tests"] == [{"name": "t1", "passed": True}]   # prior attachment survives
+
+
 def test_pruning_keeps_at_most_KEEP(store, monkeypatch):
     monkeypatch.setattr(runlog, "KEEP", 3)               # shrink the cap so the test is cheap
     ids = []
