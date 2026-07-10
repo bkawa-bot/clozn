@@ -8,6 +8,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import time
 import uuid
 
@@ -34,6 +35,33 @@ from .trace import (
 
 RUNS_DIR = os.path.join(os.path.expanduser("~/.clozn"), "runs")
 KEEP = 1000
+
+# A run id is generated as `run_<hex-ts>_<hex-uuid6>` (see record() below); this also covers the plain
+# alnum/underscore/hyphen ids test fixtures and legacy records use. No dots, no slashes, no backslashes --
+# so "..", "/", "\\", and an absolute path (which on POSIX starts with "/" and on Windows needs either a
+# backslash or a "C:" drive letter, both excluded by the charset) can never be constructed from it.
+_SAFE_RID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _safe_run_path(rid) -> str | None:
+    """`rid` (attacker-influenced: it arrives straight from a URL path segment on every `/runs/<rid>/...`
+    route, and from a CLI arg on `clozn test --attach`) -> the on-disk path inside RUNS_DIR, or None if
+    `rid` isn't safe. Two independent layers, both must pass:
+
+      1. a strict allow-list character check (no path separators, no '..', never absolute) BEFORE `rid`
+         is allowed anywhere near os.path.join -- this alone already makes traversal impossible;
+      2. resolve the joined path with os.path.realpath and confirm its parent is RUNS_DIR itself --
+         belt-and-suspenders in case the charset above is ever loosened.
+
+    Never raises: an unsafe id is a normal, expected input (a hostile request, or just a typo'd id), not
+    an error -- callers treat None exactly like "file not found"."""
+    if not isinstance(rid, str) or not rid or not _SAFE_RID.match(rid) or os.path.isabs(rid):
+        return None
+    base = os.path.realpath(RUNS_DIR)
+    path = os.path.realpath(os.path.join(RUNS_DIR, rid + ".json"))
+    if os.path.dirname(path) != base:
+        return None
+    return path
 
 
 def _ensure():
@@ -116,8 +144,8 @@ def list_runs(limit: int = 50) -> list[dict]:
 
 
 def get_run(rid: str) -> dict | None:
-    p = os.path.join(RUNS_DIR, rid + ".json")
-    if not os.path.isfile(p):
+    p = _safe_run_path(rid)
+    if not p or not os.path.isfile(p):
         return None
     try:
         with open(p, encoding="utf-8") as f:

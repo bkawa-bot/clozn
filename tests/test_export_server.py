@@ -154,6 +154,36 @@ def test_markdown_internalized_mode_stays_honest_about_soft_prefix():
     assert "MEMORY BLOCK" not in md
 
 
+def test_markdown_survives_non_numeric_memory_strength_and_gate():
+    """Bug #6 repro: `mem['strength']`/`mem['gate']` were guarded only by `is not None`, unlike
+    `relevance` right above (which checks `isinstance(rel, (int, float))` first) -- a non-numeric value
+    (e.g. a stray string from a malformed/legacy record) hit `float(mem['strength'])` and raised
+    ValueError, taking down the whole GET /runs/<id>/export?format=md response with it."""
+    md = cs._export_markdown({
+        "id": "r5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response": "yo",
+        "memory": {"cards_applied": ["Keep it brief."], "strength": "not-a-number", "gate": "also-bad",
+                  "mode": "prompt"},
+    }, None)
+    assert "Keep it brief." in md
+    assert "strength" not in md.split("## Memory applied", 1)[1]     # the bad field is simply omitted
+    assert "gate" not in md.split("## Memory applied", 1)[1]
+    assert "prompt mode" in md                                       # the still-valid sibling field renders
+
+
+def test_markdown_renders_numeric_memory_strength_and_gate():
+    """The happy path stays intact: real numeric strength/gate still render, formatted to 2 decimals."""
+    md = cs._export_markdown({
+        "id": "r6",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response": "yo",
+        "memory": {"cards_applied": ["Keep it brief."], "strength": 1.0, "gate": 0.77, "mode": "prompt"},
+    }, None)
+    assert "strength 1.00" in md
+    assert "gate 0.77" in md
+
+
 def test_markdown_is_robust_to_a_non_dict_run():
     assert cs._export_markdown(None, None).startswith("# Run ?")
 

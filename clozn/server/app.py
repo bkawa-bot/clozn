@@ -2323,7 +2323,18 @@ def make_handler():
 
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(n) or b"{}")
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                # malformed JSON (bad syntax, wrong Content-Length, truncated body, ...) -- a clean 400,
+                # not an uncaught JSONDecodeError. No route ever gets a chance to run against garbage.
+                self._json(400, {"error": "invalid JSON body"})
+                return
+            if not isinstance(body, dict):
+                # every route does body.get(...) unguarded -- a valid-JSON-but-non-dict body (e.g. `[1,2,3]`
+                # or `"hi"`) would otherwise blow up as an AttributeError deep inside whichever route matched.
+                self._json(400, {"error": "JSON body must be an object"})
+                return
             p = self.path.split("?")[0].rstrip("/") or "/"
             for mod in _POST_ROUTES:
                 if mod.try_post(self, p, body):

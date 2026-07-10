@@ -193,6 +193,50 @@ def test_get_run_missing(store):
     assert store.get_run("run_does_not_exist") is None
 
 
+# ---------------------------------------------------------------------------------- path traversal (security)
+# GET /runs/<rid>/... hands `rid` to get_run() straight from the URL path -- a hostile `rid` like
+# "../config" or an absolute path must never let a read escape RUNS_DIR onto some other readable .json
+# (e.g. ~/.clozn/config.json). None of these attempts should raise either -- get_run() never raises,
+# an unsafe id is just treated like "not found".
+
+def test_get_run_rejects_dotdot_traversal(store, tmp_path):
+    secret = tmp_path / "config.json"
+    secret.write_text('{"api_key": "super-secret"}', encoding="utf-8")
+    os.makedirs(store.RUNS_DIR, exist_ok=True)
+    assert store.get_run("../config") is None
+    assert store.get_run("..\\config") is None
+
+
+def test_get_run_rejects_absolute_path(store, tmp_path):
+    secret = tmp_path / "config.json"
+    secret.write_text('{"api_key": "super-secret"}', encoding="utf-8")
+    abs_no_ext = str(secret)[:-len(".json")]           # get_run appends ".json" itself
+    assert store.get_run(abs_no_ext) is None
+    assert store.get_run("/etc/passwd") is None
+
+
+def test_get_run_rejects_non_string_or_empty_id(store):
+    """The degenerate-run-record case (#3): a `{}` on disk summarizes to id=None; get_run(None) must
+    return None cleanly, never raise (the old code did `None + ".json"` -> TypeError)."""
+    assert store.get_run(None) is None
+    assert store.get_run("") is None
+    assert store.get_run(123) is None
+
+
+def test_update_tiny_tests_rejects_traversal_and_writes_nothing_outside_runs_dir(store, tmp_path):
+    """`clozn test --attach` reaches attachments.update_tiny_tests(rid, ...) with a CLI-supplied rid --
+    same guard, same contract (False on a bad id), and this is the WRITE side: confirm nothing lands
+    outside RUNS_DIR at all, not just that the return value is honest."""
+    target = tmp_path / "config.json"
+    target.write_text('{"api_key": "super-secret"}', encoding="utf-8")
+    os.makedirs(store.RUNS_DIR, exist_ok=True)
+
+    assert store.update_tiny_tests("../config", [{"a": 1}]) is False
+    assert store.update_tiny_tests("..\\config", [{"a": 1}]) is False
+    assert target.read_text(encoding="utf-8") == '{"api_key": "super-secret"}'   # untouched
+    assert not os.path.isfile(os.path.join(store.RUNS_DIR, "config.json"))       # nothing spilled inside either
+
+
 def test_pruning_keeps_at_most_KEEP(store, monkeypatch):
     monkeypatch.setattr(runlog, "KEEP", 3)               # shrink the cap so the test is cheap
     ids = []

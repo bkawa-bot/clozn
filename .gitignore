@@ -32,7 +32,10 @@ htmlcov/
 *.pt
 
 # --- Generated demo outputs (inspector/research write HTML/png into runs/) ---
-runs/
+# NB: anchored/specific paths — a bare `runs/` also swallowed the clozn.runs SOURCE package.
+/runs/
+research/runs/
+inspector/runs/
 research/dream_runs/
 
 # --- Local run/scratch artifacts ---

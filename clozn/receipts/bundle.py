@@ -177,9 +177,9 @@ def to_markdown(bundle: dict | None) -> str:
             suffix = f"  _(relevance {rel:.2f})_" if isinstance(rel, (int, float)) else ""
             lines.append(f"- {card}{suffix}")
         bits = []
-        if mem.get("strength") is not None:
+        if isinstance(mem.get("strength"), (int, float)):
             bits.append(f"strength {float(mem['strength']):.2f}")
-        if mem.get("gate") is not None:
+        if isinstance(mem.get("gate"), (int, float)):
             bits.append(f"gate {float(mem['gate']):.2f}")
         if mem.get("mode"):
             bits.append(f"{mem['mode']} mode")

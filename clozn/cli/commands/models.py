@@ -256,33 +256,41 @@ def cmd_plan(args):
     vram_gb = args.vram if args.vram is not None else (_detect_vram_gb() or 16.0)
     spec = args.model
 
-    if spec.startswith("http://") or spec.startswith("https://"):
-        header = fit_planner.gguf_header_from_url(spec)
-        size = header.get("file_size_bytes") or 0
-        name = header.get("name") or spec.rsplit("/", 1)[-1]
-        source_note = f"remote, not downloaded: {spec}"
-    else:
-        path = spec if (spec.lower().endswith(".gguf") and os.path.isfile(spec)) else None
-        if path is None:
-            try:
-                path = resolve_model(spec)
-            except ctx.CloznError:
-                if spec not in PULLABLE:
-                    raise
-                repo, file = PULLABLE[spec]
-                url = f"https://huggingface.co/{repo}/resolve/main/{file}"
-                print(f"{fmt.DIM}- '{spec}' isn't downloaded yet -- reading its header straight off "
-                     f"HuggingFace (no download){fmt.RST}", file=sys.stderr)
-                header = fit_planner.gguf_header_from_url(url)
-                size = header.get("file_size_bytes") or 0
-                name = spec
-                source_note = f"not downloaded -- `clozn pull {spec}` fetches it: {url}"
-                path = None
-        if path is not None:
-            header = fit_planner.gguf_header_from_path(path)
-            size = header["file_size_bytes"]
-            name = _friendly(path)
-            source_note = path
+    # gguf_header_from_path/url raise ValueError ("not a GGUF file: ...") on a malformed header, or its
+    # subclass NeedMoreBytes on a truncated one (the header didn't fit even at max_bytes) -- both are
+    # facts about the FILE, not a bug in this command, so they get the same clean one-line CloznError
+    # exit every other bad-input path here already uses; main() only catches CloznError, so anything
+    # else here would otherwise surface as a raw traceback.
+    try:
+        if spec.startswith("http://") or spec.startswith("https://"):
+            header = fit_planner.gguf_header_from_url(spec)
+            size = header.get("file_size_bytes") or 0
+            name = header.get("name") or spec.rsplit("/", 1)[-1]
+            source_note = f"remote, not downloaded: {spec}"
+        else:
+            path = spec if (spec.lower().endswith(".gguf") and os.path.isfile(spec)) else None
+            if path is None:
+                try:
+                    path = resolve_model(spec)
+                except ctx.CloznError:
+                    if spec not in PULLABLE:
+                        raise
+                    repo, file = PULLABLE[spec]
+                    url = f"https://huggingface.co/{repo}/resolve/main/{file}"
+                    print(f"{fmt.DIM}- '{spec}' isn't downloaded yet -- reading its header straight off "
+                         f"HuggingFace (no download){fmt.RST}", file=sys.stderr)
+                    header = fit_planner.gguf_header_from_url(url)
+                    size = header.get("file_size_bytes") or 0
+                    name = spec
+                    source_note = f"not downloaded -- `clozn pull {spec}` fetches it: {url}"
+                    path = None
+            if path is not None:
+                header = fit_planner.gguf_header_from_path(path)
+                size = header["file_size_bytes"]
+                name = _friendly(path)
+                source_note = path
+    except ValueError as e:
+        raise ctx.CloznError(f"couldn't read '{spec}' as a GGUF: {e}")
 
     report = fit_planner.fit_report(header, size, vram_gb)
     print(format_plan(name, header, size, report, vram_gb, source_note=source_note))

@@ -23,6 +23,8 @@ from __future__ import annotations
 import os
 import struct
 import sys
+import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -306,6 +308,37 @@ def test_format_plan_shows_wont_fit_and_offload_hint():
     text = clozn_cli.format_plan("Qwen2.5-7B-Instruct", header, QWEN_LIKE_SIZE, report, 2.0)
     assert "WON'T FIT" in text
     assert "/28" in text
+
+
+def test_cmd_plan_on_a_malformed_gguf_is_a_clean_cloznerror_not_a_traceback(tmp_path):
+    """Bug #2 repro: a bad-magic file used to blow past cmd_plan (only fit_report/format_plan were
+    exercised directly above) as an uncaught ValueError -- main() only catches CloznError, so this was a
+    raw traceback for the user. cmd_plan must now catch it and re-raise a clean, one-line CloznError."""
+    bad = tmp_path / "not-a-model.gguf"
+    bad.write_bytes(b"OOPS" + SYNTH[4:])
+    args = SimpleNamespace(model=str(bad), vram=None)
+    with pytest.raises(clozn_cli.CloznError) as ei:
+        clozn_cli.cmd_plan(args)
+    assert "not a GGUF file" in str(ei.value)
+
+
+def test_cmd_plan_on_a_truncated_gguf_is_a_clean_cloznerror():
+    """Same bug, the other raise path: a file that's truncated mid-header so badly that even reading it
+    in full (gguf_header_from_path grows the read until n >= the file's own size) still can't parse a
+    complete header -- NeedMoreBytes (a ValueError subclass) escapes all the way to `raise` inside
+    gguf_header_from_path. Must not escape cmd_plan as a raw traceback either."""
+    truncated = SYNTH[:10]                      # genuinely short: not even one full KV entry
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "truncated.gguf")
+        with open(p, "wb") as f:
+            f.write(truncated)
+        # sanity: the underlying planner really does raise NeedMoreBytes on this input
+        with pytest.raises(fit_planner.NeedMoreBytes):
+            fit_planner.gguf_header_from_path(p)
+
+        args = SimpleNamespace(model=p, vram=None)
+        with pytest.raises(clozn_cli.CloznError):
+            clozn_cli.cmd_plan(args)
 
 
 def test_format_plan_flags_dominant_tensor_type_guess():

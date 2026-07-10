@@ -143,3 +143,48 @@ def test_trace_cache_files_sorts_by_mtime_not_filename(isolated):
 def test_trace_parser_exposes_legacy_cache_flag():
     args = cli.build_parser().parse_args(["trace", "--legacy-cache"])
     assert args.legacy_cache is True
+
+
+# --------------------------------------------------------------------- degenerate `{}` run file (bug #3)
+# A bare `{}` written straight to a run_*.json file (e.g. some external tool, or a half-written record)
+# summarizes to id=None; that None used to reach store.get_run's `rid + ".json"` and blow up with
+# `TypeError: unsupported operand type(s) for +: 'NoneType' and 'str'`. Fixed transitively by #1's
+# get_run() rejecting a non-string rid instead of raising -- confirmed end-to-end here through the real
+# CLI entry points, not just the store layer.
+
+def _write_bare_run(runs_dir: Path, name="run_bare"):
+    os.makedirs(runs_dir, exist_ok=True)
+    (runs_dir / f"{name}.json").write_text("{}", encoding="utf-8")
+
+
+def test_trace_does_not_crash_with_a_bare_run_file(isolated, capsys):
+    """`clozn trace` (single-run mode) with ONLY a degenerate {} run present must fail cleanly (a
+    CloznError -- "latest run disappeared") rather than raise a raw TypeError."""
+    _write_bare_run(Path(runlog.RUNS_DIR))
+    import clozn.cli.main as cli_main
+
+    with pytest.raises(cli_main.CloznError):
+        cli.cmd_trace(_args())
+
+
+def test_trace_list_does_not_crash_with_a_bare_run_file(isolated, capsys):
+    """`clozn trace --list` must not crash either -- it has no early return on a missing/None id, it just
+    renders whatever it can for that row."""
+    _write_bare_run(Path(runlog.RUNS_DIR))
+    cli.cmd_trace(_args(list=True))
+    out = capsys.readouterr().out
+    assert "WHEN" in out                        # the header row printed; no traceback
+
+
+def test_trace_list_does_not_crash_with_a_bare_run_file_alongside_a_real_one(isolated, capsys):
+    """The mixed case: a real run + a degenerate one in the same journal, `--list` renders both rows
+    without crashing, and the real run's own row is still intact."""
+    _write_bare_run(Path(runlog.RUNS_DIR), name="run_aaaa_bare")
+    runlog.record(source="cli", messages=[{"role": "user", "content": "a real prompt"}], response="hey",
+                 started=2000.0, ended=2000.1)
+
+    cli.cmd_trace(_args(list=True))
+
+    out = capsys.readouterr().out
+    assert "WHEN" in out
+    assert "a real prompt" in out
