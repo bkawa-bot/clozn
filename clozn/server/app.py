@@ -19,17 +19,21 @@ import sys
 import threading
 import time
 
-sys.stdout.reconfigure(encoding="utf-8")
-os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
-HERE = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))   # clozn/server/app.py -> repo root is two levels up
-sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "lab"))   # so the dream substrate can import cloze_lab
-DEMO = os.path.join(REPO_ROOT, "studio")
+# `python -m clozn.server.app` executes this file as `__main__`, a SEPARATE module object from
+# `clozn.server.app` in sys.modules terms. Every route module below does `from clozn.server import app
+# as ctx` to read the shared SUB/SUBNAME/ENGINE state live -- if that import were left to run normally,
+# it would import (and re-execute) THIS FILE A SECOND TIME under its real dotted name, creating a second,
+# disconnected copy of all this module's state: main() would mutate the __main__ copy's SUB/SUBNAME
+# while every route handler reads the OTHER copy's untouched defaults (SUB=None, SUBNAME="qwen") --
+# invisible to the test suite (which only ever imports the dotted name, never runs this as __main__) but
+# fatal to a live `-m` boot. Aliasing sys.modules here, before any of the routes/* imports at the bottom
+# of this file run, makes `from clozn.server import app` resolve to THIS SAME object either way.
+sys.modules.setdefault("clozn.server.app", sys.modules[__name__])
+
+from clozn.server.config import HERE, REPO_ROOT, DEMO, CLOZN_DIR   # noqa: E402 (side effects: sys.path/env/stdout)
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
 
-sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "client"))     # the engine white-box SDK
-import numpy as np                                                   # noqa: E402
 try:
     from cloze_engine import EngineClient, EngineError
     ENGINE = EngineClient(port=int(os.environ.get("CLOZN_ENGINE_PORT", "8091")))            # the live C++ runtime
@@ -38,8 +42,6 @@ except Exception:
     ENGINE = ENGINE_QWEN = None
     class EngineError(RuntimeError):   # fallback so `except EngineError` resolves even if the SDK import failed
         pass
-
-CLOZN_DIR = os.path.join(os.path.expanduser("~"), ".clozn")   # studio memory + personality persist here
 
 
 def _git_commit():
@@ -2057,6 +2059,42 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw):
     return (ch[0].get("text", "") if ch else str(r)), [], finish
 
 
+# ------- route families: registered in dispatch order; each exposes try_get/try_post(handler, path, ...) --
+# returning True once it has written a response, so do_GET/do_POST can stop at the first family that
+# claims a path -- exactly the first-match-wins order the old inline if/elif chain had. POST falls
+# through, after every family, to the generic SUB.handle(path, body) substrate dispatch inlined at the
+# end of do_POST (the catch-all for /memory/*, /steer/* -- those live in the Substrate classes above, not
+# in a route module, since they're substrate-polymorphic domain dispatch, not per-path HTTP routing).
+#
+# runs.try_get_fallback (the generic GET /runs/<id>) is registered LAST in _GET_ROUTES, deliberately --
+# every more-specific /runs/<id>/<suffix> family (receipts' /export, runs' own /timeline etc.) must get
+# first refusal, since they all share the "/runs/" prefix the fallback also matches.
+import types as _types                                                # noqa: E402
+
+from clozn.server import static as _static_routes                     # noqa: E402
+from clozn.server.routes import health as _health_routes              # noqa: E402
+from clozn.server.routes import runs as _runs_routes                  # noqa: E402
+from clozn.server.routes import memory as _memory_routes              # noqa: E402
+from clozn.server.routes import facts as _facts_routes                # noqa: E402
+from clozn.server.routes import receipts as _receipts_routes          # noqa: E402
+from clozn.server.routes import replay as _replay_routes              # noqa: E402
+from clozn.server.routes import timetravel as _timetravel_routes      # noqa: E402
+from clozn.server.routes import profiles as _profiles_routes          # noqa: E402
+from clozn.server.routes import preferences as _preferences_routes    # noqa: E402
+from clozn.server.routes import feedback as _feedback_routes          # noqa: E402
+from clozn.server.routes import openai as _openai_routes              # noqa: E402
+from clozn.server.routes import engine as _engine_routes              # noqa: E402
+from clozn.server.routes import readouts as _readouts_routes          # noqa: E402
+
+_runs_fallback_routes = _types.SimpleNamespace(try_get=_runs_routes.try_get_fallback)
+
+_GET_ROUTES = [_static_routes, _health_routes, _runs_routes, _memory_routes, _receipts_routes,
+              _timetravel_routes, _profiles_routes, _openai_routes, _runs_fallback_routes]
+_POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes, _replay_routes,
+               _timetravel_routes, _profiles_routes, _preferences_routes, _feedback_routes,
+               _openai_routes, _engine_routes, _readouts_routes]
+
+
 def make_handler():
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -2076,59 +2114,6 @@ def make_handler():
 
         def _json(self, code, o, extra_headers=None):
             self._send(code, json.dumps(o), "application/json", extra_headers=extra_headers)
-
-        def _html(self, name):
-            self._send(200, open(os.path.join(DEMO, name), encoding="utf-8").read(), "text/html; charset=utf-8")
-
-        def _sse_chat(self, messages, max_new, model):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-
-            def chunk(delta, finish=None):
-                o = {"id": "chatcmpl-clozn", "object": "chat.completion.chunk", "model": model,
-                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
-                self.wfile.write(("data: " + json.dumps(o) + "\n\n").encode("utf-8"))
-                self.wfile.flush()
-
-            # HF chat stream (QwenSubstrate.chat_stream): a pure pass-through recorder rides along and the
-            # per-token trace is assembled after the stream (SUB.last_stream_trace()) -- so the run gets the
-            # Run Inspector timeline while the streamed chunks stay byte-identical (B3). runlog.record
-            # normalizes the raw step list; on any hiccup last_stream_trace() is [] -> a clean empty trace.
-            # memout: prompt mode fills what memory ACTUALLY rode this turn (block gated in/out) for the log.
-            #
-            # M5 any-client run_id bridge (EXPLAIN_THIS_ANSWER_SPEC.md): DEFERRED here, deliberately. Headers
-            # are already flushed above (self.end_headers(), before a single token is generated), so
-            # X-Clozn-Run-Id can never ride a header on this path -- the id only exists after _log_run runs,
-            # which is after the stream ends. A trailing SSE frame isn't clean either: a frame AFTER
-            # "data: [DONE]" is silently dropped by clients (incl. openai-python) that stop reading at the
-            # [DONE] sentinel, and a frame BEFORE [DONE] would need a full spec-shaped chat.completion.chunk
-            # (id/object/created/model/choices) just to smuggle one field, plus a stray chunk after the real
-            # finish_reason:"stop" chunk -- exactly the shape drift the honesty/compat contract rules out.
-            # Left unchanged; non-streaming (the required deliverable) carries clozn_run_id both ways.
-            t0 = time.time(); acc = []; memout = {}
-            try:
-                chunk({"role": "assistant"})
-                for piece in SUB.chat_stream(messages, max_new, mem_out=memout):
-                    acc.append(piece); chunk({"content": piece})
-                fr = SUB.last_finish_reason() if hasattr(SUB, "last_finish_reason") else None
-                openai_fr = _openai_finish_reason(fr)
-                chunk({}, finish=openai_fr)
-                self.wfile.write(b"data: [DONE]\n\n")
-                self.wfile.flush()
-                trace = SUB.last_stream_trace() if hasattr(SUB, "last_stream_trace") else None
-                self._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace, mem_out=memout,
-                              finish_reason=fr,
-                              finish_reason_fallback=None if fr else openai_fr)
-            except Exception as e:
-                self._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e), mem_out=memout)
-                try:
-                    self.wfile.write(("data: " + json.dumps({"error": str(e)}) + "\n\n").encode("utf-8"))
-                    self.wfile.flush()
-                except Exception:
-                    pass
 
         def _client(self, ua):
             ua = (ua or "").lower()
@@ -2329,770 +2314,23 @@ def make_handler():
             except Exception:
                 pass
 
-        def _facts(self, p, body):
-            """The FACTS tier (slot memory) endpoints. Every one degrades cleanly when the tier is off
-            (memory_facts) or no substrate/model is loaded -- the panel renders either way. The read/write
-            operations touch the shared 7B, so they run under the SlotBox's own lock (+ _TRAIN_LOCK inside
-            it) and are gated OFF the chat hot path by the setting -- the latency rule."""
-            import clozn.memory.facts_mode as facts_mode
-            if p == "/facts/mode":            # read or set the on/off gate (the latency switch)
-                if "enabled" in body:
-                    on = bool(body.get("enabled"))
-                    if not facts_mode.set_enabled(on):
-                        return self._json(200, {"ok": False, "reason": "could not persist the setting"})
-                    return self._json(200, {"ok": True, "enabled": facts_mode.enabled(),
-                                            "layer": facts_mode.LAYER})
-                box = _slots_box()
-                st = box.status() if box is not None else {"enabled": facts_mode.enabled(),
-                                                            "layer": facts_mode.LAYER,
-                                                            "profile": _active_profile_name() or "default",
-                                                            "count": 0}
-                return self._json(200, st)
-            box = _slots_box()
-            if box is None:                   # no substrate at all yet -> honest empty
-                return self._json(200, {"enabled": facts_mode.enabled(), "entries": [], "count": 0,
-                                        "note": "no substrate loaded"})
-            if p == "/facts/list":            # the store's entries (cue/answer) -- read-only, no forward
-                return self._json(200, {"enabled": facts_mode.enabled(), "entries": box.list_entries(),
-                                        **box.status()})
-            if p == "/facts/add":             # explicit gated write (the gate refusal is the receipt)
-                return self._json(200, box.add(str(body.get("cue", "")), str(body.get("answer", "")),
-                                               gate=bool(body.get("gate", True))))
-            if p == "/facts/delete":          # surgical per-entry removal (bystanders bit-identical)
-                return self._json(200, box.delete(cue=body.get("cue"), index=body.get("index")))
-            if p == "/facts/read":            # the honest read receipt (hit / gate value / abstention + slot_ms)
-                return self._json(200, box.read_receipt(str(body.get("query", ""))))
-            return self._json(404, {"error": f"POST {p}"})
-
-        def _timetravel(self, p, body):
-            """The time-travel debugger's gate + ring config + store stats (NEXT_STEPS #6). The snapshot
-            ring holds KV state in CPU RAM, so it is behind ONE persisted setting (`timetravel_snapshots`,
-            DEFAULT OFF -- the RAM rule); this endpoint reads/sets it, tunes the ring (cap / byte budget),
-            and reports the honest offloaded-bytes total. Branch RECORDING (POST /runs/<id>/branch) does
-            NOT depend on the gate; only holding live KV for the (future) re-prefill fast path does."""
-            import clozn.replay.timetravel as timetravel
-            if p == "/timetravel/mode":       # read or set the on/off gate + ring config
-                changed = False
-                if "enabled" in body:
-                    timetravel.set_enabled(bool(body.get("enabled")))
-                    changed = True
-                if "cap" in body or "budget_mb" in body:
-                    timetravel.set_config(cap=body.get("cap"), budget_mb=body.get("budget_mb"))
-                    changed = True
-                    cfg = timetravel.get_config()          # apply the (clamped) new ceilings to the LIVE store
-                    if _snap_store() is not None:
-                        _snap_store().reconfigure(cap=cfg["cap"], budget_mb=cfg["budget_mb"])
-                out = {"enabled": timetravel.enabled(), **timetravel.get_config()}
-                store = _snap_store()
-                if store is not None:
-                    out["store"] = store.stats()
-                out["changed"] = changed
-                return self._json(200, out)
-            if p == "/timetravel/stats":      # just the store's honest memory receipt
-                store = _snap_store()
-                return self._json(200, {"enabled": timetravel.enabled(),
-                                        **(store.stats() if store is not None else {})})
-            return self._json(404, {"error": f"POST {p}"})
-
         def do_GET(self):
             p = self.path.split("?")[0]
-            if p in ("/", "/index.html", "/instrument.html"):
-                return self._html("instrument.html")
-            if p == "/substrate":
-                return self._json(200, {"active": SUBNAME, "available": ["qwen", "dream"]})
-            if p == "/v1/models":            # OpenAI-compatible model list (so OAI clients connect)
-                return self._json(200, {"object": "list", "data": [
-                    {"id": "clozn-qwen", "object": "model", "owned_by": "clozn"}]})
-            if p == "/engine/health":
-                try:
-                    return self._json(200, {"engine": ENGINE.health()})
-                except Exception as e:
-                    return self._json(502, {"error": f"engine unreachable: {e}"})
-            if p == "/state":
-                return self._json(200, {"substrate": SUBNAME, "memory_mode": _memory_mode(),
-                                        **(SUB.state() if SUB else {})})
-            if p == "/memory/mode":          # which mechanism carries the cards (works on ANY substrate)
-                import clozn.memory.mode as memory_mode
-                return self._json(200, {"mode": _memory_mode(), "modes": list(memory_mode.MODES)})
-            if p == "/capture/tier":         # how much white-box data each run stores (light/standard/deep/lab)
-                from clozn.runs import capture_mode
-                return self._json(200, {"tier": capture_mode.tier(), "tiers": list(capture_mode.TIERS)})
-            if p == "/timetravel/mode":      # #6: is per-turn KV snapshotting on? + ring config + store stats
-                import clozn.replay.timetravel as timetravel
-                out = {"enabled": timetravel.enabled(), **timetravel.get_config()}
-                store = _snap_store()
-                if store is not None:
-                    out["store"] = store.stats()
-                return self._json(200, out)
-            if p == "/profiles/list":         # every saved persona bundle + which one is active (masthead + Settings)
-                from clozn.profiles import store as profiles
-                return self._json(200, {"profiles": profiles.ProfileStore().list(),
-                                        "active": _active_profile_name()})
-            if p.startswith("/memory/") and p.endswith("/runs"):   # E1: which runs used this card
-                cid = p[len("/memory/"):-len("/runs")]
-                return self._json(200, {"card_id": cid, "runs": _runs_for_card(cid)})
-            if p == "/runs":                 # the Run Log -- every interaction, newest first (the Studio Runs page)
-                import clozn.runs.store as runlog
-                return self._json(200, {"runs": runlog.list_runs(80)})
-            if p.startswith("/runs/") and p.endswith("/export"):   # one-call download: run + M1 explain + trace
-                import clozn.runs.store as runlog
-                import clozn.receipts.explain as explain
-                import clozn.receipts.bundle as receipt_bundle
-                from urllib.parse import urlparse, parse_qs
-                rid = p[len("/runs/"):-len("/export")]
-                run = runlog.get_run(rid)
-                if not run:
-                    return self._json(404, {"error": "run not found"})
-                try:
-                    xr = explain.explain(run)                # M1: pure read/reshape, no generation
-                except Exception:
-                    xr = None
-                bundle = receipt_bundle.build(run, explain=xr)
-                fmt = (parse_qs(urlparse(self.path).query).get("format") or ["json"])[0]
-                if fmt == "md":
-                    return self._send(200, receipt_bundle.to_markdown(bundle), "text/markdown; charset=utf-8",
-                                      extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.md"'})
-                return self._json(200, bundle,
-                                  extra_headers={"Content-Disposition": 'attachment; filename="' + rid + '.json"'})
-            if p.startswith("/runs/") and p.endswith("/timeline"):   # ordered RunEvent list -- zero generation
-                import clozn.runs.store as runlog
-                rid = p[len("/runs/"):-len("/timeline")]
-                run = runlog.get_run(rid)
-                if not run:
-                    return self._json(404, {"error": "run not found"})
-                from clozn.runs import timeline as run_timeline
-                return self._json(200, {"run_id": rid, "events": run_timeline.timeline(run)})
-            if p.startswith("/runs/") and p.endswith("/lineage"):   # branch/replay ancestry + child tree
-                import clozn.runs.store as runlog
-                rid = p[len("/runs/"):-len("/lineage")]
-                out = runlog.lineage(rid)
-                if not out:
-                    return self._json(404, {"error": "run not found"})
-                return self._json(200, out)
-            if p.startswith("/runs/") and p.endswith("/family"):   # the WHOLE branch family as GET /runs-shaped
-                # summaries -- the full lineage past the /runs 80-window, so the client's buildLineageFromRuns
-                # builds the complete tree instead of the recent-runs slice. (Distinct from /lineage, which
-                # returns the server-built ancestors/children/tree object.)
-                import clozn.runs.store as runlog
-                rid = p[len("/runs/"):-len("/family")]
-                fam = runlog.lineage_family(rid)
-                if fam is None:
-                    return self._json(404, {"error": "run not found"})
-                return self._json(200, {"runs": fam})
-            if p.startswith("/runs/") and p.endswith("/spans"):   # confidence spans -- the shape of the reply's certainty
-                import clozn.runs.store as runlog
-                rid = p[len("/runs/"):-len("/spans")]
-                run = runlog.get_run(rid)
-                if not run:
-                    return self._json(404, {"error": "run not found"})
-                from clozn.runs import confidence_spans
-                sp = confidence_spans.spans(run)
-                return self._json(200, {"run_id": rid, "spans": sp, "summary": confidence_spans.summarize(sp)})
-            if p.startswith("/runs/"):
-                import clozn.runs.store as runlog
-                r = runlog.get_run(p.split("/runs/", 1)[1])
-                return self._json(200, r) if r else self._json(404, {"error": "run not found"})
-            if p.endswith((".html", ".css", ".js")):
-                fn = os.path.normpath(os.path.join(DEMO, p.lstrip("/")))   # serve subdirs (pages/) too, safely
-                if fn.startswith(os.path.normpath(DEMO)) and os.path.isfile(fn):
-                    ct = ("text/html" if p.endswith(".html") else
-                          "text/css" if p.endswith(".css") else "application/javascript")
-                    return self._send(200, open(fn, encoding="utf-8").read(), ct + "; charset=utf-8")
+            for mod in _GET_ROUTES:
+                if mod.try_get(self, p):
+                    return
             self._json(404, {"error": "GET " + p})
 
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
             p = self.path.split("?")[0].rstrip("/") or "/"
-            if p == "/substrate":
-                name = str(body.get("name", "qwen"))
-                if name == SUBNAME:
-                    return self._json(200, {"active": SUBNAME, "switched": False})
-                if name not in ("qwen", "dream"):
-                    return self._json(400, {"error": "unknown substrate"})
-                self._json(200, {"active": name, "switched": True, "note": "reloading -- poll /substrate"})
-                threading.Thread(target=lambda: (time.sleep(0.4), switch_substrate(name)), daemon=True).start()
-                return
-            if p == "/feedback":   # preference-signal CAPTURE (the plumbing) -- log a directional signal
-                # (e.g. a Run Inspector "Too verbose" click) tied to the run that prompted it, so a later
-                # accumulate-and-propose step can mine "you keep asking for concise". Records only; changes
-                # nothing (agency-agnostic), and never fails the user's action over a feedback write.
-                from clozn.behavior import feedback
-                sig = feedback.record(body.get("run_id"), str(body.get("kind", "quick_repair")),
-                                      dial=body.get("dial"), direction=body.get("direction"),
-                                      meta=body.get("meta"))
-                return self._json(200, {"ok": True, "signal": sig})
-            if p == "/feedback/summary":   # the rollup a learning step reads: per-(dial,direction) counts +
-                from clozn.behavior import feedback            # the last run driving each, over an optional recent window (days)
-                wd = body.get("window_days")
-                ws = float(wd) * 86400 if isinstance(wd, (int, float)) else None
-                return self._json(200, feedback.summary(window_seconds=ws))
-            if p == "/preferences":   # propose-and-review: fold the feedback pattern into proposals + return
-                from clozn.behavior import feedback, preferences   # the PENDING ones (a (dial,direction) lean that crossed the
-                sigs = feedback.list_signals()  # threshold). refresh() creates/updates; it NEVER sets a dial.
-                wd = body.get("window_days")
-                if isinstance(wd, (int, float)):
-                    cut = time.time() - float(wd) * 86400
-                    sigs = [s for s in sigs if float(s.get("ts", 0)) >= cut]
-                pending = preferences.refresh(
-                    sigs, threshold=int(body.get("threshold", preferences.DEFAULT_THRESHOLD)))
-                return self._json(200, {"pending": pending})
-            if p == "/preferences/resolve":   # APPROVE (persist the dial) or DISMISS a proposal -- the review
-                from clozn.behavior import preferences            # half of propose-and-review. Approve is the ONLY place a
-                pr = preferences.resolve(str(body.get("id", "")), str(body.get("action", "")))  # dial is set.
-                if pr is None:
-                    return self._json(400, {"error": "unknown proposal id, or action not in {approve,dismiss}"})
-                applied = None
-                if pr["status"] == "approved" and SUB is not None and getattr(SUB, "steer", None) is not None:
-                    try:                       # persist the dial exactly like the F2 save-fix does (steer.set
-                        SUB.steer.set(pr["dial"], float(pr["suggested_value"]))   # caps per-axis)
-                        if hasattr(SUB.steer, "save_state") and getattr(SUB, "_pers_steer", None):
-                            SUB.steer.save_state(SUB._pers_steer)
-                        applied = {"dial": pr["dial"],
-                                   "value": float(SUB.steer.strength.get(pr["dial"], pr["suggested_value"]))}
-                    except Exception as e:
-                        applied = {"error": f"{type(e).__name__}: {e}"}
-                return self._json(200, {"ok": True, "proposal": pr, "applied": applied})
-            if p == "/capture/tier":  # set the capture tier (persisted; applies to subsequent runs)
-                from clozn.runs import capture_mode
-                name = str(body.get("tier", "")).strip().lower()
-                if name not in capture_mode.TIERS:
-                    return self._json(400, {"error": f"unknown tier (want one of {list(capture_mode.TIERS)})"})
-                if not capture_mode.set_tier(name):
-                    return self._json(200, {"ok": False, "reason": "could not persist the tier setting"})
-                return self._json(200, {"ok": True, "tier": name})
-            if p == "/memory/mode":   # swap the memory mechanism (persisted; takes effect immediately)
-                import clozn.memory.mode as memory_mode
-                mode = str(body.get("mode", "")).strip().lower()
-                if mode not in memory_mode.MODES:
-                    return self._json(400, {"error": f"unknown mode (want one of {list(memory_mode.MODES)})"})
-                if not memory_mode.set_mode(mode):
-                    return self._json(200, {"ok": False, "reason": "could not persist the mode setting"})
-                out = {"ok": True, "mode": mode}
-                # Toggling BACK to internalized: prompt-mode card edits never consolidated, so the trained
-                # prefix can be STALE relative to the cards. If the active set differs from what the
-                # current prefix embodies (_trained_rules), kick the normal background retrain so chats
-                # don't serve a personality the cards no longer describe. Cheap guards: nothing to do when
-                # there's no live memory, or when cards and prefix are both empty.
-                if mode == "internalized" and SUB is not None and getattr(SUB, "_mem", None) is not None:
-                    m = SUB._mem
-                    try:
-                        import clozn.memory.cards as memory_cards
-                        active = memory_cards.active_texts()
-                        trained = list(getattr(m, "_trained_rules", []) or [])
-                        if set(active) != set(trained) and (active or getattr(m, "prefix", None) is not None):
-                            out["resync"] = _start_retrain(m, "mode-switch", None, force=True)
-                    except Exception:
-                        pass
-                return self._json(200, out)
-            if p == "/profiles/save":        # create/update a named persona bundle (does NOT apply it -- see switch)
-                from clozn.profiles import store as profiles
-                try:
-                    saved = profiles.ProfileStore().save(profiles.validate(dict(body)))
-                except (ValueError, KeyError, TypeError) as e:
-                    return self._json(400, {"error": f"bad profile: {e}"})
-                return self._json(200, {"ok": True, "path": saved, "profile": profiles.ProfileStore().load(body["name"])})
-            if p == "/profiles/switch":      # THE persona switch: cards replace, dials replace, instant in prompt mode
-                from clozn.profiles import store as profiles
-                name = str(body.get("name", "")).strip()
-                if not name:
-                    return self._json(400, {"error": "need a profile name"})
-                try:
-                    prof = profiles.ProfileStore().load(name)
-                except (OSError, ValueError) as e:
-                    return self._json(404, {"error": f"no such profile '{name}': {e}"})
-                if SUB is None:
-                    return self._json(503, {"error": "no substrate loaded"})
-                return self._json(200, {"ok": True, **_profiles_switch(SUB, prof)})
-            if p == "/profiles/export":       # -> the bundle's own JSON (client downloads/saves it -- the portable artifact)
-                from clozn.profiles import store as profiles
-                name = str(body.get("name", "")).strip()
-                if not name:
-                    return self._json(400, {"error": "need a profile name"})
-                try:
-                    return self._json(200, {"ok": True, "profile": profiles.ProfileStore().load(name)})
-                except (OSError, ValueError) as e:
-                    return self._json(404, {"error": f"no such profile '{name}': {e}"})
-            if p == "/profiles/import":       # body IS the bundle JSON (as exported); optional {rename}
-                from clozn.profiles import store as profiles
-                try:
-                    bundle = dict(body.get("profile", body))
-                    rename = body.get("rename") or None
-                    p2 = profiles.validate(bundle)
-                    if rename:
-                        p2["name"] = rename
-                        p2 = profiles.validate(p2)
-                    path = profiles.ProfileStore().save(p2)
-                except (ValueError, KeyError, TypeError) as e:
-                    return self._json(400, {"error": f"bad profile bundle: {e}"})
-                return self._json(200, {"ok": True, "path": path, "profile": p2})
-            if p.startswith("/facts/"):      # the FACTS tier (slot memory) -- gated behind memory_facts (default OFF)
-                return self._facts(p, body)
-            if p.startswith("/timetravel/"):   # #6: the time-travel snapshot gate + ring config (default OFF)
-                return self._timetravel(p, body)
-            if p.startswith("/runs/") and p.endswith("/replay"):   # F1: re-run a past run under changed state -> a child run
-                rid = p[len("/runs/"):-len("/replay")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(404, {"error": "run not found"})
-                if not (SUB and getattr(SUB, "chat", None)):   # replay generates -> needs the qwen (chat) substrate
-                    return self._json(503, {"error": "replay needs the qwen substrate"})
-                changes = body.get("changes_applied", body.get("changes")) or {}
-                try:
-                    from clozn import replay
-                    child = replay.replay(run, changes, SUB)
-                except Exception as e:
-                    return self._json(500, {"error": f"replay failed: {type(e).__name__}: {e}"})
-                if child is None:
-                    return self._json(500, {"error": "replay failed"})
-                return self._json(200, child)
-            if p.startswith("/runs/") and p.endswith("/branch"):   # #6: rewind & branch from a turn -> a child run
-                rid = p[len("/runs/"):-len("/branch")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(404, {"error": "run not found"})
-                if not (SUB and getattr(SUB, "chat", None)):   # a branch re-generates -> needs the qwen substrate
-                    return self._json(503, {"error": "branch needs the qwen substrate"})
-                if "turn" not in body:
-                    return self._json(400, {"error": "need a branch turn"})
-                try:
-                    turn = int(body.get("turn"))
-                except (TypeError, ValueError):
-                    return self._json(400, {"error": "turn must be an integer"})
-                alt = body.get("alt_user")
-                # greedy by default (the receipt path: a branch's future is attributable, not sampling dice).
-                sample = bool(body.get("sample", False))
-                try:
-                    import clozn.replay.timetravel as timetravel
-                    child = timetravel.branch(run, turn, SUB, alt_user=alt, sample=sample,
-                                              store=_snap_store())
-                except Exception as e:
-                    return self._json(500, {"error": f"branch failed: {type(e).__name__}: {e}"})
-                if child is None:                          # None == bad turn index or a generation failure
-                    return self._json(400, {"error": "branch failed (turn out of range, or generation error)"})
-                return self._json(200, child)
-            if p.startswith("/runs/") and p.endswith("/propose-memory"):   # E2: propose a pending card from a past run
-                rid = p[len("/runs/"):-len("/propose-memory")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(200, {"ok": False, "reason": "no such run"})
-                # only a substrate whose memory exposes propose_memory qualifies (QwenSubstrate). Dream's
-                # memory has no such method -> the proposal is simply not offered there.
-                mem = getattr(SUB, "memory", None) if SUB else None
-                if mem is None or not hasattr(mem, "propose_memory"):
-                    return self._json(200, {"ok": False, "reason": "proposal not available for this substrate"})
-                import clozn.memory.cards as memory_cards
-                # Neutralize tone steering during the extraction so the dials don't color the read -- snapshot
-                # SUB.steer.strength, zero it, and RESTORE in a finally (mirror replay.py; never persist this).
-                steer = getattr(SUB, "steer", None)
-                saved_strength = dict(getattr(steer, "strength", {}) or {}) if steer is not None else None
-                try:
-                    if steer is not None:
-                        try:
-                            steer.strength = {}             # all dials neutral for the duration of the read
-                        except Exception:
-                            pass
-                    text = mem.propose_memory(run["messages"], run.get("response"))
-                except Exception as e:                      # propose_memory is defensive, but never crash the handler
-                    return self._json(200, {"proposed": False, "reason": f"proposal failed: {type(e).__name__}"})
-                finally:
-                    if steer is not None and saved_strength is not None:
-                        try:
-                            steer.strength = dict(saved_strength)   # restore EXACTLY (temp neutralization only)
-                        except Exception:
-                            pass
-                if text is None:
-                    return self._json(200, {"proposed": False,
-                                            "reason": "no durable preference found in this run"})
-                # PROVENANCE (NEXT_STEPS #1, the OBEY defense): the model just synthesized `text` as a
-                # third-person summary of the conversation -- it can be a plausible-sounding hallucination
-                # (dream_consolidation_findings.md law #4) or a faithfully-mined injected instruction. Cite
-                # the actual user words it was drawn from so a reviewer (and has_provenance()) can check the
-                # claim, not just read the model's word for it.
-                turn, span = _provenance_of(run["messages"])
-                card = memory_cards.create(text, status="pending", kind="preference",
-                                           risk=_risk_of(text), source_run_id=rid,
-                                           source_turn=turn, quoted_span=span,
-                                           evidence=f"proposed from run {rid}")
-                if not card:
-                    return self._json(200, {"proposed": False, "reason": "could not create card"})
-                # Route a STYLE preference to the tone dial that delivers it (see /memory/add). The card
-                # is still created + pending; dial_suggestion is null for a topical/non-style proposal.
-                return self._json(200, {"proposed": True, "card": card,
-                                        "dial_suggestion": _dial_suggestion(text)})
-            if p.startswith("/runs/") and p.endswith("/explain"):   # M1: assemble the FREE signals -- zero generation
-                rid = p[len("/runs/"):-len("/explain")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(404, {"error": "run not found"})
-                import clozn.receipts.explain as explain
-                return self._json(200, explain.explain(run))
-            if p.startswith("/runs/") and p.endswith("/receipts"):   # M2: prove-all -- leave-one-out + redundancy guard
-                rid = p[len("/runs/"):-len("/receipts")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(404, {"error": "run not found"})
-                mode = str(body.get("mode") or "regen")
-                if mode not in ("regen", "forced", "both"):
-                    return self._json(400, {"error": "mode must be one of regen|forced|both"})
-                # regen/both regenerate both arms -> needs the qwen substrate; forced-only never
-                # generates (S3: teacher-forced /score on the engine substrate) -- no chat needed.
-                if mode in ("regen", "both") and not (SUB and getattr(SUB, "chat", None)):
-                    return self._json(503, {"error": "receipts need the qwen substrate"})
-                from clozn import receipts
-                try:
-                    return self._json(200, receipts.prove_all(run, SUB, mode=mode))
-                except Exception as e:
-                    return self._json(500, {"error": f"receipts failed: {type(e).__name__}: {e}"})
-            if p.startswith("/runs/") and p.endswith("/receipt"):   # M2: one rigorous both-arms-greedy causal receipt
-                rid = p[len("/runs/"):-len("/receipt")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(404, {"error": "run not found"})
-                mode = str(body.get("mode") or "regen")
-                if mode not in ("regen", "forced", "both"):
-                    return self._json(400, {"error": "mode must be one of regen|forced|both"})
-                if mode in ("regen", "both") and not (SUB and getattr(SUB, "chat", None)):
-                    return self._json(503, {"error": "receipt needs the qwen substrate"})
-                influence = body.get("influence")
-                if not isinstance(influence, dict) or not influence:
-                    return self._json(400, {"error": "need an influence spec: one of "
-                                            "{card_id|dial|memory_off|behavior_off}"})
-                from clozn import receipts
-                try:
-                    out = receipts.receipt(run, influence, SUB, mode=mode)
-                except Exception as e:
-                    return self._json(500, {"error": f"receipt failed: {type(e).__name__}: {e}"})
-                if out is None:
-                    return self._json(500, {"error": "receipt failed (bad influence spec, or the replay "
-                                                      "could not be generated)"})
-                return self._json(200, out)
-            if p.startswith("/runs/") and p.endswith("/rederive"):   # S3: deterministic teacher-forced re-derivation
-                rid = p[len("/runs/"):-len("/rederive")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(404, {"error": "run not found"})
-                if not (SUB and getattr(SUB, "score_tokens", None)):
-                    return self._json(503, {"error": "rederive needs the engine substrate (score_tokens)"})
-                import clozn.receipts.rederive as rederive
-                try:
-                    out = rederive.rederive(run, SUB)
-                except Exception as e:
-                    return self._json(500, {"error": f"rederive failed: {type(e).__name__}: {e}"})
-                if out is None:
-                    return self._json(500, {"error": "rederive failed (no continuation to score, or the "
-                                                      "engine score call failed)"})
-                return self._json(200, out)
-            if p == "/jlens":   # J3: general J-lens passthrough (brain/lab page) -- per-token "disposed to say"
-                text = str(body.get("text", ""))
-                if not text:
-                    return self._json(400, {"error": "need a 'text' to read"})
-                layer = body.get("layer")
-                topk = int(body.get("topk", 5) or 5)
-                want_protocol = bool(body.get("protocol", False))
-                if not (SUB and getattr(SUB, "jlens", None)):   # non-engine substrate -> clean 200 absence
-                    return self._json(200, {"available": False, "run_id": None,
-                                            "reason": "the active substrate has no J-lens (needs the engine substrate)"})
-                res = SUB.jlens(text, layer=layer, topk=topk)
-                return self._json(200, _jlens_envelope(res, run_id=None, text_source="input",
-                                                       want_protocol=want_protocol))
-            if p.startswith("/runs/") and p.endswith("/jlens"):   # J3: the Run Inspector J-lens feed for a run
-                rid = p[len("/runs/"):-len("/jlens")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(404, {"error": "run not found"})
-                if not (SUB and getattr(SUB, "jlens", None)):
-                    return self._json(200, {"available": False, "run_id": rid,
-                                            "reason": "the active substrate has no J-lens (needs the engine substrate)"})
-                text, text_source = _jlens_run_text(run)          # prefer the stored response; note the source
-                if not text:
-                    return self._json(200, {"available": False, "run_id": rid,
-                                            "reason": "this run has no response/text to read"})
-                layer = body.get("layer")
-                topk = int(body.get("topk", 5) or 5)
-                want_protocol = bool(body.get("protocol", False))
-                res = SUB.jlens(text, layer=layer, topk=topk)
-                return self._json(200, _jlens_envelope(res, run_id=rid, text_source=text_source,
-                                                       want_protocol=want_protocol))
-            if p.startswith("/runs/") and p.endswith("/counterfactual"):   # M3: one counterfactual dial re-gen
-                rid = p[len("/runs/"):-len("/counterfactual")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(404, {"error": "run not found"})
-                if not (SUB and getattr(SUB, "chat", None)):   # both arms regenerate -> needs the qwen substrate
-                    return self._json(503, {"error": "counterfactual needs the qwen substrate"})
-                overrides = body.get("behavior_overrides")
-                if not isinstance(overrides, dict) or not overrides:
-                    return self._json(400, {"error": "need a behavior_overrides dict: {dial_name: value, ...}"})
-                import clozn.replay.counterfactual as counterfactual
-                try:
-                    out = counterfactual.counterfactual(run, overrides, SUB)
-                except Exception as e:
-                    return self._json(500, {"error": f"counterfactual failed: {type(e).__name__}: {e}"})
-                if out is None:
-                    return self._json(500, {"error": "counterfactual failed (bad overrides, or the replay "
-                                                      "could not be generated)"})
-                return self._json(200, out)
-            if p.startswith("/runs/") and p.endswith("/narrate"):   # M4: accountable-self narration + confabulation-diff
-                rid = p[len("/runs/"):-len("/narrate")]
-                import clozn.runs.store as runlog
-                run = runlog.get_run(rid)
-                if run is None:
-                    return self._json(404, {"error": "run not found"})
-                if not (SUB and getattr(SUB, "chat", None)):   # constrained + unconstrained BOTH generate -> needs qwen
-                    return self._json(503, {"error": "narration needs the qwen substrate"})
-                import clozn.receipts.narrate as narrate
-                matcher = narrate.lexical_default            # the weak keyword proxy -- the LABELED fallback judge
-                try:
-                    import clozn.receipts.semantic_matcher as semantic_matcher                  # the real, INDEPENDENT cross-encoder judge, if present
-                    if semantic_matcher.available():
-                        matcher = semantic_matcher.nli_support_matcher
-                except Exception:
-                    pass
-                try:
-                    # returns the receipt-constrained narration + confabulation flags; the raw unconstrained
-                    # "why" is NEVER a field in the result (narrate.py's structural trap guard). narrate()'s
-                    # own `note` states which matcher ran, so the response is self-describing about its honesty.
-                    out = narrate.narrate(run, SUB, support_matcher=matcher)
-                except Exception as e:
-                    return self._json(500, {"error": f"narrate failed: {type(e).__name__}: {e}"})
-                return self._json(200, out)
-            if p == "/engine/harvest":   # READ the real C++ runtime's activations (any substrate; the engine is separate)
-                try:
-                    h = ENGINE.harvest(str(body.get("text", ""))[:300])
-                    norms = np.linalg.norm(h.activations, axis=1)
-                    return self._json(200, {"tokens": h.tokens, "layer": int(h.layer), "n_embd": h.n_embd,
-                                            "norms": [round(float(x), 3) for x in norms]})
-                except Exception as e:
-                    return self._json(502, {"error": f"engine: {e}"})
-            if p == "/engine/layers":    # per-layer activation SUMMARY (depth x position norms) from the C++ engine
-                try:
-                    return self._json(200, ENGINE.harvest_layers(str(body.get("text", ""))[:300]))
-                except Exception as e:
-                    return self._json(502, {"error": f"engine-layers: {e}"})
-            if p == "/engine/observe":   # WRITE a scaled residual back at one token, OBSERVE how the prediction moves
-                try:
-                    pos = int(body.get("position", 0))
-                    scale = float(body.get("scale", 4.0))
-
-                    def tf(a):
-                        a = a.copy()
-                        if 0 <= pos < a.shape[0]:
-                            a[pos] = a[pos] * scale
-                        return a
-
-                    h, obs = ENGINE.edit_and_observe(str(body.get("text", ""))[:300], transform=tf, positions=[pos])
-                    return self._json(200, {"summary": obs.summary(), "shifted": obs.shifted(),
-                                            "moved_l2": obs.moved_l2, "baseline_top": obs.baseline_top,
-                                            "edited_top": obs.edited_top, "tokens": h.tokens,
-                                            "position": pos, "scale": scale})
-                except Exception as e:
-                    return self._json(502, {"error": f"engine: {e}"})
-            if p == "/engine/concepts":   # the brain's concepts, but read from the Qwen GGUF engine (harvest L15 + SAE)
-                try:
-                    if not (SUB and getattr(SUB, "brain", None)):
-                        return self._json(409, {"error": "concepts need the qwen substrate (it holds the SAE)"})
-                    return self._json(200, SUB.brain.concepts_from_engine(
-                        str(body.get("text", ""))[:300], ENGINE_QWEN, int(body.get("layer", 15))))
-                except Exception as e:
-                    return self._json(502, {"error": f"engine-qwen: {e}"})
-            if p == "/engine/steer/axes":   # the tone dials, but they apply on the GGUF via the engine
-                from clozn.behavior.steering.axes import AXES
-                es = _engine_steer()
-                return self._json(200, {"axes": [{"name": k, "poles": AXES[k]["poles"]} for k in AXES],
-                                        "ready": bool(es and es.ready), "engine": bool(ENGINE_QWEN)})
-            if p == "/engine/steer/check":   # A/B one dial on the engine GGUF: baseline vs steered generation
-                es = _engine_steer()
-                if es is None:
-                    return self._json(502, {"error": "no engine configured (set CLOZN_ENGINE_QWEN_PORT)"})
-                try:
-                    prompt = str(body.get("prompt", "Tell me about the city at night."))[:300]
-                    axis, val = str(body.get("axis", "warm")), float(body.get("value", 1.0))
-                    mx = int(body.get("max_tokens", 60))
-                    base = es.generate(prompt, strength={}, max_new=mx)            # no dial = the baseline
-                    stee = es.generate(prompt, strength={axis: val}, max_new=mx)
-                    return self._json(200, {"prompt": prompt, "axis": axis, "value": val,
-                                            "baseline": base.strip(), "steered": stee.strip()})
-                except Exception as e:
-                    return self._json(502, {"error": f"engine-steer: {e}"})
-            if p == "/engine/chat":   # THE HYBRID: chat on the GGUF via the engine, with the HF-trained memory injected
-                if ENGINE_QWEN is None:
-                    return self._json(502, {"error": "no engine configured"})
-                msgs = body.get("messages", [])
-                t0 = time.time()
-                memout = {}
-                try:
-                    mx = int(body.get("max_tokens", 220))
-                    kw = {}
-                    mem = getattr(SUB, "memory", None) if SUB else None
-                    if _memory_mode() == "prompt":
-                        # PROMPT MODE on the engine: the cards ride as the system block INSIDE the chat
-                        # template (compiled straight from the card store -- no HF model needed at all),
-                        # and the trained prefix is NOT injected. Strength maps to on/off; the topic gate
-                        # omits the block off-topic, exactly as on the HF path. This also means a FRESH
-                        # install (no trained prefix) finally gets memory over the engine.
-                        ms = float(getattr(mem, "memory_strength", 1.0)) if mem is not None \
-                            else _disk_memory()[1]
-                        block, applied, gate = _prompt_block_for(mem, _last_user(msgs), strength=ms)
-                        assembled = _inject_block(msgs, block)
-                        memout.update(mode="prompt", applied=applied, gate=gate, strength=ms,
-                                      prompt_block=block, assembled_messages=assembled)
-                        prompt = _engine_tmpl(ENGINE_QWEN, assembled)   # the loaded GGUF's own template, not Qwen ChatML
-                    else:
-                        prompt = _engine_tmpl(ENGINE_QWEN, msgs)        # (the internalized-prefix path is Qwen-trained,
-                        #                                                  but the CHAT TEMPLATE is still the model's own)
-                        # MEMORY: the live HF prefix if a qwen substrate is loaded, else the SAVED prefix from
-                        # disk -- so engine-chat works with NO HF model resident (the pure-engine substrate).
-                        if mem is not None and getattr(mem, "prefix", None) is not None:
-                            prefix = mem.prefix.detach().float().cpu()
-                            ms = float(getattr(mem, "memory_strength", 1.0))
-                        else:
-                            prefix, ms = _disk_memory()
-                        # TOPIC RELEVANCE gate on the injection strength (mirror the HF chat's gate="auto"):
-                        # scale ms by how on-topic the last user turn is vs the active rules. Only when a LIVE
-                        # memory with rules is present (the qwen substrate) -- the pure-engine/disk path has no
-                        # rule texts to gate against, so it degrades to no-gating (rel==1.0), the prior
-                        # behavior. Defensive: any failure leaves ms unscaled.
-                        try:
-                            if mem is not None and getattr(mem, "rules", None):
-                                ms = ms * float(mem._gate(_last_user(msgs)))
-                        except Exception:
-                            pass
-                        if prefix is not None:             # inject the trained soft prefix (dial x relevance)
-                            kw = {"prefix_embd": (prefix * ms).flatten().tolist(),
-                                  "prefix_rows": int(prefix.shape[0])}
-                    # backlog #5: record the EXACT rendered chat-template string the model saw (both memory
-                    # modes render one). _log_run reads memout["final_prompt"] -> the run record's final_prompt.
-                    memout["final_prompt"] = prompt
-                    # TONE: live dial values if a substrate is up, else the saved values from disk
-                    st = getattr(getattr(SUB, "steer", None), "strength", None) if SUB else None
-                    if not st:
-                        st = _disk_dials()
-                    if st and any(st.values()):
-                        es = _engine_steer()
-                        sv = es.steer_vector(st) if es is not None else None
-                        if sv:
-                            kw["steer_vec"] = sv
-                            kw["steer"] = {"coef": 1.0, "layer": es.layer}
-                    # Generate + capture a per-token trace alongside (B3). Reply is byte-identical to the
-                    # plain complete(); the trace feeds the Run Inspector timeline. steps=[] (diffusion, or a
-                    # stream hiccup) -> runlog stores a clean empty trace.
-                    reply_raw, steps, finish = _engine_complete_traced(ENGINE_QWEN, prompt, mx, kw)
-                    reply = reply_raw.strip()
-                    # Pass the raw step list; runlog.record normalizes it -> {tokens, confidence, alternatives}.
-                    self._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0, trace=steps,
-                                  mem_out=memout, finish_reason=finish)
-                    # "memory" == did memory actually ride this reply (block in prompt mode, prefix otherwise)
-                    return self._json(200, {"reply": reply,
-                                            "memory": bool(memout.get("applied")) or bool(kw.get("prefix_embd")),
-                                            "tone": bool(kw.get("steer_vec")), "via": "engine (GGUF)"})
-                except Exception as e:
-                    self._log_run("engine_chat", msgs, "", "clozn-qwen (engine)", t0, error=str(e),
-                                  mem_out=memout)
-                    return self._json(502, {"error": f"engine-chat: {e}"})
-            if p == "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied
-                if not (SUB and getattr(SUB, "chat", None)):
-                    return self._json(503, {"error": "chat needs the qwen substrate"})
-                msgs, mx = body.get("messages", []), int(body.get("max_tokens", 256))
-                if body.get("stream") and getattr(SUB, "chat_stream", None):
-                    return self._sse_chat(msgs, mx, str(body.get("model", "clozn-qwen")))
-                t0 = time.time()
-                trace_steps = []                            # HF non-stream: capture a per-token trace (B3)
-                memout = {}                                 # prompt mode: what memory actually rode this turn
-                reply = SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0, trace_out=trace_steps,
-                                 mem_out=memout)
-                fr = SUB.last_finish_reason() if hasattr(SUB, "last_finish_reason") else None
-                openai_fr = _openai_finish_reason(fr)
-                # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}.
-                rid = self._log_run("openai_api", msgs, reply, body.get("model", "clozn-qwen"), t0,
-                                    trace=trace_steps, mem_out=memout, finish_reason=fr,
-                                    finish_reason_fallback=None if fr else openai_fr)
-                resp = {"id": "chatcmpl-clozn", "object": "chat.completion",
-                       "created": int(time.time()), "model": body.get("model", "clozn-qwen"),
-                       "choices": [{"index": 0, "finish_reason": openai_fr,
-                                    "message": {"role": "assistant", "content": reply}}],
-                       "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
-                # M5 any-client run_id bridge (EXPLAIN_THIS_ANSWER_SPEC.md): surface the id two ways so a
-                # companion `clozn explain <run_id>` can inspect THIS reply from any OpenAI-compatible client
-                # -- an additive top-level field (spec-compliant clients ignore unknown fields) and a response
-                # header (for clients that only expose headers). Clean omission when logging failed (rid is
-                # None) -- never emit a literal "null"/"None".
-                extra_headers = {"X-Clozn-Run-Id": rid} if rid else None
-                if rid:
-                    resp["clozn_run_id"] = rid
-                # FRONTIER §1.1 "trust as an API field": when the caller OPTS IN (clozn_trust:true -- default
-                # OFF, so a standard OpenAI response stays byte-unchanged / fully compatible), attach
-                # claim-level confidence spans over the reply. Built by the SAME producer as
-                # GET /runs/<id>/spans (confidence_spans.spans over the normalized token trace), from THIS
-                # turn's trace -- so an agent can branch on per-claim confidence inline, without a second call.
-                # HONESTY (FRONTIER §6 ledger): these are RAW, UNCALIBRATED model probabilities. clozn_spans_note
-                # says so verbatim -- self-confidence != correctness; NO calibration is done here, and nothing
-                # implies confidence == correctness.
-                if body.get("clozn_trust"):
-                    try:
-                        from clozn.runs import confidence_spans
-                        import clozn.runs.store as _runlog
-                        _run_for_spans = {"trace": _runlog.steps_to_trace(trace_steps)}
-                        resp["clozn_spans"] = confidence_spans.spans(_run_for_spans)
-                        resp["clozn_spans_note"] = ("uncalibrated raw token confidence -- "
-                                                    "self-confidence != correctness")
-                    except Exception:
-                        pass                          # trust is additive: a spans hiccup never breaks the reply
-                return self._json(200, resp, extra_headers=extra_headers)
-            if p == "/say":   # studio chat (qwen memory model) -> capture it as a run
-                if not (SUB and getattr(SUB, "handle", None)):
-                    return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate"})
-                msg = str(body.get("message", ""))
-                t0 = time.time()
-                # HF studio chat: capture a per-token trace (B3) + the per-turn memory record. We hand
-                # SUB.handle collectors via body["_trace_out"] / body["_mem_out"] (server-side only, never
-                # echoed); QwenSubstrate's /say fills them through say()/_say_prompt -> _generate's
-                # pass-through recorder. Reply text is byte-identical with or without them.
-                trace_steps = []
-                body["_trace_out"] = trace_steps
-                memout = {}
-                body["_mem_out"] = memout
-                try:
-                    r = SUB.handle(p, body)
-                except Exception as e:
-                    self._log_run("studio_chat", [{"role": "user", "content": msg}], "",
-                                  "clozn-qwen", t0, error=str(e), mem_out=memout)
-                    return self._json(500, {"error": f"{type(e).__name__}: {e}"})
-                if r is None:
-                    return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
-                                            "need": "qwen", "active": SUBNAME})
-                # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}; a diffusion
-                # substrate (or any path that filled nothing) yields [] -> a clean empty trace.
-                self._log_run("studio_chat", [{"role": "user", "content": msg}],
-                              str(r.get("reply", "")), "clozn-qwen", t0, trace=trace_steps, mem_out=memout)
-                return self._json(200, r)
-            if p == "/denoise":   # Dream diffusion window -> capture it as a run
-                if not (SUB and getattr(SUB, "handle", None)):
-                    return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
-                                            "need": "dream", "active": SUBNAME})
-                prompt = str(body.get("prompt", ""))
-                t0 = time.time()
-                try:
-                    r = SUB.handle(p, body)
-                except Exception as e:
-                    self._log_run("denoise", [{"role": "user", "content": prompt}], "",
-                                  "clozn-dream", t0, error=str(e))
-                    return self._json(500, {"error": f"{type(e).__name__}: {e}"})
-                if r is None:
-                    return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
-                                            "need": "dream", "active": SUBNAME})
-                self._log_run("denoise", [{"role": "user", "content": prompt}],
-                              str(r.get("final_text", "")), "clozn-dream", t0)
-                return self._json(200, r)
+            for mod in _POST_ROUTES:
+                if mod.try_post(self, p, body):
+                    return
+            # Generic fallback: whatever the active substrate's own per-action dispatch serves
+            # (/memory/*, /steer/* -- Substrate._memory/_steer above, substrate-polymorphic domain
+            # dispatch, not per-path HTTP routing, so it stays here rather than in a route module).
             try:
                 r = SUB.handle(p, body) if SUB else None
                 if r is None:

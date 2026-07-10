@@ -17,6 +17,119 @@ Batch A complete; Batch B complete:
 - Phase 8: remaining readout/substrate modules moved into `clozn.readouts`, `clozn.substrates`, and `clozn.dev`
 - Phase 9: `clozn_server.py` moved whole (no split) into `clozn.server.app`; `fit_planner.py` moved into `clozn.cli.fit_planner` (its only consumer's package). No flat top-level `clozn/*.py` modules remain.
 - Phase 11: flat `scripts/` reorganized into purpose-based subdirectories (`bench/`, `calibration/`, `data/`, `smoke/`, plus the pre-existing `cleanup/`); moves-only, same precedent as Phase 9 (no internal split of the two giant calibration scripts).
+- Phase 9 (continued) -- the full `clozn.server.app` route split: 3124 lines split into an app-factory
+  scaffold (`app.py`, `config.py`, `static.py`, `sse.py`) + 13 `clozn/server/routes/*.py` HTTP-route
+  modules, one per family. See "Phase 9 full split" below.
+
+## Phase 9 full split -- `clozn.server.app` route extraction
+
+The Phase 9 move above landed `clozn_server.py` whole, unsplit. This chip did the actual split, following
+`docs/REPO_REORG_PLAN.md`'s target `clozn/server/` layout, in the documented incremental order (one
+family at a time, `pytest -q tests` after each).
+
+**The mechanism.** `clozn/server/app.py` still owns ALL shared mutable state -- `SUB`/`SUBNAME`/`ARGS`,
+`ENGINE`/`ENGINE_QWEN`, the retrain lock (`_TRAIN_LOCK`/`_RETRAIN`), `SLOTS`/`SNAPSHOTS`, and every helper
+function/class ~30 test files monkeypatch directly via `monkeypatch.setattr(cs, "X", ...)` (`cs` ==
+`clozn.server.app`). Each `routes/<family>.py` does `from clozn.server import app as ctx` and reads
+`ctx.SUB`, `ctx._prompt_block_for(...)`, etc. at CALL time (never `from clozn.server.app import X`, which
+would bind a private copy immune to monkeypatching) -- so a test's `monkeypatch.setattr(cs, "SUB", Fake())`
+is observed identically whether the code that reads `SUB` lives in `app.py` or in a route module. Each
+route module exposes `try_get(handler, path)` / `try_post(handler, path, body)` returning `True` once it
+has written a response (via the handler's existing `_json`/`_send`) or `False` to let the next family try
+-- `do_GET`/`do_POST` are now a 6-line and an 18-line dispatch loop over ordered `_GET_ROUTES`/
+`_POST_ROUTES` lists, ending in the one fallback that isn't a per-path route: `SUB.handle(path, body)`,
+the substrate-polymorphic dispatch for `/memory/*`/`/steer/*` that lives in the `Substrate` class
+hierarchy, not in a route file (see "What did NOT move" below).
+
+**A real bug this caught, fixed:** `python -m clozn.server.app` runs this file as `__main__` -- a SEPARATE
+module object from `clozn.server.app` in `sys.modules` terms. Once route modules started doing
+`from clozn.server import app as ctx`, that import silently re-executed `app.py` a second time under its
+real dotted name (fresh `SUB=None`/`SUBNAME="qwen"` defaults, a second `ENGINE`/`ENGINE_QWEN` pair, ...),
+so `main()` mutated the `__main__` copy while every route handler read the other, untouched copy --
+invisible to the whole test suite (which only ever imports the dotted name, never runs this as
+`__main__`) but fatal to a live boot (`/state` reported `substrate: "qwen"` no matter what `--substrate`
+was passed). Fixed with one line near the top of `app.py`:
+`sys.modules.setdefault("clozn.server.app", sys.modules[__name__])`, run before the routes/* imports at
+the bottom of the file, so both names resolve to the same module object either way. Caught only because
+this chip's hard gate requires booting the real server, not just green unit tests -- exactly the
+unit-green-does-not-mean-it-works case the gate exists for.
+
+**Families extracted, in order (all landed, all green):**
+
+1. scaffolding + app factory -- `config.py` (path/env/sys.path setup, moved out of app.py's top),
+   `static.py` (Studio static-file serving), `sse.py` (the `/v1/chat/completions` SSE writer), plus
+   `routes/health.py` (`/substrate`, `/engine/health`, `/state`, `/capture/tier`) and the
+   `_GET_ROUTES`/`_POST_ROUTES` dispatch-loop mechanism itself.
+2. `routes/runs.py` -- `/runs`, `/runs/<id>` (generic, registered LAST so more-specific suffixes get
+   first refusal), `/timeline`, `/lineage`, `/family`, `/spans`.
+3. `routes/memory.py` (`/memory/mode`, `/memory/<id>/runs`, `/runs/<id>/propose-memory`) and
+   `routes/facts.py` (all of `/facts/*`).
+4. `routes/receipts.py` -- `/runs/<id>/export`, `/explain`, `/receipts`, `/receipt`, `/rederive`,
+   `/jlens` (general + per-run), `/narrate`.
+5. `routes/replay.py` (`/runs/<id>/replay`, `/runs/<id>/counterfactual`) and `routes/timetravel.py`
+   (`/timetravel/mode`, `/timetravel/stats`, `/runs/<id>/branch`).
+6. `routes/profiles.py` (`/profiles/*`), `routes/preferences.py` (`/preferences`,
+   `/preferences/resolve`), `routes/feedback.py` (`/feedback`, `/feedback/summary`).
+7. `routes/openai.py` (`/v1/models`, `/v1/chat/completions`), `routes/engine.py` (`/engine/observe`,
+   `/engine/steer/axes`, `/engine/steer/check`, `/engine/chat`, plus `/say` and `/denoise` -- the two
+   studio-chat surfaces that log a run, placed here since no better-fitting family exists for them in
+   the target tree), `routes/readouts.py` (`/engine/harvest`, `/engine/layers`, `/engine/concepts`).
+
+**What did NOT move (by design, not by running out of time):** the `Substrate`/`QwenSubstrate`/
+`DreamSubstrate`/`_EngineMemory`/`EngineSubstrate` class hierarchy (~880 lines) and the helper functions
+they and the route modules share stay in `app.py`. These are substrate-polymorphic DOMAIN dispatch (a
+card-CRUD/tone-dial trait surface shared by three different model backends), not per-path HTTP routing --
+`Substrate._memory`/`Substrate._steer` are reached through the one generic `SUB.handle(path, body)`
+fallback at the end of `do_POST`, not through a `routes/*.py` file. They are also the most
+monkeypatch-entangled part of the file (nearly every test-patched symbol in the `cs.X` list is read from
+inside these classes); relocating them would be a substrate-package refactor (arguably `clozn.substrates`
+territory), not a mechanical HTTP split, and was out of scope for this chip. `behavior.py` (listed in the
+target tree for `/steer/*`, `/behavior/*`) was not created for the same reason: there is no inline
+per-path dispatch for `/steer/*` to extract (it is entirely `Substrate._steer`), and no `/behavior/*`
+route exists in this codebase at all.
+
+**Resulting file line counts** (`wc -l`):
+
+```text
+clozn/server/app.py              2362   (was 3124)
+clozn/server/config.py              21
+clozn/server/static.py              28
+clozn/server/sse.py                 65
+clozn/server/routes/__init__.py      1
+clozn/server/routes/health.py       59
+clozn/server/routes/runs.py         72
+clozn/server/routes/memory.py      106
+clozn/server/routes/facts.py        47
+clozn/server/routes/receipts.py    189
+clozn/server/routes/replay.py       58
+clozn/server/routes/timetravel.py   85
+clozn/server/routes/profiles.py     69
+clozn/server/routes/preferences.py  42
+clozn/server/routes/feedback.py     26
+clozn/server/routes/openai.py       74
+clozn/server/routes/engine.py      187
+clozn/server/routes/readouts.py     38
+```
+
+No route file exceeds 189 lines (target: none `>>500`). `app.py` shrank by 762 lines (24%); the remainder
+is the shared-context state + the `Substrate` domain hierarchy described above, not undispersed routing.
+
+**Verification (green at every family boundary, not just at the end):**
+
+```text
+pytest -q tests
+1204 passed, 10 skipped
+```
+
+`python -c "import clozn.server.app"` clean; `python -m clozn.server.app --help` exits 0;
+`python -m clozn --help` exits 0. LIVE boot verified (`python -m clozn.server.app --port <free>
+--substrate engine`, CPU-only, no GPU/model): `GET /` -> 200 (6254-byte HTML), `GET /state` -> 200 with
+the CORRECT active substrate + real dial/card counts (post sys.modules fix), `GET /substrate`,
+`GET /runs`, `GET /runs/<id>`, `GET /runs/<id>/{timeline,spans,export,lineage}` (export vs the generic
+by-id route both resolve correctly -- the ordering-sensitive case), `POST /runs/<id>/explain`,
+`GET /v1/models`, `GET /memory/mode`, `GET /profiles/list`, `GET /timetravel/mode`,
+`POST /feedback/summary` -- all responded correctly; `GET /does-not-exist` -> 404. Server terminated
+cleanly.
 
 ## Moved Modules
 
