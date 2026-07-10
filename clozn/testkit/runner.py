@@ -1,4 +1,4 @@
-"""testkit.py -- the tiny-test harness: user-authored, run-level assertions over the run record's already-
+"""testkit/runner.py -- the tiny-test harness: user-authored, run-level assertions over the run record's already-
 legible seams (trace / memory / meta / response / causal receipts). Like unit tests, but for model runs.
 
 Spec format is plain JSON (stdlib `json` -- no yaml, no pytest, no pip installs; clozn is a no-install

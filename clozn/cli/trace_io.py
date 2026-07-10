@@ -39,9 +39,14 @@ def _save_trace(meta: dict, steps: list) -> str:
 
 
 def _trace_cache_files() -> list[str]:
+    """Trace cache files, oldest -> newest, so callers can rely on files[-1] being the most RECENT one.
+
+    Sorted by mtime, not filename -- lexicographic name order silently breaks the moment a non-timestamp
+    filename lands in the cache dir (e.g. a stray `new-trace.json`, which sorts after every real
+    `<unix-ts>-<pid>.json` name in ASCII order regardless of when it was actually written)."""
     from clozn.cli import main as ctx
     d = os.path.join(ctx.HOME, "traces")
-    return sorted(glob.glob(os.path.join(d, "*.json")))
+    return sorted(glob.glob(os.path.join(d, "*.json")), key=os.path.getmtime)
 
 
 def _render_trace(meta: dict, steps: list):

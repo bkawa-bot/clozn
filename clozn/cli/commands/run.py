@@ -58,8 +58,11 @@ def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
     so `--heat | cat` is still clean text.
 
     The engine emits, per token, a `tokens_committed` frame (the chosen piece + its confidence) and a
-    `step_lens` frame (the top-k it weighed). We pair them by position into a replayable trace -- the raw
-    material for the timeline: where was it uncertain, and what did it almost say."""
+    `step_lens` frame (the top-k it weighed), plus a `gen_finished` frame (the real stop cause: eos vs.
+    length) once done. We pair the per-token frames by position into a replayable trace -- the raw
+    material for the timeline: where was it uncertain, and what did it almost say -- and also pluck the
+    stop cause so CLI runs get a real `finish_reason` in the run journal, same as Studio's chat path.
+    -> (token count, steps, finish_reason)."""
     body = json.dumps({"prompt": prompt, "max_tokens": max_tokens, "stream": True}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", data=body,
                                  headers={"Content-Type": "application/json"})
@@ -89,6 +92,7 @@ def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
     try:
         import clozn.runs.store as runlog
         steps = runlog.accumulate_ar_events(frames)
+        finish = runlog.finish_reason_from_frames(frames)
     except Exception:
         by_pos: dict = {}
         for obj in frames:
@@ -108,16 +112,26 @@ def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
                                     for tid, p, pr in zip(ids, pieces, probs)
                                     if (chosen_id is None or tid != chosen_id) and p != step["piece"]][:3]
         steps = [by_pos[p] for p in sorted(by_pos, key=lambda x: (x is None, x))]
-    return n, steps
+        finish = None
+        for obj in frames:
+            if obj.get("type") == "gen_finished" and isinstance(obj.get("reason"), str):
+                finish = "stop" if obj["reason"] == "eos" else "length"
+    return n, steps, finish
 
 
-def complete_once(port: int, prompt: str, max_tokens: int) -> str:
-    """Non-streaming /v1/completions (used for diffusion, which commits out of reading order)."""
+def _complete_once_raw(port: int, prompt: str, max_tokens: int) -> dict:
+    """Non-streaming /v1/completions -- the raw parsed JSON response (choices[0] carries text + the
+    engine's real finish_reason)."""
     body = json.dumps({"prompt": prompt, "max_tokens": max_tokens}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", data=body,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as resp:
-        r = json.loads(resp.read())
+        return json.loads(resp.read())
+
+
+def complete_once(port: int, prompt: str, max_tokens: int) -> str:
+    """Non-streaming /v1/completions (used for diffusion, which commits out of reading order)."""
+    r = _complete_once_raw(port, prompt, max_tokens)
     return (r.get("choices") or [{}])[0].get("text", "")
 
 
@@ -125,8 +139,9 @@ def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, h
     """One generation: stream (AR, auto-saving the trace) or denoise (diffusion). Prints stats. -> response."""
     g0 = time.time()
     steps = []
+    finish = None
     if mode == "autoregressive":
-        n, steps = stream_ar(port, text, max_tokens, heat=heat)
+        n, steps, finish = stream_ar(port, text, max_tokens, heat=heat)
         sys.stdout.write("\n")
         if heat and fmt.COLOR:                             # a legend + how many tokens wavered, after the reply
             lows = sum(1 for s in steps if fmt._num(s.get("conf")) < 0.5)
@@ -135,16 +150,20 @@ def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, h
                      "backend": "GPU" if gpu else "CPU", "mode": mode, "n": n, "t": time.time()}, steps)
         resp = "".join(s["piece"] for s in steps).strip()
     else:
-        resp = complete_once(port, text, max_tokens).strip()
+        r = _complete_once_raw(port, text, max_tokens)
+        resp = (r.get("choices") or [{}])[0].get("text", "").strip()
+        finish = (r.get("choices") or [{}])[0].get("finish_reason")
         print(resp); n = len(resp.split())
     dt = time.time() - g0
     rate = f", ~{n/dt:.0f} tok/s" if dt > 0 and mode == "autoregressive" else ""
     print(f"{fmt.DIM}- {n} tok in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{fmt.RST}", file=sys.stderr)
-    _log_run_cli(model_name, prompt_for_trace, resp, steps, g0)   # every CLI turn becomes an inspectable run
+    # every CLI turn becomes an inspectable run -- finish_reason mirrors Studio's chat path (the engine's
+    # real stop cause: "stop" on eos, "length" on truncation), not left null like before this fix.
+    _log_run_cli(model_name, prompt_for_trace, resp, steps, g0, finish_reason=finish)
     return resp
 
 
-def _log_run_cli(model_name, prompt, resp, steps, started):
+def _log_run_cli(model_name, prompt, resp, steps, started, finish_reason=None):
     """Write this CLI turn to the Run Log so `clozn run`/REPL turns show up in the Studio alongside chats.
     runlog.py lives in clozn.runs (a sibling of this stdlib-only CLI) and is itself stdlib-only, so we
     import it directly. Logging must NEVER break a run -- swallow everything."""
@@ -155,7 +174,7 @@ def _log_run_cli(model_name, prompt, resp, steps, started):
         trace = runlog.steps_to_trace(steps)
         runlog.record(source="cli", client="cli", model=model_name, substrate="engine",
                       messages=[{"role": "user", "content": prompt}], response=resp,
-                      trace=trace, started=started)
+                      trace=trace, started=started, finish_reason=finish_reason)
     except Exception:
         pass
 

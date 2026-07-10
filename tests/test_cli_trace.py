@@ -110,6 +110,36 @@ def test_save_trace_does_not_prune_legacy_cache_files(isolated):
     assert len(list(trace_dir.glob("*.json"))) == 31
 
 
+def test_trace_cache_files_sorts_by_mtime_not_filename(isolated):
+    """Regression: a stray non-timestamp filename (e.g. `new-trace.json`, left over from some other
+    process writing straight into the traces dir) must not be picked as "the latest trace" just because
+    it sorts last lexicographically -- ASCII puts digits before lowercase letters, so `new-trace.json`
+    sorts after every real `<unix-ts>-<pid>.json` name regardless of when it was actually written.
+    `clozn branch` relies on `_trace_cache_files()[-1]` being the most RECENTLY WRITTEN file."""
+    import clozn.cli.trace_io as trace_io
+
+    trace_dir = Path(cli.HOME) / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+
+    old_real = trace_dir / "1700000000-001.json"
+    old_real.write_text(json.dumps({"meta": {"id": "1700000000-001"}, "steps": [{"piece": "old"}]}),
+                         encoding="utf-8")
+    os.utime(old_real, (1_700_000_000, 1_700_000_000))
+
+    stray = trace_dir / "new-trace.json"                # written in between, but sorts last by NAME
+    stray.write_text(json.dumps({"meta": {"id": "new-trace"}, "steps": []}), encoding="utf-8")
+    os.utime(stray, (1_700_000_500, 1_700_000_500))
+
+    latest_real = trace_dir / "1700001000-002.json"      # the actually-latest trace, by write time
+    latest_real.write_text(json.dumps({"meta": {"id": "1700001000-002"}, "steps": [{"piece": "new"}]}),
+                            encoding="utf-8")
+    os.utime(latest_real, (1_700_001_000, 1_700_001_000))
+
+    files = trace_io._trace_cache_files()
+
+    assert files[-1] == str(latest_real)
+
+
 def test_trace_parser_exposes_legacy_cache_flag():
     args = cli.build_parser().parse_args(["trace", "--legacy-cache"])
     assert args.legacy_cache is True

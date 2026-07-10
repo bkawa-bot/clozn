@@ -1,4 +1,4 @@
-"""test_testkit -- model-free tests for clozn/testkit.py (backlog/tiny-test-harness).
+"""test_testkit -- model-free tests for clozn/testkit/runner.py (backlog/tiny-test-harness).
 
 No model, no GPU, no torch: static checks are exercised against plain fixture run dicts (the exact shapes
 runlog.py / receipt_bundle.py / run_timeline.py document); the one causal check (`leans_on`) is exercised

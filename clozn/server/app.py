@@ -1273,7 +1273,7 @@ class QwenSubstrate(Substrate):
         from clozn.behavior.steering.hf_adapter import SteeringControl
         sae = GpuSAE()
         tok, model = load7b()
-        self.brain = BrainReadout(model, tok, sae, DEMO, HERE)
+        self.brain = BrainReadout(model, tok, sae, DEMO, os.path.join(REPO_ROOT, "research"))
         self.memory = SelfTeach("Qwen/Qwen2.5-7B-Instruct", model=model, tok=tok,   # shares the model
                                 persist_path=_pers("studio_memory.pt"))
         self.steer = SteeringControl(model, tok)            # tone dials on the same model

@@ -236,7 +236,8 @@ def test_concepts_unavailable_on_an_ordinary_run(store):
                        trace={"tokens": ["a"], "confidence": [0.9]})
     out = explain.explain(store.get_run(rid))
     assert out["concepts"] == {"available": False,
-                               "note": "concept readout needs the engine — not available on this run."}
+                               "note": "concept readout needs the qwen/PyTorch substrate (SAE) — "
+                                       "not available on this run."}
 
 
 def test_concepts_available_when_the_run_carries_sae_readouts(store):

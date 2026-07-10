@@ -184,7 +184,8 @@ def _format_influences(inf: dict) -> list[str]:
 def _format_concepts(conc: dict) -> list[str]:
     out = [f"{fmt.BOLD}concepts{fmt.RST}"]
     if not conc.get("available"):
-        out.append(f"  {fmt.DIM}not available -- {conc.get('note', 'concept readout needs the engine')}{fmt.RST}")
+        out.append(f"  {fmt.DIM}not available -- "
+                   f"{conc.get('note', 'concept readout needs the qwen/PyTorch substrate (SAE)')}{fmt.RST}")
         return out
     spans = [s for s in fmt._as_list(conc.get("spans")) if isinstance(s, dict)]
     if not spans:

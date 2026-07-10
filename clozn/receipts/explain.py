@@ -42,7 +42,7 @@ import clozn.memory.cards as memory_cards
 LOW_CONF = 0.5
 
 _NO_TRACE_NOTE = "token trace captured on the engine path"
-_NO_CONCEPTS_NOTE = "concept readout needs the engine — not available on this run."
+_NO_CONCEPTS_NOTE = "concept readout needs the qwen/PyTorch substrate (SAE) — not available on this run."
 
 
 def _as_list(x) -> list:

@@ -66,7 +66,7 @@ HAPPY_PATH = {
         ],
         "dials": [{"name": "concise", "value": 0.5, "causal_verified": None}],
     },
-    "concepts": {"available": False, "note": "concept readout needs the engine — not available on this run."},
+    "concepts": {"available": False, "note": "concept readout needs the qwen/PyTorch substrate (SAE) — not available on this run."},
 }
 
 
@@ -114,12 +114,12 @@ def test_not_available_notes_render_verbatim_not_hidden():
         "run_id": "run_no_trace",
         "confidence": {"available": False, "note": "token trace captured on the engine path"},
         "influences_active": {"cards": [], "dials": [], "gate": None, "mode": None, "note": "no memory applied"},
-        "concepts": {"available": False, "note": "concept readout needs the engine — not available on this run."},
+        "concepts": {"available": False, "note": "concept readout needs the qwen/PyTorch substrate (SAE) — not available on this run."},
     }
     out = clozn_cli.format_explain(expl)
     assert "token trace captured on the engine path" in out
     assert "no memory applied" in out
-    assert "concept readout needs the engine" in out
+    assert "concept readout needs the qwen/PyTorch substrate (SAE)" in out
     assert "not available" in out.lower()
     assert not _PCT_RE.search(out)
 
@@ -130,7 +130,7 @@ def test_zero_hesitations_and_no_influences_still_renders_honestly_not_hidden():
         "confidence": {"available": True, "threshold": 0.5, "n_tokens": 3, "summary": "0 hesitations",
                        "uncertain_moments": []},
         "influences_active": {"cards": [], "dials": [], "gate": None, "mode": None, "note": "no memory applied"},
-        "concepts": {"available": False, "note": "concept readout needs the engine — not available on this run."},
+        "concepts": {"available": False, "note": "concept readout needs the qwen/PyTorch substrate (SAE) — not available on this run."},
     }
     out = clozn_cli.format_explain(expl)
     assert "0 hesitations" in out

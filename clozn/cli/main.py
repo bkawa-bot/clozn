@@ -124,7 +124,7 @@ def build_parser():
     ppref.add_argument("--port", type=int, default=0, help="Studio port (default 8090)")
     ppref.set_defaults(fn=cmd_preferences)
     pte = sub.add_parser("test", help="run tiny-test assertions against a stored run (the receipt/replay seams)")
-    pte.add_argument("file", help="path to a JSON tiny-test spec (see clozn/testkit.py's module docstring)")
+    pte.add_argument("file", help="path to a JSON tiny-test spec (see clozn/testkit/runner.py's module docstring)")
     pte.add_argument("--json", action="store_true",
                      help="print the machine-readable suite result instead of the report")
     pte.add_argument("--attach", action="store_true",
