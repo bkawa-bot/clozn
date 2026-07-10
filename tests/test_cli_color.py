@@ -20,6 +20,7 @@ REPO = os.path.dirname(HERE)                                  # repo root (clozn
 sys.path.insert(0, REPO)
 
 import clozn.cli.main as cli                                      # noqa: E402
+import clozn.cli.formatting as fmt                                 # noqa: E402
 
 _ESC = re.compile(r"\033\[[0-9;]*m")
 
@@ -30,17 +31,20 @@ def _visible(s: str) -> str:
 
 @pytest.fixture
 def color_on(monkeypatch):
-    monkeypatch.setattr(cli, "COLOR", True)
-    monkeypatch.setattr(cli, "RST", "\033[0m")
-    monkeypatch.setattr(cli, "DIM", "\033[2m")
+    # The color globals live in clozn.cli.formatting (not clozn.cli.main): _paint/_conf_rgb/etc. are
+    # defined there and read them live from their OWN module, so a patch has to land on the real owner to
+    # be observed. cli.<name> re-exports below (e.g. cli._paint) are the SAME function objects either way.
+    monkeypatch.setattr(fmt, "COLOR", True)
+    monkeypatch.setattr(fmt, "RST", "\033[0m")
+    monkeypatch.setattr(fmt, "DIM", "\033[2m")
     return True
 
 
 @pytest.fixture
 def color_off(monkeypatch):
-    monkeypatch.setattr(cli, "COLOR", False)
-    monkeypatch.setattr(cli, "RST", "")
-    monkeypatch.setattr(cli, "DIM", "")
+    monkeypatch.setattr(fmt, "COLOR", False)
+    monkeypatch.setattr(fmt, "RST", "")
+    monkeypatch.setattr(fmt, "DIM", "")
     return False
 
 

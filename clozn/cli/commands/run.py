@@ -1,0 +1,238 @@
+"""commands.run -- `clozn run`: one-shot or interactive (Ollama-style REPL) generation against a model,
+reusing a warm `clozn serve` daemon when one is up. Owns the prompting/streaming plumbing (chat templates,
+the AR SSE stream, the diffusion non-stream path) and the trace-capture side effect of every turn: each
+reply is paired into a replayable per-token trace and written to both the legacy trace cache and the
+shared run journal (clozn.runs.store), which Studio and `clozn trace`/`clozn explain` read.
+
+HOME lives on `clozn.cli.main`; imported INSIDE cmd_run (not at module level) for the same circular-import
+reason documented in engine_process.py's module docstring.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+import urllib.request
+
+from clozn.cli import formatting as fmt
+from clozn.cli.commands.models import _flags_for, _friendly, resolve_model
+from clozn.cli.engine_process import _find_warm, _free_port, spawn_engine
+from clozn.cli.trace_io import _runid, _save_trace
+
+SYS = "You are a helpful assistant."
+
+
+def _chat_session(history, new_user: str, family: str = "qwen") -> str:
+    """Build the whole conversation in the family's chat template. BOS is left to the engine (add_bos).
+    history: list of (user, assistant) pairs already exchanged; new_user: the current turn."""
+    if family == "mistral":
+        s = "".join(f"[INST] {u} [/INST] {a}</s>" for u, a in history)
+        return s + f"[INST] {new_user} [/INST]"
+    if family == "llama3":
+        s = f"<|start_header_id|>system<|end_header_id|>\n\n{SYS}<|eot_id|>"
+        for u, a in history:
+            s += (f"<|start_header_id|>user<|end_header_id|>\n\n{u}<|eot_id|>"
+                  f"<|start_header_id|>assistant<|end_header_id|>\n\n{a}<|eot_id|>")
+        return s + (f"<|start_header_id|>user<|end_header_id|>\n\n{new_user}<|eot_id|>"
+                    f"<|start_header_id|>assistant<|end_header_id|>\n\n")
+    if family == "gemma":
+        s = "".join(f"<start_of_turn>user\n{u}<end_of_turn>\n<start_of_turn>model\n{a}<end_of_turn>\n"
+                    for u, a in history)
+        return s + f"<start_of_turn>user\n{new_user}<end_of_turn>\n<start_of_turn>model\n"
+    s = f"<|im_start|>system\n{SYS}<|im_end|>\n"
+    for u, a in history:
+        s += f"<|im_start|>user\n{u}<|im_end|>\n<|im_start|>assistant\n{a}<|im_end|>\n"
+    return s + f"<|im_start|>user\n{new_user}<|im_end|>\n<|im_start|>assistant\n"
+
+
+def _chat_wrap(prompt: str, family: str = "qwen") -> str:
+    return _chat_session([], prompt, family)
+
+
+def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
+    """POST /v1/completions (stream); print each committed token. -> (count, trace steps w/ conf + alts).
+
+    heat=True paints each token as it lands by its confidence (the denoise heatmap, live); False (default)
+    is the plain, byte-for-byte-unchanged stream. Painting also no-ops when color is off (piped/NO_COLOR),
+    so `--heat | cat` is still clean text.
+
+    The engine emits, per token, a `tokens_committed` frame (the chosen piece + its confidence) and a
+    `step_lens` frame (the top-k it weighed). We pair them by position into a replayable trace -- the raw
+    material for the timeline: where was it uncertain, and what did it almost say."""
+    body = json.dumps({"prompt": prompt, "max_tokens": max_tokens, "stream": True}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", data=body,
+                                 headers={"Content-Type": "application/json"})
+    n = 0
+    frames = []                                             # every parsed SSE frame, for the shared accumulator
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                obj = json.loads(payload)
+            except Exception:
+                continue
+            frames.append(obj)
+            if obj.get("type") == "tokens_committed":       # print live as tokens land
+                for it in obj.get("items", []):
+                    sys.stdout.write(fmt._stream_token(it.get("piece", ""), it.get("conf"), heat))
+                    sys.stdout.flush()
+                    n += 1
+    # Accumulation (pair tokens_committed with step_lens by position) lives in runlog so the CLI and the
+    # engine-chat capture share ONE tested implementation. Fall back to a local pairing if the import fails
+    # -- the stdlib CLI must never break on a missing sibling.
+    try:
+        import clozn.runs.store as runlog
+        steps = runlog.accumulate_ar_events(frames)
+    except Exception:
+        by_pos: dict = {}
+        for obj in frames:
+            if obj.get("type") == "tokens_committed":
+                for it in obj.get("items", []):
+                    by_pos[it.get("pos")] = {"pos": it.get("pos"), "index": it.get("pos"),
+                                             "token_id": it.get("id"), "piece": it.get("piece", ""),
+                                             "prob": round(float(it.get("conf", 0.0)), 3),
+                                             "conf": round(float(it.get("conf", 0.0)), 3), "alts": []}
+            elif obj.get("type") == "step_lens":
+                step = by_pos.get((obj.get("positions") or [None])[0])
+                if step:
+                    pieces, probs = obj.get("pieces", []), obj.get("probs", [])
+                    ids = obj.get("ids") or [None] * len(pieces)
+                    chosen_id = step.get("token_id")
+                    step["alts"] = [{"token_id": tid, "piece": p, "prob": round(float(pr), 3)}
+                                    for tid, p, pr in zip(ids, pieces, probs)
+                                    if (chosen_id is None or tid != chosen_id) and p != step["piece"]][:3]
+        steps = [by_pos[p] for p in sorted(by_pos, key=lambda x: (x is None, x))]
+    return n, steps
+
+
+def complete_once(port: int, prompt: str, max_tokens: int) -> str:
+    """Non-streaming /v1/completions (used for diffusion, which commits out of reading order)."""
+    body = json.dumps({"prompt": prompt, "max_tokens": max_tokens}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        r = json.loads(resp.read())
+    return (r.get("choices") or [{}])[0].get("text", "")
+
+
+def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, heat=False):
+    """One generation: stream (AR, auto-saving the trace) or denoise (diffusion). Prints stats. -> response."""
+    g0 = time.time()
+    steps = []
+    if mode == "autoregressive":
+        n, steps = stream_ar(port, text, max_tokens, heat=heat)
+        sys.stdout.write("\n")
+        if heat and fmt.COLOR:                             # a legend + how many tokens wavered, after the reply
+            lows = sum(1 for s in steps if fmt._num(s.get("conf")) < 0.5)
+            print(f"{fmt._conf_legend()}   {fmt.DIM}{lows} wavered{fmt.RST}", file=sys.stderr)
+        _save_trace({"id": _runid(), "model": model_name, "prompt": prompt_for_trace,
+                     "backend": "GPU" if gpu else "CPU", "mode": mode, "n": n, "t": time.time()}, steps)
+        resp = "".join(s["piece"] for s in steps).strip()
+    else:
+        resp = complete_once(port, text, max_tokens).strip()
+        print(resp); n = len(resp.split())
+    dt = time.time() - g0
+    rate = f", ~{n/dt:.0f} tok/s" if dt > 0 and mode == "autoregressive" else ""
+    print(f"{fmt.DIM}- {n} tok in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{fmt.RST}", file=sys.stderr)
+    _log_run_cli(model_name, prompt_for_trace, resp, steps, g0)   # every CLI turn becomes an inspectable run
+    return resp
+
+
+def _log_run_cli(model_name, prompt, resp, steps, started):
+    """Write this CLI turn to the Run Log so `clozn run`/REPL turns show up in the Studio alongside chats.
+    runlog.py lives in clozn.runs (a sibling of this stdlib-only CLI) and is itself stdlib-only, so we
+    import it directly. Logging must NEVER break a run -- swallow everything."""
+    try:
+        import clozn.runs.store as runlog
+        # stream_ar hands us per-token steps ({piece, conf, alts}); runlog owns the steps->trace mapping so
+        # the on-disk trace schema stays one contract shared with the engine-chat capture (issue B3).
+        trace = runlog.steps_to_trace(steps)
+        runlog.record(source="cli", client="cli", model=model_name, substrate="engine",
+                      messages=[{"role": "user", "content": prompt}], response=resp,
+                      trace=trace, started=started)
+    except Exception:
+        pass
+
+
+def _repl(port, mode, flags, fam, gpu, model, max_tokens, heat=False):
+    """Interactive chat loop on a warm engine (Ollama-style). /reset clears, /bye quits."""
+    name = _friendly(model)
+    is_chat = flags.get("chat") and mode == "autoregressive"
+    tty = sys.stdin.isatty()
+    print(f"{fmt.DIM}chat with {name}  -  /reset clears history, /bye quits{fmt.RST}", file=sys.stderr)
+    history = []
+    while True:
+        if tty:
+            try:
+                msg = input("\nyou> ").strip()
+            except EOFError:
+                break
+        else:
+            line = sys.stdin.readline()
+            if not line:
+                break
+            msg = line.strip()
+        if not msg:
+            continue
+        if msg in ("/bye", "/exit", "/quit"):
+            break
+        if msg == "/reset":
+            history = []; print(f"{fmt.DIM}(history cleared){fmt.RST}", file=sys.stderr); continue
+        text = (_chat_session(history, msg, fam) if is_chat
+                else "".join(f"{u}\n{a}\n" for u, a in history) + msg)
+        sys.stdout.write(f"{fmt.BOLD}{name}>{fmt.RST} ")
+        resp = _run_turn(port, mode, text, max_tokens, gpu, name, msg, heat=heat)
+        history.append((msg, resp))
+    print(f"{fmt.DIM}bye{fmt.RST}", file=sys.stderr)
+
+
+def cmd_run(args):
+    from clozn.cli import main as ctx
+    model = resolve_model(args.model)
+    flags = _flags_for(model)
+    if args.mask is not None:
+        flags["mask"] = args.mask
+    if args.eos is not None:
+        flags["eos"] = args.eos
+    fam = flags.get("tmpl", "qwen")
+    warm = None if args.cpu else _find_warm(model)     # reuse a live `clozn serve` instead of reloading
+    proc = logf = None
+    if warm:
+        port, gpu, mode = warm
+        print(f"{fmt.DIM}- {_friendly(model)} warm on port {port} ({'GPU' if gpu else 'CPU'}, {mode}){fmt.RST}",
+              file=sys.stderr, flush=True)
+    else:
+        os.makedirs(ctx.HOME, exist_ok=True)
+        logf = open(os.path.join(ctx.HOME, "engine-run.log"), "w")
+        port = args.port or _free_port()
+        print(f"{fmt.DIM}- loading {_friendly(model)} …{fmt.RST}", file=sys.stderr, flush=True)
+        t0 = time.time()
+        proc, health, gpu = spawn_engine(model, port, flags, prefer_gpu=not args.cpu, logf=logf)
+        mode = health.get("mode", "?")
+        print(f"{fmt.DIM}- {_friendly(model)} on {'GPU' if gpu else 'CPU'} build ({mode}), "
+              f"ready in {time.time()-t0:.1f}s{fmt.RST}", file=sys.stderr, flush=True)
+    try:
+        if args.prompt is not None:                            # one-shot
+            is_chat = flags.get("chat") and mode == "autoregressive"
+            text = _chat_wrap(args.prompt, fam) if is_chat else args.prompt
+            _run_turn(port, mode, text, args.max, gpu, _friendly(model), args.prompt, heat=args.heat)
+            if mode == "autoregressive":
+                print(f"{fmt.DIM}  clozn trace   inspect where it was uncertain + what it almost said{fmt.RST}",
+                      file=sys.stderr)
+        else:                                                  # interactive REPL (Ollama-style)
+            _repl(port, mode, flags, fam, gpu, model, args.max, heat=args.heat)
+    finally:
+        if proc:                                       # only tear down an engine WE spawned; leave warm ones up
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+        if logf:
+            logf.close()

@@ -38,6 +38,7 @@ REPO = os.path.dirname(HERE)                                 # repo root (clozn/
 sys.path.insert(0, REPO)
 
 import clozn.cli.main as clozn_cli                                            # noqa: E402
+import clozn.cli.commands.explain as explain_cmd                                     # noqa: E402
 from clozn.server import app as cs                                    # noqa: E402
 import clozn.memory.cards as memory_cards                                          # noqa: E402
 import clozn.memory.mode as memory_mode                                            # noqa: E402
@@ -266,20 +267,24 @@ def test_why_flag_opts_in():
 
 
 def test_cmd_explain_without_why_never_calls_fetch_narrate(monkeypatch):
-    """The generation is opt-in: without --why, _fetch_narrate must never even be called."""
-    monkeypatch.setattr(clozn_cli, "_fetch_explain", lambda port, rid: {})
+    """The generation is opt-in: without --why, _fetch_narrate must never even be called.
+
+    cmd_explain/_fetch_explain/_fetch_narrate all live in clozn.cli.commands.explain; cmd_explain's call
+    to _fetch_narrate(...) is a bare-name lookup resolved against THAT module's globals, so the patch has
+    to land there (not on clozn.cli.main's re-exported copy of the name) to be observed."""
+    monkeypatch.setattr(explain_cmd, "_fetch_explain", lambda port, rid: {})
 
     def _boom(port, rid):
         raise AssertionError("_fetch_narrate must not be called without --why")
-    monkeypatch.setattr(clozn_cli, "_fetch_narrate", _boom)
+    monkeypatch.setattr(explain_cmd, "_fetch_narrate", _boom)
 
     args = clozn_cli.build_parser().parse_args(["explain", "run_x"])
     clozn_cli.cmd_explain(args)   # must not raise
 
 
 def test_cmd_explain_with_why_calls_narrate_and_prints_it(monkeypatch, capsys):
-    monkeypatch.setattr(clozn_cli, "_fetch_explain", lambda port, rid: {})
-    monkeypatch.setattr(clozn_cli, "_fetch_narrate", lambda port, rid: HAPPY_PATH)
+    monkeypatch.setattr(explain_cmd, "_fetch_explain", lambda port, rid: {})
+    monkeypatch.setattr(explain_cmd, "_fetch_narrate", lambda port, rid: HAPPY_PATH)
 
     args = clozn_cli.build_parser().parse_args(["explain", "run_x", "--why"])
     clozn_cli.cmd_explain(args)

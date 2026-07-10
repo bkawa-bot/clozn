@@ -20,6 +20,9 @@ Batch A complete; Batch B complete:
 - Phase 9 (continued) -- the full `clozn.server.app` route split: 3124 lines split into an app-factory
   scaffold (`app.py`, `config.py`, `static.py`, `sse.py`) + 13 `clozn/server/routes/*.py` HTTP-route
   modules, one per family. See "Phase 9 full split" below.
+- Phase 10: the full `clozn.cli.main` split: 1793 lines split into `main.py` (argparse root + dispatch),
+  `formatting.py`, `engine_process.py`, `trace_io.py`, and 7 `clozn/cli/commands/*.py` modules, one per
+  command family. See "Phase 10 full split" below.
 
 ## Phase 9 full split -- `clozn.server.app` route extraction
 
@@ -131,6 +134,158 @@ by-id route both resolve correctly -- the ordering-sensitive case), `POST /runs/
 `POST /feedback/summary` -- all responded correctly; `GET /does-not-exist` -> 404. Server terminated
 cleanly.
 
+## Phase 10 full split -- `clozn.cli.main` command extraction
+
+Split the monolithic `clozn/cli/main.py` (1793 lines) into command modules + helper modules, in the
+documented incremental order (helpers first, then leaf commands, then run/serve/studio, then
+explain/trace/branch), `pytest -q tests` after each family, exactly like the Phase 9 route split. Unlike
+the server, `main.py` has one piece of genuine shared mutable state to carry across modules: `HOME`
+(the `~/.clozn` root) and `CloznError` (the one user-facing exception class `main()` catches). Both stay
+owned by `main.py`; every other module reaches them via `from clozn.cli import main as ctx` ->
+`ctx.HOME` / `raise ctx.CloznError(...)`, read at CALL time (never `from clozn.cli.main import HOME`,
+which would bind a stale copy immune to a later `_setup_console()` call or a test's monkeypatch). The
+color globals (`DIM`/`BOLD`/`RST`/`COLOR`) got the same treatment but a different owner: they now live in
+`formatting.py` itself (not `main.py`), and every module that prints with them does
+`from clozn.cli import formatting as fmt` -> `fmt.DIM` etc. Functions that read them internally
+(`_paint`, `_conf_rgb`, `_heatmap_lines`, ...) are safe to import directly by name anywhere
+(`from clozn.cli.formatting import _paint`) despite living in `formatting.py`, since a Python function
+always reads its OWN defining module's globals, never a copy bound into whoever imported it -- that's
+what makes `formatting.py`'s module-level `COLOR`/`DIM`/`BOLD`/`RST` the single live source of truth
+regardless of which command module calls into it.
+
+**A real circular-import bug this caught, fixed:** the first cut had `engine_process.py`/`trace_io.py`/
+every `commands/*.py` do `from clozn.cli import main as ctx` at MODULE level (mirroring the `ctx.SUB`
+pattern from the Phase 9 server split literally). That is safe as long as `clozn.cli.main` happens to be
+the first CLI submodule anyone imports -- which is true for every test file and for `python -m clozn` --
+but breaks the moment anything imports a submodule directly and first, e.g. `from clozn.cli.engine_process
+import find_engine` in isolation: `engine_process` starts loading, hits its `from clozn.cli import main as
+ctx` line, which loads `main.py` fresh, which (at its own module level) does `from clozn.cli.engine_process
+import _free_port` -- but `engine_process` is still mid-load, stuck at that very `ctx` import, so
+`_free_port` doesn't exist on it yet: `ImportError: cannot import name '_free_port' from partially
+initialized module`. Fixed by making every `ctx`/`CloznError` reference in `engine_process.py`,
+`trace_io.py`, and every `commands/*.py` file a FUNCTION-LOCAL import (`from clozn.cli import main as ctx`
+as the first line of each function body that needs `ctx.HOME`/`ctx.CloznError`, not a module-level
+import) -- by the time any of these functions actually run, module loading has long finished, so the
+import is always safe regardless of which submodule was entered first. Verified by directly importing
+every new submodule in isolation (`import clozn.cli.engine_process`, `.trace_io`, `.formatting`,
+`.commands.models`, `.commands.explain`, each on its own, fresh interpreter) as well as via `clozn.cli.main`
+-- exactly the kind of gap unit-green tests don't catch (every test file already imports
+`clozn.cli.main` first), caught only because the hard gate requires exercising the live import graph, not
+just the test suite.
+
+**A real pre-existing bug this caught and fixed:** `REPO` was computed as
+`os.path.dirname(os.path.dirname(os.path.abspath(__file__)))` (two levels up from the file) -- correct
+for the OLD flat `clozn/cli.py`, but `cli.py` became `cli/main.py` in the original Phase 9 move (one
+directory deeper) without updating this arithmetic, so `REPO` had silently resolved to `<repo>/clozn`
+instead of `<repo>` ever since. This made `find_engine()` unable to find a real engine build under
+`<repo>/engine/core` (always fell through to "no engine built", even with one present) and made
+`_model_dirs()` scan a nonexistent `<repo>/clozn/models` instead of the real `<repo>/models`. Fixed
+(now three `dirname` calls, in `engine_process.py`) and confirmed live: `ENGINE_CORE` now resolves to
+the real `<repo>/engine/core` and `os.path.isdir(...)` on it returns `True`. Caught only because the hard
+gate requires running `clozn models`/`clozn plan` against the real repo layout, not just importing the
+module.
+
+**Command -> module mapping:**
+
+- `commands/models.py` -- `cmd_models`, `cmd_pull`, `cmd_plan` + model discovery (`resolve_model`,
+  `_flags_for`, `_friendly`, `_model_dirs`, `_scan_models`, `KNOWN`, `PULLABLE`) and the fit-planner render
+  (`format_plan`, `_fmt_ctx`, `_detect_vram_gb`).
+- `commands/serve.py` -- `cmd_serve` + its two small daemon-registry companions `cmd_ps`/`cmd_stop`
+  (grouped together rather than over-fragmented into three files, since all three share one registry).
+- `commands/studio.py` -- `cmd_studio` (launch + health-poll + browser-open) and its helpers.
+- `commands/run.py` -- `cmd_run`, the interactive REPL (`_repl`), one-turn execution (`_run_turn`), the
+  AR/diffusion prompting plumbing (`stream_ar`, `complete_once`, chat templates), and the run-log side
+  effect (`_log_run_cli`).
+- `commands/explain.py` -- `cmd_explain` + `cmd_trace` + `cmd_branch` (folded together per the migration
+  doc's own "(+ trace/branch/preferences if cohesive)" note -- all three are the run-inspection family),
+  plus `format_explain`/`format_narrate` and their `_fetch_explain`/`_fetch_narrate`/`_verified_tag`/
+  `_last_run_id` support.
+- `commands/preferences.py` -- `cmd_preferences`, `format_preferences`, `_fetch_preferences`,
+  `_resolve_preference` (kept separate from `explain.py`, matching the target tree's explicit listing).
+- `commands/test.py` -- `cmd_test` (testkit invocation), `format_test_report`, `_load_test_spec`,
+  `_fetch_live_receipt`.
+- `formatting.py` -- the color globals (`DIM`/`BOLD`/`RST`/`COLOR`) + `_setup_console()` + every pure
+  render helper (`_paint`, `_conf_rgb`, `_heatmap_lines`, `_conf_legend`, `_confbar`, `_sparkline`,
+  `_paint_sparkline`, `_stream_token`, `_num`, `_as_list`, `_as_dict`, `_term_width`).
+- `engine_process.py` -- `find_engine`, `_env_with_dlls`, `_launch_args`, `spawn_engine`, `_health`,
+  `_free_port`, `_log_tail`, plus the warm-daemon registry (`_reg_read`/`_reg_write`/`_register`/`_kill`/
+  `_unregister`/`_find_warm`) and the (now-fixed) `REPO`/`ENGINE_CORE`/`BUILDS` constants.
+- `trace_io.py` -- CLI trace save/load (`_save_trace`, `_trace_cache_files`, `_runid`) and the
+  runlog-journal -> terminal-render bridge (`_render_trace`, `_cmd_trace_legacy`, `_runlog_trace_steps`,
+  `_runlog_trace_meta`, `_list_runlog_traces`, `_import_runlog`).
+- `main.py` -- `build_parser()`, `main()`, the shared `HOME`/`CloznError`, and a block of stable re-exports
+  (`_free_port`, `_save_trace`, `format_explain`, `_SPARK`, ...) purely so pre-split tests that call
+  `clozn.cli.main.<name>` directly keep working -- safe because none of them are mutated globals, just
+  functions/constants.
+
+**Test compatibility:** four test files (`test_cli_color.py`, `test_cli_trace.py`, `test_testkit_cli.py`,
+`test_narrate_cli.py`) needed edits, all mechanical and all about monkeypatch TARGETS, never call sites:
+- `test_cli_color.py`'s `color_on`/`color_off` fixtures, `test_cli_trace.py`'s `isolated` fixture, and
+  `test_testkit_cli.py`'s `iso` fixture patched `COLOR`/`DIM`/`BOLD`/`RST` on `clozn.cli.main` -- updated
+  to patch `clozn.cli.formatting` instead, since that's where the real, live-read globals now live
+  (patching the old location would silently no-op: the render functions never read it there anymore).
+  `test_cli_trace.py`'s `HOME` patch needed NO change -- `HOME` stayed on `clozn.cli.main` exactly where
+  the test already patches it.
+- `test_narrate_cli.py`'s two tests proving `--why` is opt-in patched `_fetch_explain`/`_fetch_narrate` on
+  `clozn.cli.main` -- updated to patch `clozn.cli.commands.explain` instead, since `cmd_explain` (which
+  calls them by bare name) is defined there now, not in `main.py`; a patch on `main`'s re-exported copy
+  wouldn't be observed by `cmd_explain`'s own call.
+- `test_explain_cli.py`, `test_preferences_cli.py`, `test_fit_planner.py` needed NO changes: they only call
+  functions directly (`format_explain(...)`, `build_parser()`, ...), never monkeypatch CLI internals, and
+  every name they reference is still importable from `clozn.cli.main` via the re-export block.
+- `test_engine_ctx_overflow.py` does `from clozn.cli import find_engine, _env_with_dlls` (the bare
+  `clozn.cli` package, not `.main`) -- this import was ALREADY broken before this chip (confirmed with
+  `python -c "from clozn.cli import find_engine"` on the pre-split tree: `ImportError`), is caught by a
+  `try/except -> pytest.skip` inside a module-scoped fixture, and is gated behind `-m model` (not run in
+  the default suite, hence invisible in the 1204/10 baseline). Left as-is rather than re-exported from
+  `clozn/cli/__init__.py`: doing so would force the ENTIRE CLI module tree to load eagerly the moment
+  ANYTHING imports `clozn.cli` (even `from clozn.cli import fit_planner`, which `test_fit_planner.py`
+  does), which is both a bigger blast radius than this pre-existing, already-skipped gap warrants and its
+  own fresh circular-import risk (package `__init__.py` would become a NEW earlier entry point than
+  `main.py`). Not a regression -- verified identical (broken) behavior before and after this chip.
+
+**Resulting file line counts** (`wc -l`):
+
+```text
+clozn/cli/main.py                  156   (was 1793)
+clozn/cli/formatting.py             187
+clozn/cli/engine_process.py         184
+clozn/cli/trace_io.py               186
+clozn/cli/commands/models.py        288
+clozn/cli/commands/run.py           238
+clozn/cli/commands/serve.py          88
+clozn/cli/commands/studio.py        112
+clozn/cli/commands/explain.py       375
+clozn/cli/commands/preferences.py    89
+clozn/cli/commands/test.py          120
+```
+
+No module exceeds 400 lines (target: none `>>400`); `main.py` shrank by 1637 lines (91%) down to the
+argparse tree + dispatch + shared constants + the test-compat re-export block.
+
+**Verification (green at every family boundary, not just at the end):**
+
+```text
+pytest -q tests
+1204 passed, 10 skipped
+```
+
+`python -c "import clozn.cli.main"` clean; also confirmed each new submodule imports standalone, in
+isolation, in a fresh interpreter (`import clozn.cli.engine_process`, `.trace_io`, `.formatting`,
+`.commands.models`, `.commands.explain`) -- the specific check the circular-import bug above needed.
+LIVE CLI run (no server, no GPU, no model load): `python -m clozn --help` lists all 13 subcommands;
+`python -m clozn models` correctly reports "no engine built" (verified against the real, empty
+`engine/core` -- no `build-*` directories exist on this machine, only the `build_*.bat` scripts) and
+lists real local GGUFs (via the fixed `REPO`); `python -m clozn plan llama-1b` and `plan qwen-0.5b` read
+real local GGUF headers and print correct FITS/size/layer verdicts; `python -m clozn ps` reports no
+daemons; `python -m clozn trace` rendered a REAL prior run from the shared `~/.clozn/runs` journal (the
+full confidence heatmap + per-token bars + "almost" alternatives); `python -m clozn stop all`,
+`clozn explain --last` (Studio down), `clozn test does_not_exist.json`, and `clozn pull
+totally-unknown-model-xyz` all produced clean, one-line `CloznError` messages (never a traceback) with the
+correct exit codes (1, 1, 2, 1 respectively); `--help` on every subcommand
+(run/serve/models/pull/plan/studio/ps/stop/trace/branch/explain/preferences/test) renders its full flag
+list correctly. `clozn/__main__.py` still does `from clozn.cli.main import main` unchanged and works.
+
 ## Moved Modules
 
 - `clozn/cli.py` -> `clozn/cli/main.py`
@@ -188,6 +343,20 @@ cleanly.
 - standalone self-teach server -> `clozn/dev/self_teach_server.py`
 - `clozn/clozn_server.py` -> `clozn/server/app.py` (single-module move, not a split; run via `python -m clozn.server.app`)
 - `clozn/fit_planner.py` -> `clozn/cli/fit_planner.py` (its only consumer is `clozn/cli/main.py`'s `plan` command)
+
+### Phase 10 — `clozn.cli.main` command extraction
+
+- model discovery + `cmd_models`/`cmd_pull`/`cmd_plan`/`format_plan` -> `clozn/cli/commands/models.py`
+- `cmd_serve`/`cmd_ps`/`cmd_stop` -> `clozn/cli/commands/serve.py`
+- `cmd_studio` -> `clozn/cli/commands/studio.py`
+- `cmd_run`/`stream_ar`/`complete_once`/chat templates/`_repl` -> `clozn/cli/commands/run.py`
+- `cmd_explain`/`cmd_trace`/`cmd_branch`/`format_explain`/`format_narrate` -> `clozn/cli/commands/explain.py`
+- `cmd_preferences`/`format_preferences` -> `clozn/cli/commands/preferences.py`
+- `cmd_test`/`format_test_report` -> `clozn/cli/commands/test.py`
+- color globals + paint/heatmap/sparkline helpers -> `clozn/cli/formatting.py`
+- `find_engine`/DLL-on-PATH/spawn/health/warm-daemon registry -> `clozn/cli/engine_process.py`
+- trace persistence + runlog-journal render bridge -> `clozn/cli/trace_io.py`
+- `build_parser`/`main`/`HOME`/`CloznError` stay in `clozn/cli/main.py`
 
 ### Phase 11 — `scripts/` reorg (moves-only)
 
@@ -289,13 +458,35 @@ pytest -q tests
 
 Also reverified clean by direct invocation (not just import): `python scripts/calibration/gen_dial_calibration.py --check`, `python scripts/calibration/deploy_dial_library.py --check`, `python scripts/calibration/torch_autocalibrate.py --help`, and `python scripts/calibration/engine_autocalibrate.py --help` -- all resolve `clozn/data/dial_library_shipped.json` and the repo-root `clozn` package correctly from the new one-level-deeper location.
 
+Phase 10 (`clozn.cli.main` split) reverified the full product suite after each command family AND at the end:
+
+```text
+pytest -q tests
+1204 passed, 10 skipped
+```
+
+Also reverified clean: `python -c "import clozn.cli.main"`; each new submodule imported standalone in a
+fresh interpreter (`import clozn.cli.engine_process` / `.trace_io` / `.formatting` / `.commands.models` /
+`.commands.explain`, each on its own -- the specific check that caught the circular-import bug described
+above); `clozn/__main__.py` unchanged (`from clozn.cli.main import main`) and confirmed working. LIVE CLI
+(no server, no GPU, no model load): `python -m clozn --help` lists all 13 subcommands and every
+subcommand's own `--help`; `python -m clozn models` (correct "no engine built" + real local GGUFs found,
+post-REPO-fix); `python -m clozn plan llama-1b` / `plan qwen-0.5b` (real GGUF headers, correct FITS
+verdicts); `python -m clozn ps`; `python -m clozn trace` (rendered a REAL run from `~/.clozn/runs`, full
+heatmap); `python -m clozn stop all` / `explain --last` / `test does_not_exist.json` / `pull
+totally-unknown-model-xyz` (all clean one-line `CloznError`s with correct exit codes, never a traceback).
+
 ## Known Broken Commands
 
-None currently known through Phase 11.
+None currently known through Phase 10. (A pre-existing, already-broken, `-m model`-gated import in
+`tests/test_engine_ctx_overflow.py` -- `from clozn.cli import find_engine, _env_with_dlls` -- predates this
+chip, is unaffected by it, and is documented in the Phase 10 section above rather than fixed, to avoid a
+new circular-import risk; it is caught by a try/except inside the test's own fixture and does not affect
+the default `pytest -q tests` baseline.)
 
 ## Remaining Import Errors
 
-None currently known through Phase 11. Python sources no longer import `clozn.runlog`, `clozn.memory_cards`,
+None currently known through Phase 10. Python sources no longer import `clozn.runlog`, `clozn.memory_cards`,
 `clozn.memory_mode`, `clozn.facts_mode`, `clozn.topic_gate`, `clozn.slotmem_qwen`, `clozn.explain`,
 `clozn.narrate`, `clozn.rederive`, `clozn.receipt_bundle`, `clozn.semantic_matcher`,
 `clozn.counterfactual`, `clozn.timetravel`, the old flat readout/substrate modules, the old flat

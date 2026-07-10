@@ -18,17 +18,19 @@ REPO = os.path.dirname(HERE)                                  # repo root (clozn
 sys.path.insert(0, REPO)
 
 import clozn.cli.main as cli  # noqa: E402
+import clozn.cli.formatting as fmt  # noqa: E402
 import clozn.runs.store as runlog  # noqa: E402
 
 
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
-    monkeypatch.setattr(cli, "HOME", str(tmp_path / ".clozn"))
-    monkeypatch.setattr(cli, "COLOR", False)
-    monkeypatch.setattr(cli, "DIM", "")
-    monkeypatch.setattr(cli, "BOLD", "")
-    monkeypatch.setattr(cli, "RST", "")
+    monkeypatch.setattr(cli, "HOME", str(tmp_path / ".clozn"))     # HOME is owned by clozn.cli.main
+    # The color globals live in clozn.cli.formatting -- trace_io._render_trace reads fmt.DIM/BOLD/RST live.
+    monkeypatch.setattr(fmt, "COLOR", False)
+    monkeypatch.setattr(fmt, "DIM", "")
+    monkeypatch.setattr(fmt, "BOLD", "")
+    monkeypatch.setattr(fmt, "RST", "")
     return tmp_path
 
 

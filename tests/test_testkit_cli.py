@@ -19,6 +19,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
 
 import clozn.cli.main as cli       # noqa: E402
+import clozn.cli.formatting as fmt          # noqa: E402
 import clozn.receipts.bundle as receipt_bundle    # noqa: E402
 import clozn.runs.store as runlog            # noqa: E402
 
@@ -26,10 +27,11 @@ import clozn.runs.store as runlog            # noqa: E402
 @pytest.fixture
 def iso(tmp_path, monkeypatch):
     monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
-    monkeypatch.setattr(cli, "COLOR", False)
-    monkeypatch.setattr(cli, "DIM", "")
-    monkeypatch.setattr(cli, "BOLD", "")
-    monkeypatch.setattr(cli, "RST", "")
+    # The color globals live in clozn.cli.formatting -- format_test_report reads fmt.DIM/BOLD/RST live.
+    monkeypatch.setattr(fmt, "COLOR", False)
+    monkeypatch.setattr(fmt, "DIM", "")
+    monkeypatch.setattr(fmt, "BOLD", "")
+    monkeypatch.setattr(fmt, "RST", "")
     return tmp_path
 
 
