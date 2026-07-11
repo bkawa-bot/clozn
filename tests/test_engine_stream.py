@@ -253,7 +253,10 @@ def test_chat_stream_closes_the_connection_on_early_generator_close(iso, monkeyp
 # ==================================================================================== the request mirrors _engine_complete_traced
 
 def test_chat_stream_request_body_mirrors_engine_complete_traced(iso, monkeypatch, fake_urlopen):
+    """With S5's "sampling" setting off, chat_stream's body is byte-identical to pre-S5: temperature 0,
+    rep_penalty 1, seed 0 -- exactly what _engine_complete_traced's greedy fallback sends too."""
     monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    memory_mode.set_setting("sampling", False)
     sub = _bare_engine_substrate(FakeEngine())
 
     list(sub.chat_stream([{"role": "user", "content": "capital of France?"}], max_new=64))
@@ -263,10 +266,46 @@ def test_chat_stream_request_body_mirrors_engine_complete_traced(iso, monkeypatc
     body = json.loads(req.data.decode("utf-8"))
     assert body["stream"] is True
     assert body["temperature"] == 0.0
+    assert body["rep_penalty"] == 1.0
+    assert body["seed"] == 0
     assert body["max_tokens"] == 64
     assert "capital of France?" in body["prompt"]
     assert "<|im_start|>assistant" in body["prompt"]        # rendered via the engine's apply_template (fake mimics ChatML)
     assert fake_urlopen[-1]["timeout"] == 0.2                # FakeEngine.timeout, via getattr fallback
+
+
+# ==================================================================================== S5: interactive sampling
+
+def test_chat_stream_samples_by_default(iso, monkeypatch, fake_urlopen):
+    """chat_stream has no per-call `sample` arg -- it's always eligible, and the "sampling" setting
+    defaults ON (S5), so the request body carries the Ollama/llama.cpp canonical params + a real seed,
+    NOT top_p/top_k (this engine build doesn't parse them)."""
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    sub = _bare_engine_substrate(FakeEngine())
+
+    list(sub.chat_stream([{"role": "user", "content": "capital of France?"}], max_new=64))
+
+    body = json.loads(fake_urlopen[-1]["req"].data.decode("utf-8"))
+    assert body["temperature"] == 0.8
+    assert body["rep_penalty"] == 1.1
+    assert isinstance(body["seed"], int) and body["seed"] != 0
+    assert "top_p" not in body and "top_k" not in body
+
+    meta = sub._last_generation_meta
+    assert meta["sampler_mode"] == "sample"
+    assert meta["decode"]["top_p"] == 0.9 and meta["decode"]["top_k"] == 40
+
+
+def test_chat_stream_sampling_off_is_byte_identical_to_pre_s5(iso, monkeypatch, fake_urlopen):
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    memory_mode.set_setting("sampling", False)
+    sub = _bare_engine_substrate(FakeEngine())
+
+    list(sub.chat_stream([{"role": "user", "content": "hi"}]))
+
+    body = json.loads(fake_urlopen[-1]["req"].data.decode("utf-8"))
+    assert body["temperature"] == 0.0 and body["rep_penalty"] == 1.0 and body["seed"] == 0
+    assert sub._last_generation_meta["decode"] == {"mode": "greedy", "temperature": 0.0, "seed": 0}
 
 
 # ==================================================================================== dial forwarding parity with chat()

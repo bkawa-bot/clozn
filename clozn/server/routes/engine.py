@@ -7,13 +7,52 @@ HYBRID engine chat (GGUF generation with the HF-trained memory prefix/prompt-blo
 the fully generic SUB.handle(path, body) fallback (still in clozn.server.app's do_POST), these two shape
 a specific response AND capture a trace/memory record for the Run Inspector. Mechanical extraction of the
 matching branches out of do_POST; behavior unchanged. -> engine chat / substrate calls / model routing.
+
+GET/POST /sampling/mode (REPRODUCE_AND_PROVE_PLAN S5): the interactive-chat sampling settings -- on/off +
+temperature/top_p/top_k/repeat_penalty -- read by EngineSubstrate.chat/chat_stream on every turn. Mirrors
+/timetravel/mode's shape (GET the live config; POST any subset of keys, get the resolved config + whether
+anything changed back). Turning this off (or leaving it on -- either way) never touches the receipt/
+replay/forced-scoring stack: those always pass sample=False ("greedy": True), which short-circuits before
+this setting is even read (see EngineSubstrate.chat / _resolve_sampling).
 """
 import time
 
 from clozn.server import app as ctx
 
 
+def try_get(h, p):
+    if p == "/sampling/mode":   # S5: the live interactive-chat sampling settings (never mutates)
+        h._json(200, ctx._sampling_settings())
+        return True
+    return False
+
+
 def try_post(h, p, body):
+    if p == "/sampling/mode":   # S5: adjust/toggle interactive-chat sampling (on/off + the 4 params)
+        import clozn.memory.mode as memory_mode
+        changed = False
+        if "sampling" in body:
+            memory_mode.set_setting("sampling", bool(body.get("sampling")))
+            changed = True
+        for key in ("sample_temperature", "sample_top_p", "sample_repeat_penalty"):
+            if key in body:
+                try:
+                    memory_mode.set_setting(key, float(body[key]))
+                    changed = True
+                except (TypeError, ValueError):
+                    h._json(400, {"error": f"{key} must be a number"})
+                    return True
+        if "sample_top_k" in body:
+            try:
+                memory_mode.set_setting("sample_top_k", int(body["sample_top_k"]))
+                changed = True
+            except (TypeError, ValueError):
+                h._json(400, {"error": "sample_top_k must be an integer"})
+                return True
+        out = ctx._sampling_settings()
+        out["changed"] = changed
+        h._json(200, out)
+        return True
     if p == "/engine/observe":   # WRITE a scaled residual back at one token, OBSERVE how the prediction moves
         try:
             pos = int(body.get("position", 0))

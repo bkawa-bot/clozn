@@ -482,10 +482,99 @@ def test_run_meta_includes_request_specific_generation_fields_after_chat(iso, mo
     sub._mem = cs._EngineMemory()
     sub.memory = sub._mem
 
-    sub.chat([{"role": "user", "content": "hi"}], max_new=17)
+    # sample=False (the receipt/replay contract) -- this test is about request-specific fields
+    # (max_tokens/stream) riding into run_meta(), not about S5 sampling; see the dedicated
+    # test_run_meta_reflects_a_sampled_chat_call below for that.
+    sub.chat([{"role": "user", "content": "hi"}], max_new=17, sample=False)
 
     meta = sub.run_meta()
     assert meta["max_tokens"] == 17
     assert meta["stream"] is False
     assert meta["temperature"] == 0.0
     assert meta["seed"] == 0
+
+
+# ==================================================================================== S5: interactive sampling
+
+def test_run_meta_reflects_a_sampled_chat_call(iso, monkeypatch):
+    """sample=True (interactive chat's default) + the "sampling" setting ON (the S5 default) -> run_meta
+    reports the REAL regime this call used: the Ollama/llama.cpp canonical params, sampler_mode "sample",
+    and a decode block with a concrete (non-zero) seed -- not the greedy baseline."""
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    sub = object.__new__(cs.EngineSubstrate)
+    sub.engine = _HealthEngine()
+    sub.steer = None
+    sub._mem = cs._EngineMemory()
+    sub.memory = sub._mem
+
+    sub.chat([{"role": "user", "content": "hi"}], max_new=17, sample=True)
+
+    meta = sub.run_meta()
+    assert meta["sampler_mode"] == "sample" and meta["sampling"] == "sample"
+    assert meta["temperature"] == 0.8
+    assert meta["repetition_penalty"] == 1.1
+    assert isinstance(meta["seed"], int) and meta["seed"] != 0
+    decode = meta["decode"]
+    assert decode["mode"] == "sample"
+    assert decode["top_p"] == 0.9 and decode["top_k"] == 40
+    assert "note" in decode                       # honest: top_p/top_k are requested, not enforced
+
+
+def test_sampling_setting_off_forces_greedy_even_when_sample_true(iso, monkeypatch):
+    """The persisted "sampling" setting is the master off switch -- OFF means every sample=True caller
+    still gets exactly today's greedy behavior (temperature 0, seed 0), byte-identical to pre-S5."""
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    memory_mode.set_setting("sampling", False)
+    sub = object.__new__(cs.EngineSubstrate)
+    sub.engine = _HealthEngine()
+    sub.steer = None
+    sub._mem = cs._EngineMemory()
+    sub.memory = sub._mem
+
+    sub.chat([{"role": "user", "content": "hi"}], max_new=17, sample=True)
+
+    meta = sub.run_meta()
+    assert meta["sampler_mode"] == "greedy" and meta["sampling"] == "greedy"
+    assert meta["temperature"] == 0.0
+    assert meta["seed"] == 0
+    assert meta["decode"] == {"mode": "greedy", "temperature": 0.0, "seed": 0}
+
+
+def test_sample_false_stays_greedy_regardless_of_the_sampling_setting(iso, monkeypatch):
+    """The receipt/replay contract: sample=False ALWAYS decodes greedy, even with "sampling" ON (the
+    default) -- the setting is read only AFTER want_sample is checked (_resolve_sampling), so it can
+    never turn a forced-greedy call into a sampled one."""
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    memory_mode.set_setting("sampling", True)     # explicit: still must not matter
+    sub = object.__new__(cs.EngineSubstrate)
+    sub.engine = _HealthEngine()
+    sub.steer = None
+    sub._mem = cs._EngineMemory()
+    sub.memory = sub._mem
+
+    sub.chat([{"role": "user", "content": "hi"}], max_new=17, sample=False)
+
+    meta = sub.run_meta()
+    assert meta["sampler_mode"] == "greedy"
+    assert meta["temperature"] == 0.0 and meta["seed"] == 0
+
+
+def test_resolve_sampling_generates_a_fresh_seed_each_call(iso):
+    """A fresh per-turn seed (not a fixed one) is what S5 promises -- two resolutions differ."""
+    a = cs._resolve_sampling(True)
+    b = cs._resolve_sampling(True)
+    assert a["on"] is True and b["on"] is True
+    assert a["seed"] != b["seed"]
+
+
+def test_engine_complete_traced_sends_the_resolved_sampler_params(iso, fake_engine, monkeypatch):
+    """_engine_complete_traced forwards temperature/rep_penalty/seed from a _resolve_sampling() dict to
+    the engine's .complete() fallback (FakeEngine's .base is unroutable, so every call here exercises
+    that fallback) -- and does NOT forward top_p/top_k (this engine build doesn't parse them)."""
+    samp = {"on": True, "temperature": 0.8, "top_p": 0.9, "top_k": 40, "repeat_penalty": 1.1, "seed": 12345}
+    cs._engine_complete_traced(fake_engine, "hello", 16, {}, sample=samp)
+    params = fake_engine.calls[-1]["params"]
+    assert params["temperature"] == 0.8
+    assert params["rep_penalty"] == 1.1
+    assert params["seed"] == 12345
+    assert "top_p" not in params and "top_k" not in params

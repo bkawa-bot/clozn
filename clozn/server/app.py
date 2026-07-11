@@ -14,6 +14,7 @@ from studio, so the iframes' fetches all land here.
 import argparse
 import json
 import os
+import secrets
 import subprocess
 import sys
 import threading
@@ -90,18 +91,93 @@ def _qwen_generation_meta(max_new=None, sample=True, stream=None):
     })
 
 
-def _engine_generation_meta(max_new=None, stream=None):
+# REPRODUCE_AND_PROVE_PLAN S5: settings-exposed interactive-chat sampling (Ollama/llama.cpp's canonical
+# defaults -- model-agnostic, since clozn serves any GGUF). "sampling" is the master on/off; OFF (or a
+# caller that explicitly asked for greedy, e.g. every receipt/replay/forced-scoring call) always decodes
+# temperature 0, byte-identical to pre-S5 behavior. top_p/top_k ride here as REQUESTED settings, but see
+# _resolve_sampling's docstring: this engine build does not enforce them.
+_SAMPLING_DEFAULTS = {
+    "sampling": True,
+    "sample_temperature": 0.8,
+    "sample_top_p": 0.9,
+    "sample_top_k": 40,
+    "sample_repeat_penalty": 1.1,
+}
+
+
+def _resolve_sampling(want_sample):
+    """Whether THIS engine generation should sample, and under what params -- S5. `want_sample` is the
+    caller's own per-call ask (EngineSubstrate.chat's `sample` arg; chat_stream always asks True and lets
+    the setting alone decide). Returns None (greedy, temperature 0 -- exactly pre-S5 behavior) when
+    `want_sample` is falsy OR the persisted "sampling" setting is off; otherwise a dict {"on": True,
+    "temperature", "top_p", "top_k", "repeat_penalty", "seed"} with a FRESH per-turn seed.
+
+    Critical for the receipt/replay/rederive stack: `want_sample=False` (replay.py's
+    `sampled = not changes.get("greedy")`, always False for receipts) short-circuits to None BEFORE the
+    setting is even read -- so turning interactive sampling on/off can never make a receipt's forced-greedy
+    regen non-deterministic. Only the caller's own request gates that.
+
+    HONESTY: only temperature/repeat_penalty/seed actually reach the engine's sampler (verified against
+    engine/core/serve/server_shared.hpp's sample_from + engine/core/src/sample.cpp: a full-vocabulary
+    temperature-scaled softmax draw + repetition penalty -- there is no nucleus (top_p) or top-k truncation
+    in this engine build). top_p/top_k are still resolved and recorded (self-describing settings a future
+    engine build could honor), just never sent as request-body keys the engine reads."""
+    if not want_sample:
+        return None
+    import clozn.memory.mode as memory_mode
+    if not bool(memory_mode.get_setting("sampling", _SAMPLING_DEFAULTS["sampling"])):
+        return None
+    return {
+        "on": True,
+        "temperature": float(memory_mode.get_setting("sample_temperature", _SAMPLING_DEFAULTS["sample_temperature"])),
+        "top_p": float(memory_mode.get_setting("sample_top_p", _SAMPLING_DEFAULTS["sample_top_p"])),
+        "top_k": int(memory_mode.get_setting("sample_top_k", _SAMPLING_DEFAULTS["sample_top_k"])),
+        "repeat_penalty": float(memory_mode.get_setting("sample_repeat_penalty",
+                                                         _SAMPLING_DEFAULTS["sample_repeat_penalty"])),
+        # A FRESH seed every turn (not a fixed one) -- what makes a sampled reply vary turn to turn while
+        # still being independently reproducible: re-POSTing /v1/completions with this same seed+params
+        # reproduces the text (mode.decode records it on the run).
+        "seed": secrets.randbits(63),
+    }
+
+
+def _sampling_settings():
+    """The persisted S5 sampling settings (on/off + the four params) for the GET/POST /sampling/mode
+    route -- what's actually configured, not what one specific turn resolved to. Unlike _resolve_sampling,
+    this never generates a seed (a GET must never mutate anything)."""
+    import clozn.memory.mode as memory_mode
+    return {k: memory_mode.get_setting(k, v) for k, v in _SAMPLING_DEFAULTS.items()}
+
+
+def _engine_generation_meta(max_new=None, stream=None, sample=None):
+    """Reproducibility metadata for one engine generation (REPRODUCE_AND_PROVE_PLAN S2/S5).
+
+    `sample`: None (the default) always yields the honest greedy regime -- byte-identical to every
+    pre-S5 caller (run_meta()'s static baseline, and any chat()/chat_stream() call that resolved to
+    greedy). Pass a _resolve_sampling() dict to flip the decode block to the real sampled regime this
+    generation actually used."""
+    on = bool(sample and sample.get("on"))
+    if on:
+        top = {"sampler_mode": "sample", "sampling": "sample", "temperature": sample["temperature"],
+               "repetition_penalty": sample["repeat_penalty"], "seed": sample["seed"]}
+        decode = {"mode": "sample", "temperature": sample["temperature"], "top_p": sample["top_p"],
+                  "top_k": sample["top_k"], "repeat_penalty": sample["repeat_penalty"],
+                  "seed": sample["seed"],
+                  # HONESTY: top_p/top_k are the requested settings, not a guess -- but this engine build
+                  # does not enforce them (see _resolve_sampling's docstring); only temperature/
+                  # repeat_penalty/seed actually shaped this reply's sampler.
+                  "note": "top_p/top_k are requested settings, NOT enforced by this engine build "
+                          "(temperature + repeat_penalty softmax only; see engine/core/src/sample.cpp)"}
+    else:
+        top = {"sampler_mode": "greedy", "sampling": "greedy", "temperature": 0.0,
+               "repetition_penalty": 1.0, "seed": 0}
+        # Self-describing decode block (REPRODUCE_AND_PROVE_PLAN S2): the honest regime this run was
+        # produced under, so re-derivation/forced-scoring is exact-by-construction. Engine chat is greedy
+        # (temperature 0), seed 0 -- the actual values passed, not a guess.
+        decode = {"mode": "greedy", "temperature": 0.0, "seed": 0}
     return _without_unknowns({
-        "sampler_mode": "greedy",
-        "sampling": "greedy",
-        "temperature": 0.0,
-        "repetition_penalty": 1.0,
-        "seed": 0,
-        # Self-describing decode block (REPRODUCE_AND_PROVE_PLAN S2): the honest regime this run
-        # was produced under, so re-derivation/forced-scoring is exact-by-construction and S5
-        # (sampling) can flip it to {"mode":"sample", ...} + the real seed without schema churn.
-        # Engine chat is greedy (temperature 0), seed 0 -- the actual values passed, not a guess.
-        "decode": {"mode": "greedy", "temperature": 0.0, "seed": 0},
+        **top,
+        "decode": decode,
         "max_tokens": int(max_new) if max_new is not None else None,
         "stream": bool(stream) if stream is not None else None,
     })
@@ -1701,15 +1777,25 @@ class EngineSubstrate(Substrate):
              reference_tokens=None):
         """One stateless chat completion on the engine with memory (prompt-mode card block) + tone dials
         applied. Mirrors QwenSubstrate.chat's contract EXACTLY (same signature, same trace_out/mem_out
-        fill) so the receipts/replay stack is backend-agnostic. `sample` is accepted for signature parity;
-        the engine trace path decodes greedily (temperature 0) so a receipt diff is attributable, matching
-        how the stack already drives QwenSubstrate for receipts.
+        fill) so the receipts/replay stack is backend-agnostic.
+
+        `sample`: the caller's request to sample (True) or force greedy (False). REPRODUCE_AND_PROVE_PLAN
+        S5: `sample=True` (the default, and what interactive chat -- openai.py's /v1/chat/completions --
+        passes) resolves via _resolve_sampling against the persisted "sampling" setting (default ON,
+        Ollama/llama.cpp's canonical temperature=0.8/top_p=0.9/top_k=40/repeat_penalty=1.1, a FRESH seed
+        every turn); the setting off degrades to greedy, byte-identical to pre-S5 behavior.
+        `sample=False` ALWAYS decodes greedy (temperature 0) regardless of the setting -- this is what the
+        receipt/replay/forced-scoring stack relies on: it forces the STORED token ids over this generation
+        (replay.py passes `sample=False` for every `{"greedy": True}` change spec, which every receipt
+        path uses), so a sampled interactive run's receipts are computed exactly like a greedy run's.
 
         `reference_tokens` (optional): the baseline reply's committed token ids. When present, the engine
         EARLY-STOPS this generation at the first token that differs from the reference (prove-all ablated
         arms) -- so the reply is a bit-exact PREFIX of what full generation would produce, plus a divergence
-        verdict stashed for last_divergence(). Decode/sampling are untouched, so greedy determinism holds."""
-        self._last_generation_meta = _engine_generation_meta(max_new, stream=False)
+        verdict stashed for last_divergence(). This is a pure termination check -- decode/sampling (greedy
+        or not) are otherwise untouched, so a diverged reply is still a bit-exact prefix either way."""
+        samp = _resolve_sampling(sample)
+        self._last_generation_meta = _engine_generation_meta(max_new, stream=False, sample=samp)
         self._last_diverged = None
         self._last_diverged_at = None
         # MEMORY: the active cards as a topic-gated system block (omitted off-topic / when strength 0).
@@ -1731,7 +1817,8 @@ class EngineSubstrate(Substrate):
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
         if reference_tokens:                                # prove-all early-stop: halt when the answer changes
             kw["reference_tokens"] = [int(t) for t in reference_tokens if t is not None]
-        reply_raw, steps, finish, divinfo = _engine_complete_traced(self.engine, prompt, max_new, kw)
+        reply_raw, steps, finish, divinfo = _engine_complete_traced(self.engine, prompt, max_new, kw,
+                                                                    sample=samp)
         self._last_finish_reason = finish                   # stash for last_finish_reason() (the log path)
         self._last_diverged, self._last_diverged_at = divinfo  # stash for last_divergence()
         if trace_out is not None:
@@ -1834,9 +1921,12 @@ class EngineSubstrate(Substrate):
 
     def run_meta(self):
         """Reproducibility metadata -- WHAT produced a run -- for the run record. Fetched once from
-        /health (model file -> quant, engine mode) and cached; the sampling regime is greedy (chat and
-        chat_stream both force temperature 0). Health-derived fields are omitted when unavailable rather
-        than guessed. Never raises: metadata never breaks a run."""
+        /health (model file -> quant, engine mode) and cached; the STATIC baseline here is the honest
+        greedy default (temperature 0) -- the ACTUAL regime a specific reply used (greedy, or S5 sampled
+        with its params + seed) rides in _last_generation_meta, filled by chat()/chat_stream() and merged
+        in below, so a call made before any generation still reports the honest baseline rather than a
+        guess. Health-derived fields are omitted when unavailable rather than guessed. Never raises:
+        metadata never breaks a run."""
         health_meta = getattr(self, "_run_meta", None)
         if health_meta is None:
             health_meta = {}
@@ -1883,10 +1973,17 @@ class EngineSubstrate(Substrate):
         collected, then folded into self._last_stream_trace via runlog.accumulate_ar_events once the
         stream ends -- normal completion OR an early GeneratorExit (the consumer stopped early) -- so a
         partial stream still logs whatever trace it managed. Wrapped so any parse hiccup just leaves it
-        [], same as the non-streaming path's fallback."""
+        [], same as the non-streaming path's fallback.
+
+        SAMPLING (S5): chat_stream has no per-call `sample` arg -- unlike chat(), no receipt/replay path
+        ever drives this method (only the live SSE studio chat does), so it is always ELIGIBLE to sample;
+        _resolve_sampling(True) alone decides, against the persisted "sampling" setting (default ON --
+        temperature/top_p/top_k/repeat_penalty/a fresh seed) exactly like chat()'s sample=True path. The
+        setting off degrades to greedy, byte-identical to pre-S5 behavior."""
         import urllib.request
         import clozn.runs.store as runlog
-        self._last_generation_meta = _engine_generation_meta(max_new, stream=True)
+        samp = _resolve_sampling(True)
+        self._last_generation_meta = _engine_generation_meta(max_new, stream=True, sample=samp)
         # MEMORY + TONE: built EXACTLY as chat() builds them.
         block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
         assembled = _inject_block(messages, block)
@@ -1903,7 +2000,15 @@ class EngineSubstrate(Substrate):
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
         body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_new)
-        body["temperature"] = 0.0; body["rep_penalty"] = 1.0; body["seed"] = 0; body["stream"] = True
+        if samp and samp.get("on"):     # S5: real sampling -- temperature/rep_penalty/seed from settings
+            body["temperature"] = float(samp["temperature"])
+            body["rep_penalty"] = float(samp["repeat_penalty"])
+            body["seed"] = int(samp["seed"])
+            # top_p/top_k are NOT sent -- this engine build's sampler has no nucleus/top-k truncation to
+            # receive them (see _resolve_sampling's docstring); they still ride _last_generation_meta.
+        else:
+            body["temperature"] = 0.0; body["rep_penalty"] = 1.0; body["seed"] = 0
+        body["stream"] = True
         req = urllib.request.Request(self.engine.base + "/v1/completions",
                                      data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
@@ -2025,24 +2130,38 @@ def _engine_model_info(name):
     return fam, dict(_ENGINE_MODELS.get(fam, _ENGINE_MODEL_DEFAULT))
 
 
-def _engine_complete_traced(engine, prompt, max_tokens, kw):
+def _engine_complete_traced(engine, prompt, max_tokens, kw, sample=None):
     """Generate on the engine and ALSO capture a per-token trace (issue B3), returning
     (reply, steps, finish, divinfo).
 
     The engine's non-streaming /v1/completions carries only the final text -- no per-token confidence. To
     populate the Run Inspector timeline we ask the SAME request with stream:True and fold its per-token
-    `tokens_committed`/`step_lens` frames into steps via runlog.accumulate_ar_events. Generation is greedy
-    (temperature 0), so the reassembled text is identical to the blocking call -- we only capture ALONGSIDE;
-    the client still receives the same single JSON reply (this streams engine<->server, never to the client).
-    Any streaming hiccup falls back to the plain complete() so a run is never lost -- just without a trace.
-    (AR GGUFs only; a diffusion engine commits out of reading order and emits no such per-token stream.)
+    `tokens_committed`/`step_lens` frames into steps via runlog.accumulate_ar_events. Generation defaults to
+    greedy (temperature 0) so the reassembled text is identical to the blocking call; passing a
+    _resolve_sampling() dict as `sample` (S5) switches BOTH the streaming attempt and the fallback below to
+    the same temperature/rep_penalty/seed, so the two paths always agree. Either way we only capture
+    ALONGSIDE; the client still receives the same single JSON reply (this streams engine<->server, never to
+    the client). Any streaming hiccup falls back to the plain complete() so a run is never lost -- just
+    without a trace. (AR GGUFs only; a diffusion engine commits out of reading order and emits no such
+    per-token stream.)
 
     `divinfo` is (diverged, diverged_at) when the request carried `reference_tokens` (prove-all early-stop):
     diverged True/False is the engine's verdict, else (None, None). The reply on a diverged run is a
-    BIT-EXACT PREFIX of the full generation (the engine only adds a stop check -- decode is unchanged)."""
+    BIT-EXACT PREFIX of the full generation (the engine only adds a stop check -- decode is unchanged).
+
+    `sample`: None (or a falsy dict) -- greedy, temperature=0/rep_penalty=1/seed=0, byte-identical to
+    pre-S5 behavior. A _resolve_sampling() dict -- temperature/repeat_penalty/seed ride the request as
+    the engine's own SampleConfig keys (`temperature`, `rep_penalty`, `seed`); top_p/top_k are NOT sent
+    (the engine's sampler -- engine/core/src/sample.cpp -- has no nucleus/top-k truncation to receive
+    them)."""
+    on = bool(sample and sample.get("on"))
+    temperature = float(sample["temperature"]) if on else 0.0
+    rep_penalty = float(sample["repeat_penalty"]) if on else 1.0
+    seed = int(sample["seed"]) if on else 0
     import urllib.request
     body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_tokens)
-    body["temperature"] = 0.0; body["rep_penalty"] = 1.0; body["seed"] = 0; body["stream"] = True
+    body["temperature"] = temperature; body["rep_penalty"] = rep_penalty; body["seed"] = seed
+    body["stream"] = True
     try:
         req = urllib.request.Request(engine.base + "/v1/completions",
                                      data=json.dumps(body).encode("utf-8"),
@@ -2078,8 +2197,11 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw):
     except Exception:
         pass
     # Fallback: the original blocking path, reply preserved, trace simply empty. The non-streaming
-    # /v1/completions carries the same `diverged`/`diverged_at` when a reference was sent.
-    r = engine.complete(prompt, max_tokens=max_tokens, temperature=0.0, rep_penalty=1.0, seed=0, **kw)
+    # /v1/completions carries the same `diverged`/`diverged_at` when a reference was sent. Same
+    # temperature/rep_penalty/seed as the streaming attempt above -- the fallback must never silently
+    # decode under a DIFFERENT regime than the one recorded in the run's meta.
+    r = engine.complete(prompt, max_tokens=max_tokens, temperature=temperature, rep_penalty=rep_penalty,
+                        seed=seed, **kw)
     ch = r.get("choices") if isinstance(r, dict) else None
     finish = ch[0].get("finish_reason") if (ch and isinstance(ch[0], dict)) else None
     divinfo = (r.get("diverged"), r.get("diverged_at")) if isinstance(r, dict) else (None, None)
@@ -2116,7 +2238,7 @@ from clozn.server.routes import readouts as _readouts_routes          # noqa: E4
 _runs_fallback_routes = _types.SimpleNamespace(try_get=_runs_routes.try_get_fallback)
 
 _GET_ROUTES = [_static_routes, _health_routes, _runs_routes, _memory_routes, _receipts_routes,
-              _timetravel_routes, _profiles_routes, _openai_routes, _runs_fallback_routes]
+              _timetravel_routes, _profiles_routes, _openai_routes, _engine_routes, _runs_fallback_routes]
 _POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes, _replay_routes,
                _timetravel_routes, _profiles_routes, _preferences_routes, _feedback_routes,
                _openai_routes, _engine_routes, _readouts_routes]
