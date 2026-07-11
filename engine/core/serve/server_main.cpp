@@ -591,14 +591,23 @@ int main(int argc, char** argv) {
             return;
         }
 
-        GenerateResult r = run({});
-        json resp = {
-            {"id", id}, {"object", "revise"},
-            {"choices", json::array({{{"text", r.text}, {"index", 0},
-                         {"finish_reason", finish_reason(r.reason)}}})},
-            {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
-        };
-        res.set_content(dump_json(resp), "application/json");
+        // Non-streaming: run() can throw on a genuinely exceptional decode state (a prompt that exceeds
+        // n_ctx, a llama_decode failure). Catch it here so it becomes a clean 400 JSON error, NEVER an
+        // uncaught throw that cpp-httplib turns into an empty-body 500 (mirrors /v1/completions' guard).
+        try {
+            GenerateResult r = run({});
+            json resp = {
+                {"id", id}, {"object", "revise"},
+                {"choices", json::array({{{"text", r.text}, {"index", 0},
+                             {"finish_reason", finish_reason(r.reason)}}})},
+                {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
+            };
+            res.set_content(dump_json(resp), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(dump_json(json{{"error", std::string("generation failed: ") + e.what()}}),
+                            "application/json");
+        }
     });
 
     // /v1/board — restore/branch a board SNAPSHOT. Accepts a raw board (token ids; mask_token marks
@@ -713,15 +722,24 @@ int main(int argc, char** argv) {
             return;
         }
 
-        GenerateResult r = run({});
-        json resp = {
-            {"id", id}, {"object", "board"}, {"board", r.board},
-            {"layout", board_layout_json(*model, r.board, mask_token)},
-            {"choices", json::array({{{"text", r.text}, {"index", 0},
-                         {"finish_reason", finish_reason(r.reason)}}})},
-            {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
-        };
-        res.set_content(dump_json(resp), "application/json");
+        // Non-streaming: run() can throw on a genuinely exceptional decode state (a prompt that exceeds
+        // n_ctx, a llama_decode failure). Catch it here so it becomes a clean 400 JSON error, NEVER an
+        // uncaught throw that cpp-httplib turns into an empty-body 500 (mirrors /v1/completions' guard).
+        try {
+            GenerateResult r = run({});
+            json resp = {
+                {"id", id}, {"object", "board"}, {"board", r.board},
+                {"layout", board_layout_json(*model, r.board, mask_token)},
+                {"choices", json::array({{{"text", r.text}, {"index", 0},
+                             {"finish_reason", finish_reason(r.reason)}}})},
+                {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
+            };
+            res.set_content(dump_json(resp), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(dump_json(json{{"error", std::string("generation failed: ") + e.what()}}),
+                            "application/json");
+        }
     });
 
 
