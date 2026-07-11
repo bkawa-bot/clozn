@@ -289,10 +289,18 @@ int main(int argc, char** argv) {
         if (ar_mode && body.contains("steer_vec") && body["steer_vec"].is_array()) {
             steer_vec = body["steer_vec"].get<std::vector<float>>();
         }
+        // Optional early-stop reference (prove-all ablated arms, AR-only): the baseline reply's committed
+        // token ids. generate_ar halts at the first generated token that differs from this list -- so the
+        // ablated arm decodes only up to the point the answer provably changed, not the full ~max_tokens.
+        // Purely a termination check; greedy output up to the stop is bit-identical to full generation.
+        std::vector<int> reference_tokens;
+        if (ar_mode && body.contains("reference_tokens") && body["reference_tokens"].is_array()) {
+            reference_tokens = body["reference_tokens"].get<std::vector<int>>();
+        }
 
         // One call into the runtime on a POOLED context (acquire blocks until one is free, so N
         // workers run N requests concurrently; the Lease releases it on any exit).
-        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec](
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);  // white-box tap on for this request (off by default)
@@ -347,7 +355,8 @@ int main(int argc, char** argv) {
             try {
                 GenerateResult r = ar_mode
                        ? generate_ar(*lease, prompt_ids, cfg, ev, sample, probes,
-                                     prefix_embd.empty() ? nullptr : &prefix_embd, prefix_rows)
+                                     prefix_embd.empty() ? nullptr : &prefix_embd, prefix_rows,
+                                     reference_tokens.empty() ? nullptr : &reference_tokens)
                        : (is_infill
                             ? infill(*lease, prompt_ids, suffix_ids, gap, cfg, nullptr, ev, revise, sample, probes)
                             : generate(*lease, prompt_ids, cfg, cache, nullptr, ev, revise, sample, probes));
@@ -396,6 +405,10 @@ int main(int argc, char** argv) {
                     json final_frame = {{"id", id}, {"object", object},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
                                                      {"finish_reason", finish_reason(r.reason)}}})}};
+                    if (r.ref_active) {  // early-stop-on-divergence verdict (prove-all ablated arms)
+                        final_frame["diverged"] = r.diverged;
+                        final_frame["diverged_at"] = r.diverged_at;
+                    }
                     write("data: " + dump_json(final_frame) + "\n\n");
                     write("data: [DONE]\n\n");
                     sink.done();
@@ -433,6 +446,10 @@ int main(int argc, char** argv) {
                 {"layout", board_layout_json(*model, r.board, mask_token)},
                 {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
             };
+            if (r.ref_active) {  // early-stop-on-divergence verdict (prove-all ablated arms)
+                resp["diverged"] = r.diverged;
+                resp["diverged_at"] = r.diverged_at;
+            }
             res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;

@@ -62,6 +62,14 @@ struct GenerateResult {
     int new_tokens = 0;          // == generated.size()
     int steps_total = 0;         // total passes run across all blocks
     std::vector<Event> events;   // the §5.1 event stream for this run (invariant 2; replayable)
+    // Early-stop-on-divergence (prove-all ablated arms; AR only). When a reference token list is
+    // supplied, generation halts at the first generated token that differs from the reference at that
+    // position -- so `text`/`generated` are a BIT-EXACT PREFIX of the full generation (numerics and
+    // sampling are unchanged; this is a pure termination condition, never a decode change). The flags
+    // let the caller distinguish "changed early, stopped" from "matched all the way (no change)".
+    bool ref_active = false;     // a reference was supplied => divergence checking was armed this run
+    bool diverged = false;       // true => stopped at diverged_at; false (+ref_active) => matched fully
+    int diverged_at = -1;        // generation index of the first divergent token (-1 if none/inactive)
 };
 
 // Denoise config.max_new masked slots after prompt_ids. Uses Stepper::fixed(config.steps)

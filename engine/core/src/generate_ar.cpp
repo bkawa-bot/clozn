@@ -17,9 +17,18 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
                            const SampleConfig& sample,
                            const ConceptProbes* read_probes,
                            const std::vector<float>* prefix_embd,
-                           int prefix_rows) {
+                           int prefix_rows,
+                           const std::vector<int>* reference) {
     if (prompt_ids.empty()) throw std::invalid_argument("prompt_ids must be non-empty");
     if (config.max_new < 1) throw std::invalid_argument("max_new must be >= 1");
+
+    // Early-stop-on-divergence is armed only with a non-empty reference. This is a pure termination
+    // condition -- nothing about sampling, batching, or the KV path changes -- so the generated prefix
+    // is bit-identical to what a full (reference-less) generation would produce up to the stop point.
+    const bool ref_active = (reference != nullptr && !reference->empty());
+    const int ref_len = ref_active ? static_cast<int>(reference->size()) : 0;
+    bool diverged = false;
+    int diverged_at = -1;
 
     const ModelConfig& mcfg = adapter.config();
     const int eos = mcfg.eos_token_id;
@@ -96,6 +105,18 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
         seq.push_back(tok);
         const bool is_eos = (eos >= 0 && tok == eos);
 
+        // Early-stop on divergence from the reference (prove-all ablated arms): the just-committed token
+        // is already in `generated`, so the partial reply is a bit-exact PREFIX of the full reply. We stop
+        // BEFORE feeding this token back in -- the remaining ~max_new-k decodes are exactly the work we're
+        // here to save. `tok != reference[k]` (or running past the reference's length) is the divergence.
+        // `is_eos` is folded in: an early EOS that the reference didn't have is itself a divergence at k.
+        if (ref_active && (k >= ref_len || tok != (*reference)[k])) {
+            diverged = true;
+            diverged_at = k;
+            ++t;  // count this committed step (matches the non-diverged ++t below)
+            break;
+        }
+
         // Feed the token back in: this decode (a) advances the KV and (b) yields the hidden state at
         // the token we just generated — its concept read. So StepFeatures is labeled with the
         // GENERATED token's own position (act_rows = {n_past}), the intuitive "this token is X".
@@ -116,6 +137,9 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     result.text = adapter.decode(kept);
     result.steps_total = t;
     result.reason = reason;
+    result.ref_active = ref_active;    // divergence checking was armed (a reference was supplied)
+    result.diverged = diverged;        // true => stopped early at diverged_at; false + ref_active => matched fully
+    result.diverged_at = diverged_at;  // generation index of the first divergent token (-1 if none)
     result.board = prompt_ids;
     result.board.insert(result.board.end(), generated.begin(), generated.end());
 

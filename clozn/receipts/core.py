@@ -5,11 +5,51 @@ assembly, and forced scoring live in sibling modules so this file stays focused 
 """
 from __future__ import annotations
 
+import os
+
 from clozn.replay.replay import replay as replay_run
 
 from .deltas import _ablation_changes, _build_receipt, _key, _merge_ablation_changes
 from .forced import forced_receipt
 from .metrics import receipt_metrics
+
+
+def _earlystop_enabled() -> bool:
+    """prove-all ablated arms early-stop at the first token that changes the answer (a decode-time win --
+    has_effect only asks 'did the greedy reply CHANGE?', not for the full ~256-token ablated reply). ON by
+    default; set CLOZN_RECEIPTS_EARLYSTOP=0 for a clean A/B against the legacy full-generate path."""
+    return os.environ.get("CLOZN_RECEIPTS_EARLYSTOP", "1") != "0"
+
+
+def _ablated_child(run: dict, changes: dict, sub, baseline_ref, baseline_reply: str) -> dict | None:
+    """One ablated (or joint) arm, early-stopped on divergence from the baseline when a reference is
+    available -- returning a child whose `response` string-compares against `baseline_reply` to the SAME
+    has_effect the full generation would (so _build_receipt / the redundancy guard stay unchanged and
+    provably correct):
+
+      * diverged False  -> the ablated tokens matched the baseline all the way -> reply == baseline ->
+                           string compare yields has_effect False. (No tokens saved; a true match must be
+                           confirmed in full -- fine, since a load-bearing card usually diverges early.)
+      * diverged True, and the partial reply is NOT a prefix of the baseline -> the answer provably changed
+                           already (the partial != baseline) -> string compare yields True. THE fast win.
+      * diverged True, but the partial IS a prefix of the baseline -> a rare tokenization reconvergence
+                           (the same text, a different token split): the early stop can't decide, so
+                           REGENERATE this one arm FULLY (no reference) and let the string compare rule.
+
+    With no reference (early-stop off, or the substrate lacks it), this is just the legacy full generation
+    -- the string compare in _build_receipt is untouched, so has_effect is provably identical to before."""
+    if not changes:
+        return None
+    child = replay_run(run, {**changes, "greedy": True}, sub, reference_tokens=baseline_ref)
+    if child is None:
+        return None
+    if child.get("diverged") is True:
+        partial = child.get("response") or ""
+        if baseline_reply.startswith(partial):   # might reconverge to the baseline -> can't trust the stop
+            full = replay_run(run, {**changes, "greedy": True}, sub)  # no reference => full generation
+            if full is not None:
+                child = full
+    return child
 
 
 _APPROX_NOTE = (
@@ -94,11 +134,14 @@ def _prove_all_regen(run: dict, sub, *, manifest: dict | None = None) -> dict:
                                    "reason": "could not generate the greedy baseline (with-influence arm)"})
             return out
         baseline_reply = baseline_child.get("response") or ""
+        # The baseline reply's committed token ids -- the early-stop reference every ablated/joint arm halts
+        # against (None => full generation, the legacy path). Off-switch: CLOZN_RECEIPTS_EARLYSTOP=0.
+        baseline_ref = (baseline_child.get("generated_ids") or None) if _earlystop_enabled() else None
 
         per_key: dict = {}
         for inf in influences:
             changes = _ablation_changes(inf)
-            ablated_child = replay_run(run, {**changes, "greedy": True}, sub) if changes else None
+            ablated_child = _ablated_child(run, changes, sub, baseline_ref, baseline_reply) if changes else None
             if ablated_child is None:
                 out["skipped"].append({"influence": inf, "reason": "ablation could not be generated"})
                 continue
@@ -113,7 +156,7 @@ def _prove_all_regen(run: dict, sub, *, manifest: dict | None = None) -> dict:
                 joint_changes = _merge_ablation_changes([per_key[ka][0], per_key[kb][0]])
                 if not joint_changes:
                     continue
-                joint_child = replay_run(run, {**joint_changes, "greedy": True}, sub)
+                joint_child = _ablated_child(run, joint_changes, sub, baseline_ref, baseline_reply)
                 if joint_child is None:
                     continue
                 joint_reply = joint_child.get("response") or ""

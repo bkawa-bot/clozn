@@ -1697,13 +1697,21 @@ class EngineSubstrate(Substrate):
         from clozn.behavior.steering.engine_adapter import EngineSteer
         return EngineSteer._text(self.engine.complete(prompt, max_tokens=90))
 
-    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None,
+             reference_tokens=None):
         """One stateless chat completion on the engine with memory (prompt-mode card block) + tone dials
         applied. Mirrors QwenSubstrate.chat's contract EXACTLY (same signature, same trace_out/mem_out
         fill) so the receipts/replay stack is backend-agnostic. `sample` is accepted for signature parity;
         the engine trace path decodes greedily (temperature 0) so a receipt diff is attributable, matching
-        how the stack already drives QwenSubstrate for receipts."""
+        how the stack already drives QwenSubstrate for receipts.
+
+        `reference_tokens` (optional): the baseline reply's committed token ids. When present, the engine
+        EARLY-STOPS this generation at the first token that differs from the reference (prove-all ablated
+        arms) -- so the reply is a bit-exact PREFIX of what full generation would produce, plus a divergence
+        verdict stashed for last_divergence(). Decode/sampling are untouched, so greedy determinism holds."""
         self._last_generation_meta = _engine_generation_meta(max_new, stream=False)
+        self._last_diverged = None
+        self._last_diverged_at = None
         # MEMORY: the active cards as a topic-gated system block (omitted off-topic / when strength 0).
         block, applied, gate = _prompt_block_for(self.memory, _last_user(messages))
         assembled = _inject_block(messages, block)
@@ -1721,11 +1729,20 @@ class EngineSubstrate(Substrate):
             if sv:
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
-        reply_raw, steps, finish = _engine_complete_traced(self.engine, prompt, max_new, kw)
+        if reference_tokens:                                # prove-all early-stop: halt when the answer changes
+            kw["reference_tokens"] = [int(t) for t in reference_tokens if t is not None]
+        reply_raw, steps, finish, divinfo = _engine_complete_traced(self.engine, prompt, max_new, kw)
         self._last_finish_reason = finish                   # stash for last_finish_reason() (the log path)
+        self._last_diverged, self._last_diverged_at = divinfo  # stash for last_divergence()
         if trace_out is not None:
             trace_out.extend(steps)
         return reply_raw.strip()
+
+    def last_divergence(self):
+        """The early-stop verdict from the most recent chat(): (diverged, diverged_at). (None, None) when
+        the last chat carried no reference_tokens. Read by replay to record whether an ablated arm's reply
+        was truncated at the point it provably changed."""
+        return (getattr(self, "_last_diverged", None), getattr(self, "_last_diverged_at", None))
 
     def score_tokens(self, messages, continuation_ids=None, *, continuation=None, block=None,
                      steer_strengths=None, steer_vec=None, topk=0):
@@ -2009,7 +2026,8 @@ def _engine_model_info(name):
 
 
 def _engine_complete_traced(engine, prompt, max_tokens, kw):
-    """Generate on the engine and ALSO capture a per-token trace (issue B3), returning (reply, steps, finish).
+    """Generate on the engine and ALSO capture a per-token trace (issue B3), returning
+    (reply, steps, finish, divinfo).
 
     The engine's non-streaming /v1/completions carries only the final text -- no per-token confidence. To
     populate the Run Inspector timeline we ask the SAME request with stream:True and fold its per-token
@@ -2018,7 +2036,10 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw):
     the client still receives the same single JSON reply (this streams engine<->server, never to the client).
     Any streaming hiccup falls back to the plain complete() so a run is never lost -- just without a trace.
     (AR GGUFs only; a diffusion engine commits out of reading order and emits no such per-token stream.)
-    """
+
+    `divinfo` is (diverged, diverged_at) when the request carried `reference_tokens` (prove-all early-stop):
+    diverged True/False is the engine's verdict, else (None, None). The reply on a diverged run is a
+    BIT-EXACT PREFIX of the full generation (the engine only adds a stop check -- decode is unchanged)."""
     import urllib.request
     body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_tokens)
     body["temperature"] = 0.0; body["rep_penalty"] = 1.0; body["seed"] = 0; body["stream"] = True
@@ -2027,6 +2048,7 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw):
                                      data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
         frames, text = [], ""
+        diverged, diverged_at = None, None
         with urllib.request.urlopen(req, timeout=getattr(engine, "timeout", 600)) as resp:
             for raw in resp:
                 line = raw.decode("utf-8", "replace").strip()
@@ -2043,20 +2065,25 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw):
                 ch = obj.get("choices")                     # the final OpenAI-style frame carries the full text
                 if ch and isinstance(ch, list) and ch[0].get("text"):
                     text = ch[0]["text"]
+                if "diverged" in obj:                       # early-stop verdict rides the final frame
+                    diverged = obj.get("diverged")
+                    diverged_at = obj.get("diverged_at")
         import clozn.runs.store as runlog
         steps = runlog.accumulate_ar_events(frames)
         finish = runlog.finish_reason_from_frames(frames)   # the engine's real stop cause (else None)
         if not text:                                        # no final frame text -> reassemble from the pieces
             text = "".join(s.get("piece", "") for s in steps)
         if steps or text:
-            return text, steps, finish
+            return text, steps, finish, (diverged, diverged_at)
     except Exception:
         pass
-    # Fallback: the original blocking path, reply preserved, trace simply empty.
+    # Fallback: the original blocking path, reply preserved, trace simply empty. The non-streaming
+    # /v1/completions carries the same `diverged`/`diverged_at` when a reference was sent.
     r = engine.complete(prompt, max_tokens=max_tokens, temperature=0.0, rep_penalty=1.0, seed=0, **kw)
     ch = r.get("choices") if isinstance(r, dict) else None
     finish = ch[0].get("finish_reason") if (ch and isinstance(ch[0], dict)) else None
-    return (ch[0].get("text", "") if ch else str(r)), [], finish
+    divinfo = (r.get("diverged"), r.get("diverged_at")) if isinstance(r, dict) else (None, None)
+    return (ch[0].get("text", "") if ch else str(r)), [], finish, divinfo
 
 
 # ------- route families: registered in dispatch order; each exposes try_get/try_post(handler, path, ...) --

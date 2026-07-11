@@ -115,7 +115,7 @@ def _effective_dials(sub) -> dict:
         return {}
 
 
-def replay(run: dict, changes: dict, sub) -> dict | None:
+def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
     """Re-run `run` under `changes` on the live substrate `sub`; record the result as a child run and return
     it. Returns None on any failure (a replay must never raise into the request handler).
 
@@ -124,7 +124,14 @@ def replay(run: dict, changes: dict, sub) -> dict | None:
                   behavior_overrides / disabled_memory_ids / edited_memory / plain. {} == a plain re-roll.
     `sub`      -- the live substrate (SUB); must expose .chat(messages, max_new=, sample=). Its
                   .memory.memory_strength and .steer.strength are snapshotted and restored around generation.
-    """
+    `reference_tokens` -- optional baseline reply token ids (prove-all early-stop): when the substrate's
+                  chat() supports it, this ablated arm's generation HALTS at the first token that differs
+                  from the baseline, so the child's `response` is a bit-exact prefix of the full reply and
+                  the child carries `diverged`/`diverged_at`. A substrate whose chat() lacks the kwarg (torch
+                  QwenSubstrate, test fakes) simply generates fully -- correctness is preserved because the
+                  receipt layer falls back to the string compare when `diverged` is absent. The returned
+                  child ALSO always carries `generated_ids` (the committed token ids, tier-independent), so a
+                  baseline replay can hand its own tokens to the ablated arms even at a trace-dropping tier."""
     try:
         if not run or not isinstance(run, dict):
             return None
@@ -157,12 +164,23 @@ def replay(run: dict, changes: dict, sub) -> dict | None:
             # Capture the per-token trace when chat supports it (the real substrates do); fall back for a
             # chat that predates trace_out -- replay's sub contract is just (messages, max_new=, sample=).
             sampled = not bool(changes.get("greedy"))
-            try:
-                reply = chat(messages, max_new=256, sample=sampled, trace_out=trace_steps)
-            except TypeError as e:
-                if "trace_out" not in str(e):
-                    raise                                    # a real TypeError from inside chat, not the kwarg
-                reply = chat(messages, max_new=256, sample=sampled)
+            # Build the call kwargs and drop any the substrate's chat() doesn't accept (torch QwenSubstrate
+            # / test fakes predate trace_out and/or reference_tokens). Progressive-degrade on the exact
+            # unknown kwarg named in the TypeError, so the reply is never lost -- just less instrumented.
+            call_kw = {"max_new": 256, "sample": sampled, "trace_out": trace_steps}
+            if reference_tokens:
+                call_kw["reference_tokens"] = reference_tokens
+            while True:
+                try:
+                    reply = chat(messages, **call_kw)
+                    break
+                except TypeError as e:
+                    msg = str(e)
+                    dropped = next((k for k in ("reference_tokens", "trace_out")
+                                    if k in call_kw and k in msg), None)
+                    if dropped is None:
+                        raise                                # a real TypeError from inside chat, not a kwarg
+                    del call_kw[dropped]
         finally:
             # restore EXACTLY -- and never persist the temporary dials (no save_state here).
             if steer is not None:
@@ -185,6 +203,19 @@ def replay(run: dict, changes: dict, sub) -> dict | None:
                     pass
 
         reply = reply if isinstance(reply, str) else str(reply)
+
+        # Capture the committed token ids NOW, from the in-memory trace -- BEFORE the capture-tier logic
+        # below may drop trace_steps to []. A baseline replay hands these to its ablated arms as the
+        # early-stop reference, and they must survive even at a trace-dropping tier.
+        generated_ids = [int(s["id"]) for s in (trace_steps or [])
+                         if isinstance(s, dict) and s.get("id") is not None]
+        # The early-stop verdict (prove-all ablated arms): (diverged, diverged_at) or (None, None).
+        diverged = diverged_at = None
+        if hasattr(sub, "last_divergence"):
+            try:
+                diverged, diverged_at = sub.last_divergence()
+            except Exception:
+                diverged = diverged_at = None
 
         # the replay's own stop cause + repro metadata (engine substrate) -- the SAME fields a live run
         # carries, read after generation (the finally above doesn't touch these stashes). Per-substrate
@@ -257,6 +288,16 @@ def replay(run: dict, changes: dict, sub) -> dict | None:
         if rid is None:
             return None
         child = runlog.get_run(rid)
-        return child if child is not None else {"id": rid, "response": reply, "parent_run_id": run.get("id")}
+        if child is None:
+            child = {"id": rid, "response": reply, "parent_run_id": run.get("id")}
+        # Attach the early-stop bookkeeping to the returned child (not persisted in the run record's core
+        # fields -- these are for the receipt orchestrator that called replay). `generated_ids` is the
+        # committed-token reference a baseline hands to its ablated arms; `diverged`/`diverged_at` let the
+        # receipt read the verdict without re-deriving it.
+        child["generated_ids"] = generated_ids
+        if diverged is not None:
+            child["diverged"] = diverged
+            child["diverged_at"] = diverged_at
+        return child
     except Exception:
         return None

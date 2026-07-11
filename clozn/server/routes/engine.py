@@ -118,7 +118,7 @@ def try_post(h, p, body):
             # Generate + capture a per-token trace alongside (B3). Reply is byte-identical to the
             # plain complete(); the trace feeds the Run Inspector timeline. steps=[] (diffusion, or a
             # stream hiccup) -> runlog stores a clean empty trace.
-            reply_raw, steps, finish = ctx._engine_complete_traced(ctx.ENGINE_QWEN, prompt, mx, kw)
+            reply_raw, steps, finish, _divinfo = ctx._engine_complete_traced(ctx.ENGINE_QWEN, prompt, mx, kw)
             reply = reply_raw.strip()
             # Pass the raw step list; runlog.record normalizes it -> {tokens, confidence, alternatives}.
             h._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0, trace=steps,

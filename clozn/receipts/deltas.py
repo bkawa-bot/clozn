@@ -97,6 +97,18 @@ def _build_receipt(influence: dict, baseline_child: dict, ablated_child: dict, c
         "note": _NOTE_BASELINE,
         "cost_note": _cost_note(influence),
     }
+    # Early-stop (prove-all perf): the ablated arm halted at the first token that left the baseline, so the
+    # ablated reply above is a bit-exact PREFIX up to that divergence -- NOT the full ablated reply (the rest
+    # was never generated; that's the saved decode). has_effect is still exact (a prefix that already differs
+    # proves the answer changed), but the `delta` word/Jaccard numbers describe the divergence POINT, not a
+    # full-reply diff -- so flag it, honestly, rather than let a consumer read the truncation as a huge change.
+    if ablated_child.get("diverged") is True:
+        out["ablated_reply_truncated"] = True
+        out["diverged_at"] = ablated_child.get("diverged_at")
+        out["early_stop_note"] = (
+            "ablated arm early-stopped at the first token that diverged from the baseline (token index "
+            f"{ablated_child.get('diverged_at')}): the reply shown is the bit-exact prefix up to that point, "
+            "not the full ablated reply. has_effect is exact; the delta numbers reflect the divergence point.")
     if unapplied:
         out["ablation_note"] = unapplied
     return out

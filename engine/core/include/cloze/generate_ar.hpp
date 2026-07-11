@@ -38,6 +38,13 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
                            // in ahead of the prompt (via ar_forward_embd) before decoding, so a memory learned
                            // on the HF model rides into this ggml generation. nullptr/0 = no prefix (default).
                            const std::vector<float>* prefix_embd = nullptr,
-                           int prefix_rows = 0);
+                           int prefix_rows = 0,
+                           // Optional early-stop reference (prove-all ablated arms): the baseline reply's
+                           // committed token ids. Generation halts at the first generated token that differs
+                           // from reference[k] -- yielding a bit-exact PREFIX of the full reply plus a
+                           // diverged/diverged_at verdict. Sampling/batching are untouched: this is ONLY a
+                           // termination check, so greedy determinism holds (the reply is what full generation
+                           // would produce, truncated). nullptr/empty = no reference (full generation, default).
+                           const std::vector<int>* reference = nullptr);
 
 }  // namespace cloze
