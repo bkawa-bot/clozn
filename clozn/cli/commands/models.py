@@ -249,8 +249,52 @@ def format_plan(name: str, header: dict, file_size_bytes: int, report: dict, vra
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------- throughput predictor (model-free)
+# `clozn plan` also renders a decode-tok/s ROOFLINE: physics from throughput_predictor.py (memory-bandwidth
+# bound decode -- see that module's docstring), rendered here the same way format_plan renders fit_report.
+
+def format_throughput(est: dict) -> str:
+    """Pure dict->text render of a throughput_predictor.predict_throughput() estimate (no I/O -- testable
+    with canned dicts). Appended under format_plan's fit-check output in `clozn plan`."""
+    n_params = est.get("n_params") or 0
+    weight_bytes = est.get("weight_bytes") or 0.0
+    total_bytes = est.get("total_bytes_per_token") or 0.0
+    if not n_params or not total_bytes:
+        return (f"{fmt.DIM}predicted decode throughput: unavailable -- header didn't carry enough "
+                f"tensor/shape info to estimate.{fmt.RST}")
+
+    weight_gb = weight_bytes / 1e9
+    kv_mb = (est.get("kv_bytes_per_token") or 0.0) / 1e6
+    total_mb = total_bytes / 1e6
+    bw = est["bandwidth_gb_s"]
+    tok_s = est["predicted_tok_s"]
+    bpw_avg = weight_bytes * 8 / n_params
+
+    lines = [
+        f"predicted decode throughput: {fmt.BOLD}~{tok_s:.0f} tok/s{fmt.RST}  "
+        f"{fmt.DIM}(roofline @ {bw:g} GB/s assumed effective bandwidth){fmt.RST}",
+        f"  weight bytes/token: {weight_gb:.2f} GB  ({n_params / 1e9:.2f}B params @ ~{bpw_avg:.2f} bpw, "
+        f"exact from the GGUF's tensor shapes/types -- not the file size)",
+        f"  KV bytes/token:     {kv_mb:.1f} MB  (at {_fmt_ctx(est['ctx_for_estimate'])} ctx, "
+        f"{est['kv_bytes_per_element']:g}-byte/elem cache; grows as context fills -- this is the worst case "
+        f"at that context depth, not a constant)",
+        f"  total: {total_mb:.1f} MB/token  ->  {bw:g} GB/s / {total_mb:.1f} MB = ~{tok_s:.0f} tok/s",
+        f"{fmt.DIM}ROOFLINE, not a promise: this is a memory-bandwidth-bound estimate that ignores "
+        f"compute-bound prefill, batching, and real kernel efficiency (hardware rarely sustains 100% of "
+        f"theoretical bandwidth) -- it predicts the ORDER of tok/s, not the exact number. Calibrate "
+        f"against a live run for the real one (`--calibrate`, not yet wired -- see cmd_plan).{fmt.RST}",
+    ]
+    if est.get("unknown_params"):
+        n_tensors = sum(est["unknown_type_tensor_counts"].values())
+        lines.append(f"{fmt.DIM}note: {est['unknown_params']:,} params across {n_tensors} tensor(s) of "
+                     f"unrecognized ggml_type were excluded from the weight-byte total (extend "
+                     f"BPW_BY_GGML_TYPE in throughput_predictor.py).{fmt.RST}")
+    return "\n".join(lines)
+
+
 def cmd_plan(args):
-    from clozn.cli import fit_planner   # stdlib+urllib only; imported lazily like the other clozn.* siblings
+    from clozn.cli import fit_planner            # stdlib+urllib only; imported lazily like other clozn.* siblings
+    from clozn.cli import throughput_predictor as tp   # stdlib-only, model-free (see its module docstring)
     from clozn.cli import main as ctx
 
     vram_gb = args.vram if args.vram is not None else (_detect_vram_gb() or 16.0)
@@ -294,3 +338,36 @@ def cmd_plan(args):
 
     report = fit_planner.fit_report(header, size, vram_gb)
     print(format_plan(name, header, size, report, vram_gb, source_note=source_note))
+
+    bandwidth_gb_s = args.bandwidth_gb_s if getattr(args, "bandwidth_gb_s", None) is not None \
+        else tp.DEFAULT_BANDWIDTH_GB_S
+    est = tp.predict_throughput(header, bandwidth_gb_s=bandwidth_gb_s)
+    print()
+    print(format_throughput(est))
+
+    if getattr(args, "calibrate", False):
+        _cmd_plan_calibrate_stub(name)
+
+
+def _cmd_plan_calibrate_stub(name: str):
+    """DEFERRED seam for `clozn plan --calibrate`: boot the engine on this GGUF, run a short fixed-length
+    decode, measure the ACTUAL tok/s, and solve for this machine's real effective bandwidth
+    (bandwidth_gb_s = measured_tok_s * total_bytes_per_token / 1e9) so future `clozn plan` calls on this
+    machine can default to a calibrated constant instead of the generic RTX-5080-class guess.
+
+    Deliberately NOT implemented in this pass: the engine is being rebuilt in a concurrent workstream
+    (see docs/ROADMAP.md), and this predictor must stay pure-CPU / model-free until that lands. TODO
+    (next pass, once the engine is free):
+      1. resolve_model(name) -> path, launch the engine the same way `clozn run` does (engine_process.py)
+      2. run a short, fixed-length decode (e.g. 64-128 tokens, greedy, no --heat) and time it
+      3. measured_tok_s = tokens_generated / wall_clock_seconds
+      4. back out bandwidth_gb_s from measured_tok_s and this run's own total_bytes_per_token, then
+         report BOTH the roofline prediction and the calibrated number side by side
+      5. optionally cache the calibrated bandwidth_gb_s under ~/.clozn/config.json for future `plan` runs
+    """
+    print()
+    print(f"{fmt.BOLD}--calibrate: DEFERRED{fmt.RST} (not implemented in this pass)")
+    print(f"{fmt.DIM}this would boot the engine on {name}, run a short live decode, measure the ACTUAL "
+          f"tok/s, and use it to correct the assumed bandwidth above for this machine. Left unwired "
+          f"deliberately -- the engine is being rebuilt in a concurrent workstream; see the TODO in "
+          f"cmd_plan._cmd_plan_calibrate_stub() for the plan once it's free.{fmt.RST}")

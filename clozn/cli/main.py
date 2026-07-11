@@ -46,7 +46,8 @@ from clozn.cli.engine_process import _free_port                                 
 from clozn.cli.trace_io import _save_trace                                                    # noqa: E402
 from clozn.cli.formatting import _C_BLUE, _C_HOT, _C_PALE, _SPARK, _conf_rgb, _heatmap_lines   # noqa: E402,F401
 from clozn.cli.formatting import _paint, _paint_sparkline, _sparkline, _stream_token           # noqa: E402,F401
-from clozn.cli.commands.models import cmd_models, cmd_pull, cmd_plan, format_plan             # noqa: E402
+from clozn.cli.commands.models import cmd_models, cmd_pull, cmd_plan, format_plan              # noqa: E402
+from clozn.cli.commands.models import format_throughput                                       # noqa: E402,F401
 from clozn.cli.commands.run import cmd_run                                                    # noqa: E402
 from clozn.cli.commands.serve import cmd_serve, cmd_ps, cmd_stop                              # noqa: E402
 from clozn.cli.commands.studio import cmd_studio                                              # noqa: E402
@@ -89,6 +90,14 @@ def build_parser():
     ppl.add_argument("model", help="a known model name, a local .gguf path, or a HF resolve/... .gguf URL")
     ppl.add_argument("--vram", type=float, default=None,
                      help="VRAM budget in GB (default: detect via nvidia-smi, else 16)")
+    ppl.add_argument("--bandwidth-gb-s", type=float, default=None,
+                     help="assumed effective memory bandwidth in GB/s for the decode-throughput roofline "
+                          "predictor (default: 900 GB/s, RTX-5080-class -- a model-free estimate, stated "
+                          "explicitly since it drives the whole prediction; see `clozn plan`'s output)")
+    ppl.add_argument("--calibrate", action="store_true",
+                     help="DEFERRED: would boot the engine and measure ACTUAL tok/s to correct the "
+                          "bandwidth assumption -- not implemented yet (prints a stub explaining why), "
+                          "never boots anything")
     ppl.set_defaults(fn=cmd_plan)
     pst = sub.add_parser("studio", help="launch Clozn Studio (the glass-box UI + the endpoint your tools connect to)")
     pst.add_argument("substrate", nargs="?", default=None, help="qwen (default) | dream | engine")
