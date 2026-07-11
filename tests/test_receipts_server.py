@@ -17,6 +17,7 @@ import json
 import os
 import sys
 
+import numpy as np
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -297,3 +298,156 @@ def test_receipt_mode_both_over_http_includes_forced_and_regen_fields(iso, monke
     assert "baseline_reply" in out                          # regen fields present at the top level
     assert "forced" in out and out["forced"]["mode"] == "forced"
     assert "silent_influence" in out
+
+
+# ============================================================================================================
+# ==================================================== Tier-1 #3: POST /runs/<id>/swap_receipt (FABLE_HANDOFF.md) ==
+# ============================================================================================================
+# The THIN endpoint wiring only -- clozn.receipts.swap_receipt's own math/degrade-paths are exhaustively
+# unit-tested model-free in test_swap_receipt.py. Here: the route matches, a missing run is a clean 404, no
+# engine/jlens substrate is a clean 503, a missing to_concept is a clean 400, and a real request's swap
+# receipt comes back over HTTP with `causal_verified` intact. dir(c) needs a REAL (tiny, on-disk, fixture)
+# J-lens + unembed export -- mirrors test_swap_receipt.py / test_concept_dir.py's own orthogonal-J /
+# orthonormal-W_U construction -- pointed at via CLOZN_JLENS_DIR / CLOZN_DIRC_UNEMBED_DIR (the route itself
+# builds a bare concept_dir.ConceptSteer(engine, layer=...) with no fixture wiring of its own, exactly as
+# swap_receipt(run, from_hint, to_concept, ctx.SUB) is documented to be called -- see swap_receipt.py).
+
+def _orthogonal(seed, n):
+    rng = np.random.default_rng(seed)
+    q, _ = np.linalg.qr(rng.standard_normal((n, n)))
+    return q
+
+
+def _write_jlens_fixture(tmp_path, *, d_model=32, layer=21, seed=1):
+    jdir = tmp_path / "jlens"
+    jdir.mkdir()
+    manifest = {"model": "fixture", "d_model": d_model, "vocab": d_model, "layers": [layer],
+               "engine_default_tap_layer": layer}
+    (jdir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    J = _orthogonal(seed, d_model).astype(np.float32)
+    J.astype("<f2").tofile(str(jdir / f"J_layer{layer}.f16"))
+    return str(jdir)
+
+
+def _write_unembed_fixture(tmp_path, *, d_model=32, vocab=32, seed=2):
+    udir = tmp_path / "unembed"
+    udir.mkdir()
+    q = _orthogonal(seed, d_model)[:vocab].astype(np.float32)
+    np.save(str(udir / "norm_weight.npy"), np.ones(d_model, dtype=np.float32))
+    np.save(str(udir / "lm_head_weight.npy"), q)
+    (udir / "unembed_meta.json").write_text(json.dumps({"rms_norm_eps": 1e-6}), encoding="utf-8")
+    return str(udir)
+
+
+class FakeSwapEngine:
+    """apply_template/complete/intervene/score -- mirrors test_swap_receipt.py's FakeEngineClient, pared
+    down to what a THIN route test needs (one swap arm, one null arm, both canned)."""
+
+    def __init__(self):
+        self.vocab = {}
+        self._next_id = 0      # fixture vocab is d_model=32 rows -- stay well inside range
+        self.intervene_calls = 0
+
+    def apply_template(self, messages, add_assistant=True):
+        return "PROMPT::" + " | ".join(str(m.get("content", "")) for m in messages)
+
+    def complete(self, prompt, max_tokens=64):
+        return {"choices": [{"text": "the sky is calm and blue today"}]}
+
+    def intervene(self, prompt, vector=None, coef=None, layer=None, max_tokens=64):
+        self.intervene_calls += 1
+        if self.intervene_calls == 1:                 # the real swap arm
+            return {"choices": [{"text": "a vast ocean wave of deep ocean water"}]}
+        return {"choices": [{"text": "xk garble zzzz repeated repeated repeated"}]}   # the null arm
+
+    def score(self, prompt=None, continuation_ids=None, continuation=None, topk=0, steer=None, steer_vec=None):
+        if continuation is not None:                   # token-resolution path (ConceptSteer.resolve_token_id)
+            word = continuation.strip()
+            tid = self.vocab.get(word)
+            if tid is None:
+                tid = self._next_id
+                self._next_id += 1
+                self.vocab[word] = tid
+            return {"tokens": [{"id": tid, "piece": word}]}
+        tid = continuation_ids[0] if continuation_ids else 0
+        lp = -0.3 if steer_vec is not None else -2.0
+        return {"tokens": [{"id": tid, "piece": "x", "logprob": lp}]}
+
+
+class FakeSwapSub:
+    """The minimal duck-typed substrate swap_receipt needs: .engine + .jlens -- mirrors
+    clozn.server.app.EngineSubstrate's own shape."""
+
+    def __init__(self, engine):
+        self.engine = engine
+
+    def jlens(self, text, layer=None, topk=5):
+        return {"available": False, "reason": "test fake has no jlens sidecar"}
+
+
+class FakeSwapSubNoJlens:
+    def __init__(self, engine):
+        self.engine = engine
+
+
+class FakeSwapSubNoEngine:
+    pass
+
+
+@pytest.fixture
+def jlens_env(tmp_path, monkeypatch):
+    """CLOZN_JLENS_DIR / CLOZN_DIRC_UNEMBED_DIR -> a tiny fixture export -- the DEFAULT concept_dir.
+    ConceptDirSource() the route builds (no fixture wiring of its own) picks these up via env vars."""
+    jdir = _write_jlens_fixture(tmp_path)
+    udir = _write_unembed_fixture(tmp_path)
+    monkeypatch.setenv("CLOZN_JLENS_DIR", jdir)
+    monkeypatch.setenv("CLOZN_DIRC_UNEMBED_DIR", udir)
+    return tmp_path
+
+
+def test_swap_receipt_missing_run_is_a_clean_404(iso):
+    out = _post("/runs/run_does_not_exist/swap_receipt", {"to_concept": "ocean"})
+    assert out == {"error": "run not found"}
+
+
+def test_swap_receipt_needs_the_engine_substrate_503_when_sub_is_none(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", None)
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/swap_receipt", {"to_concept": "ocean"})
+    assert out == {"error": "swap_receipt needs the engine substrate (.engine + .jlens)"}
+
+
+def test_swap_receipt_needs_the_engine_substrate_503_when_sub_has_no_engine(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", FakeSwapSubNoEngine())
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/swap_receipt", {"to_concept": "ocean"})
+    assert out == {"error": "swap_receipt needs the engine substrate (.engine + .jlens)"}
+
+
+def test_swap_receipt_needs_the_engine_substrate_503_when_sub_has_no_jlens(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", FakeSwapSubNoJlens(FakeSwapEngine()))
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/swap_receipt", {"to_concept": "ocean"})
+    assert out == {"error": "swap_receipt needs the engine substrate (.engine + .jlens)"}
+
+
+def test_swap_receipt_rejects_a_missing_to_concept_with_400(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", FakeSwapSub(FakeSwapEngine()))
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/swap_receipt", {})
+    assert out == {"error": "need a 'to_concept' to swap in"}
+
+
+def test_swap_receipt_happy_path_over_http(iso, monkeypatch, jlens_env):
+    monkeypatch.setattr(cs, "SUB", FakeSwapSub(FakeSwapEngine()))
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/swap_receipt", {"to_concept": "ocean", "from_hint": "Paris"})
+    assert "error" not in out
+    assert out["mode"] == "swap_receipt"
+    assert out["run_id"] == rid
+    assert out["causal_verified"] is True
+    assert out["swapped_to"]["concept"] == "ocean"
+    assert out["disposed"]["hint"] == "Paris"
+    assert out["baseline_reply"] == "the sky is calm and blue today"
+    assert out["swapped_reply"] == "a vast ocean wave of deep ocean water"
+    assert "lexicon_hits" in out and "logprob_shift" in out

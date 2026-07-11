@@ -282,6 +282,19 @@ def _engine_steer():
     return ENGINE_STEER
 
 
+ENGINE_CONCEPT_STEER = None   # lazy ConceptSteer(ENGINE_QWEN) -- Tier-1 #1's any-concept dial (dir(c)), see
+                              # clozn/behavior/steering/concept_dir.py. Mirrors _engine_steer() above; a
+                              # SEPARATE mechanism (dir(c), zero calibration) from the tone-dial EngineSteer.
+
+
+def _engine_concept_steer():
+    global ENGINE_CONCEPT_STEER
+    if ENGINE_CONCEPT_STEER is None and ENGINE_QWEN is not None:
+        from clozn.behavior.steering.concept_dir import ConceptSteer
+        ENGINE_CONCEPT_STEER = ConceptSteer(ENGINE_QWEN)
+    return ENGINE_CONCEPT_STEER
+
+
 def _qwen_tmpl(messages):
     """Render chat messages into Qwen's chat-template STRING (ChatML). LEGACY: kept only as a documented
     reference / last-ditch fallback -- the engine generation paths now template PER-MODEL via
@@ -1335,6 +1348,40 @@ class Substrate:
                 self.steer.save_custom(_pers(f"studio_custom_{self.name}.json"))
                 self.steer.save_state(self._pers_steer)
             return {"custom": list(getattr(self.steer, "custom", {}))}
+        if path == "/steer/concept/set":         # Tier-1 #1: any-concept dial (dir(c)) -- ZERO calibration
+            import clozn.behavior.steering.concept_dir as concept_dir
+            cs = _engine_concept_steer()
+            if cs is None:
+                return {"error": "concept dials need a running engine (CLOZN_ENGINE_QWEN_PORT)"}
+            concept = str(body.get("concept", "")).strip()
+            if not concept:
+                return {"error": "need a concept word"}
+            strength = float(body.get("strength", concept_dir.DEFAULT_STRENGTH))
+            result = cs.steer_toward(concept, strength)
+            result["active"] = cs.active()
+            return result
+        if path == "/steer/concept/check":       # A/B: baseline vs dir(concept)-steered (mirrors /steer/check)
+            import clozn.behavior.steering.concept_dir as concept_dir
+            cs = _engine_concept_steer()
+            if cs is None:
+                return {"error": "concept dials need a running engine (CLOZN_ENGINE_QWEN_PORT)"}
+            concept = str(body.get("concept", "")).strip()
+            if not concept:
+                return {"error": "need a concept word"}
+            strength = float(body.get("strength", concept_dir.DEFAULT_STRENGTH))
+            prompt = str(body.get("prompt", ""))[:300]
+            max_new = int(body.get("max_new", 90))
+            base = concept_dir._text_of(cs.ec.complete(prompt, max_tokens=max_new))
+            built = cs.steer_toward(concept, strength)
+            if not built.get("ok"):
+                return {"prompt": prompt, "concept": concept, "strength": strength,
+                        "baseline": base, "steered": None,
+                        "blocked": built.get("blocked"), "note": built.get("note")}
+            steered = concept_dir._text_of(cs.ec.intervene(
+                prompt, vector=built["vector"], coef=built["coef"], layer=built["layer"], max_tokens=max_new))
+            return {"prompt": prompt, "concept": concept, "strength": strength, "layer": built["layer"],
+                    "token_id": built["token_id"], "coef": built["coef"],
+                    "baseline": base, "steered": steered, "note": built.get("note")}
         return None
 
 

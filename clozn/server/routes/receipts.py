@@ -99,6 +99,28 @@ def try_post(h, p, body):
             return True
         h._json(200, out)
         return True
+    if p.startswith("/runs/") and p.endswith("/swap_receipt"):   # Tier-1 #3: read-disposition, write-a-different-concept, diff
+        rid = p[len("/runs/"):-len("/swap_receipt")]
+        import clozn.runs.store as runlog
+        run = runlog.get_run(rid)
+        if run is None:
+            h._json(404, {"error": "run not found"})
+            return True
+        if not (ctx.SUB and getattr(ctx.SUB, "engine", None) and getattr(ctx.SUB, "jlens", None)):
+            h._json(503, {"error": "swap_receipt needs the engine substrate (.engine + .jlens)"})
+            return True
+        to_concept = str(body.get("to_concept", "")).strip()
+        if not to_concept:
+            h._json(400, {"error": "need a 'to_concept' to swap in"})
+            return True
+        from clozn.receipts.swap_receipt import swap_receipt
+        try:
+            out = swap_receipt(run, body.get("from_hint"), to_concept, ctx.SUB)
+        except Exception as e:
+            h._json(500, {"error": f"swap_receipt failed: {type(e).__name__}: {e}"})
+            return True
+        h._json(200, out)
+        return True
     if p.startswith("/runs/") and p.endswith("/rederive"):   # S3: deterministic teacher-forced re-derivation
         rid = p[len("/runs/"):-len("/rederive")]
         import clozn.runs.store as runlog
