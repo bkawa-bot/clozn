@@ -949,6 +949,53 @@ struct JlensServe {
         ggml_free(ctx);
         return true;
     }
+
+    // Hand back ONE row of the model's own (quantized) unembed/lm_head matrix -- W_U[token_id],
+    // a [d_model] fp32 vector -- via ggml_get_rows. This is the missing ingredient the product's
+    // dir(c) concept-dial (clozn/behavior/steering/concept_dir.py) needs: dir(c) =
+    // normalize(J_l^T @ W_U[c]) already has J_l (the shipped product sidecar, read straight with
+    // plain numpy) but had NO in-product source for W_U at all -- it lives only inside this
+    // process, read straight out of the loaded GGUF for /jlens (out_head above). ggml_get_rows
+    // dequantizes through the tensor's own `to_float` type trait (ggml-cpu/ops.cpp's
+    // ggml_compute_forward_get_rows_q/_f16/...), so this works whatever quant type the GGUF's
+    // head tensor is, with no engine-side dequant code of our own. out_head is laid out
+    // [d_model, vocab] (ne0=d_model contiguous, ne1=vocab -- see load()'s "the model's own head"
+    // comment and /jlens's `ggml_mul_mat(out_head, nm)`, which contracts over that same ne0), so
+    // "row token_id" (ne1-index=token_id) is exactly W_U[token_id, :]. Hands back ONE row, never
+    // the whole [vocab, d_model] matrix (~2 GB fp32) -- that never needs to leave this process.
+    // Returns false + sets e on a not-loaded engine or an out-of-range token_id; never returns a
+    // wrong-shaped vector.
+    bool unembed_row(int token_id, std::vector<float>& out, std::string& e) {
+        if (!on) { e = "jlens not loaded"; return false; }
+        if (token_id < 0 || token_id >= vocab) {
+            e = "token_id " + std::to_string(token_id) + " out of range for vocab " + std::to_string(vocab);
+            return false;
+        }
+        std::lock_guard<std::mutex> lk(mtx);
+
+        const size_t mem = static_cast<size_t>(d_model) * sizeof(float)
+                         + ggml_graph_overhead() + 8 * ggml_tensor_overhead() + (1ULL << 20);
+        struct ggml_init_params ip; ip.mem_size = mem; ip.mem_buffer = nullptr; ip.no_alloc = false;
+        struct ggml_context* ctx = ggml_init(ip);
+        if (!ctx) { e = "ggml_init(unembed_row graph) failed"; return false; }
+
+        struct ggml_tensor* idx = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        *static_cast<int32_t*>(idx->data) = token_id;
+        struct ggml_tensor* row = ggml_get_rows(ctx, out_head, idx);   // [d_model, 1] f32, dequantized
+
+        struct ggml_cgraph* gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, row);
+        int nthreads = static_cast<int>(std::thread::hardware_concurrency());
+        if (nthreads < 1) nthreads = 4;
+        if (nthreads > 16) nthreads = 16;
+        const enum ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, nthreads);
+        if (st != GGML_STATUS_SUCCESS) { ggml_free(ctx); e = "unembed_row graph compute failed"; return false; }
+
+        const float* data = static_cast<const float*>(row->data);
+        out.assign(data, data + d_model);
+        ggml_free(ctx);
+        return true;
+    }
 };
 
 // A pool of contexts over ONE shared model. Each request acquires a free context (blocking until

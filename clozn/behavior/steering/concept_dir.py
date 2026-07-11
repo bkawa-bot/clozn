@@ -21,43 +21,40 @@ are just numpy, not a restricted asset):
   * dir_c(token_id, layer) = normalize(J_l.T @ W_U[token_id]), optionally scaled to a realistic
     residual magnitude (`scale * typical_norm`).
 
-*** THE ONE REAL BLOCKER (read before wiring this into anything) ***
+*** THE BLOCKER, AND THE FIX (notes/FABLE_HANDOFF.md Build 1) ***
 J_l ships in the product today: ~/.clozn/jlens/J_layer{L}.f16 (the SAME raw fp16 sidecar the C++
 engine's JlensServe::load reads for /jlens -- see engine/core/serve/server_shared.hpp). This
 module reads it directly with plain numpy (load_jlens_jacobians below) -- no engine round trip
 needed for J_l.
 
-W_U (the model's unembed/lm_head matrix) is NOT exposed to product Python code ANYWHERE today:
-  * The engine reads it straight out of the loaded GGUF's own (quantized) tensors, inside its own
-    C++ process (JlensServe::load's out_head/out_norm) -- there is no HTTP route that returns the
-    raw matrix, or even one row of it, or logits for an arbitrary candidate vector. /jlens computes
-    a full read+transport+unembed server-side and only ever returns TOP-K TOKENS for a real
-    residual it harvested from real text.
-  * The only place a full-precision copy exists is the research lab
-    (../clozn-jlens-work/artifacts/lm_head_weight.npy, HF-exported fp32) -- explicitly lab-only,
-    never to be imported by product/server code (dirc.py's own docstring restriction).
-So: THIS MODULE CANNOT BUILD A REAL dir(c) OUT OF THE BOX. `load_unembed()` raises
-`UnembedUnavailable` (see BLOCKER_NOTE) unless the caller points it at a directory holding the
-same 3-file shape the lab already produces (norm_weight.npy [d_model] fp32, lm_head_weight.npy
-[vocab, d_model] fp32, unembed_meta.json {"rms_norm_eps": eps}) -- via the `unembed_dir=` argument
-or the CLOZN_DIRC_UNEMBED_DIR env var. There is deliberately NO default path baked in (that would
-be silently depending on a lab artifact from product code); every caller sees a labeled
-"blocked": "unembed_unavailable" instead of a crash or a silently-wrong vector.
-Shipping this for real needs ONE of:
-  (a) a new engine route that returns W_U[token_id] (or, better, computes dir(c) server-side in
-      one round trip, since the engine process already holds both J_l and the head) -- the
-      lowest-latency, no-precision-loss option, and avoids ever handing a 152064 x 3584 fp32
-      matrix (~2GB) to a Python client; or
-  (b) a product-local unembed export shipped alongside the J-lens sidecar (the same 3-file shape
-      above), generated once at `clozn jlens fit` time.
-Neither exists yet. This is the flagged blocker -- see notes/FABLE_HANDOFF.md Build 1.
+W_U (the model's unembed/lm_head matrix) was NOT exposed to product Python code anywhere: the
+engine reads it straight out of the loaded GGUF's own (quantized) tensors, inside its own C++
+process (JlensServe::load's out_head/out_norm), and no route handed any of it back -- /jlens
+computes a full read+transport+unembed server-side and only ever returns TOP-K TOKENS for a real
+residual it harvested from real text. The FIX: the engine now exposes
+`POST /jlens/unembed_row {token_id}` -> `{vector: W_U[token_id]}` (engine/core/serve/
+routes_jlens.cpp, added specifically to close this gap) -- ONE row (d_model floats), extracted
+server-side via ggml_get_rows (which dequantizes whatever GGUF quant type the head tensor is), so
+the full [vocab, d_model] matrix (~2 GB fp32) never has to leave the engine process. That is now
+the DEFAULT path: ConceptDirSource.unembed_row() / fetch_unembed_row_from_engine() call it, and
+ConceptSteer.compute() uses it automatically via the engine_client it already holds (for
+resolve_token_id's /score round trip) -- no extra configuration needed to make dir(c) work
+end-to-end against a running cloze-server with a J-lens sidecar loaded.
+The OLDER lab-export path (a directory holding norm_weight.npy [d_model] fp32, lm_head_weight.npy
+[vocab, d_model] fp32, unembed_meta.json {"rms_norm_eps": eps} -- the same shape
+../clozn-jlens-work/artifacts already has) still works and still WINS if explicitly configured
+(`unembed_dir=` / CLOZN_DIRC_UNEMBED_DIR) -- useful for offline dev/tests with no engine running,
+or for the self-consistency verification that needs the FULL matrix (read_through_lens/rank_of).
+`UnembedUnavailable` (see BLOCKER_NOTE) now only fires when NEITHER an explicit lab export NOR a
+usable engine_client is available -- a genuine "no W_U source at all" degrade, not the normal case.
 
 House honesty style (mirrors clozn/receipts/quant_receipts.py): never raise out of the
 PRODUCT-FACING calls (ConceptSteer.compute/.steer_toward/.steer_vector) -- they return a
 labeled `{"ok": False, "blocked": "...", "note": "..."}` dict instead. The lower-level math/loader
-functions (dir_c, load_unembed, load_jlens_jacobians) DO raise (ValueError / FileNotFoundError /
-UnembedUnavailable) -- they are the seam ConceptSteer.compute() catches, kept raising for anyone
-building custom orchestration on top who wants a normal exception instead of a checked dict.
+functions (dir_c, dir_c_from_row, load_unembed, load_jlens_jacobians, fetch_unembed_row_from_engine)
+DO raise (ValueError / FileNotFoundError / UnembedUnavailable) -- they are the seam
+ConceptSteer.compute() catches, kept raising for anyone building custom orchestration on top who
+wants a normal exception instead of a checked dict.
 """
 from __future__ import annotations
 
@@ -85,21 +82,26 @@ VALIDATED_MEDIAN_RESID_NORM = {21: 146.68, 25: 343.14}
 # ============================================================================== the blocker + loaders
 
 class UnembedUnavailable(RuntimeError):
-    """No W_U (unembed/lm_head) source is configured. See the module docstring's BLOCKER section --
-    J_l ships in the product J-lens sidecar; W_U does not, anywhere, today."""
+    """No W_U (unembed/lm_head) source is available: neither an explicit lab export
+    (unembed_dir=/CLOZN_DIRC_UNEMBED_DIR) NOR a usable engine_client with /jlens/unembed_row (the
+    engine route added to close this gap -- see the module docstring's BLOCKER-AND-FIX section).
+    ConceptSteer.compute() always tries the engine route by default; this only fires when that
+    ALSO fails (no engine_client given, or the round trip itself errored) and there is no lab
+    export configured either."""
 
 
 BLOCKER_NOTE = (
-    "dir(c) = normalize(J_l^T @ W_U[c]) needs W_U (the model's unembed/lm_head matrix, "
-    "[vocab, d_model]), which is NOT exposed to product Python code anywhere today -- the engine "
-    "reads it straight out of the loaded (quantized) GGUF inside its own C++ process "
-    "(engine/core/serve/server_shared.hpp JlensServe::load), and no route hands back the raw "
-    "matrix or a row of it. The only full-precision copy lives in the research lab "
-    "(../clozn-jlens-work/artifacts/lm_head_weight.npy), which is lab-only and must not be "
-    "imported by product code. Set unembed_dir= (or CLOZN_DIRC_UNEMBED_DIR) to point at a "
-    "directory holding norm_weight.npy [d_model] fp32 + lm_head_weight.npy [vocab, d_model] fp32 "
-    "+ unembed_meta.json {rms_norm_eps} -- there is no default; this is the flagged real blocker "
-    "(notes/FABLE_HANDOFF.md Build 1), not a bug in this loader."
+    "dir(c) = normalize(J_l^T @ W_U[c]) needs W_U (the model's unembed/lm_head matrix row for "
+    "the target token). The DEFAULT in-product source is the engine's POST /jlens/unembed_row "
+    "{token_id} route (engine/core/serve/routes_jlens.cpp) -- ConceptSteer already calls this "
+    "automatically via the engine_client it holds; this note only appears when that ALSO failed "
+    "(no engine_client, the engine has no J-lens sidecar loaded, or the round trip errored) and "
+    "no lab export is configured either. Set unembed_dir= (or CLOZN_DIRC_UNEMBED_DIR) to point at "
+    "a directory holding norm_weight.npy [d_model] fp32 + lm_head_weight.npy [vocab, d_model] "
+    "fp32 + unembed_meta.json {rms_norm_eps} (e.g. ../clozn-jlens-work/artifacts) as an explicit "
+    "override/fallback -- there is no baked-in default for that path, only the engine route is "
+    "on by default. (notes/FABLE_HANDOFF.md Build 1 -- was a hard blocker before the engine route "
+    "shipped; now only degrades here on an actual engine/config failure.)"
 )
 
 
@@ -244,6 +246,54 @@ def dir_c(token_id: int, layer: int, J_by_layer: dict, unembed_weights: UnembedW
     return (unit * magnitude).astype(np.float32)
 
 
+def dir_c_from_row(w_c: np.ndarray, layer: int, J_by_layer: dict, *,
+                   scale: float = 1.0, typical_norm: Optional[float] = None) -> np.ndarray:
+    """dir(c) = normalize(J_l^T @ w_c) starting from an ALREADY-EXTRACTED W_U row (e.g. from
+    fetch_unembed_row_from_engine's ONE-row engine round trip) instead of the full
+    [vocab, d_model] lm_head matrix dir_c() needs. This is the engine-route path's entry point
+    into the SAME math (same scale/typical_norm convention as dir_c() -- see its docstring); the
+    two differ only in where w_c comes from, which is exactly the point: the product path never
+    needs to hold the full unembed matrix in Python at all.
+
+    Raises ValueError for an unfitted layer, a d_model-mismatched row, or a degenerate (~zero)
+    raw direction -- never silently returns a wrong/garbage vector.
+    """
+    if layer not in J_by_layer:
+        raise ValueError(f"layer {layer} has no loaded J_l (loaded: {sorted(J_by_layer)})")
+    J = J_by_layer[layer]
+    row = np.asarray(w_c, dtype=np.float32).reshape(-1)
+    if row.shape[0] != J.shape[0]:
+        raise ValueError(f"d_model mismatch: J_l is {J.shape}, w_c row is {row.shape}")
+    raw = J.T @ row
+    norm = float(np.linalg.norm(raw))
+    if norm < 1e-12:
+        raise ValueError("degenerate dir(c) (norm~0)")
+    unit = raw / norm
+    magnitude = scale if typical_norm is None else scale * typical_norm
+    return (unit * magnitude).astype(np.float32)
+
+
+def fetch_unembed_row_from_engine(engine_client, token_id: int) -> np.ndarray:
+    """The DEFAULT in-product W_U source: POST /jlens/unembed_row -> W_U[token_id], the ONE
+    unembed/lm_head row dir(c) needs (see engine/core/serve/routes_jlens.cpp, added to close the
+    gap this module's BLOCKER_NOTE used to describe). `engine_client` is a cloze_engine.EngineClient
+    (or anything duck-typed against its `.unembed_row(token_id) -> {"vector": [float,...], ...}`).
+
+    Propagates whatever `engine_client.unembed_row` itself raises on a network/HTTP failure (e.g.
+    EngineError -- "J-lens not loaded", connection refused, ...) unchanged; raises
+    UnembedUnavailable itself only when the call SUCCEEDS but the response is missing/malformed
+    `vector` (a server contract violation, not a normal failure mode). Either way, the caller
+    (ConceptDirSource.unembed_row / ConceptSteer.compute) treats ANY exception here as "no W_U for
+    this token right now" and degrades to a labeled blocked dict -- never raises out to product UI.
+    """
+    r = engine_client.unembed_row(int(token_id))
+    vec = r.get("vector") if isinstance(r, dict) else None
+    if not isinstance(vec, list) or not vec:
+        raise UnembedUnavailable(
+            f"engine /jlens/unembed_row returned no usable 'vector' for token {token_id}: {r!r}")
+    return np.asarray(vec, dtype=np.float32)
+
+
 def read_through_lens(vec: np.ndarray, layer: int, J_by_layer: dict,
                       unembed_weights: UnembedWeights) -> np.ndarray:
     """unembed(J_l @ vec) for a single [d_model] vector -- the self-consistency readout: logits
@@ -289,7 +339,11 @@ class ConceptDirSource:
         return self._J
 
     def unembed(self) -> UnembedWeights:
-        """Raises UnembedUnavailable (never degrades silently) -- see BLOCKER_NOTE."""
+        """The FULL [vocab, d_model] lab-export matrix (norm_weight/lm_head_weight/eps) -- only
+        ever needed for the offline self-consistency check (read_through_lens/rank_of) or explicit
+        lab dev, never for the product's own dir(c) build (see unembed_row). Raises
+        UnembedUnavailable (never degrades silently) if no unembed_dir/CLOZN_DIRC_UNEMBED_DIR is
+        configured -- see BLOCKER_NOTE."""
         if self._unembed is None:
             self._unembed = load_unembed(self.unembed_dir)
         return self._unembed
@@ -300,6 +354,26 @@ class ConceptDirSource:
             return True
         except UnembedUnavailable:
             return False
+
+    def unembed_row(self, token_id: int, engine_client=None) -> np.ndarray:
+        """W_U[token_id] -- the ONE row dir(c) needs, never the full matrix. An EXPLICIT lab
+        export (unembed_dir=/CLOZN_DIRC_UNEMBED_DIR) always wins, matching every other config knob
+        in this module (see _default_unembed_dir/_default_jlens_dir) -- useful for offline dev/
+        tests with no engine running. Otherwise -- the DEFAULT in-product path -- fetches the row
+        from the running engine's /jlens/unembed_row via `engine_client`
+        (fetch_unembed_row_from_engine); this is what makes dir(c) work with nothing but the
+        shipped J-lens sidecar + a running cloze-server, no lab export needed at all.
+
+        Raises UnembedUnavailable if neither an explicit export NOR an engine_client is available.
+        An engine_client that IS given but fails propagates that failure unchanged -- the caller
+        (ConceptSteer.compute) already wraps this call and turns any exception into a labeled
+        blocked dict (see its docstring).
+        """
+        if self.unembed_available():
+            return self.unembed().lm_head_weight[int(token_id)].astype(np.float32)
+        if engine_client is not None:
+            return fetch_unembed_row_from_engine(engine_client, token_id)
+        raise UnembedUnavailable(BLOCKER_NOTE)
 
 
 # ============================================================================== the product entry point
@@ -387,11 +461,19 @@ class ConceptSteer:
             return {"ok": False, "blocked": "token_resolution", "concept": concept, "layer": layer,
                     "note": resolved.get("note")}
         token_id = resolved["token_id"]
+        # W_U[token_id]: the DEFAULT path is the engine's /jlens/unembed_row (via self.ec, the
+        # same engine_client resolve_token_id already used) -- an explicit lab export
+        # (unembed_dir=/CLOZN_DIRC_UNEMBED_DIR) wins if configured, see
+        # ConceptDirSource.unembed_row. Any failure of either path (no engine_client, engine has
+        # no J-lens loaded, connection error, ...) degrades here, never raises.
         try:
-            unembed_weights = self.source.unembed()
+            w_c = self.source.unembed_row(token_id, engine_client=self.ec)
         except UnembedUnavailable as e:
             return {"ok": False, "blocked": "unembed_unavailable", "concept": concept, "layer": layer,
                     "token_id": token_id, "note": str(e)}
+        except Exception as e:
+            return {"ok": False, "blocked": "unembed_unavailable", "concept": concept, "layer": layer,
+                    "token_id": token_id, "note": f"engine unembed-row fetch failed: {e}"}
         if layer not in self.source.available_layers():
             return {"ok": False, "blocked": "bad_layer", "concept": concept, "layer": layer,
                     "token_id": token_id,
@@ -408,7 +490,7 @@ class ConceptSteer:
                     "note": f"no fitted J-lens sidecar for layer {layer} (available: "
                             f"{self.source.available_layers()})"}
         try:
-            vec = dir_c(token_id, layer, J_by_layer, unembed_weights, scale=1.0, typical_norm=None)
+            vec = dir_c_from_row(w_c, layer, J_by_layer, scale=1.0, typical_norm=None)
         except Exception as e:
             return {"ok": False, "blocked": "error", "concept": concept, "layer": layer,
                     "token_id": token_id, "note": str(e)}
@@ -495,15 +577,12 @@ class ConceptSteer:
 # Mirrors engine/client/cloze_engine.py's own --selftest/--demo split: --selftest is offline (no
 # engine, no GPU, safe as this module's default with no flags -- exercised in spirit by
 # tests/test_concept_dir.py's fixture-based self-consistency checks, just runnable standalone
-# here too). --demo is the LIVE smoke this session's guardrails explicitly DEFER (a GPU experiment
-# is running elsewhere; do not boot the engine) -- it is real, runnable code, just never invoked
-# by this session or by the pytest suite. It needs TWO things neither exists by default:
-#   1. a running cloze-server with a J-lens sidecar loaded (`--jlens <dir>` / CLOZN_JLENS_DIR);
-#   2. an unembed export (see BLOCKER_NOTE) -- e.g. for local dev, point --unembed-dir at
-#      ../clozn-jlens-work/artifacts (which already has norm_weight.npy/lm_head_weight.npy/
-#      unembed_meta.json in the lab's shape this loader expects).
-# Once both exist: `python -m clozn.behavior.steering.concept_dir --demo --port 8095
-#   --unembed-dir ../clozn-jlens-work/artifacts --concept ocean --strength 0.35`
+# here too). --demo is the LIVE smoke -- it needs only a running cloze-server with a J-lens
+# sidecar loaded (`--jlens <dir>` / CLOZN_JLENS_DIR); W_U comes from that same server's
+# /jlens/unembed_row route (see the BLOCKER-AND-FIX section above), so --unembed-dir is now
+# OPTIONAL (pass it only to force the older lab-export path instead, e.g. for a model whose
+# engine isn't running): `python -m clozn.behavior.steering.concept_dir --demo --port 8095
+#   --concept ocean --strength 0.35`
 
 def _selftest() -> int:
     """Offline self-consistency proof on a synthetic fixture (orthogonal J + orthonormal W_U) --

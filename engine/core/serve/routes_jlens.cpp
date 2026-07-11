@@ -121,6 +121,50 @@ void register_jlens_routes(httplib::Server& svr, ServerContext& ctx) {
             res.set_content(json{{"error", e.what()}}.dump(), "application/json");
         }
     });
+
+    // POST /jlens/unembed_row — hands back ONE row of the model's own (quantized) unembed/lm_head
+    // matrix, W_U[token_id] ([d_model] fp32) — the ingredient the product's dir(c) concept-dial
+    // (clozn/behavior/steering/concept_dir.py: dir(c) = normalize(J_l^T @ W_U[c])) was missing:
+    // J_l already ships in the product J-lens sidecar (read directly with plain numpy); W_U lived
+    // ONLY inside this process (read straight out of the loaded GGUF for /jlens above — see
+    // JlensServe::load's out_head) with no route back to it at all (concept_dir.py's
+    // BLOCKER_NOTE). Body {token_id}. Response {token_id, piece, d_model, vector:[d_model
+    // floats]}. Hands back exactly one row (via ggml_get_rows, which dequantizes whatever quant
+    // type the GGUF head is), never the whole [vocab, d_model] matrix — no full-precision unembed
+    // copy ever needs to leave this process. Guards mirror /jlens: J-lens not loaded -> 400;
+    // missing/out-of-range token_id -> 400.
+    svr.Post("/jlens/unembed_row", [&](const httplib::Request& req, httplib::Response& res) {
+        if (!jlens.on) {
+            res.status = 400;
+            res.set_content(json{{"error", "J-lens not loaded (start with --jlens <dir> or set CLOZN_JLENS_DIR)"}}.dump(),
+                            "application/json");
+            return;
+        }
+        json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+        if (body.is_discarded()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON body"}}.dump(), "application/json");
+            return;
+        }
+        try {
+            const int token_id = body.value("token_id", -1);
+            std::vector<float> row;
+            std::string e;
+            if (!jlens.unembed_row(token_id, row, e)) {
+                res.status = 400;
+                res.set_content(json{{"error", e}}.dump(), "application/json");
+                return;
+            }
+            json vec = json::array();
+            for (float v : row) vec.push_back(v);
+            json resp = {{"token_id", token_id}, {"piece", model->decode({token_id})},
+                        {"d_model", jlens.d_model}, {"vector", vec}};
+            res.set_content(dump_json(resp), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
 }
 
 }  // namespace cloze

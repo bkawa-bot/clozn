@@ -89,6 +89,15 @@ def test_harvest_parses_response():
     assert method == "POST" and path == "/harvest" and body["layer"] == 3
 
 
+def test_unembed_row_sends_token_id_and_parses():
+    eng = _Stub([{"token_id": 42, "piece": " ocean", "d_model": 4, "vector": [1.0, 2.0, 3.0, 4.0]}])
+    r = eng.unembed_row(42)
+    method, path, body = eng.calls[0]
+    assert method == "POST" and path == "/jlens/unembed_row" and body == {"token_id": 42}
+    assert r["vector"] == [1.0, 2.0, 3.0, 4.0]
+    assert r["d_model"] == 4
+
+
 def test_write_state_sends_flat_values_and_parses():
     rows = np.ones((2, 4), dtype="<f4")
     eng = _Stub([{"applied": True, "layer": 6, "moved_l2": 12.5,

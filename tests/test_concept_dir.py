@@ -13,10 +13,15 @@ elsewhere; this module boots no engine):
     ../clozn-jlens-work/artifacts/dirc_selfconsistency_result.txt) -- this suite proves the CODE
     is wired right; it does not re-derive the science.
   * ConceptSteer is exercised against a FakeEngineClient (mirrors test_engine_add_custom.py's
-    _FakeEC pattern) -- no real cloze-server, no socket.
-  * The one real BLOCKER (W_U not being available in-product) is itself unit-tested: with no
-    unembed_dir/CLOZN_DIRC_UNEMBED_DIR configured, every product-facing call degrades to a
-    labeled `blocked: "unembed_unavailable"` dict instead of raising or silently guessing.
+    _FakeEC pattern) -- no real cloze-server, no socket; FakeEngineClient now ALSO stands in for
+    the engine's /jlens/unembed_row route (see its `unembed_rows` param) so the DEFAULT
+    in-product path (no lab export at all) is covered without booting a real engine.
+  * The FIX (engine/core/serve/routes_jlens.cpp's /jlens/unembed_row) is unit-tested for both the
+    success path (test_compute_succeeds_via_engine_unembed_row_with_no_lab_export_configured) and
+    the degrade path (test_compute_blocked_unembed_unavailable_when_engine_has_no_row_and_no_lab_
+    export): with no unembed_dir/CLOZN_DIRC_UNEMBED_DIR configured AND no working engine row,
+    every product-facing call still degrades to a labeled `blocked: "unembed_unavailable"` dict
+    instead of raising or silently guessing.
 """
 from __future__ import annotations
 
@@ -78,15 +83,24 @@ def _write_unembed_fixture(tmp_path, *, d_model=32, vocab=32, seed=2):
 
 
 class FakeEngineClient:
-    """Stands in for cloze_engine.EngineClient: ConceptSteer.resolve_token_id only calls
-    `.score(prompt=, continuation=, topk=)`, reusing the /score route as a tokenizer (see the
-    module docstring). `vocab` maps a leading-space concept string -> a list of token ids (len>1
-    simulates a multi-token word); unknown words default to a single fresh id."""
+    """Stands in for cloze_engine.EngineClient: ConceptSteer.resolve_token_id calls
+    `.score(prompt=, continuation=, topk=)` (reusing /score as a tokenizer), and
+    ConceptSteer.compute (via ConceptDirSource.unembed_row) calls `.unembed_row(token_id)` -- the
+    NEW /jlens/unembed_row round trip that closed the W_U blocker (see the module docstring).
+    `vocab` maps a leading-space concept string -> a list of token ids (len>1 simulates a
+    multi-token word); unknown words default to a single fresh id. `unembed_rows` maps
+    token_id -> a [d_model] row (simulating what the real engine's /jlens/unembed_row would
+    return for that token); a token_id with no configured row raises, mirroring a real engine
+    round-trip failure (no J-lens loaded, connection error, ...) -- exercised by the existing
+    "no unembed configured" tests, which never populate this dict."""
 
-    def __init__(self, vocab=None, raises=False):
+    def __init__(self, vocab=None, raises=False, unembed_rows=None, unembed_raises=False):
         self.vocab = dict(vocab or {})
         self.raises = raises
+        self.unembed_rows = {int(k): list(v) for k, v in (unembed_rows or {}).items()}
+        self.unembed_raises = unembed_raises
         self.calls = []
+        self.unembed_calls = []
         self._next_id = 1000
 
     def score(self, prompt=None, continuation=None, topk=0, **kw):
@@ -99,6 +113,16 @@ class FakeEngineClient:
             self._next_id += 1
             self.vocab[continuation] = ids
         return {"tokens": [{"id": i, "piece": continuation} for i in ids]}
+
+    def unembed_row(self, token_id):
+        self.unembed_calls.append(int(token_id))
+        if self.unembed_raises:
+            raise RuntimeError("engine unreachable")
+        row = self.unembed_rows.get(int(token_id))
+        if row is None:
+            raise RuntimeError(f"no /jlens/unembed_row fixture configured for token {token_id} "
+                               "(simulates: J-lens not loaded / engine unreachable)")
+        return {"token_id": int(token_id), "piece": None, "d_model": len(row), "vector": list(row)}
 
 
 # ==================================================================================== loaders: load_jlens_jacobians
@@ -271,6 +295,63 @@ def test_dir_c_raises_on_degenerate_direction():
         cd.dir_c(0, 21, {21: J}, uw)
 
 
+# ==================================================================================== dir_c_from_row + fetch_unembed_row_from_engine
+# (the engine-route path's own math/plumbing -- notes/FABLE_HANDOFF.md Build 1's fix: dir(c) from
+# ONE already-fetched W_U row instead of the full [vocab, d_model] matrix.)
+
+def test_dir_c_from_row_matches_dir_c_given_the_same_row():
+    """dir_c_from_row (engine-route path) must be the SAME math as dir_c (lab-export path) -- they
+    only differ in whether the caller already extracted the row or hands over the whole matrix."""
+    d_model = 16
+    J = _orthogonal(70, d_model).astype(np.float32)
+    W = _orthogonal(71, d_model).astype(np.float32)
+    uw = cd.UnembedWeights(norm_weight=np.ones(d_model, dtype=np.float32), lm_head_weight=W, eps=1e-6)
+    for c in (0, 5, 15):
+        a = cd.dir_c(c, 21, {21: J}, uw, scale=0.7)
+        b = cd.dir_c_from_row(W[c], 21, {21: J}, scale=0.7)
+        np.testing.assert_allclose(a, b, atol=1e-6)
+
+
+def test_dir_c_from_row_raises_on_unfitted_layer():
+    with pytest.raises(ValueError, match="no loaded J_l"):
+        cd.dir_c_from_row(np.ones(4, dtype=np.float32), 99, {21: np.eye(4, dtype=np.float32)})
+
+
+def test_dir_c_from_row_raises_on_d_model_mismatch():
+    J = np.eye(4, dtype=np.float32)
+    with pytest.raises(ValueError, match="mismatch"):
+        cd.dir_c_from_row(np.ones(3, dtype=np.float32), 21, {21: J})
+
+
+def test_dir_c_from_row_raises_on_degenerate_direction():
+    d_model = 4
+    J = np.zeros((d_model, d_model), dtype=np.float32)
+    with pytest.raises(ValueError, match="degenerate"):
+        cd.dir_c_from_row(np.ones(d_model, dtype=np.float32), 21, {21: J})
+
+
+def test_fetch_unembed_row_from_engine_calls_client_and_returns_array():
+    ec = FakeEngineClient(unembed_rows={5: [1.0, 2.0, 3.0]})
+    row = cd.fetch_unembed_row_from_engine(ec, 5)
+    np.testing.assert_allclose(row, [1.0, 2.0, 3.0])
+    assert ec.unembed_calls == [5]
+
+
+def test_fetch_unembed_row_from_engine_propagates_client_failure():
+    ec = FakeEngineClient(unembed_raises=True)
+    with pytest.raises(RuntimeError, match="unreachable"):
+        cd.fetch_unembed_row_from_engine(ec, 5)
+
+
+def test_fetch_unembed_row_from_engine_raises_unembedunavailable_on_malformed_response():
+    class BadEngineClient:
+        def unembed_row(self, token_id):
+            return {"token_id": token_id}   # no "vector" -- a server contract violation
+
+    with pytest.raises(cd.UnembedUnavailable):
+        cd.fetch_unembed_row_from_engine(BadEngineClient(), 5)
+
+
 # ==================================================================================== ConceptDirSource
 
 def test_concept_dir_source_available_layers(tmp_path):
@@ -291,6 +372,42 @@ def test_concept_dir_source_unembed_available_true_when_configured(tmp_path):
     udir, _ = _write_unembed_fixture(tmp_path, d_model=8, vocab=8)
     source = cd.ConceptDirSource(jlens_dir=jdir, unembed_dir=udir)
     assert source.unembed_available() is True
+
+
+def test_concept_dir_source_unembed_row_prefers_explicit_lab_export_over_engine(tmp_path):
+    """An explicit unembed_dir/CLOZN_DIRC_UNEMBED_DIR always wins, matching every other config
+    knob in this module -- the engine route is the DEFAULT, not an override."""
+    jdir, _ = _write_jlens_fixture(tmp_path, d_model=8, layers=(21,))
+    udir, W = _write_unembed_fixture(tmp_path, d_model=8, vocab=8)
+    source = cd.ConceptDirSource(jlens_dir=jdir, unembed_dir=udir)
+    ec = FakeEngineClient(unembed_rows={0: [999.0] * 8})   # would be WRONG if ever used
+
+    row = source.unembed_row(0, engine_client=ec)
+
+    np.testing.assert_allclose(row, W[0])
+    assert ec.unembed_calls == []   # lab export wins; engine never called
+
+
+def test_concept_dir_source_unembed_row_falls_back_to_engine_without_lab_export(tmp_path, monkeypatch):
+    """THE fix: with NO unembed_dir/env configured at all, unembed_row() still succeeds -- via the
+    engine's /jlens/unembed_row (fetch_unembed_row_from_engine)."""
+    monkeypatch.delenv("CLOZN_DIRC_UNEMBED_DIR", raising=False)
+    jdir, _ = _write_jlens_fixture(tmp_path, d_model=8, layers=(21,))
+    source = cd.ConceptDirSource(jlens_dir=jdir)   # no unembed_dir at all
+    ec = FakeEngineClient(unembed_rows={3: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]})
+
+    row = source.unembed_row(3, engine_client=ec)
+
+    np.testing.assert_allclose(row, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+    assert ec.unembed_calls == [3]
+
+
+def test_concept_dir_source_unembed_row_raises_when_neither_available(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLOZN_DIRC_UNEMBED_DIR", raising=False)
+    jdir, _ = _write_jlens_fixture(tmp_path, d_model=8, layers=(21,))
+    source = cd.ConceptDirSource(jlens_dir=jdir)
+    with pytest.raises(cd.UnembedUnavailable):
+        source.unembed_row(0, engine_client=None)
 
 
 def test_concept_dir_source_jacobians_caches_and_only_loads_missing_layers(tmp_path):
@@ -344,11 +461,15 @@ def _steer_with_fixtures(tmp_path, *, layer=21, d_model=32, vocab=32, vocab_map=
     return cd.ConceptSteer(ec, source=source, layer=layer, median_norm=median_norm), ec
 
 
-def test_compute_blocked_unembed_unavailable_when_no_unembed_configured(tmp_path, monkeypatch):
+def test_compute_blocked_unembed_unavailable_when_engine_has_no_row_and_no_lab_export(tmp_path, monkeypatch):
+    """The degrade path THIS module keeps tested even after the fix: no lab export configured AND
+    the engine_client can't produce the row either (here: FakeEngineClient with no unembed_rows
+    configured, simulating "engine unreachable" / "no J-lens sidecar loaded") -- must still
+    degrade to a labeled blocked dict, never raise."""
     monkeypatch.delenv("CLOZN_DIRC_UNEMBED_DIR", raising=False)
     jdir, _ = _write_jlens_fixture(tmp_path, d_model=8, layers=(21,))
     source = cd.ConceptDirSource(jlens_dir=jdir)   # no unembed_dir
-    ec = FakeEngineClient(vocab={" ocean": [3]})
+    ec = FakeEngineClient(vocab={" ocean": [3]})   # no unembed_rows configured
     steer = cd.ConceptSteer(ec, source=source, layer=21)
 
     out = steer.compute("ocean")
@@ -356,6 +477,35 @@ def test_compute_blocked_unembed_unavailable_when_no_unembed_configured(tmp_path
     assert out["ok"] is False
     assert out["blocked"] == "unembed_unavailable"
     assert out["concept"] == "ocean"
+
+
+def test_compute_succeeds_via_engine_unembed_row_with_no_lab_export_configured(tmp_path, monkeypatch):
+    """THE fix (notes/FABLE_HANDOFF.md Build 1): dir(c) now works with ONLY the shipped J-lens
+    sidecar + a running engine -- no lab-only unembed export needed at all. Hands ConceptSteer a
+    full orthogonal W_U ONLY via the fake engine's /jlens/unembed_row (never via
+    unembed_dir/CLOZN_DIRC_UNEMBED_DIR, which stay unset), then checks the resulting dir(c)
+    recovers the token at rank 0 through the SAME self-consistency check the lab-export path
+    already proves (test_dir_c_self_consistency_through_the_real_file_loaders) -- using the full
+    W ONLY for this offline verification, never handed to ConceptSteer itself."""
+    monkeypatch.delenv("CLOZN_DIRC_UNEMBED_DIR", raising=False)
+    d_model = 32
+    jdir, J_by_layer = _write_jlens_fixture(tmp_path, d_model=d_model, layers=(21,), seed=60)
+    W = _orthogonal(61, d_model).astype(np.float32)   # a full W_U, held ONLY by the test/"engine"
+    source = cd.ConceptDirSource(jlens_dir=jdir)      # NOTE: no unembed_dir at all
+    token_id = 7
+    ec = FakeEngineClient(vocab={" ocean": [token_id]},
+                         unembed_rows={token_id: W[token_id].tolist()})
+    steer = cd.ConceptSteer(ec, source=source, layer=21)
+
+    out = steer.compute("ocean")
+
+    assert out["ok"] is True, out
+    assert out["token_id"] == token_id
+    assert ec.unembed_calls == [token_id]   # fetched exactly the ONE row it needed
+
+    uw = cd.UnembedWeights(norm_weight=np.ones(d_model, dtype=np.float32), lm_head_weight=W, eps=1e-6)
+    logits = cd.read_through_lens(np.asarray(out["vector"]), 21, J_by_layer, uw)
+    assert cd.rank_of(logits, token_id) == 0
 
 
 def test_compute_blocked_token_resolution_propagates_the_reason(tmp_path):
