@@ -4,6 +4,7 @@ from . import axes as _axes
 
 __all__ = [
     "AXES",
+    "ConceptSteer",
     "DEV",
     "DreamSteering",
     "EngineSteer",
@@ -33,4 +34,7 @@ def __getattr__(name: str):
     if name == "EngineSteer":
         from .engine_adapter import EngineSteer
         return EngineSteer
+    if name == "ConceptSteer":
+        from .concept_dir import ConceptSteer
+        return ConceptSteer
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
