@@ -189,6 +189,51 @@ def test_list_runs_limit(store):
     assert len(store.list_runs(limit=3)) == 3
 
 
+# ------------------------------------------------------------------ include_replays (receipt-journal spam)
+# A `/runs/<id>/receipts` "prove-all" persists one child run per arm (baseline + one per fired influence +
+# one per redundancy-guard pair -- clozn.replay.replay.replay(), source="replay") so each is itself an
+# inspectable, diffable run. Real usage surfaced this as noise: one "prove-all" click produced ~7
+# near-duplicate entries in a run-history listing. include_replays=False lets a browsing view opt out
+# without losing the underlying data (still fully readable via get_run()).
+
+def test_list_runs_include_replays_true_by_default(store):
+    store.record(source="cli", messages=[{"role": "user", "content": "real"}], response="a", started=1000.0)
+    store.record(source="replay", messages=[{"role": "user", "content": "real"}], response="b", started=2000.0)
+    assert len(store.list_runs()) == 2
+
+
+def test_list_runs_include_replays_false_drops_replay_sourced_entries(store):
+    real = store.record(source="cli", messages=[{"role": "user", "content": "real"}], response="a",
+                        started=1000.0)
+    store.record(source="replay", messages=[{"role": "user", "content": "real"}], response="b",
+                 started=2000.0, parent_run_id=real)
+    rows = store.list_runs(include_replays=False)
+    assert [r["id"] for r in rows] == [real]
+
+
+def test_list_runs_include_replays_false_still_honors_limit(store):
+    for i in range(5):
+        store.record(source="cli", messages=[{"role": "user", "content": str(i)}], response=str(i),
+                     started=1000.0 + i, ended=1000.0 + i)
+        store.record(source="replay", messages=[{"role": "user", "content": str(i)}], response=str(i),
+                     started=1000.5 + i, ended=1000.5 + i)
+    rows = store.list_runs(limit=3, include_replays=False)
+    assert len(rows) == 3
+    assert all(r.get("source") != "replay" for r in
+              [store.get_run(r["id"]) for r in rows])
+
+
+def test_list_runs_include_replays_false_replay_still_readable_by_id(store):
+    """The filter hides replay children from a listing view -- it must never make them unreachable."""
+    real = store.record(source="cli", messages=[{"role": "user", "content": "real"}], response="a",
+                        started=1000.0)
+    replay_id = store.record(source="replay", messages=[{"role": "user", "content": "real"}], response="b",
+                             started=2000.0, parent_run_id=real)
+    store.list_runs(include_replays=False)   # must not affect what's on disk
+    assert store.get_run(replay_id) is not None
+    assert store.get_run(replay_id)["source"] == "replay"
+
+
 def test_get_run_missing(store):
     assert store.get_run("run_does_not_exist") is None
 

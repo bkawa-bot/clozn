@@ -180,7 +180,10 @@ def _runlog_trace_meta(run: dict, steps: list[dict]) -> dict:
 
 
 def _list_runlog_traces(runlog, limit=12):
-    rows = runlog.list_runs(limit=limit)
+    # include_replays=False: skip the internal leave-one-out/redundancy-guard re-generations a
+    # `/runs/<id>/receipts` prove-all persists (clozn.replay.replay, source="replay") -- real runs, still
+    # fully readable by id, just not something a person actually did, so they shouldn't spam this list.
+    rows = runlog.list_runs(limit=limit, include_replays=False)
     print(f"{'WHEN':<19} {'MODEL':<11} {'TOK':>4}  PROMPT")
     for row in reversed(rows):
         run = runlog.get_run(row.get("id", "")) or {}

@@ -43,6 +43,15 @@ def _setup_console():
         COLOR = not os.environ.get("NO_COLOR")   # truecolor heatmaps unless the user opts out (NO_COLOR is a std)
 
 
+def _oneline(text) -> str:
+    """Collapse embedded newlines/tabs to their escaped literal form ('\\n' / '\\t') so a chunk of model
+    text can be printed on the single, correctly-indented terminal line its caller built for it -- a raw
+    '\n' inside a reconstructed reply (e.g. `clozn branch`'s "original:"/"branch:" lines) would otherwise
+    split into multiple unindented lines and read as garbled/misaligned output. Mirrors the per-token
+    escaping trace_io._render_trace and explain._format_confidence already do at the single-token level."""
+    return str(text if text is not None else "").replace("\n", "\\n").replace("\t", "\\t")
+
+
 def _num(x, default: float = 0.0) -> float:
     try:
         return float(x)

@@ -64,6 +64,39 @@ def test_trace_defaults_to_shared_runlog_even_when_legacy_cache_exists(isolated,
     assert "legacy prompt" not in out
 
 
+def test_trace_skips_internal_replay_runs_when_picking_the_last_run(isolated, capsys):
+    """Regression (receipt-journal spam): a `/runs/<id>/receipts` prove-all persists an internal
+    leave-one-out re-generation as its own run (source="replay", clozn.replay.replay.replay()) -- it
+    must not masquerade as "the last run" a bare `clozn trace` shows."""
+    runlog.record(source="cli", client="cli", model="new-model", substrate="engine",
+                  messages=[{"role": "user", "content": "the real prompt"}], response="Real answer",
+                  trace={"tokens": ["Real", " answer"], "confidence": [0.9, 0.9]},
+                  started=1000.0, ended=1000.1)
+    runlog.record(source="replay", client="studio", model="new-model", substrate="engine",
+                  messages=[{"role": "user", "content": "the real prompt"}], response="Ablated answer",
+                  trace={"tokens": ["Ablated"], "confidence": [0.9]},
+                  started=2000.0, ended=2000.1)   # newer, but internal -- must be skipped
+
+    cli.cmd_trace(_args())
+
+    out = capsys.readouterr().out
+    assert "the real prompt" in out
+    assert "Ablated answer" not in out
+
+
+def test_trace_list_skips_internal_replay_runs(isolated, capsys):
+    runlog.record(source="cli", messages=[{"role": "user", "content": "a real prompt"}], response="hey",
+                 started=1000.0, ended=1000.1)
+    runlog.record(source="replay", messages=[{"role": "user", "content": "a real prompt"}], response="hey2",
+                 started=2000.0, ended=2000.1)
+
+    cli.cmd_trace(_args(list=True))
+
+    out = capsys.readouterr().out
+    assert "a real prompt" in out
+    assert out.count("a real prompt") == 1     # the replay-sourced duplicate is not listed
+
+
 def test_trace_shows_token_id_logprob_and_topk_entropy_with_honest_labels(isolated, capsys):
     """Backlog #2: `clozn trace` shows the v2 per-token fields, compactly and honestly labeled -- 'logp'
     for the derived logprob, 'H@k(approx)' (never bare 'H', which is reserved for the true full-softmax

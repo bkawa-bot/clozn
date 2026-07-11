@@ -134,16 +134,28 @@ def _prune():
             pass
 
 
-def list_runs(limit: int = 50) -> list[dict]:
+def list_runs(limit: int = 50, *, include_replays: bool = True) -> list[dict]:
+    """Newest-first run summaries. `include_replays=False` drops entries whose source is "replay" -- the
+    leave-one-out/redundancy-guard re-generations `clozn.replay.replay.replay()` persists for every arm of
+    a `/runs/<id>/receipts` "prove-all" (one baseline + one per fired influence + one per redundancy-guard
+    pair -- easily 5-10 near-duplicate entries from a single click). Those child runs are real and stay
+    fully readable by id (get_run) and in lineage()/lineage_family() (which read the raw files directly,
+    untouched by this filter) -- they're just not something a person actually did, so a "browse my run
+    history" view can opt out of the noise without losing the underlying data. Default unchanged (True):
+    every existing caller keeps seeing everything until it opts in."""
     _ensure()
     out = []
-    for f in sorted(_files(), reverse=True)[:limit]:
+    for f in sorted(_files(), reverse=True):
+        if len(out) >= limit:
+            break
         try:
             with open(f, encoding="utf-8") as fh:
                 r = json.load(fh)
-            out.append(_summary(r))
         except Exception:
-            pass
+            continue
+        if not include_replays and r.get("source") == "replay":
+            continue
+        out.append(_summary(r))
     return out
 
 

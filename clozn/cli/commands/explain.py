@@ -36,7 +36,11 @@ def cmd_trace(args):
         return _cmd_trace_legacy(args)
     try:
         runlog = _import_runlog()
-        rows = runlog.list_runs(limit=12 if args.list else 1)
+        # include_replays=False: don't let an internal leave-one-out/redundancy re-generation from a
+        # `/runs/<id>/receipts` prove-all (clozn.replay.replay, source="replay") masquerade as "the last
+        # run" or clutter --list -- it's real data (still fully readable by id), just not something the
+        # user actually did.
+        rows = runlog.list_runs(limit=12 if args.list else 1, include_replays=False)
     except Exception as e:
         raise ctx.CloznError(f"could not read the run journal (~/.clozn/runs): {e}")
     if not rows:
@@ -85,7 +89,8 @@ def cmd_branch(args):
     print(f"  fork at token {idx}: it chose {fmt.BOLD}{step.get('piece', step.get('text', '')).strip()!r}{fmt.RST} "
           f"({fmt._num(step.get('prob', step.get('conf', step.get('confidence')))):.2f})"
           f"  ->  branch on {fmt.BOLD}{alt_piece.strip()!r}{fmt.RST} ({fmt._num(alt.get('prob')):.2f})")
-    print(f"  {fmt.DIM}original:{fmt.RST} {''.join(s.get('piece', s.get('text', '')) for s in steps).strip()[:130]}")
+    original = fmt._oneline("".join(s.get("piece", s.get("text", "")) for s in steps).strip())
+    print(f"  {fmt.DIM}original:{fmt.RST} {original[:130]}")
     warm = _find_warm(model); proc = logf = None
     if warm:
         port = warm[0]
@@ -95,7 +100,10 @@ def cmd_branch(args):
         print(f"{fmt.DIM}  - loading {_friendly(model)} …{fmt.RST}", file=sys.stderr, flush=True)
         proc, _h, _g = spawn_engine(model, port, flags, prefer_gpu=not args.cpu, logf=logf)
     try:
-        cont = complete_once(port, prefix, args.max).strip()
+        # rstrip only: a leading space here is the separator between the alt piece and the continuation
+        # (word-piece tokenization keeps it as part of `cont`) -- an eager .strip() used to eat it, running
+        # the two together ("...suddenlyand it lived...") in the line printed below.
+        cont = complete_once(port, prefix, args.max).rstrip()
     finally:
         if proc:
             proc.terminate()
@@ -105,7 +113,8 @@ def cmd_branch(args):
                 proc.kill()
         if logf:
             logf.close()
-    print(f"  {fmt.BOLD}branch:{fmt.RST}   {(kept + alt['piece'] + cont).strip()[:160]}")
+    branch_text = fmt._oneline((kept + alt_piece + cont).strip())
+    print(f"  {fmt.BOLD}branch:{fmt.RST}   {branch_text[:160]}")
 
 
 # ----------------------------------------------------------------------------- explain (M5 display; M1 assembles)
@@ -235,10 +244,14 @@ def _last_run_id():
     """The most recent run in the shared Studio run log (~/.clozn/runs), read directly -- mirrors
     _log_run_cli's own direct `import runlog` (clozn.runs is a stdlib-only sibling). `clozn run`/`serve`
     write every turn straight into this log whether or not the Studio HTTP server is up, so --last
-    resolves even while it's down; only the actual /explain fetch below needs the server."""
+    resolves even while it's down; only the actual /explain fetch below needs the server.
+
+    include_replays=False: an internal leave-one-out/redundancy re-generation from a `/runs/<id>/receipts`
+    prove-all (clozn.replay.replay, source="replay") must never outrank the user's own last turn here --
+    same reasoning as cmd_trace's "last run" pick above."""
     try:
         import clozn.runs.store as runlog
-        runs = runlog.list_runs(limit=1)
+        runs = runlog.list_runs(limit=1, include_replays=False)
         return runs[0]["id"] if runs else None
     except Exception:
         return None

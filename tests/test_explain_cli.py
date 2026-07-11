@@ -246,6 +246,17 @@ def test_last_run_id_is_none_when_no_runs_exist(iso):
     assert clozn_cli._last_run_id() is None
 
 
+def test_last_run_id_skips_internal_replay_runs(iso):
+    """Regression (receipt-journal spam): a `/runs/<id>/receipts` prove-all persists its leave-one-out
+    re-generations as their own runs (source="replay") -- `clozn explain --last` must resolve to the
+    user's own last turn, not a newer internal regeneration."""
+    real = runlog.record(source="cli", messages=[{"role": "user", "content": "first"}], response="a",
+                         started=1000.0)
+    runlog.record(source="replay", messages=[{"role": "user", "content": "first"}], response="b",
+                 started=2000.0, parent_run_id=real)
+    assert clozn_cli._last_run_id() == real
+
+
 # ------------------------------------------------------------------------------------------- _fetch_explain
 
 def test_fetch_explain_is_an_honest_cloznerror_when_studio_is_down():
