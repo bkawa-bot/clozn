@@ -1,0 +1,38 @@
+"""GET /runs/<id>/card — the shareable receipt card: ONE self-contained HTML rendering of the SAME
+bundle GET /runs/<id>/export returns. Replicates the export handler's exact assembly (routes/receipts.py:
+get_run -> explain (M1, pure read) -> receipt_bundle.build) and adds only runlog.lineage(rid) — another
+pure read of already-recorded runs, zero generation — so the card can draw its family tree. The card is a
+RENDERING of that bundle, never a new computation: receipts/lens data appear only if the record already
+carries them; otherwise the card states their honest absence.
+
+NOT yet registered. To register: in clozn/server/app.py add
+    from clozn.server.routes import card as _card_routes
+and insert `_card_routes` into _GET_ROUTES BEFORE `_runs_fallback_routes` (the generic /runs/<id>
+fallback must keep last refusal, exactly like the other /runs/<id>/<suffix> families).
+"""
+
+
+def try_get(h, p):
+    if p.startswith("/runs/") and p.endswith("/card"):
+        import clozn.runs.store as runlog
+        import clozn.receipts.explain as explain
+        import clozn.receipts.bundle as receipt_bundle
+        from clozn.server.card_html import render_card
+        rid = p[len("/runs/"):-len("/card")]
+        run = runlog.get_run(rid)
+        if not run:
+            h._json(404, {"error": "run not found"})
+            return True
+        try:
+            xr = explain.explain(run)                # M1: pure read/reshape, no generation
+        except Exception:
+            xr = None
+        bundle = receipt_bundle.build(run, explain=xr)
+        try:
+            bundle["lineage"] = runlog.lineage(rid)  # pure journal read (parent/children ids)
+        except Exception:
+            bundle["lineage"] = None
+        h._send(200, render_card(bundle), "text/html; charset=utf-8",
+               extra_headers={"Content-Disposition": 'inline; filename="' + rid + '.card.html"'})
+        return True
+    return False
