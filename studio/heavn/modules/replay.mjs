@@ -26,6 +26,8 @@ export function ReplayModule(){
     <div class="col">
       <${Meters} rec=${rec}/>
       <${ReceiptsPanel} rec=${rec}/>
+      <${SpanForensics} rec=${rec}/>
+      <${LieDetector} rec=${rec}/>
       <${Steer} rec=${rec}/>
       <${Minfl} rec=${rec}/>
     </div>
@@ -54,13 +56,46 @@ function Monitor({ rec }){
   const chatting = useStore(x => x.chatting);
   const chatBuf = useStore(x => x.chatBuf);
   const chatPrompt = useStore(x => x.chatPrompt);
+  const liveLens = useStore(x => x.liveLens);
+  const trust = useStore(x => rec ? x.trust[rec.id] : null);
   const steps = rec ? normSteps(rec) : [];
   const done = P >= steps.length;
-  const upto = steps.slice(0, P).map(s => s.piece).join("");
   const trunc = rec && rec.finish_reason === "length";
   const liveView = chatting || chatBuf != null;   /* streaming, or streamed & awaiting the journal */
   const stLabel = chatting ? "LIVE" : chatBuf != null ? "SAVING"
     : !rec ? "IDLE" : playing ? "PLAY" : done ? "END" : P === 0 ? "IDLE" : "PAUSE";
+
+  /* F2 trust shading: fetch the journal-calibrated spans once per live run (pure journal math) */
+  useEffect(() => {
+    if(!rec || rec._sample || !store.get().live) return;
+    if(store.get().trust[rec.id] !== undefined) return;
+    let dead = false;
+    (async () => {
+      const r = await api.trustSpans(rec.id);
+      if(dead) return;
+      store.set(st => ({ trust: { ...st.trust, [rec.id]: (r && r.available) ? r : null } }));
+    })();
+    return () => { dead = true; };
+  }, [rec && rec.id]);
+  /* token index -> its trust span (start/end are TOKEN indices per contracts) */
+  const spanOf = i => trust && (trust.spans || []).find(sp => i >= sp.start && i < sp.end);
+  const shadedUpto = () => steps.slice(0, P).map((s, i) => {
+    const sp = spanOf(i);
+    if(!sp || sp.trusted_rate_estimate == null) return html`<span key=${i}>${s.piece}</span>`;
+    const tr = sp.trusted_rate_estimate;
+    const amber = tr < .55, faint = .55 + .45 * Math.min(1, Math.max(0, tr));
+    return html`<span key=${i}
+      style=${"opacity:" + faint.toFixed(2)
+        + (amber ? ";border-bottom:1px dotted rgba(255,196,120,.75);cursor:pointer" : "")}
+      title=${"kept " + Math.round(tr*100) + "% of the time at this confidence in your journal ("
+        + sp.bin_n + " runs" + (sp.small_n ? ", small bin — weak evidence" : "") + ") · proxy, not a fact-check"}
+      onClick=${amber ? (() => store.set({ verbResult: { verb: "trust", ok: true,
+        msg: `“${(sp.text || "").slice(0, 48)}” — conf ${(+sp.mean_conf).toFixed(2)}, kept `
+           + `${Math.round(tr*100)}% of the time in your own journal (${sp.bin_n} runs`
+           + `${sp.small_n ? ", small bin" : ""}). Acceptance proxy, not a fact-check — press PROVE `
+           + `for causal receipts.` } })) : null}>${s.piece}</span>`;
+  });
+
   return html`<div class="mod">
     <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
     <div class="mod-h"><span class="led"></span><span class="cap">output monitor</span>
@@ -75,9 +110,18 @@ function Monitor({ rec }){
           ? html`${chatPrompt && html`<span class="dim">⟨you⟩ ${chatPrompt}\n</span>`}${chatBuf || ""}${html`<span class="cursor">▋</span>`}`
           : !rec ? html`<span class="dim">no tape on the deck — say something below…</span>`
           : P === 0 ? html`<span class="dim">awaiting playback…</span>`
-          : html`${upto}${(done && !playing) ? "" : html`<span class="cursor">▋</span>`}`}
+          : html`${trust ? shadedUpto() : steps.slice(0, P).map(s => s.piece).join("")}${(done && !playing) ? "" : html`<span class="cursor">▋</span>`}`}
       </div>
     </div></div>
+    ${liveView && liveLens && html`<div class="cfg" style="margin:6px 13px 0;border-left-color:var(--lilac)">
+      ${liveLens.error
+        ? html`<span class="cap">live lens</span><span>${liveLens.error}</span>`
+        : html`<span class="cap">disposed L${liveLens.layer}</span>
+          ${(liveLens.words || []).map((w,k) => html`<span class=${"jchip d" + Math.min(3, k+1)}
+            style="font-size:9.5px">${w.piece || "·"}</span>`)}
+          <span style="margin-left:auto;font-size:8px;color:var(--mist)">J-lens, mid-generation · a
+            disposition, not a verified thought · content-only</span>`}
+    </div>`}
     <${ChatBar} rec=${rec}/>
     <div class="crt-foot">
       ${liveView ? html`<span>the reply is landing in the journal when the stream ends — no run id rides the stream, by design</span>`
@@ -86,7 +130,9 @@ function Monitor({ rec }){
           <span>tokens <b>${steps.length}</b></span>
           ${rec._sample ? html`<span style="color:var(--mist)">sample reel</span>`
                         : html`<span>recorded on this machine</span>`}
-          ${trunc && html`<span class="tag fail-t">TRUNCATED</span>`}`
+          ${trunc && html`<span class="tag fail-t">TRUNCATED</span>`}
+          ${trust && html`<span style="color:var(--mist)">shading = your journal's acceptance rate at
+            this confidence — proxy, not a fact-check</span>`}`
         : html`<span>nothing recorded yet</span>`}
     </div>
   </div>`;
@@ -102,8 +148,16 @@ async function doSend(rec, text, cont){
   const prevTop = (s.runs[0] || {}).id;
   const messages = (cont && rec && Array.isArray(rec.messages) ? rec.messages : [])
     .concat([{ role: "user", content: text }]);
-  store.set({ chatting: true, chatBuf: "", chatPrompt: text, playing: false });
+  const lensLayer = s.lensLayer || 0;                 /* F1: 0 = off; else the requested J-lens depth */
+  store.set({ chatting: true, chatBuf: "", chatPrompt: text, playing: false, liveLens: null });
   chatAbortFn = api.chatStream(messages, {
+    lens: lensLayer ? { layer: lensLayer, topk: 4 } : null,
+    onLens: fr => {                                    /* F1: the disposed-to-say readout, mid-stream */
+      if(fr && fr.error){ store.set({ liveLens: { error: String(fr.error) } }); return; }
+      const row = (fr.readouts && fr.readouts[0]) || [];
+      store.set({ liveLens: { layer: fr.layer, t: fr.t,
+        words: row.map(x => ({ piece: String(x.piece || "").trim(), score: +x.score })) } });
+    },
     onDelta: chunk => store.set(st => ({ chatBuf: (st.chatBuf || "") + chunk })),
     onDone: async () => {
       store.set({ chatting: false });
@@ -124,9 +178,11 @@ async function doSend(rec, text, cont){
       toast("chat stream failed: " + err); },
   });
 }
+const LENS_STOPS = [0, 2, 14, 21, 25];   /* 0 = off, else the fitted J-lens depths */
 function ChatBar({ rec }){
   const chatting = useStore(x => x.chatting);
   const live = useStore(x => x.live);
+  const lensLayer = useStore(x => x.lensLayer);
   const [text, setText] = useState("");
   const [cont, setCont] = useState(false);
   const send = () => {
@@ -141,6 +197,14 @@ function ChatBar({ rec }){
       value=${text} disabled=${chatting || !live}
       onInput=${e => setText(e.target.value)}
       onKeyDown=${e => { if(e.key === "Enter") send(); }}/>
+    <button class="spd" disabled=${!live || chatting}
+      style=${lensLayer ? "color:#7A6FB8;border-color:rgba(154,146,200,.7)" : ""}
+      title="live lens: stream the J-lens disposed-to-say readout per token while it generates (slows decoding a little)"
+      onClick=${() => {
+        const next = LENS_STOPS[(LENS_STOPS.indexOf(lensLayer) + 1) % LENS_STOPS.length];
+        store.set({ lensLayer: next });
+        toast(next ? "live lens ON — layer " + next + " (disposed-to-say, content-only)" : "live lens off");
+      }}>${lensLayer ? "◉ LENS L" + lensLayer : "○ LENS"}</button>
     ${chatting
       ? html`<button class="spd" style="color:#C24A31;border-color:rgba(242,109,79,.6)"
           onClick=${() => { chatAbortFn && chatAbortFn();
@@ -207,6 +271,7 @@ function TapeMod({ rec }){
     <${Leader} rec=${rec}/>
     <${Arrangement} rec=${rec}/>
     <${JlensProvenance}/>
+    <${LineageTree} rec=${rec}/>
   </div>`;
 }
 function RunTail(){
@@ -298,6 +363,11 @@ function Transport({ rec }){
         if(rec._sample) return toast("EXPORT — live runs only (this is the sample reel)");
         window.open(api.exportUrl(rec.id), "_blank");
       }}>⤓ EXPORT</button>
+      <button class="spd" title="one self-contained HTML receipt card — save it, post it"
+        onClick=${() => {
+          if(rec._sample) return toast("CARD — live runs only (this is the sample reel)");
+          window.open(api.cardUrl(rec.id), "_blank");
+        }}>⧉ CARD</button>
     </div>
   </div>`;
 }
@@ -501,7 +571,7 @@ function Arrangement({ rec }){
             style=${"--l:" + Math.round(Math.abs(leaning[i]) / leanMax * 14)}></span>`}
         </div>`)}
       </div>
-      ${sel != null && html`<${Pop} step=${steps[sel]} i=${sel} w=${w} plateW=${plateW} pad=${pad} arrRef=${arrRef}/>`}
+      ${sel != null && html`<${Pop} step=${steps[sel]} i=${sel} w=${w} plateW=${plateW} pad=${pad} arrRef=${arrRef} rec=${rec}/>`}
       </div>
     </div>
 
@@ -551,8 +621,9 @@ function Locators({ steps, mem, rec, w, innerW }){
       ▸ ${rec.finish_reason || "end"}</span>`;
 }
 
-function Pop({ step, i, w, plateW, pad, arrRef }){
+function Pop({ step, i, w, plateW, pad, arrRef, rec }){
   const ref = useRef(null);
+  const busy = useStore(x => x.busy.fork);
   useEffect(() => {
     const arr = arrRef.current, el = ref.current;
     if(!arr || !el) return;
@@ -561,14 +632,33 @@ function Pop({ step, i, w, plateW, pad, arrRef }){
     el.style.top = "34px";
   }, [i]);
   const alts = (step.alts || []).slice(0,3);
+  /* F3: click an almost-said token to FORK reality from this position (greedy continuation) */
+  const fork = async piece => {
+    if(rec && guardSample(rec)) return;
+    if(store.get().busy.fork) return;
+    setBusy("fork", true); toast(`forking at token ${i} — “${piece.trim()}” instead, greedy from there…`);
+    const res = await api.fork(rec.id, i, piece);
+    setBusy("fork", false);
+    if(!res || !res.id){ store.set({ verbResult: { verb: "fork", ok: false,
+      msg: "fork didn't answer — is the engine up?" } }); return; }
+    await adoptChild(res, "fork", ` · “${piece.trim()}” at ${i}`);
+  };
   return html`<div class="pop" ref=${ref} onClick=${e => e.stopPropagation()}>
     <h4>what it almost played</h4>
     <div class="alt win"><span>${(step.piece || "").trim()}</span>
       <b>${step.conf != null ? step.conf.toFixed(2) : "—"}</b></div>
-    ${alts.length ? alts.map(a => html`<div class="alt">
-        <span>${((a.piece ?? a.text ?? "") + "").trim() || "·"}</span>
-        <span>${a.prob != null ? (+a.prob).toFixed(2) : ""}</span></div>`)
+    ${alts.length ? alts.map(a => {
+        const piece = ((a.piece ?? a.text ?? "") + "");
+        return html`<div class="alt">
+          <span>${piece.trim() || "·"}</span>
+          <span>${a.prob != null ? (+a.prob).toFixed(2) : ""}</span>
+          ${piece && rec && !rec._sample && html`<button class="spd"
+            style="height:17px;font-size:7.5px;padding:0 5px" disabled=${busy}
+            onClick=${e => { e.stopPropagation(); fork(piece); }}>⑂ fork</button>`}
+        </div>`; })
       : html`<div class="alt"><span style="font-style:italic">no alternatives recorded</span></div>`}
+    ${alts.length ? html`<div style="font-size:7.5px;color:var(--mist);padding-top:3px">
+      fork = force that token at this position, continue greedy → a child run</div>` : null}
   </div>`;
 }
 
@@ -964,6 +1054,148 @@ function Steer({ rec }){
     <div class="sooncard">
       <span><b>Patch interventions</b><span class="ds">any-concept dials · swap receipts</span></span>
       <span class="stag">soon</span>
+    </div>
+  </div>`;
+}
+
+/* ── F3: lineage subway map — the whole branch family as a clickable tree ── */
+function LineageTree({ rec }){
+  const [fam, setFam] = useState(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setFam(null); setOpen(false); }, [rec.id]);
+  const load = async () => {
+    if(fam || rec._sample || !store.get().live) return;
+    const r = await api.family(rec.id);
+    setFam((r && Array.isArray(r.runs)) ? r.runs : []);
+  };
+  if(rec._sample) return null;
+  const kids = {};
+  (fam || []).forEach(r => { if(r.parent_run_id) (kids[r.parent_run_id] = kids[r.parent_run_id] || []).push(r); });
+  const byId = Object.fromEntries((fam || []).map(r => [r.id, r]));
+  const roots = (fam || []).filter(r => !r.parent_run_id || !byId[r.parent_run_id]);
+  const verb = r => (r.changes_applied && Object.keys(r.changes_applied)[0]) || r.source || "";
+  const Node = ({ r, depth }) => html`
+    <div style=${"padding-left:" + (depth * 18) + "px;display:flex;align-items:center;gap:6px"}>
+      <span style="color:var(--mist);font-size:9px">${depth ? "└⑂" : "●"}</span>
+      <button class="mono" style=${"font-size:9px;padding:1px 5px;border-radius:4px;cursor:pointer;"
+          + (r.id === rec.id ? "color:var(--navy);background:rgba(182,176,218,.25);font-weight:600" : "color:#4A5878")}
+        onClick=${() => loadRun(r.id)}>${r.id}</button>
+      <span style="font-size:8.5px;color:var(--mist)">${verb(r)} · ${shortTime(r.created_at)}</span>
+    </div>
+    ${(kids[r.id] || []).map(c => html`<${Node} r=${c} depth=${depth + 1}/>`)}`;
+  return html`<details class="leader" onToggle=${e => { setOpen(e.target.open); if(e.target.open) load(); }}>
+    <summary>Lineage — every branch/replay/fork of this run, as a tree
+      <span style="margin-left:auto">${fam ? fam.length + " run(s)" : "on demand"}</span></summary>
+    <div style="padding:8px 12px 10px;display:flex;flex-direction:column;gap:3px">
+      ${!fam && open ? html`<span class="none">reading the family…</span>`
+        : fam && !fam.length ? html`<span class="none">this run has no recorded relatives</span>`
+        : fam ? roots.map(r => html`<${Node} r=${r} depth=${0}/>`) : null}
+    </div>
+  </details>`;
+}
+
+/* ── F4: span forensics — ablate a phrase from the prompt, attribute the change causally ── */
+function SpanForensics({ rec }){
+  const [phrase, setPhrase] = useState("");
+  const [out, setOut] = useState(null);
+  const busy = useStore(x => x.busy.spanReceipt);
+  useEffect(() => { setOut(null); setPhrase(""); }, [rec.id]);
+  const run = async () => {
+    if(guardSample(rec)) return;
+    const p = phrase.trim(); if(!p) return;
+    if(store.get().busy.spanReceipt) return;
+    setBusy("spanReceipt", true); setOut(null);
+    toast("span forensics — regenerating without that span + forced-scoring the original…");
+    const r = await api.spanReceipt(rec.id, p);
+    setBusy("spanReceipt", false);
+    if(!r){ setOut({ error: "no answer — is the engine up?" }); return; }
+    if(r.__status && r.__status >= 400){ setOut({ error: r.error || ("failed (" + r.__status + ")") }); return; }
+    setOut(r);
+  };
+  const forced = (out && (out.forced || {})) || {};
+  const changed = out && (out.answer_changed ?? out.has_effect
+    ?? (out.regen && out.regen.has_effect)
+    ?? (out.baseline_reply != null && out.ablated_reply != null
+        && out.baseline_reply !== out.ablated_reply));
+  return html`<div class="mod">
+    <div class="mod-h"><span class="led lilac"></span><span class="cap">span forensics</span>
+      <span class="tail">${busy ? "ablating…" : "which words in the context did this?"}</span></div>
+    <div style="padding:2px 13px 10px;display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;gap:6px">
+        <input type="text" placeholder="a phrase from the prompt/context to ablate"
+          value=${phrase} disabled=${busy}
+          style="flex:1;font-size:10px;padding:4px 7px;border:1px solid rgba(90,130,155,.4);border-radius:5px;background:rgba(255,255,255,.6)"
+          onInput=${e => setPhrase(e.target.value)}
+          onKeyDown=${e => { if(e.key === "Enter") run(); }}/>
+        <button class="spd" disabled=${busy} onClick=${run}>${busy ? "…" : "ABLATE"}</button>
+      </div>
+      ${out && out.error && html`<span class="none">${out.error}</span>`}
+      ${out && !out.error && html`
+        <div class="receipt-row">
+          <span>“${((out.influence || {}).text || phrase).slice(0, 44)}”
+            <span class=${changed ? "tag warn-t" : "tag cap-t"} style=${changed
+              ? "color:#C24A31;background:rgba(242,109,79,.10);border:1px solid rgba(242,109,79,.45)" : ""}>
+              ${changed ? "CHANGED THE ANSWER" : "no change"}</span></span>
+          <span class="nats">${forced.sum_nats != null ? (+forced.sum_nats).toFixed(2) + " nats" : ""}</span>
+          <span class="sub">
+            ${out.baseline_reply != null && html`<span>with: “${String(out.baseline_reply).slice(0, 60)}”</span>`}
+            ${out.ablated_reply != null && html`<span>without: “${String(out.ablated_reply).slice(0, 60)}”</span>`}
+            ${forced.mean_nats_per_token != null && html`<span>forced Δ ${(+forced.mean_nats_per_token).toFixed(3)} nats/tok</span>`}
+          </span>
+        </div>
+        <span class="none" style="font-size:8px">ablation-causal: the span was removed and the run
+          re-derived — measured, not guessed. Agent transcripts: paste the suspect retrieved sentence.</span>`}
+    </div>
+  </div>`;
+}
+
+/* ── F5: the introspection check — the model's own "why" vs the causal receipts ── */
+function LieDetector({ rec }){
+  const [out, setOut] = useState(null);
+  const busy = useStore(x => x.busy.narrate);
+  useEffect(() => setOut(null), [rec.id]);
+  const run = async () => {
+    if(guardSample(rec)) return;
+    if(store.get().busy.narrate) return;
+    setBusy("narrate", true); setOut(null);
+    toast("asking the model why — then checking its story against the receipts…");
+    const r = await api.narrate(rec.id);
+    setBusy("narrate", false);
+    if(!r){ setOut({ error: "no answer from the server" }); return; }
+    if(r.__status && r.__status >= 400){
+      setOut({ error: r.__status === 503
+        ? "narration needs the qwen (HF) substrate — the pure-engine substrate can't run the constrained self-report. Switch substrates to use the lie detector."
+        : (r.error || ("failed (" + r.__status + ")")) });
+      return;
+    }
+    setOut(r);
+  };
+  const claims = (out && (out.claims || out.narration_claims || [])) || [];
+  const nar = out && (out.narration || out.text || out.narrative || null);
+  return html`<div class="mod">
+    <div class="mod-h"><span class="led" style="background:var(--pink);box-shadow:0 0 8px var(--pink)"></span>
+      <span class="cap">self-report check</span>
+      <span class="tail">${busy ? "narrating…" : "measure, don't ask — then compare"}</span></div>
+    <div style="padding:2px 13px 10px;display:flex;flex-direction:column;gap:6px">
+      ${!out && !busy && html`
+        <span class="none">Ask the model to explain its own answer, then score that story against the
+          causal receipts. X1 measured: content is legible, process is not — expect confabulation, and
+          see it caught.</span>
+        <button class="spd" style="align-self:start" onClick=${run}>ASK WHY — THEN CHECK IT</button>`}
+      ${busy && html`<span class="none">generating the constrained narration…</span>`}
+      ${out && out.error && html`<span class="none">${out.error}</span>`}
+      ${out && !out.error && html`
+        ${nar && html`<div style="font-size:9.5px;color:#2A3252;border-left:2px solid var(--lilac);padding-left:8px">
+          ${String(nar).slice(0, 400)}</div>`}
+        ${claims.length ? claims.map(c => html`<div class="receipt-row">
+          <span>${String(c.claim || c.text || "").slice(0, 52)}</span>
+          <span class="sub">
+            <span class=${c.supported ?? c.receipt_supported ? "yes" : "no"}>
+              receipt-supported · ${String(c.supported ?? c.receipt_supported ?? "?")}</span>
+            ${(c.verdict || c.flag) && html`<span>${String(c.verdict || c.flag)}</span>`}
+          </span>
+        </div>`) : null}
+        ${out.note && html`<span class="none" style="font-size:8px">${String(out.note).slice(0, 220)}</span>`}`}
     </div>
   </div>`;
 }

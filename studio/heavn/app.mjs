@@ -7,6 +7,7 @@ import { MemoryModule } from "./modules/memory.mjs";
 import { PatchModule } from "./modules/patch.mjs";
 import { EditModule } from "./modules/edit.mjs";
 import { ScopeModule } from "./modules/scope.mjs";
+import { AtlasModule } from "./modules/atlas.mjs";
 import { ModelsStub, SettingsStub } from "./modules/stubs.mjs";
 
 const MODULES = [
@@ -15,6 +16,7 @@ const MODULES = [
   { id: "edit",     nm: "Edit",     view: EditModule },
   { id: "memory",   nm: "Memory",   view: MemoryModule },
   { id: "scope",    nm: "Scope",    view: ScopeModule },
+  { id: "atlas",    nm: "Atlas",    view: AtlasModule },
   { id: "models",   nm: "Models",   view: ModelsStub,   soon: true },
   { id: "settings", nm: "Settings", view: SettingsStub, soon: true },
 ];

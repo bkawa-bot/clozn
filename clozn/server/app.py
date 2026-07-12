@@ -2054,6 +2054,24 @@ class EngineSubstrate(Substrate):
             if sv:
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
+        # F6 ANCHORED MEMORY (X7): active bags compose into ONE steer_vec at L21 and ride LIVE CHAT
+        # TURNS ONLY -- this method is never driven by receipts/replay (see docstring above), so the
+        # ablation machinery stays uncontaminated; chat() is deliberately NOT wired. One raw steer
+        # channel per request: when tone dials already hold it, they win and the skip is recorded.
+        try:
+            from clozn.memory import anchored as _anchored
+            _comp = _anchored.compile_steer()
+            if _comp:
+                if kw.get("steer_vec"):
+                    if mem_out is not None:
+                        mem_out["anchored_skipped"] = "tone dials held the raw-steer channel this turn"
+                else:
+                    kw["steer_vec"] = _comp["steer_vec"]
+                    kw["steer"] = {"coef": 1.0, "layer": _comp["layer"]}
+                    if mem_out is not None:
+                        mem_out["anchored"] = _comp["bags"]     # run-record receipt: what rode, at what gate
+        except Exception:
+            pass                                                 # anchored memory can never break chat
         body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_new)
         if samp and samp.get("on"):     # S5: real sampling -- temperature/rep_penalty/seed from settings
             body["temperature"] = float(samp["temperature"])

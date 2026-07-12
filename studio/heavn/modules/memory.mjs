@@ -84,8 +84,104 @@ export function MemoryModule(){
     <${ReviewQueue} cards=${cards} act=${act} busy=${busy}/>
     <${CardsPanel} cards=${cards} act=${act} busy=${busy}
       expanded=${expanded} toggleRuns=${toggleRuns} runsCache=${runsCache}/>
+    <${AnchoredShelf} cards=${cards} live=${live}/>
     <${AddCard} live=${live} onAdded=${refreshCards}/>
     <${ProposeFromRun} rec=${rec} live=${live} onProposed=${refreshCards}/>
+  </div>`;
+}
+
+/* ───────────────────────── F6) the anchored shelf — memory as named directions ─────────────
+   X7 productized: each bag is a k-sparse decomposition into the card's OWN words; the α-table is a
+   LOOKUP of what is injected (never a self-report); deleting a word is a real edit (refit). Bags ride
+   LIVE CHAT turns only, as one composed steer at L21 — the validated envelope. Content only: style/rule
+   cards are refused with the measured reason and belong on the dials. */
+function AnchoredShelf({ cards, live }){
+  const [bags, setBags] = useState(null);          // null = loading
+  const [envelope, setEnvelope] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState({});            // key -> bool
+  const [fitMsg, setFitMsg] = useState(null);      // last fit outcome (refusals shown verbatim)
+
+  const refresh = async () => {
+    const r = await api.anchoredList();
+    if(r){ setBags(r.bags || []); setEnvelope(r.envelope || ""); }
+    else setBags([]);
+    const wl = await api.whatlearned();
+    if(wl && wl.note) setNote(wl.note);
+  };
+  useEffect(() => { if(live) refresh(); else setBags([]); }, [live]);
+
+  const withBusy = async (key, fn) => {
+    if(busy[key]) return;
+    setBusy(b => ({ ...b, [key]: true }));
+    await fn();
+    setBusy(b => ({ ...b, [key]: false }));
+  };
+  const fit = card => withBusy("fit:" + card.id, async () => {
+    setFitMsg(null);
+    const r = await api.anchoredFit(card.id);
+    if(!r){ setFitMsg({ ok: false, msg: "no answer — is the engine up? (fitting resolves word directions through it)" }); return; }
+    if(r.refused){ setFitMsg({ ok: false, msg: r.reason }); return; }
+    setFitMsg({ ok: true, msg: "anchored — " + (((r.bag || {}).terms) || []).length + " word-direction(s)" });
+    await refresh();
+  });
+  const toggle = bag => withBusy("tg:" + bag.card_id, async () => {
+    await api.anchoredToggle(bag.card_id, !(bag.on !== false)); await refresh();
+  });
+  const delTerm = (bag, token) => withBusy("del:" + bag.card_id + ":" + token, async () => {
+    const r = await api.anchoredDeleteTerm(bag.card_id, token);
+    if(r && r.ok === false) toast("delete — " + (r.reason || "failed"));
+    else if(r && r.deleted_bag) toast("last word removed — the whole memory is gone (an empty memory is no memory)");
+    await refresh();
+  });
+
+  const anchoredIds = new Set((bags || []).map(b => b.card_id));
+  const anchorable = (cards || []).filter(c => c.status === "active" && !anchoredIds.has(c.id));
+
+  return html`<div class="mod">
+    <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
+    <div class="mod-h"><span class="led lilac"></span><span class="cap">anchored shelf</span>
+      <span class="tail">${bags === null ? "loading…" : bags.length + " bag(s) · " + envelope}</span>
+      <span class="tag der-t">DERIVED</span></div>
+    <div style="padding:2px 14px 12px;display:flex;flex-direction:column;gap:8px">
+      <span class="none" style="font-size:8.5px">memory as named word-directions: “what do you
+        remember?” is a lookup of this table, never a generation. Bags ride LIVE chat turns as one
+        composed steer (L21, s=0.5 — the measured envelope). Content only — style routes to dials.</span>
+      ${(bags || []).map(bag => html`<div class="receipt-row" key=${bag.card_id}>
+        <span>${(bag.card_text || bag.card_id).slice(0, 60)}
+          <span class=${"tag " + (bag.on !== false ? "cap-t" : "smp-t")} style="margin-left:6px">
+            ${bag.on !== false ? "RIDING" : "OFF"}</span></span>
+        <span class="nats">cos ${bag.reconstruction_cos != null ? (+bag.reconstruction_cos).toFixed(2) : "—"}</span>
+        <span class="sub" style="grid-column:1/-1;flex-wrap:wrap">
+          ${(bag.terms || []).map(t => html`<span class="jchip d1" key=${t.token}
+              style="font-size:9px;display:inline-flex;align-items:center;gap:3px">
+            ${t.token} ${t.alpha != null ? (t.alpha >= 0 ? "+" : "") + (+t.alpha).toFixed(2) : ""}
+            <button title="delete this word from the memory (refits the rest — a real edit)"
+              style="border:none;background:none;cursor:pointer;font-size:8px;color:var(--coral);padding:0"
+              onClick=${() => delTerm(bag, t.token)}>✕</button></span>`)}
+        </span>
+        <span class="sub" style="grid-column:1/-1">
+          <button class=${"spd" + (busy["tg:" + bag.card_id] ? " busy" : "")}
+            onClick=${() => toggle(bag)}>${bag.on !== false ? "SWITCH OFF" : "SWITCH ON"}</button>
+          ${bag.reconstruction_cos != null && bag.reconstruction_cos < .5
+            && html`<span style="color:#C24A31;font-size:8.5px">low cos — the card's own words barely
+              span the target; read this bag skeptically</span>`}
+        </span>
+      </div>`)}
+      ${bags !== null && !bags.length && html`<span class="none">no anchored bags yet — anchor an
+        active content card below.</span>`}
+      ${anchorable.length ? html`<div style="display:flex;flex-direction:column;gap:4px">
+        <span class="cap" style="font-size:8.5px;color:var(--mist)">anchorable (active cards)</span>
+        ${anchorable.slice(0, 6).map(c => html`<div class="steer-row" key=${c.id}>
+          <span style="font-size:9.5px">${c.text.slice(0, 56)}</span>
+          <button class=${"spd" + (busy["fit:" + c.id] ? " busy" : "")}
+            onClick=${() => fit(c)}>⚓ ANCHOR</button>
+        </div>`)}
+      </div>` : null}
+      ${fitMsg && html`<div class="cfg" style=${"border-left-color:" + (fitMsg.ok ? "var(--teal)" : "var(--coral)")}>
+        <span style=${fitMsg.ok ? "" : "color:#C24A31"}>${fitMsg.msg}</span></div>`}
+      ${note && html`<span class="none" style="font-size:8px">${note}</span>`}
+    </div>
   </div>`;
 }
 

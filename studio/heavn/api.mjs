@@ -14,6 +14,19 @@ async function j(path, opts, timeoutMs = 30000){
 }
 const post = (path, body, t) => j(path, { method: "POST",
   headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }, t);
+/* like post(), but a non-2xx still returns the JSON body with __status attached — for routes whose
+   error text matters to the UI (e.g. narrate's honest 503 "needs the qwen substrate") */
+async function postE(path, body, timeoutMs = 30000){
+  const c = new AbortController();
+  const k = setTimeout(() => c.abort(), timeoutMs);
+  try{
+    const r = await fetch(path, { method: "POST", signal: c.signal,
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    clearTimeout(k);
+    let o = null; try{ o = await r.json(); }catch(e){ o = {}; }
+    return Object.assign({ __status: r.status }, o);
+  }catch(e){ clearTimeout(k); return null; }
+}
 const enc = encodeURIComponent;
 
 export const api = {
@@ -33,8 +46,24 @@ export const api = {
   counterfactual: (id, overrides) => post("/runs/" + enc(id) + "/counterfactual",
                                           { behavior_overrides: overrides }, 300000),
   explain:  id => post("/runs/" + enc(id) + "/explain", {}, 30000),   // POST-only (contracts §11)
-  narrate:  id => post("/runs/" + enc(id) + "/narrate", {}, 180000),
+  narrate:  id => postE("/runs/" + enc(id) + "/narrate", {}, 300000), // __status rides (503 = needs qwen)
   proposeMemory: id => post("/runs/" + enc(id) + "/propose-memory", {}, 60000),
+
+  /* ── the F-wave (2026-07-12) ── */
+  trustSpans: id => post("/runs/" + enc(id) + "/trust_spans", {}, 60000),      // F2: journal-calibrated
+  fork: (id, position, token) => post("/runs/" + enc(id) + "/fork",
+                                      { position, token }, 300000),            // F3: child run back
+  spanReceipt: (id, find) => postE("/runs/" + enc(id) + "/span_receipt",
+                                   { find }, 600000),                          // F4: ablate a phrase
+  diffRuns: (a, b) => post("/diff/runs", { a, b }, 60000),                     // F8
+  anchoredList: () => j("/memory/anchored/list", null, 15000),                 // F6
+  anchoredFit: (card_id, k) => post("/memory/anchored/fit",
+                                    { card_id, ...(k ? { k } : {}) }, 180000),
+  anchoredToggle: (card_id, on) => post("/memory/anchored/toggle", { card_id, on }),
+  anchoredDeleteTerm: (card_id, token) => post("/memory/anchored/delete_term",
+                                               { card_id, token }, 180000),
+  whatlearned: () => j("/memory/anchored/whatlearned", null, 15000),
+  cardUrl: id => "/runs/" + enc(id) + "/card",                                 // F9
 
   /* ── readouts (POST-only — contracts §9: params ride the JSON body, never the query string) ── */
   jlens: (id, layer, topk) => post("/runs/" + enc(id) + "/jlens",
@@ -52,15 +81,18 @@ export const api = {
   steerAxes: () => post("/steer/axes", {}),
   steerSet: (name, value) => post("/steer/set", { name: name ?? "", value }),
 
-  /* ── chat (SSE stream). onDelta(textChunk), onDone(finalInfo|null). Returns abort fn. ── */
-  chatStream(messages, { onDelta, onDone, onError, trust = false } = {}){
+  /* ── chat (SSE stream). onDelta(textChunk), onDone(finalInfo|null), onLens(readout) — the F1 live
+        lens frames when `lens` ({layer, topk?, every?}) is passed. Returns abort fn. ── */
+  chatStream(messages, { onDelta, onDone, onError, onLens, lens = null, trust = false } = {}){
     const c = new AbortController();
     (async () => {
       try{
         const r = await fetch("/v1/chat/completions", {
           method: "POST", signal: c.signal,
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages, stream: true, ...(trust ? { clozn_trust: true } : {}) }),
+          body: JSON.stringify({ messages, stream: true,
+                                 ...(lens ? { clozn_lens: lens } : {}),
+                                 ...(trust ? { clozn_trust: true } : {}) }),
         });
         if(!r.ok || !r.body){ onError && onError("stream unavailable (" + (r ? r.status : "no response") + ")"); return; }
         const reader = r.body.getReader(), dec = new TextDecoder();
@@ -78,6 +110,7 @@ export const api = {
             try{
               const obj = JSON.parse(payload);
               if(obj.error){ onError && onError(String(obj.error)); continue; }   /* mid-stream error frame */
+              if(obj.clozn_lens){ onLens && onLens(obj.clozn_lens); continue; }   /* F1 live lens side-frame */
               const delta = obj.choices && obj.choices[0] && (obj.choices[0].delta?.content ?? obj.choices[0].text);
               if(delta) onDelta && onDelta(delta, obj);
               if(obj.choices && obj.choices[0] && obj.choices[0].finish_reason) final = obj;

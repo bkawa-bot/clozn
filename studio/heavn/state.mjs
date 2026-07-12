@@ -29,6 +29,9 @@ export const store = createStore({
   busy: {},               // verb -> bool (rederive / prove / replay / branch)
   receipts: null,         // last prove-all result for current run
   leaning: null,          // per-token leaning heat for current run (from receipts)
+  trust: {},              // F2: run id -> journal-calibrated trust spans (null = unavailable)
+  lensLayer: 0,           // F1: 0 = live lens off; else the requested J-lens depth (2/14/21/25)
+  liveLens: null,         // F1: the latest mid-stream disposed-to-say readout
 });
 
 /* subscribe a component to a slice of the store */
