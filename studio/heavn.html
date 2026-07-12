@@ -1,0 +1,1021 @@
+<title>CLOZN — Runtime Deck</title>
+<!--
+  heavnOS ε — the fusion (2026-07-11): Maiko's Claude-Design deck components (CRT output
+  monitor, module headers with LEDs, CAPTURED/DERIVED tags, corner screws, functional tape
+  transport) recast in the LIGHT ethereal glossy Y2K sky-port palette — blue / green /
+  lavender, chrome gloss, NO pink. The dark CRT screen is the one dark object in the room.
+  The transport actually PLAYS the tape: the playhead sweeps the lanes while the monitor
+  types the answer token-by-token — all real run data.
+  LIVE against the run journal when served (/heavn.html); SAMPLE reel offline (bannered).
+  Fonts: Chakra Petch / IBM Plex Mono / VT323 via Google (fall back to system in sandboxes).
+  studio/pages/run.js untouched (held edit).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --sky0:#EAF4F9; --sky1:#E4EAF8; --milk:#E8F7FA; --port:#A9D6E8;
+    --navy:#2A3252; --slate:#4A5878; --mist:#8290AC;
+    --blue:#4C8DF0; --teal:#5FC8BC; --lilac:#B6B0DA; --lilac2:#9A92C8; --peri:#8FA8E8;
+    --coral:#F26D4F; /* functional only: fail · truncated · playhead */
+    --chrome-hi:rgba(255,255,255,.95); --chrome-lo:rgba(140,155,200,.45);
+    --edge:rgba(128,142,190,.32); --edge-soft:rgba(128,142,190,.16);
+    --screen:#1E2447;
+    --flow:linear-gradient(90deg,#4C8DF0,#2CBFE8 34%,#5FC8BC 62%,#B6B0DA);
+    --disp:"Chakra Petch","Space Grotesk","Segoe UI",sans-serif;
+    --mono:"IBM Plex Mono","Cascadia Mono",ui-monospace,Consolas,monospace;
+    --crt:"VT323","Cascadia Mono",ui-monospace,monospace;
+    color-scheme:light;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{background:var(--sky1)}
+  body{font-family:var(--mono);color:var(--navy);font-size:12px;line-height:1.5;
+    -webkit-font-smoothing:antialiased;min-height:100vh;padding:12px;
+    background:
+      radial-gradient(1000px 600px at 8% -5%, rgba(127,180,240,.34), transparent 60%),
+      radial-gradient(900px 560px at 96% 2%, rgba(182,176,218,.36), transparent 56%),
+      radial-gradient(820px 620px at 50% 108%, rgba(95,200,188,.26), transparent 60%),
+      radial-gradient(700px 420px at 76% 52%, rgba(143,168,232,.20), transparent 60%),
+      linear-gradient(165deg,#F3F5FC 0%,#EAEFF9 50%,#E9EDF8 100%)}
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;opacity:.35;
+    background:repeating-linear-gradient(0deg,rgba(22,50,74,.02) 0 1px,transparent 1px 3px)}
+  @keyframes clzPulse{0%,100%{opacity:.45}50%{opacity:1}}
+  @keyframes clzBlink{0%,100%{opacity:1}50%{opacity:0}}
+  .beats{animation:clzPulse 4s ease-in-out infinite}
+  @media (prefers-reduced-motion:reduce){.beats{animation:none;opacity:.8}}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .cap{font-family:var(--disp);font-weight:600;letter-spacing:.22em;text-transform:uppercase}
+
+  .app{max-width:1600px;margin:0 auto}
+
+  /* ═══ the glossy Y2K panel ═══ */
+  .mod{position:relative;border-radius:16px;border:1px solid rgba(255,255,255,.8);
+    background:linear-gradient(180deg,rgba(255,255,255,.62),rgba(240,246,252,.42));
+    backdrop-filter:blur(14px) saturate(1.15);-webkit-backdrop-filter:blur(14px) saturate(1.15);
+    box-shadow:0 10px 30px rgba(100,115,160,.14), inset 0 1px 0 var(--chrome-hi)}
+  .mod::before{content:"";position:absolute;left:1px;right:1px;top:1px;height:40%;border-radius:15px 15px 45%/15px 15px 24%;
+    background:linear-gradient(180deg,rgba(255,255,255,.55),rgba(255,255,255,.03));pointer-events:none}
+  .mod > *{position:relative}
+  .screw{position:absolute;width:3px;height:3px;border-radius:50%;background:rgba(90,130,155,.5);
+    box-shadow:inset 0 .5px 1px rgba(255,255,255,.9)}
+  .mod-h{display:flex;align-items:center;gap:9px;padding:9px 14px 7px}
+  .led{width:7px;height:7px;border-radius:50%;background:var(--teal);box-shadow:0 0 8px var(--teal);flex:none}
+  .led.blue{background:var(--blue);box-shadow:0 0 8px var(--blue)}
+  .led.lilac{background:var(--lilac);box-shadow:0 0 8px var(--lilac)}
+  .mod-h .cap{font-size:10px;color:var(--slate)}
+  .mod-h .tail{margin-left:auto;font-size:8.5px;letter-spacing:.08em;color:var(--mist)}
+  .tag{font-size:8px;letter-spacing:.12em;padding:1.5px 6px;border-radius:3px;white-space:nowrap}
+  .tag.cap-t{color:#1B7F74;background:rgba(95,200,188,.14);border:1px solid rgba(95,200,188,.5)}
+  .tag.der-t{color:#1B87A8;background:rgba(44,191,232,.12);border:1px solid rgba(44,191,232,.45)}
+  .tag.fail-t{color:#C24A31;background:rgba(242,109,79,.10);border:1px solid rgba(242,109,79,.45)}
+
+  /* ═══ top status bar ═══ */
+  .topbar{display:flex;align-items:center;gap:18px;height:48px;padding:0 16px;margin-bottom:12px;
+    border-radius:16px;border:1px solid rgba(255,255,255,.8);
+    background:linear-gradient(180deg,rgba(255,255,255,.72),rgba(234,242,252,.5));
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    box-shadow:0 8px 24px rgba(100,115,160,.15), inset 0 1px 0 var(--chrome-hi)}
+  .wordmark{font-family:var(--disp);font-weight:700;font-size:19px;letter-spacing:.16em;
+    transform:scaleX(1.08);transform-origin:left;
+    background:linear-gradient(100deg,#4C8DF0,#8FA8E8 40%,#B6B0DA 70%,#5FC8BC);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    filter:drop-shadow(0 1px 5px rgba(150,160,220,.5))}
+  .topbar .sub{font-size:8.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--mist)}
+  .stat{display:flex;align-items:center;gap:7px;font-size:9.5px;letter-spacing:.14em;color:var(--slate)}
+  .stat b{color:var(--navy);font-weight:600}
+  .vsep{width:1px;height:14px;background:var(--edge-soft)}
+  .meter{display:flex;flex-direction:column;gap:3px}
+  .meter .row{display:flex;justify-content:space-between;gap:8px;font-size:8.5px;color:var(--mist)}
+  .meter .row b{color:var(--navy)}
+  .meter .bar{width:64px;height:3px;border-radius:2px;background:rgba(90,130,155,.18);overflow:hidden}
+  .meter .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--teal))}
+  .windots{display:flex;align-items:center;gap:8px;color:var(--mist)}
+  .windots span{width:10px;height:10px;border-radius:50%;border:1px solid var(--edge);
+    background:linear-gradient(180deg,#fff,#DCEAF2)}
+
+  .statusline{margin:0 0 12px;padding:7px 14px;font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
+    display:flex;gap:9px;align-items:center;border-radius:11px}
+  .statusline.live{color:#1B7F74;background:rgba(95,200,188,.16);border:1px solid rgba(95,200,188,.5)}
+  .statusline.sample{color:#5F5794;background:rgba(182,176,218,.18);border:1px solid rgba(182,176,218,.55)}
+  .statusline i{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+
+  .frame{display:grid;grid-template-columns:212px 1fr 288px;gap:12px;align-items:start}
+  .col{display:flex;flex-direction:column;gap:12px;min-width:0}
+
+  /* ═══ left: hardware module selector ═══ */
+  .navmod .head{display:flex;justify-content:space-between;padding:11px 15px 8px;border-bottom:1px solid var(--edge-soft)}
+  .navrow{display:grid;grid-template-columns:20px 9px 1fr 12px;align-items:center;gap:10px;width:100%;
+    text-align:left;padding:10px 15px;border-bottom:1px solid var(--edge-soft);border-left:2px solid transparent}
+  .navrow .idx{font-size:9px;color:var(--mist)}
+  .navrow .nled{width:7px;height:7px;border-radius:50%;background:rgba(90,130,155,.3)}
+  .navrow .nm{font-family:var(--disp);font-size:10.5px;font-weight:500;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--slate)}
+  .navrow .mark{font-size:10px;color:var(--teal);text-align:right}
+  .navrow:hover{background:rgba(95,200,188,.07)}
+  .navrow.on{border-left-color:var(--teal);background:linear-gradient(90deg,rgba(95,200,188,.14),transparent)}
+  .navrow.on .nled{background:var(--teal);box-shadow:0 0 8px var(--teal)}
+  .navrow.on .nm{color:var(--navy);font-weight:600}
+  .navfoot{padding:12px 15px;border-top:1px solid var(--edge-soft);font-size:9.5px;line-height:1.75;color:var(--mist)}
+  .navfoot b{color:var(--slate)}
+  .health{display:flex;align-items:center;gap:8px;margin-top:7px}
+  .health .bar{flex:1;height:4px;border-radius:2px;background:rgba(90,130,155,.18);overflow:hidden}
+  .health .bar i{display:block;height:100%;width:98%;background:linear-gradient(90deg,var(--blue),var(--teal))}
+  .health span{font-size:9.5px;color:#1B7F74}
+
+  /* ═══ CRT OUTPUT MONITOR (the loved component — dark screen in the bright room) ═══ */
+  .monrow{display:grid;grid-template-columns:1.55fr 1fr;gap:12px}
+  .crt-shell{padding:10px 12px 8px}
+  .crt{position:relative;border-radius:10px;min-height:118px;
+    background:
+      radial-gradient(120% 100% at 50% 0%,rgba(95,200,188,.20),transparent 60%),
+      radial-gradient(90% 80% at 85% 100%,rgba(143,168,232,.26),transparent 62%),
+      linear-gradient(180deg,#2B3160,var(--screen));
+    border:1px solid rgba(182,176,218,.6);
+    box-shadow:inset 0 0 46px rgba(22,26,64,.55), inset 0 0 70px rgba(127,180,240,.12), 0 2px 0 rgba(255,255,255,.6);
+    padding:26px 15px 13px;overflow:hidden}
+  .crt .scan{position:absolute;inset:0;pointer-events:none;opacity:.18;border-radius:10px;
+    background:repeating-linear-gradient(180deg,rgba(0,0,0,0) 0 2px,rgba(18,22,56,.6) 2px 3px)}
+  .crt .st{position:absolute;top:7px;left:12px;display:flex;align-items:center;gap:6px;
+    font-size:8px;letter-spacing:.16em;color:var(--teal)}
+  .crt .st i{width:6px;height:6px;border-radius:50%;background:var(--coral);box-shadow:0 0 7px var(--coral)}
+  .crt .st.idle i{background:var(--teal);box-shadow:0 0 7px var(--teal);animation:none}
+  .crt .sid{position:absolute;top:8px;right:12px;font-size:8.5px;letter-spacing:.12em;color:#8A94C4}
+  .crt-text{position:relative;font-family:var(--crt);font-size:17px;line-height:1.4;letter-spacing:.02em;
+    color:#BDF3E9;text-shadow:0 0 6px rgba(122,235,214,.55);word-break:break-word;min-height:40px}
+  .crt-text .dim{color:#5A6490}
+  .crt-text .cursor{color:var(--teal);animation:clzBlink 1s steps(1) infinite}
+  .crt-foot{display:flex;align-items:center;gap:14px;padding:7px 14px 9px;font-size:9px;color:var(--slate)}
+  .crt-foot b{color:#1B7F74}
+
+  .logbox{max-height:158px;overflow-y:auto;padding:5px 13px 10px}
+  .logline{display:flex;align-items:baseline;gap:9px;padding:2.5px 0;font-size:9.5px}
+  .logline .t{color:var(--mist);flex:none;font-size:8.5px}
+  .logline .lt{letter-spacing:.08em;flex:none;width:56px;font-size:8.5px;text-transform:uppercase}
+  .logline .m{color:var(--slate);flex:1}
+  .logline .ok{color:#1B7F74}
+  .logline .fail{color:#C24A31;font-weight:600}
+
+  .cfg{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:7px 13px;margin-top:12px;
+    border-radius:11px;border:1px solid var(--edge);border-left:3px solid var(--teal);
+    background:linear-gradient(180deg,rgba(255,255,255,.8),rgba(232,247,250,.55));
+    font-size:9.5px;color:var(--slate)}
+  .cfg .cap{font-size:9px;color:#1B7F74}
+  .cfg b{color:var(--navy)}
+  .cfg .dot{color:var(--port)}
+
+  /* ═══ the tape ═══ */
+  .transport{display:flex;align-items:center;gap:13px;padding:9px 13px;border-bottom:1px solid var(--edge-soft);
+    background:linear-gradient(180deg,rgba(95,200,188,.10),transparent)}
+  .tbtns{display:flex;gap:5px}
+  .tbtn{font-size:11px;min-width:31px;height:28px;display:inline-flex;align-items:center;justify-content:center;
+    border-radius:7px;border:1px solid var(--edge);color:var(--slate);
+    background:linear-gradient(180deg,#fff,#E2EFF6);box-shadow:inset 0 1px 0 #fff, 0 1px 2px rgba(90,130,160,.25)}
+  .tbtn:hover{color:var(--navy);border-color:var(--blue)}
+  .tbtn.play{min-width:44px;color:#1B7F74;border-color:rgba(95,200,188,.7);
+    background:linear-gradient(180deg,#F0FCFA,#CDEEE8)}
+  .pos{display:flex;align-items:baseline;gap:8px}
+  .pos .big{font-size:20px;color:var(--navy);letter-spacing:.02em}
+  .pos .of{font-size:8.5px;letter-spacing:.08em;color:var(--mist)}
+  .transport .right{margin-left:auto;display:flex;align-items:center;gap:13px}
+  .entlegend{display:flex;align-items:center;gap:7px;font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--mist)}
+  .entlegend i{height:6px;width:88px;border-radius:3px;background:linear-gradient(90deg,#5FC8BC,#8FD3C0,#B6B0DA,#9A92C8)}
+  .spd{font-size:10px;height:25px;padding:0 10px;border-radius:7px;border:1px solid var(--edge);
+    color:var(--slate);background:linear-gradient(180deg,#fff,#E2EFF6)}
+
+  .arr-wrap{overflow-x:auto}
+  .arr{min-width:720px;position:relative;padding:9px 13px 12px}
+  .lane{display:grid;grid-template-columns:118px 1fr;margin-bottom:6px}
+  .lane:last-child{margin-bottom:0}
+  .plate{display:flex;align-items:center;gap:7px;padding:0 8px 0 2px}
+  .plate .cap{font-size:8.5px;letter-spacing:.18em;color:var(--slate)}
+  .plate .sub{font-size:7px;color:var(--mist);display:block;letter-spacing:.04em}
+  .lane-body{position:relative;min-width:0;border-radius:8px;border:1px solid var(--edge-soft);
+    background:linear-gradient(180deg,rgba(255,255,255,.65),rgba(228,242,248,.5));
+    box-shadow:inset 0 1px 3px rgba(90,130,160,.14);overflow:hidden}
+  .cells{display:grid;height:100%}
+  .lane.ruler .lane-body{height:24px;border:none;background:none;box-shadow:none;overflow:visible}
+  .tick{border-left:1px solid var(--edge-soft);height:5px;position:relative;align-self:end}
+  .tick.five{height:10px;border-left-color:var(--mist)}
+  .tick .idx{position:absolute;top:-13px;left:2px;font-size:7.5px;color:var(--mist)}
+  .loc{position:absolute;top:-2px;font-size:7px;letter-spacing:.1em;text-transform:uppercase;color:var(--slate);
+    background:rgba(255,255,255,.85);border:1px solid var(--edge-soft);border-radius:6px;padding:0 6px;white-space:nowrap;z-index:3}
+  .loc.bad{color:#C24A31;border-color:rgba(242,109,79,.5)}
+  .lane.clips .lane-body{padding:4px 3px}
+  .clip-t{margin:0 1px;border-radius:4px;display:flex;align-items:center;padding:0 4px;height:25px;
+    font-size:9.5px;color:var(--navy);cursor:pointer;white-space:nowrap;overflow:hidden;
+    background:linear-gradient(180deg,rgba(44,191,232,calc(.14 + var(--c,.5)*.42)),rgba(95,200,188,calc(.10 + var(--c,.5)*.32)));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.55)}
+  .clip-t.shaky{background:linear-gradient(180deg,rgba(182,176,218,calc(.35 + (1 - var(--c,.5))*.35)),rgba(154,146,200,.25))}
+  .clip-t:hover{box-shadow:0 0 0 1px var(--blue)}
+  .clip-t.sel{box-shadow:0 0 0 2px var(--navy)}
+  .lane.wave .lane-body{height:46px}
+  .lane.wave canvas{display:block;width:100%;height:100%}
+  .lane.auto .lane-body{height:30px}
+  .lane.auto svg{display:block;width:100%;height:100%}
+  .lane.jl .lane-body{min-height:34px}
+  .jcell{display:flex;flex-direction:column;gap:2px;padding:3px 1px;min-width:0}
+  .jchip{font-size:8.5px;padding:.5px 5px;border-radius:7px;border:1px solid rgba(154,146,200,.5);
+    color:#5F5794;background:rgba(182,176,218,.16);white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis;text-align:center}
+  .jchip.d2{opacity:.6}.jchip.d3{opacity:.35}
+  .lane-action{padding:6px 10px}
+  .lane-action button{font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;border-radius:7px;
+    border:1px solid var(--edge);padding:4px 12px;color:var(--slate);
+    background:linear-gradient(180deg,#fff,#E6F1F7)}
+  .lane-action button:hover{color:var(--navy);border-color:var(--blue)}
+  .none{font-size:9.5px;color:var(--mist);font-style:italic}
+  .playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--coral);
+    box-shadow:0 0 10px rgba(242,109,79,.7);z-index:6;pointer-events:none}
+  .playhead::before{content:"";position:absolute;top:-2px;left:50%;transform:translateX(-50%);
+    width:9px;height:9px;border-radius:50%;background:var(--coral);box-shadow:0 0 9px rgba(242,109,79,.8)}
+  .colshade{position:absolute;top:0;bottom:0;background:rgba(44,191,232,.08);z-index:1;pointer-events:none}
+  .pop{position:absolute;width:190px;background:linear-gradient(180deg,#fff,#EAF4FA);border:1px solid var(--edge);
+    border-radius:10px;box-shadow:0 14px 30px rgba(60,90,120,.25), inset 0 1px 0 #fff;padding:9px 11px;z-index:20;text-align:left}
+  .pop h4{font-size:7.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--mist);margin-bottom:5px;font-family:var(--disp)}
+  .pop .alt{display:flex;justify-content:space-between;font-size:10px;color:var(--slate);padding:1px 0}
+  .pop .alt.win{color:var(--navy)}.pop .alt.win b{color:#1B7F74;font-weight:600}
+  .provenance{padding:5px 14px 10px;font-size:8px;color:var(--mist);line-height:1.7}
+  .provenance b{color:var(--slate)}
+  details.leader{margin:10px 13px 0;border:1px solid var(--edge-soft);border-radius:9px;background:rgba(255,255,255,.5)}
+  details.leader summary{list-style:none;display:flex;gap:9px;align-items:center;padding:6px 11px;cursor:pointer;
+    font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--slate)}
+  details.leader summary::before{content:"▸";color:var(--blue)}
+  details[open].leader summary::before{content:"▾"}
+  .leader-body{padding:5px 13px 10px;font-size:9.5px;color:var(--slate);line-height:1.7;
+    border-top:1px dashed var(--edge-soft);white-space:pre-wrap;word-break:break-word;max-height:150px;overflow-y:auto}
+
+  /* scope */
+  .scope-body{position:relative;padding:0 12px 4px}
+  .scope-body canvas{display:block;width:100%}
+  .grace{position:absolute;top:4px;right:20px;font-family:"Segoe Script","Brush Script MT",cursive;
+    font-size:14px;color:var(--lilac2);opacity:.7;transform:rotate(-3deg);pointer-events:none}
+  .scope-ctl{display:flex;align-items:center;gap:13px;padding:5px 15px 11px;flex-wrap:wrap;font-size:8px;
+    letter-spacing:.16em;text-transform:uppercase;color:var(--mist)}
+  .scope-ctl input[type=range]{width:104px;accent-color:var(--blue);height:3px}
+  .scope-ctl select{font-family:var(--mono);font-size:9.5px;color:var(--navy);border:1px solid var(--edge);
+    border-radius:7px;padding:2px 7px;background:linear-gradient(180deg,#fff,#E6F1F7)}
+  .scope-note{padding:0 15px 9px;font-size:7.5px;color:var(--mist);letter-spacing:.05em}
+
+  /* run strip + right column */
+  .runstrip{display:flex;gap:8px;overflow-x:auto;padding:2px 13px 10px}
+  .runchip{flex:none;width:148px;text-align:left;border-radius:9px;border:1px solid var(--edge-soft);
+    padding:7px 9px;background:linear-gradient(180deg,rgba(255,255,255,.7),rgba(230,243,249,.5))}
+  .runchip.on{border-color:rgba(44,191,232,.7);box-shadow:0 3px 12px rgba(44,191,232,.3), inset 0 1px 0 #fff}
+  .runchip .t{font-size:9px;font-weight:600;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+  .runchip canvas{display:block;width:100%;height:15px;margin:4px 0 2px}
+  .runchip .m{font-size:7.5px;color:var(--mist);letter-spacing:.05em;text-transform:uppercase}
+  .meterbody{padding:3px 13px 11px}
+  .meterbody .mcap{display:flex;gap:12px;font-size:8px;color:var(--mist);letter-spacing:.1em;
+    text-transform:uppercase;padding:2px 0 4px}
+  .meterbody .mcap i{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px;vertical-align:-1px}
+  .meterbody canvas{display:block;width:100%;height:70px;border-radius:7px}
+  .steer-row{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:7px 14px;
+    border-top:1px solid var(--edge-soft);font-size:10px;align-items:center;color:var(--navy)}
+  .steer-row:first-of-type{border-top:none}
+  .steer-row .v{font-size:9px;color:#1B87A8;font-weight:600}
+  .steer-row .bar{grid-column:1/-1;height:4px;border-radius:2px;background:rgba(90,130,155,.16);overflow:hidden}
+  .steer-row .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--teal))}
+  .sooncard{padding:9px 14px;border-top:1px solid var(--edge-soft);display:flex;align-items:center;gap:10px;font-size:10px}
+  .sooncard .ds{font-size:8px;color:var(--mist);display:block}
+  .sooncard .stag{margin-left:auto;font-size:7px;letter-spacing:.12em;color:#5F5794;text-transform:uppercase;
+    border:1px solid rgba(154,146,200,.5);border-radius:7px;padding:1px 7px}
+
+  .bottom{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+  .footer{display:flex;align-items:center;gap:18px;margin-top:12px;padding:10px 15px;flex-wrap:wrap;
+    border-radius:13px;border:1px solid var(--edge);
+    background:linear-gradient(180deg,rgba(255,255,255,.8),rgba(230,243,249,.6))}
+  .flowbar{height:7px;flex:1;min-width:200px;border-radius:4px;background:var(--flow);opacity:.85}
+  .legend{display:flex;gap:13px;font-size:7.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--mist);flex-wrap:wrap}
+  .legend i{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px;vertical-align:-1px}
+  .credo{font-size:8px;letter-spacing:.1em;color:var(--slate);text-transform:uppercase}
+  .empty{padding:30px;color:var(--mist);font-style:italic;text-align:center}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:200;
+    background:var(--navy);color:#EAF4F9;font-size:10px;padding:9px 18px;border-radius:10px;
+    opacity:0;transition:opacity .25s;pointer-events:none;max-width:70vw;text-align:center}
+  .toast.show{opacity:1}
+</style>
+
+<div class="app">
+  <!-- top status bar -->
+  <div class="topbar">
+    <div style="display:flex;align-items:baseline;gap:11px">
+      <span class="wordmark">CLOZN</span>
+      <span class="sub">local glass-box ai runtime</span>
+    </div>
+    <div style="flex:1;display:flex;justify-content:center;align-items:center;gap:15px">
+      <span class="stat"><i class="led beats" style="width:6px;height:6px"></i>LOCAL</span>
+      <span class="vsep"></span>
+      <span class="stat">ENGINE <b id="tb-engine">—</b></span>
+      <span class="stat">MODEL <b id="tb-model">—</b></span>
+      <span class="stat" id="tb-quant"></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px">
+      <span class="stat mono" id="tb-addr" style="letter-spacing:.04em">local://replay</span>
+      <span class="windots"><span></span><span></span><span></span></span>
+    </div>
+  </div>
+
+  <div class="statusline" id="banner" hidden></div>
+
+  <div class="frame">
+    <!-- ═══ left: module selector ═══ -->
+    <div class="col">
+      <div class="mod navmod">
+        <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
+        <div class="head"><span class="cap" style="font-size:9px;color:var(--mist)">system</span>
+          <span style="font-size:8.5px;color:var(--mist)">07</span></div>
+        <button class="navrow on"><span class="idx">01</span><span class="nled"></span><span class="nm">Replay</span><span class="mark">◂</span></button>
+        <button class="navrow" data-soon="PATCH — any-concept dials, swap receipts, the glass diff"><span class="idx">02</span><span class="nled"></span><span class="nm">Patch</span><span class="mark"></span></button>
+        <button class="navrow" data-soon="EDIT — pin &amp; resolve, the glass edit"><span class="idx">03</span><span class="nled"></span><span class="nm">Edit</span><span class="mark"></span></button>
+        <button class="navrow" data-soon="MEMORY — two tiers: anchored (legible) + learned style"><span class="idx">04</span><span class="nled"></span><span class="nm">Memory</span><span class="mark"></span></button>
+        <button class="navrow" data-soon="SCOPE — the observatory"><span class="idx">05</span><span class="nled"></span><span class="nm">Scope</span><span class="mark"></span></button>
+        <button class="navrow" data-soon="MODELS — fit planner, quant-check"><span class="idx">06</span><span class="nled"></span><span class="nm">Models</span><span class="mark"></span></button>
+        <button class="navrow" data-soon="SETTINGS"><span class="idx">07</span><span class="nled"></span><span class="nm">Settings</span><span class="mark"></span></button>
+        <div class="navfoot">
+          <b>CLOZN v0.2</b><br><span id="nav-engine">engine — · substrate —</span><br><span id="nav-sess">session —</span>
+          <div class="cap" style="font-size:8.5px;letter-spacing:.22em;color:var(--mist);margin-top:11px">system health</div>
+          <div class="health"><div class="bar"><i class="beats"></i></div><span>98%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ center ═══ -->
+    <div class="col">
+      <!-- monitor zone -->
+      <div class="monrow">
+        <div class="mod">
+          <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
+          <div class="mod-h"><span class="led"></span><span class="cap">output monitor</span>
+            <span class="tail" id="mon-count">—</span><span class="tag cap-t">CAPTURED</span></div>
+          <div class="crt-shell">
+            <div class="crt">
+              <div class="scan"></div>
+              <div class="st idle" id="crt-st"><i></i><span id="crt-mode">IDLE</span></div>
+              <div class="sid" id="crt-sid">—</div>
+              <div class="crt-text" id="crt-text"><span class="dim">awaiting tape…</span></div>
+            </div>
+          </div>
+          <div class="crt-foot" id="crt-foot"></div>
+        </div>
+        <div class="mod">
+          <span class="screw" style="top:5px;right:5px"></span>
+          <div class="mod-h"><span class="led blue beats"></span><span class="cap">local logs</span>
+            <span class="tail" id="log-count">—</span></div>
+          <div class="logbox" id="logs"></div>
+        </div>
+      </div>
+
+      <!-- run config strip -->
+      <div class="cfg" id="cfg"></div>
+
+      <!-- THE TAPE -->
+      <div class="mod" style="margin-top:12px">
+        <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
+        <div class="mod-h"><span class="led"></span><span class="cap">replay tape</span>
+          <span class="tail" id="run-tail">—</span></div>
+        <div class="runstrip" id="runstrip"></div>
+        <div class="transport" id="transport"></div>
+        <div id="leader-slot"></div>
+        <div class="arr-wrap"><div class="arr" id="arr"></div></div>
+        <div class="provenance" id="jlens-prov" hidden></div>
+      </div>
+
+      <!-- ANGEL SCOPE -->
+      <div class="mod">
+        <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
+        <div class="mod-h"><span class="led lilac"></span><span class="cap">state scope</span>
+          <span class="tail" id="scope-tail">—</span><span class="tag der-t" id="scope-tag">DERIVED</span></div>
+        <div class="scope-body">
+          <span class="grace">you're an angel!</span>
+          <canvas id="scope-canvas" height="230"></canvas>
+        </div>
+        <div class="scope-ctl">
+          <span>Rotate</span><input type="range" id="ctl-rot" min="0" max="100" value="42">
+          <span>Zoom</span><input type="range" id="ctl-zoom" min="60" max="140" value="100">
+          <span>Focus</span><select id="ctl-focus"></select>
+          <button class="spd" data-soon="LAYER INSPECTOR — the deep pane view" style="margin-left:auto">OPEN LAYER INSPECTOR</button>
+        </div>
+        <div class="scope-note" id="scope-note"></div>
+      </div>
+    </div>
+
+    <!-- ═══ right ═══ -->
+    <div class="col">
+      <div class="mod">
+        <span class="screw" style="top:5px;right:5px"></span>
+        <div class="mod-h"><span class="led blue"></span><span class="cap">multi-meter</span>
+          <span class="tag cap-t">CAPTURED</span></div>
+        <div class="meterbody">
+          <div class="mcap"><span><i style="background:var(--blue)"></i>confidence</span></div>
+          <canvas id="meter-conf" height="70"></canvas>
+          <div class="mcap" style="margin-top:8px"><span><i style="background:var(--lilac2)"></i>entropy</span>
+            <span class="tag der-t" style="margin-left:auto">DERIVED</span></div>
+          <canvas id="meter-ent" height="70"></canvas>
+        </div>
+      </div>
+      <div class="mod">
+        <div class="mod-h"><span class="led"></span><span class="cap">quick steer</span>
+          <span class="tail">this run · read-only</span></div>
+        <div id="steer-list"></div>
+        <div class="sooncard" data-soon="PATCH — live dials land with the Patch module">
+          <span><b>Patch interventions</b><span class="ds">any-concept dials · swap receipts</span></span>
+          <span class="stag">soon</span></div>
+      </div>
+      <div class="mod">
+        <div class="mod-h"><span class="led"></span><span class="cap">memory influence</span>
+          <span class="tail">top contributors</span></div>
+        <div id="minfl"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span class="cap" style="font-size:8.5px;color:var(--mist)">gradient flow</span>
+    <span class="flowbar"></span>
+    <span class="legend">
+      <span><i style="background:var(--teal)"></i>teal: calm focus, observation</span>
+      <span><i style="background:var(--lilac)"></i>lilac: branch, disposition</span>
+      <span><i style="background:var(--coral)"></i>coral: repair, protect the signal</span>
+    </span>
+    <span class="credo">Clozn is a local runtime. It doesn't phone home.</span>
+  </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let toastT = null;
+function toast(m){ const t = $("#toast"); t.textContent = m; t.classList.add("show");
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
+async function api(path, opts){
+  const c = new AbortController(); const k = setTimeout(() => c.abort(), 7000);
+  try{ const r = await fetch(path, Object.assign({signal:c.signal}, opts||{})); clearTimeout(k);
+       return r.ok ? await r.json() : null; }catch(e){ clearTimeout(k); return null; } }
+const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const SAMPLE = {
+  id:"run_sample", created_at:"2026-07-09 14:12", model:"Qwen2.5-7B-Instruct", substrate:"engine",
+  finish_reason:"stop", flags:["memory","steered"],
+  prompt_summary:"What country is shaped like a boot?",
+  response:"The country shaped like a boot is Italy. Its distinctive shape extends into the Mediterranean Sea.",
+  memory:{ mode:"prompt", gate:0.62,
+    cards_applied:["enjoys geography trivia","prefers concise factual answers"], relevance:[0.66,0.41] },
+  behavior:{ active_dials:{ concise:0.4, warm:0.2 } },
+  meta:{ decode:{ mode:"greedy", temperature:0, seed:0, quant:"Q4_K_M", engine:"cloze-server" } },
+  assembled_messages:[{role:"system",content:"[memory block · gate .62] The user enjoys geography trivia. The user prefers concise factual answers."},
+                      {role:"user",content:"What country is shaped like a boot?"}],
+  trace:{ tokens:["The"," country"," shaped"," like"," a"," boot"," is"," Italy","."," Its"," distinctive"," shape"," extends"," into"," the"," Mediterranean"," Sea","."],
+    confidence:[.97,.93,.95,.98,.99,.96,.98,.91,.99,.62,.44,.83,.38,.74,.92,.88,.95,.99],
+    entropy:[.10,.22,.16,.06,.03,.13,.06,.29,.03,1.22,1.79,.54,1.98,.83,.26,.38,.16,.03],
+    alternatives:[[],[],[],[],[],[],[], [{piece:" the",prob:.04},{piece:" Rome",prob:.02}], [],[],[],[],[],[],[],[],[],[]] },
+  _sample:true,
+  _jlens:{ layer:25, layers:[2,14,21,25],
+    provenance:"J-lens readout (Anthropic, 2026) — what each position is disposed to say later. Fitted on Qwen2.5-7B nf4, 100-prompt corpus, 2026-07-09; engine-transfer hit@5 0.72. A disposition, not a verified thought; blank ≠ nothing.",
+    chips:{ 6:[" Italy"," Sicily"," boot"], 10:[" peninsula"," coast"," Rome"] } }
+};
+
+const S = { live:false, runs:[], full:{}, current:null, P:0, playing:null, speed:1, steps:[], w:[] };
+function normSteps(rec){
+  const tr = rec && rec.trace || {};
+  if(Array.isArray(tr.steps) && tr.steps.length)
+    return tr.steps.map(s => ({piece:s.piece ?? s.text ?? "", conf:num(s.conf ?? s.confidence),
+                               ent:num(s.entropy), alts:s.alts || s.alternatives || []}));
+  return (tr.tokens || []).map((p,i) => ({piece:p, conf:num((tr.confidence||[])[i]),
+    ent:num((tr.entropy||[])[i]), alts:((tr.alternatives||[])[i])||[]}));
+}
+
+(async function boot(){
+  const list = await api("/runs");
+  const banner = $("#banner"); banner.hidden = false;
+  if(list && Array.isArray(list.runs)){
+    S.live = true; S.runs = list.runs;
+    banner.className = "statusline live";
+    banner.innerHTML = '<i class="beats"></i> live — the run journal, recorded on this machine';
+    $("#tb-engine").textContent = "connected";
+  } else {
+    S.live = false; S.runs = [Object.assign({}, SAMPLE)]; S.full[SAMPLE.id] = SAMPLE;
+    banner.className = "statusline sample";
+    banner.innerHTML = '<i class="beats"></i> sample reel — engine offline · serve heavn.html from the clozn server to go live';
+    $("#tb-engine").textContent = "offline";
+  }
+  renderRunstrip();
+  if(S.runs.length) selectRun(S.runs[0].id);
+  else $("#arr").innerHTML = '<div class="empty">Nothing has spoken yet.</div>';
+})();
+
+function renderRunstrip(){
+  $("#run-tail").textContent = S.runs.length ? (S.live ? S.runs.length + " recorded" : "sample reel") : "—";
+  const box = $("#runstrip"); box.innerHTML = "";
+  S.runs.forEach(r => {
+    const b = document.createElement("button");
+    b.className = "runchip" + (S.current === r.id ? " on" : "");
+    b.innerHTML = `<span class="t">${esc(r.prompt_summary || r.id)}</span>
+      <canvas width="136" height="15"></canvas>
+      <span class="m">${esc(shortTime(r.created_at))} · ${esc(r.finish_reason || "")}</span>`;
+    b.addEventListener("click", () => selectRun(r.id));
+    box.appendChild(b);
+    hydrateThumb(r.id, b.querySelector("canvas"));
+  });
+}
+const shortTime = t => String(t||"").replace("T"," ").slice(5,16);
+async function fullRun(id){
+  if(S.full[id]) return S.full[id];
+  const r = S.live ? await api("/runs/" + encodeURIComponent(id)) : null;
+  const rec = r && (r.run || r); if(rec) S.full[id] = rec; return rec;
+}
+async function hydrateThumb(id, canvas){
+  const rec = await fullRun(id); if(!rec || !canvas) return;
+  const conf = (rec.trace||{}).confidence || normSteps(rec).map(s => s.conf ?? 0);
+  if(!conf.length){ canvas.style.display = "none"; return; }
+  const x = canvas.getContext("2d"), W = canvas.width, H = canvas.height, n = conf.length;
+  x.clearRect(0,0,W,H);
+  const gr = x.createLinearGradient(0,0,W,0);
+  gr.addColorStop(0,"rgba(44,191,232,.85)"); gr.addColorStop(1,"rgba(95,200,188,.85)");
+  x.fillStyle = gr;
+  conf.forEach((c,i) => { const a = Math.max(1,(c||0)*(H-2)/2);
+    x.fillRect(i*(W/n), H/2 - a, Math.max(1, W/n - 1), a*2); });
+}
+
+async function selectRun(id){
+  stopPlay();
+  S.current = id; renderRunstrip();
+  const rec = await fullRun(id);
+  if(!rec){ $("#arr").innerHTML = '<div class="empty">Couldn\'t load this run.</div>'; return; }
+  S.steps = normSteps(rec); S.w = S.steps.map(s => Math.max(2, Math.min(16, (s.piece||"").length)));
+  S.P = S.steps.length;   /* tape starts fully played (the run already happened) */
+  renderAll(rec);
+  await setupScope(rec);
+}
+function renderAll(rec){
+  renderTopbar(rec); renderTape(rec); renderMonitor(rec); renderLogs(rec);
+  renderCfg(rec); renderMeters(rec); renderSteer(rec); renderMinfl(rec);
+}
+const colsFor = w => w.map(x => x + "fr").join(" ");
+function colGeom(w, W){
+  const total = w.reduce((a,b) => a+b, 0); let acc = 0;
+  return w.map(x => { const g = {x0: acc/total*W, x1:(acc+x)/total*W, xc:(acc + x/2)/total*W}; acc += x; return g; });
+}
+function firstLine(rec){
+  const m = rec.messages || rec.assembled_messages || [];
+  const u = [...m].reverse().find(x => x.role === "user");
+  return (u && u.content) ? String(u.content).slice(0,140) : (rec.prompt_summary || rec.id || "run");
+}
+function renderTopbar(rec){
+  const d = (rec.meta && rec.meta.decode) || {};
+  $("#tb-model").textContent = rec.model || "—";
+  $("#tb-quant").textContent = d.quant ? "· " + d.quant : "";
+  $("#tb-addr").textContent = "local://replay/" + (rec.id || "");
+  $("#nav-engine").textContent = "engine " + (d.engine || "—") + " · substrate " + (rec.substrate || "—");
+  $("#nav-sess").textContent = "session " + (rec.id || "—");
+}
+function renderCfg(rec){
+  const d = (rec.meta && rec.meta.decode) || {};
+  const bits = [`<span class="cap">run</span>`, `<b>${esc(rec.model||"—")}</b>`];
+  const push = (k,v) => bits.push(`<span class="dot">·</span><span>${k} <b>${esc(String(v))}</b></span>`);
+  if(d.quant) push("quant", d.quant);
+  if(d.mode) push("decode", d.mode);
+  if(d.temperature != null) push("temp", d.temperature);
+  if(d.seed != null) push("seed", d.seed);
+  push("finish", rec.finish_reason || "?");
+  bits.push(`<span style="margin-left:auto" class="tag cap-t">CAPTURED</span>`);
+  $("#cfg").innerHTML = bits.join("");
+}
+
+/* ═══ CRT monitor — typed by the playhead ═══ */
+function renderMonitor(rec){
+  $("#mon-count").textContent = "tokens 0–" + S.steps.length;
+  $("#crt-sid").textContent = (rec.id || "—") + " · " + shortTime(rec.created_at);
+  const trunc = rec.finish_reason === "length";
+  $("#crt-foot").innerHTML =
+    `<span>finish <b>${esc(rec.finish_reason||"?")}</b></span>` +
+    `<span>tokens <b>${S.steps.length}</b></span>` +
+    (rec._sample ? `<span style="color:var(--mist)">sample reel</span>` : `<span>recorded on this machine</span>`) +
+    (trunc ? `<span class="tag fail-t">TRUNCATED</span>` : "");
+  paintMonitor();
+}
+function paintMonitor(){
+  const el = $("#crt-text"); if(!el || !S.steps.length) return;
+  const upto = S.steps.slice(0, S.P).map(s => esc(s.piece)).join("");
+  const playing = !!S.playing, done = S.P >= S.steps.length;
+  el.innerHTML = (S.P === 0 ? '<span class="dim">awaiting playback…</span>'
+    : upto + (done && !playing ? "" : '<span class="cursor">▋</span>'));
+  const st = $("#crt-st");
+  st.className = "st" + (playing ? "" : " idle");
+  $("#crt-mode").textContent = playing ? "PLAY" : (done ? "END" : "PAUSE");
+}
+
+/* ═══ the tape ═══ */
+function renderTape(rec){
+  const steps = S.steps, w = S.w, cols = colsFor(w);
+  const innerW = Math.max(680, w.reduce((a,b) => a+b, 0) * 8.5 + 130);
+  const mem = rec.memory || {};
+  const hasEnt = steps.some(s => s.ent != null);
+
+  $("#transport").innerHTML = `
+    <div class="tbtns">
+      <button class="tbtn" id="t-start">⇤</button>
+      <button class="tbtn" id="t-prev">◂◂</button>
+      <button class="tbtn play" id="t-play">▶</button>
+      <button class="tbtn" id="t-next">▸▸</button>
+      <button class="tbtn" id="t-end">⇥</button>
+    </div>
+    <div class="pos"><span class="big" id="pos-big">${S.P}</span>
+      <span class="of">/ ${steps.length} · <span id="pos-tok">—</span></span></div>
+    <div class="right">
+      <span class="entlegend">entropy <i></i><span class="tag der-t">DERIVED</span></span>
+      <button class="spd" id="t-speed">1.0×</button>
+      <button class="spd" data-todo="prove" style="color:#1B7F74;border-color:rgba(95,200,188,.7)">PROVE</button>
+      <button class="spd" id="btn-export">⤓ EXPORT</button>
+    </div>`;
+
+  $("#leader-slot").innerHTML = leaderHTML(rec);
+
+  $("#arr").style.minWidth = innerW + "px";
+  $("#arr").innerHTML = `
+    <div class="playhead" id="playhead" hidden></div>
+    <div class="colshade" id="colshade" hidden></div>
+    <div class="lane ruler">
+      <div class="plate"><span><span class="cap">ruler</span><span class="sub">index · locators</span></span></div>
+      <div class="lane-body"><div class="cells" style="grid-template-columns:${cols};height:100%">
+        ${steps.map((s,i) => `<div class="tick ${i%5===0?"five":""}">${i%5===0?`<span class="idx">${i}</span>`:""}</div>`).join("")}
+      </div>${locators(steps, mem, rec, w, innerW)}</div>
+    </div>
+    <div class="lane clips">
+      <div class="plate"><span><span class="cap">run</span><span class="sub">token clips</span></span></div>
+      <div class="lane-body"><div class="cells" style="grid-template-columns:${cols}" id="clip-cells">
+        ${steps.map((s,i) => `<div class="clip-t ${(s.conf ?? 1) < .55 ? "shaky":""}"
+             style="--c:${(s.conf ?? .6).toFixed(2)}" data-i="${i}" tabindex="0">${esc(s.piece.trim()||"·")}</div>`).join("")}
+      </div></div>
+    </div>
+    <div class="lane wave">
+      <div class="plate"><span><span class="cap">confidence</span><span class="sub">CAPTURED</span></span></div>
+      <div class="lane-body"><canvas id="wave-canvas"></canvas></div>
+    </div>
+    ${hasEnt ? `<div class="lane auto">
+      <div class="plate"><span><span class="cap">entropy</span><span class="sub">DERIVED</span></span></div>
+      <div class="lane-body" id="ent-cell"></div>
+    </div>` : ""}
+    <div class="lane jl">
+      <div class="plate"><span><span class="cap">disposed</span><span class="sub">J-lens · DERIVED</span></span>
+        <span id="layer-picker" style="margin-left:auto"></span></div>
+      <div class="lane-body" id="jlens-zone" data-cols="${esc(cols)}">
+        <div class="lane-action"><button id="btn-jlens">Read dispositions</button></div></div>
+    </div>`;
+
+  drawWave(steps, w);
+  if(hasEnt) drawEntropy(steps, w);
+  wireTape(rec, steps, w, cols);
+  setPlayhead(S.P, true);
+}
+function leaderHTML(rec){
+  const fp = rec.final_prompt || null, am = rec.assembled_messages;
+  let body = fp || (Array.isArray(am) ? am.map(x => `⟨${x.role}⟩ ${x.content}`).join("\n")
+            : Array.isArray(rec.messages) ? rec.messages.map(x => `⟨${x.role}⟩ ${x.content}`).join("\n") : "");
+  if(!body) return "";
+  return `<details class="leader"><summary>Leader — the exact prompt the model saw
+    <span style="margin-left:auto">${fp ? "final_prompt" : "messages"}</span></summary>
+    <div class="leader-body">${esc(body)}</div></details>`;
+}
+function locators(steps, mem, rec, w, innerW){
+  const W = innerW - 118 - 26, g = colGeom(w, W), out = [];
+  if((mem.cards_applied||[]).length)
+    out.push(`<span class="loc" style="left:${g[0].x0 + 2}px">▸ memory${mem.gate!=null?" "+(+mem.gate).toFixed(2):""}</span>`);
+  const shaky = steps.findIndex(s => (s.conf ?? 1) < .5);
+  if(shaky >= 0) out.push(`<span class="loc" style="left:${g[shaky].x0}px">▸ low conf</span>`);
+  out.push(`<span class="loc ${rec.finish_reason==="length"?"bad":""}" style="right:3px">▸ ${esc(rec.finish_reason||"end")}</span>`);
+  return out.join("");
+}
+function drawWave(steps, w){
+  const cv = $("#wave-canvas"), cell = cv.parentElement;
+  const W = cell.clientWidth, H = cell.clientHeight, dpr = Math.min(2, devicePixelRatio||1);
+  cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext("2d"); g.scale(dpr,dpr);
+  const geo = colGeom(w, W), mid = H/2;
+  g.strokeStyle = "rgba(90,130,155,.25)"; g.beginPath(); g.moveTo(0,mid); g.lineTo(W,mid); g.stroke();
+  const gr = g.createLinearGradient(0,0,W,0);
+  gr.addColorStop(0,"rgba(44,191,232,.6)"); gr.addColorStop(1,"rgba(95,200,188,.6)");
+  g.fillStyle = gr; g.strokeStyle = "rgba(27,127,116,.85)";
+  const top = [], bot = [];
+  geo.forEach((c,i) => {
+    const amp = Math.max(1.5, (steps[i].conf ?? 0) * (H/2 - 4));
+    const seg = Math.max(2, Math.floor((c.x1-c.x0)/3));
+    for(let k = 0; k <= seg; k++){
+      const x = c.x0 + (c.x1-c.x0)*k/seg;
+      const jag = 1 - .22*Math.abs(Math.sin(k*2.7 + i*1.3));
+      top.push([x, mid - amp*jag]); bot.push([x, mid + amp*jag]);
+    }});
+  g.beginPath(); top.forEach((p,i) => i ? g.lineTo(p[0],p[1]) : g.moveTo(p[0],p[1]));
+  bot.reverse().forEach(p => g.lineTo(p[0],p[1])); g.closePath(); g.fill();
+  g.beginPath(); top.forEach((p,i) => i ? g.lineTo(p[0],p[1]) : g.moveTo(p[0],p[1])); g.stroke();
+}
+function drawEntropy(steps, w){
+  const cell = $("#ent-cell"); const W = cell.clientWidth, H = cell.clientHeight;
+  const geo = colGeom(w, W);
+  const mx = Math.max(1e-6, ...steps.map(s => s.ent || 0));
+  const pts = steps.map((s,i) => [geo[i].xc, H - 4 - ((s.ent ?? 0)/mx)*(H-9)]);
+  cell.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <polyline points="${pts.map(p => p.join(",")).join(" ")}" fill="none" stroke="#9A92C8" stroke-width="1.3"/>
+    ${pts.map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="2" fill="#EAF4F9" stroke="#9A92C8" stroke-width="1.1"/>`).join("")}
+  </svg>`;
+}
+
+/* transport mechanics: the tape actually plays */
+function setPlayhead(P, silent){
+  S.P = Math.max(0, Math.min(S.steps.length, P));
+  const arr = $("#arr"), ph = $("#playhead");
+  if(!arr || !ph) return;
+  const plateW = 118, W = arr.clientWidth - plateW - 26;
+  const g = colGeom(S.w, W);
+  const x = S.P >= S.steps.length ? g[g.length-1].x1 : (S.P <= 0 ? 0 : g[S.P-1].x1);
+  ph.hidden = false; ph.style.left = (plateW + 13 + x) + "px";
+  $("#pos-big").textContent = S.P;
+  const cur = S.steps[Math.max(0, S.P-1)];
+  $("#pos-tok").textContent = S.P ? "“" + (cur.piece.trim()||"·") + "” conf " + (cur.conf!=null?cur.conf.toFixed(2):"—") : "start";
+  if(!silent) paintMonitor();
+}
+function stopPlay(){ if(S.playing){ clearInterval(S.playing); S.playing = null; } const b = $("#t-play"); if(b) b.textContent = "▶"; paintMonitorSafe(); }
+function paintMonitorSafe(){ try{ paintMonitor(); }catch(e){} }
+function togglePlay(){
+  if(S.playing){ stopPlay(); return; }
+  if(S.P >= S.steps.length) S.P = 0;
+  $("#t-play").textContent = "❚❚";
+  S.playing = setInterval(() => {
+    if(S.P >= S.steps.length){ stopPlay(); return; }
+    setPlayhead(S.P + 1); paintMonitor();
+  }, 220 / S.speed);
+  paintMonitor();
+}
+function eventStops(rec){
+  const stops = [0];
+  const shaky = S.steps.findIndex(s => (s.conf ?? 1) < .5);
+  if(shaky > 0) stops.push(shaky);
+  stops.push(S.steps.length);
+  return [...new Set(stops)].sort((a,b) => a-b);
+}
+function wireTape(rec, steps, w, cols){
+  $("#t-play").addEventListener("click", togglePlay);
+  $("#t-start").addEventListener("click", () => { stopPlay(); setPlayhead(0); paintMonitor(); });
+  $("#t-end").addEventListener("click", () => { stopPlay(); setPlayhead(steps.length); paintMonitor(); });
+  const stops = eventStops(rec);
+  $("#t-prev").addEventListener("click", () => { stopPlay();
+    setPlayhead(stops.filter(x => x < S.P).pop() ?? 0); paintMonitor(); });
+  $("#t-next").addEventListener("click", () => { stopPlay();
+    setPlayhead(stops.find(x => x > S.P) ?? steps.length); paintMonitor(); });
+  $("#t-speed").addEventListener("click", () => {
+    S.speed = S.speed === 1 ? 2 : S.speed === 2 ? 4 : S.speed === 4 ? .5 : 1;
+    $("#t-speed").textContent = S.speed.toFixed(1) + "×"; });
+  document.querySelectorAll("[data-todo]").forEach(b =>
+    b.addEventListener("click", () => toast(b.dataset.todo.toUpperCase() + " — wired in the next phase (the endpoint exists; the console doesn't reach it yet)")));
+  $("#btn-export").addEventListener("click", () => {
+    if(rec._sample) return toast("EXPORT — live runs only (this is the sample reel)");
+    window.open("/runs/" + encodeURIComponent(rec.id) + "/export?format=json", "_blank"); });
+
+  const arr = $("#arr"), shade = $("#colshade"), plateW = 118;
+  arr.addEventListener("mousemove", e => {
+    const r = arr.getBoundingClientRect(), x = e.clientX - r.left - plateW - 13;
+    if(x < 0){ shade.hidden = true; return; }
+    const g = colGeom(w, arr.clientWidth - plateW - 26);
+    let i = g.findIndex(c => x >= c.x0 && x < c.x1); if(i < 0){ shade.hidden = true; return; }
+    shade.hidden = false; shade.style.left = (plateW + 13 + g[i].x0) + "px";
+    shade.style.width = (g[i].x1 - g[i].x0) + "px";
+  });
+  arr.addEventListener("mouseleave", () => { shade.hidden = true; });
+  arr.addEventListener("dblclick", e => {   /* double-click scrubs the committed playhead */
+    const r = arr.getBoundingClientRect(), x = e.clientX - r.left - plateW - 13;
+    if(x < 0) return;
+    const g = colGeom(w, arr.clientWidth - plateW - 26);
+    const i = g.findIndex(c => x >= c.x0 && x < c.x1);
+    if(i >= 0){ stopPlay(); setPlayhead(i + 1); paintMonitor(); }
+  });
+  $("#clip-cells").addEventListener("click", e => {
+    const c = e.target.closest(".clip-t"); if(!c) return;
+    const was = c.classList.contains("sel");
+    document.querySelectorAll(".clip-t.sel").forEach(x => x.classList.remove("sel"));
+    document.querySelectorAll(".pop").forEach(p => p.remove());
+    if(was) return;
+    c.classList.add("sel");
+    const i = +c.dataset.i, s = steps[i];
+    const g = colGeom(w, arr.clientWidth - plateW - 26);
+    const pop = document.createElement("div"); pop.className = "pop";
+    const alts = (s.alts||[]).slice(0,3).map(a =>
+      `<div class="alt"><span>${esc((a.piece ?? a.text ?? "").trim()||"·")}</span><span>${a.prob!=null?(+a.prob).toFixed(2):""}</span></div>`).join("");
+    pop.innerHTML = `<h4>what it almost played</h4>
+      <div class="alt win"><span>${esc(s.piece.trim())}</span><b>${s.conf!=null?s.conf.toFixed(2):"—"}</b></div>
+      ${alts || '<div class="alt"><span style="font-style:italic">no alternatives recorded</span></div>'}`;
+    pop.style.left = Math.max(4, Math.min(arr.clientWidth - 205, plateW + 13 + g[i].xc - 95)) + "px";
+    pop.style.top = "58px";
+    pop.addEventListener("click", ev => ev.stopPropagation());
+    arr.appendChild(pop);
+  });
+  document.addEventListener("click", e => {
+    if(!e.target.closest(".clip-t") && !e.target.closest(".pop")){
+      document.querySelectorAll(".pop").forEach(p => p.remove());
+      document.querySelectorAll(".clip-t.sel").forEach(x => x.classList.remove("sel")); }
+  });
+  $("#btn-jlens").addEventListener("click", () => loadJlens(rec, steps, cols));
+}
+async function loadJlens(rec, steps, cols, layer){
+  const zone = $("#jlens-zone"), prov = $("#jlens-prov");
+  zone.innerHTML = '<div class="lane-action"><span class="none">listening back…</span></div>';
+  let data = rec._jlens || null;
+  if(!data){
+    const q = layer ? ("?layer="+layer) : "";
+    data = await api("/runs/"+encodeURIComponent(rec.id)+"/jlens"+q)
+        || await api("/runs/"+encodeURIComponent(rec.id)+"/jlens", {method:"POST",
+             headers:{"Content-Type":"application/json"}, body: JSON.stringify(layer?{layer}:{})});
+  }
+  if(!data){ zone.innerHTML = '<div class="lane-action"><span class="none">no lens fitted for this model — blank ≠ nothing, but there is nothing fitted to read with</span></div>'; return; }
+  const chips = normJlens(data, steps.length);
+  zone.innerHTML = `<div class="cells" style="grid-template-columns:${cols};align-items:center">${
+    steps.map((s,i) => { const c = chips[i];
+      if(!c || !c.length) return "<div></div>";
+      return `<div class="jcell">${c.slice(0,3).map((t,k) =>
+        `<span class="jchip d${k+1}">${esc(String(t).trim())}</span>`).join("")}</div>`; }).join("")}</div>`;
+  const pv = data.provenance && (data.provenance.caption || data.provenance);
+  if(pv){ prov.hidden = false; prov.innerHTML = `<b>J-lens</b> — ${esc(typeof pv === "string" ? pv : JSON.stringify(pv))}`; }
+  const layers = data.layers || data.layers_available || [];
+  const lp = $("#layer-picker");
+  if(layers.length){
+    lp.innerHTML = layers.map(L => `<button class="mono" style="font-size:7.5px;padding:0 3px;color:${L==(data.layer||layers[layers.length-1])?"var(--navy)":"var(--mist)"}" data-l="${L}">${L}</button>`).join("");
+    lp.querySelectorAll("button").forEach(b => b.addEventListener("click", ev => {
+      ev.stopPropagation();
+      if(rec._sample) return toast("LAYER SWEEP — live engine only (sample reel)");
+      loadJlens(rec, steps, cols, +b.dataset.l); })); }
+}
+function normJlens(data, n){
+  const out = Array.from({length:n}, () => null);
+  if(data.chips){ Object.entries(data.chips).forEach(([p,c]) => { if(out[+p] !== undefined) out[+p] = c; }); return out; }
+  if(Array.isArray(data.readouts)){ data.readouts.forEach((r,i) => { if(i<n && Array.isArray(r) && r.length) out[i] = r.map(x => x.piece ?? x.token ?? x); }); return out; }
+  if(Array.isArray(data.positions)){ data.positions.forEach(x => { const p = x.pos ?? x.index;
+      if(p != null && p < n) out[p] = (x.top || x.tokens || []).map(t => t.piece ?? t.token ?? t); }); return out; }
+  return out;
+}
+
+/* ═══ ANGEL SCOPE (blue/green/lavender panes) ═══ */
+let scopeRAF = 0;
+async function setupScope(rec){
+  cancelAnimationFrame(scopeRAF);
+  const steps = S.steps;
+  let norms = null, layerIds = null, real = false;
+  if(S.live){
+    const r = await api("/engine/layers", {method:"POST", headers:{"Content-Type":"application/json"},
+                        body: JSON.stringify({text: firstLine(rec)})});
+    if(r && Array.isArray(r.norms) && r.norms.length){
+      const nl = r.norms.length;
+      const pick = [0, Math.floor(nl*.25), Math.floor(nl*.5), Math.floor(nl*.75), nl-1];
+      norms = pick.map(L => r.norms[L]); layerIds = pick; real = true;
+    }
+  }
+  if(!norms){
+    layerIds = [0, 6, 12, 18, 24];
+    norms = layerIds.map((L,li) => steps.map((s,i) =>
+      (s.conf ?? .6) * (0.45 + 0.55*Math.abs(Math.sin(li*1.3 + i*.7)))));
+  }
+  $("#scope-note").textContent = real
+    ? "residual norms — one causal forward over this run's prompt, read at five depths (live)"
+    : "sample pattern — the live scope reads real /engine/layers norms when the engine is up";
+  $("#scope-tail").textContent = real ? "live · depth × position" : "sample pattern";
+  $("#scope-tag").textContent = real ? "CAPTURED" : "SAMPLE";
+  const focus = $("#ctl-focus");
+  focus.innerHTML = layerIds.map((L,i) => `<option value="${i}" ${i===3?"selected":""}>L${L}${i===0?" in":i===layerIds.length-1?" out":""}</option>`).join("");
+  const redraw = () => drawScope(norms, layerIds);
+  redraw();
+  $("#ctl-rot").oninput = redraw; $("#ctl-zoom").oninput = redraw; focus.onchange = redraw;
+}
+function drawScope(norms, layerIds){
+  cancelAnimationFrame(scopeRAF);
+  const cv = $("#scope-canvas"), wrap = cv.parentElement;
+  const W = wrap.clientWidth - 24, H = 230, dpr = Math.min(2, devicePixelRatio||1);
+  cv.width = W*dpr; cv.height = H*dpr; cv.style.width = W+"px"; cv.style.height = H+"px";
+  const g = cv.getContext("2d"); g.scale(dpr,dpr);
+  const rot = (+$("#ctl-rot").value)/100, zoom = (+$("#ctl-zoom").value)/100;
+  const focusIdx = +($("#ctl-focus").value || 3);
+  const NP = norms.length;
+  const paneW = 82*zoom, paneH = 156*zoom, skew = 10 + rot*26;
+  const span = W - paneW - 56, x0 = 30;
+  const PAL = [[76,141,240],[95,200,188],[143,168,232],[182,176,218],[127,180,240]];
+  const mx = Math.max(1e-6, ...norms.flat());
+  const cols = 6, rows = 9;
+  const grids = norms.map(row => {
+    const out = [];
+    for(let r = 0; r < rows; r++) for(let c = 0; c < cols; c++){
+      const t = (r*cols + c)/(rows*cols);
+      out.push((row[Math.min(row.length-1, Math.floor(t*row.length))]||0)/mx);
+    } return out; });
+  const quad = i => { const px = x0 + span*(i/(NP-1)), py = H/2;
+    return { tl:[px, py-paneH/2 - skew*.4], tr:[px+paneW, py-paneH/2 + skew*.4],
+             br:[px+paneW, py+paneH/2 + skew*.4], bl:[px, py+paneH/2 - skew*.4], x:px, y:py }; };
+  function frame(ms){
+    const T = ms*.001;
+    g.clearRect(0,0,W,H);
+    for(let i = 0; i < NP-1; i++){
+      const a = quad(i), b = quad(i+1);
+      for(let k = 0; k < 9; k++){
+        const ya = a.y - paneH/2 + paneH*(k+.5)/9, yb = b.y - paneH/2 + paneH*((k*3.7)%9 + .5)/9;
+        const c1 = PAL[i%PAL.length], c2 = PAL[(i+1)%PAL.length];
+        const gr = g.createLinearGradient(a.tr[0], ya, b.tl[0], yb);
+        gr.addColorStop(0, `rgba(${c1[0]},${c1[1]},${c1[2]},.30)`);
+        gr.addColorStop(1, `rgba(${c2[0]},${c2[1]},${c2[2]},.30)`);
+        g.strokeStyle = gr; g.lineWidth = .8;
+        g.beginPath(); g.moveTo(a.tr[0]-4, ya);
+        const mid = (a.tr[0] + b.tl[0])/2, sway = REDUCED ? 0 : Math.sin(T*.7 + i*2 + k)*5;
+        g.bezierCurveTo(mid, ya + sway, mid, yb - sway, b.tl[0]+4, yb); g.stroke();
+      }
+    }
+    for(let i = 0; i < NP; i++){
+      const q = quad(i), c = PAL[i%PAL.length], isF = i === focusIdx;
+      g.beginPath(); g.moveTo(...q.tl); g.lineTo(...q.tr); g.lineTo(...q.br); g.lineTo(...q.bl); g.closePath();
+      g.fillStyle = `rgba(255,255,255,${isF ? .55 : .35})`; g.fill();
+      g.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},${isF ? .95 : .55})`; g.lineWidth = isF ? 1.6 : 1; g.stroke();
+      const cells = grids[i];
+      for(let r = 0; r < rows; r++) for(let cc = 0; cc < cols; cc++){
+        const u = (cc+.5)/cols, v = (r+.5)/rows;
+        const x = q.tl[0] + (q.tr[0]-q.tl[0])*u;
+        const yTop = q.tl[1] + (q.tr[1]-q.tl[1])*u, yBot = q.bl[1] + (q.br[1]-q.bl[1])*u;
+        const y = yTop + (yBot-yTop)*v;
+        let a = cells[r*cols+cc];
+        if(!REDUCED) a *= .8 + .2*Math.sin(T*1.57 + i + r*.6 + cc*.4);
+        g.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${.15 + a*.8})`;
+        g.beginPath(); g.arc(x, y, 1.3 + a*2.3, 0, 7); g.fill();
+      }
+      g.font = "600 9px " + '"IBM Plex Mono",monospace'; g.textAlign = "left";
+      g.fillStyle = `rgba(22,50,74,${isF?.95:.6})`;
+      g.fillText("L" + layerIds[i] + (i===0 ? " IN" : i===NP-1 ? " OUT" : ""), q.tl[0], q.tl[1] - 8);
+    }
+    if(!REDUCED) scopeRAF = requestAnimationFrame(frame);
+  }
+  frame(REDUCED ? 0 : performance.now());
+}
+
+/* ═══ right column + logs (real run data) ═══ */
+function areaChart(canvasId, vals, rgb){
+  const cv = $(canvasId), W = cv.parentElement.clientWidth, H = cv.height;
+  const dpr = Math.min(2, devicePixelRatio||1);
+  cv.width = W*dpr; cv.style.width = W+"px"; cv.height = H*dpr; cv.style.height = H+"px";
+  const g = cv.getContext("2d"); g.scale(dpr,dpr);
+  g.clearRect(0,0,W,H);
+  for(let k = 1; k < 4; k++){ g.strokeStyle = "rgba(90,130,155,.14)";
+    g.beginPath(); g.moveTo(0, H*k/4); g.lineTo(W, H*k/4); g.stroke(); }
+  if(!vals.length) return;
+  const mx = Math.max(1e-6, ...vals);
+  const pts = vals.map((v,i) => [i/(vals.length-1||1)*W, H - 4 - (v/mx)*(H-10)]);
+  const gr = g.createLinearGradient(0,0,0,H);
+  gr.addColorStop(0, `rgba(${rgb},.4)`); gr.addColorStop(1, `rgba(${rgb},.03)`);
+  g.beginPath(); g.moveTo(0,H); pts.forEach(p => g.lineTo(p[0],p[1])); g.lineTo(W,H); g.closePath();
+  g.fillStyle = gr; g.fill();
+  g.beginPath(); pts.forEach((p,i) => i ? g.lineTo(p[0],p[1]) : g.moveTo(p[0],p[1]));
+  g.strokeStyle = `rgba(${rgb},.9)`; g.lineWidth = 1.4; g.stroke();
+  const e = pts[pts.length-1];
+  g.fillStyle = `rgba(${rgb},1)`; g.beginPath(); g.arc(e[0],e[1],2.6,0,7); g.fill();
+}
+function renderMeters(rec){
+  areaChart("#meter-conf", S.steps.map(s => s.conf ?? 0), "44,191,232");
+  areaChart("#meter-ent", S.steps.map(s => s.ent ?? 0), "154,146,200");
+}
+function renderSteer(rec){
+  const dials = (rec.behavior||{}).active_dials || {};
+  const dk = Object.entries(dials).filter(([,v]) => v);
+  $("#steer-list").innerHTML = dk.length ? dk.map(([k,v]) =>
+    `<div class="steer-row"><span>${esc(k)}</span><span class="v">${(+v).toFixed(1)}</span>
+     <span class="bar"><i style="width:${Math.round(Math.min(1,Math.abs(v))*100)}%"></i></span></div>`).join("")
+    : '<div class="steer-row"><span class="none">no dials rode this run</span></div>';
+}
+function renderMinfl(rec){
+  const mem = rec.memory || {};
+  const cards = mem.cards_applied || [];
+  $("#minfl").innerHTML = cards.length ? cards.map((c,i) => {
+    const rel = (mem.relevance||[])[i];
+    return `<div class="steer-row"><span style="font-size:9.5px">${esc(String(c).slice(0,42))}</span>
+      <span class="v">${rel!=null?(+rel).toFixed(2):"—"}</span>
+      <span class="bar"><i style="width:${rel!=null?Math.round(rel*100):0}%"></i></span></div>`; }).join("")
+    + (mem.gate != null ? `<div class="steer-row"><span style="font-size:9.5px">topic gate</span><span class="v">${(+mem.gate).toFixed(2)}</span><span class="bar"><i style="width:${Math.round(mem.gate*100)}%"></i></span></div>` : "")
+    : '<div class="steer-row"><span class="none">no memory rode this run</span></div>';
+}
+function renderLogs(rec){
+  const t = shortTime(rec.created_at) || "—", L = [];
+  const line = (col, tag, msg, ok) =>
+    `<div class="logline"><span class="t">${esc(t)}</span>
+      <span class="lt" style="color:${col}">${tag}</span><span class="m">${msg}
+      <span class="${ok===false?"fail":"ok"}" style="float:right">${ok===false?"fail":"✓"}</span></span></div>`;
+  L.push(line("var(--blue)","RUN", "recorded — " + esc(rec.id||"")));
+  const mem = rec.memory || {};
+  if((mem.cards_applied||[]).length)
+    L.push(line("var(--teal)","MEMORY", `block injected · gate ${mem.gate!=null?(+mem.gate).toFixed(2):"—"} · ${mem.cards_applied.length} card(s)`));
+  const dials = Object.entries((rec.behavior||{}).active_dials||{}).filter(([,v]) => v);
+  if(dials.length) L.push(line("var(--lilac2)","STEER", "dials · " + dials.map(([k,v])=>k+" "+(+v).toFixed(1)).join(" · ")));
+  (rec.tiny_tests||[]).forEach(tt =>
+    L.push(line(tt.pass ? "var(--teal)" : "var(--coral)","TEST", `expectation “${esc(tt.name||"?")}” · ${esc(tt.kind||"static")}`, !!tt.pass)));
+  const trunc = rec.finish_reason === "length";
+  L.push(line(trunc ? "var(--coral)" : "var(--teal)","FINISH", esc(rec.finish_reason||"?"), !trunc));
+  $("#logs").innerHTML = L.join("");
+  $("#log-count").textContent = L.length ? ($("#logs").children.length + " entries") : "—";
+}
+document.querySelectorAll("[data-soon]").forEach(b =>
+  b.addEventListener("click", () => toast(b.dataset.soon + " — this door opens in a later phase")));
+</script>

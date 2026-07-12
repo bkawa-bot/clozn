@@ -18,11 +18,11 @@ def try_get(handler, path):
     if path in ("/", "/index.html", "/instrument.html"):
         serve_named(handler, "instrument.html")
         return True
-    if path.endswith((".html", ".css", ".js")):
-        fn = os.path.normpath(os.path.join(DEMO, path.lstrip("/")))   # serve subdirs (pages/) too, safely
+    if path.endswith((".html", ".css", ".js", ".mjs")):
+        fn = os.path.normpath(os.path.join(DEMO, path.lstrip("/")))   # serve subdirs (pages/, heavn/) too, safely
         if fn.startswith(os.path.normpath(DEMO)) and os.path.isfile(fn):
             ct = ("text/html" if path.endswith(".html") else
-                  "text/css" if path.endswith(".css") else "application/javascript")
+                  "text/css" if path.endswith(".css") else "application/javascript")   # .js and .mjs (ES modules)
             handler._send(200, open(fn, encoding="utf-8").read(), ct + "; charset=utf-8")
             return True
     return False
