@@ -42,7 +42,7 @@ One endpoint that reads the run and returns a structured `explanation` with no m
 - **influences_active**: the manifest — cards that fired (each with its provenance quote + gate value),
   dials that were on. Free — already logged. Each tagged `causal_verified:null` (active, not yet proven).
 - **concepts**: if the run has `sae:*` readouts (engine path), the top features per span; else omit with
-  an honest "concept readout needs the engine — not available on this run."
+  an honest "concept readout needs the qwen/PyTorch substrate (SAE) — not available on this run."
 Done: a captured run returns a complete explanation object; model-free tests over a fixture run.
 
 ### M2 — on-demand causal receipts (the honest ablation) — Sonnet, ~1 day

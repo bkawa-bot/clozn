@@ -960,7 +960,7 @@
     conc = conc || {};
     var h = '<div class="ri-xpl-sec"><h4>Concepts</h4>';
     if (!conc.available) {
-      return h + '<div class="sub">not available — ' + esc(conc.note || "concept readout needs the engine") + "</div></div>";
+      return h + '<div class="sub">not available — ' + esc(conc.note || "concept readout needs the qwen/PyTorch substrate (SAE)") + "</div></div>";
     }
     var spans = Array.isArray(conc.spans) ? conc.spans : [];
     if (!spans.length) return h + '<div class="sub">(no spans recorded)</div></div>';
