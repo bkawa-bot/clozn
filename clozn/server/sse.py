@@ -12,9 +12,16 @@ import time
 from clozn.server import app as ctx
 
 
-def sse_chat(handler, messages, max_new, model):
+def sse_chat(handler, messages, max_new, model, lens=None):
     """Stream one /v1/chat/completions reply as OpenAI-style `chat.completion.chunk` frames over SSE,
-    then log the run. `handler` is the live BaseHTTPRequestHandler (needs .wfile + ._log_run)."""
+    then log the run. `handler` is the live BaseHTTPRequestHandler (needs .wfile + ._log_run).
+
+    F1 LIVE LENS: `lens` (from the request's opt-in `clozn_lens` field -- absent for every standard
+    OpenAI client, whose stream stays byte-identical) forwards to the substrate's chat_stream, and each
+    engine `jlens_live` frame is relayed as its own SSE frame `data: {"clozn_lens": {...}}` interleaved
+    with the delta chunks. Only substrates whose chat_stream accepts (lens, on_frame) can serve it --
+    currently the engine substrate; on any other, one honest error frame is sent and the chat proceeds
+    without the lens (the reply must never be held hostage by a readout)."""
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")
     handler.send_header("Cache-Control", "no-cache")
@@ -26,6 +33,22 @@ def sse_chat(handler, messages, max_new, model):
              "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
         handler.wfile.write(("data: " + json.dumps(o) + "\n\n").encode("utf-8"))
         handler.wfile.flush()
+
+    def side_frame(obj):        # a non-OpenAI side-channel frame (clients that don't know it skip it)
+        handler.wfile.write(("data: " + json.dumps({"clozn_lens": obj}) + "\n\n").encode("utf-8"))
+        handler.wfile.flush()
+
+    lens_kw = {}
+    if lens:
+        import inspect
+        try:
+            params = inspect.signature(ctx.SUB.chat_stream).parameters
+        except Exception:
+            params = {}
+        if "lens" in params and "on_frame" in params:
+            lens_kw = {"lens": (lens if isinstance(lens, dict) else {}), "on_frame": side_frame}
+        else:
+            side_frame({"error": "live lens needs the engine substrate (post-hoc: POST /runs/<id>/jlens)"})
 
     # HF chat stream (QwenSubstrate.chat_stream): a pure pass-through recorder rides along and the
     # per-token trace is assembled after the stream (SUB.last_stream_trace()) -- so the run gets the
@@ -45,7 +68,7 @@ def sse_chat(handler, messages, max_new, model):
     t0 = time.time(); acc = []; memout = {}
     try:
         chunk({"role": "assistant"})
-        for piece in ctx.SUB.chat_stream(messages, max_new, mem_out=memout):
+        for piece in ctx.SUB.chat_stream(messages, max_new, mem_out=memout, **lens_kw):
             acc.append(piece); chunk({"content": piece})
         fr = ctx.SUB.last_finish_reason() if hasattr(ctx.SUB, "last_finish_reason") else None
         openai_fr = ctx._openai_finish_reason(fr)

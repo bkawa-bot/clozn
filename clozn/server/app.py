@@ -2006,7 +2006,7 @@ class EngineSubstrate(Substrate):
         meta.update(getattr(self, "_last_generation_meta", None) or {})
         return dict(meta)
 
-    def chat_stream(self, messages, max_new=256, mem_out=None):
+    def chat_stream(self, messages, max_new=256, mem_out=None, lens=None, on_frame=None):
         """Streaming twin of chat(): the SAME memory-block + tone-dial construction (kept in lockstep --
         see chat()'s comments; do not let this drift from that logic), but opens the engine's
         /v1/completions with stream:True (mirrors _engine_complete_traced's request) and yields text as
@@ -2015,6 +2015,13 @@ class EngineSubstrate(Substrate):
         pure-engine substrate too -- before this existed, a streaming request here silently fell through
         to one non-streamed chat() reply. mem_out: as in chat() -- prompt mode records what memory
         actually rode this turn.
+
+        F1 LIVE LENS: lens = a dict {layer?, topk?, every?} (or {} for engine defaults) rides to the
+        engine as body["lens"]; the engine then interleaves `jlens_live` frames (the J-lens
+        "disposed to say" readout for each committed token, computed mid-generation) with the token
+        frames. Each one is handed to `on_frame(obj)` as it arrives -- a side-channel, because this
+        generator's yields are text pieces and must stay that way for every existing consumer. A
+        failing on_frame is dropped (never kills generation).
 
         Per-token trace (mirrors QwenSubstrate.chat_stream's B3 contract): every parsed SSE frame is
         collected, then folded into self._last_stream_trace via runlog.accumulate_ar_events once the
@@ -2027,6 +2034,7 @@ class EngineSubstrate(Substrate):
         _resolve_sampling(True) alone decides, against the persisted "sampling" setting (default ON --
         temperature/top_p/top_k/repeat_penalty/a fresh seed) exactly like chat()'s sample=True path. The
         setting off degrades to greedy, byte-identical to pre-S5 behavior."""
+        import urllib.error
         import urllib.request
         import clozn.runs.store as runlog
         samp = _resolve_sampling(True)
@@ -2056,12 +2064,22 @@ class EngineSubstrate(Substrate):
         else:
             body["temperature"] = 0.0; body["rep_penalty"] = 1.0; body["seed"] = 0
         body["stream"] = True
+        if lens is not None:                # F1 live lens: opt-in passthrough (engine validates layer etc.)
+            body["lens"] = lens if isinstance(lens, dict) else True
         req = urllib.request.Request(self.engine.base + "/v1/completions",
                                      data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
         self._last_stream_trace = []        # reset; reassembled in `finally` below (empty on any hiccup)
         frames = []
-        resp = urllib.request.urlopen(req, timeout=getattr(self.engine, "timeout", 600))
+        try:
+            resp = urllib.request.urlopen(req, timeout=getattr(self.engine, "timeout", 600))
+        except urllib.error.HTTPError as he:
+            # surface the engine's own error text (e.g. a bad lens layer's 400) instead of a bare code
+            try:
+                detail = json.loads(he.read()).get("error") or str(he)
+            except Exception:
+                detail = str(he)
+            raise RuntimeError(f"engine: {detail}")
         try:
             for raw in resp:
                 line = raw.decode("utf-8", "replace").strip()
@@ -2075,6 +2093,13 @@ class EngineSubstrate(Substrate):
                 except Exception:
                     continue
                 frames.append(obj)
+                if obj.get("type") == "jlens_live":     # F1: side-channel to the SSE relay, never yielded
+                    if on_frame is not None:
+                        try:
+                            on_frame(obj)
+                        except Exception:
+                            on_frame = None             # a dead callback must never kill generation
+                    continue
                 if obj.get("type") == "tokens_committed":
                     for it in obj.get("items") or []:
                         piece = it.get("piece", "")
@@ -2281,14 +2306,24 @@ from clozn.server.routes import feedback as _feedback_routes          # noqa: E4
 from clozn.server.routes import openai as _openai_routes              # noqa: E402
 from clozn.server.routes import engine as _engine_routes              # noqa: E402
 from clozn.server.routes import readouts as _readouts_routes          # noqa: E402
+# The F-wave route families (2026-07-12): span receipts (F4), fork-at-token (F3), journal actuary +
+# calibrated trust spans (F2), shareable card (F9), anchored memory (F6), model diff (F8).
+from clozn.server.routes import span_receipts as _span_receipt_routes  # noqa: E402
+from clozn.server.routes import fork as _fork_routes                   # noqa: E402
+from clozn.server.routes import journal as _journal_routes             # noqa: E402
+from clozn.server.routes import card as _card_routes                   # noqa: E402
+from clozn.server.routes import anchored as _anchored_routes           # noqa: E402
+from clozn.server.routes import diff as _diff_routes                   # noqa: E402
 
 _runs_fallback_routes = _types.SimpleNamespace(try_get=_runs_routes.try_get_fallback)
 
 _GET_ROUTES = [_static_routes, _health_routes, _runs_routes, _memory_routes, _receipts_routes,
-              _timetravel_routes, _profiles_routes, _openai_routes, _engine_routes, _runs_fallback_routes]
+              _timetravel_routes, _profiles_routes, _openai_routes, _engine_routes,
+              _journal_routes, _card_routes, _anchored_routes, _diff_routes, _runs_fallback_routes]
 _POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes, _replay_routes,
                _timetravel_routes, _profiles_routes, _preferences_routes, _feedback_routes,
-               _openai_routes, _engine_routes, _readouts_routes]
+               _openai_routes, _engine_routes, _readouts_routes,
+               _span_receipt_routes, _fork_routes, _journal_routes, _anchored_routes, _diff_routes]
 
 
 def make_handler():

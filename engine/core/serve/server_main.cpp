@@ -260,6 +260,52 @@ int main(int argc, char** argv) {
             steer_layer = body["steer"].value("layer", 0);
         }
 
+        // F1 live lens ("watch it think"): {"lens": {layer?, topk?, every?}} (or lens:true) streams a
+        // jlens_live frame per committed token — the J-lens "disposed to say" readout computed from the
+        // tapped residual DURING generation, not post-hoc. Stream-only; exclusive with features/state/
+        // protocol (one activation tap per request; the lens owns it). Each readout is one CPU
+        // J-transport + unembed (~10-30ms/token) — "every" thins it to every Nth committed token.
+        bool lens_on = false; int lens_layer = 0, lens_topk = 5, lens_every = 1;
+        if (body.contains("lens") &&
+            ((body["lens"].is_boolean() && body["lens"].get<bool>()) || body["lens"].is_object())) {
+            const json lb = body["lens"].is_object() ? body["lens"] : json::object();
+            if (!jlens.on) {
+                res.status = 400;
+                res.set_content(json{{"error",
+                    "lens requested but J-lens not loaded (start with --jlens <dir> or set CLOZN_JLENS_DIR)"}}.dump(),
+                    "application/json");
+                return;
+            }
+            lens_layer = lb.value("layer", jlens.default_layer);
+            if (!jlens.has(lens_layer)) {
+                res.status = 400;
+                res.set_content(json{{"error", "no J-lens sidecar for that layer"},
+                                     {"layer", lens_layer}, {"available", jlens.layers()}}.dump(),
+                                "application/json");
+                return;
+            }
+            lens_topk = lb.value("topk", 5);
+            if (lens_topk < 1) lens_topk = 1;
+            if (lens_topk > 20) lens_topk = 20;
+            lens_every = lb.value("every", 1);
+            if (lens_every < 1) lens_every = 1;
+            if (!stream) {
+                res.status = 400;
+                res.set_content(json{{"error",
+                    "lens rides the SSE stream only; set stream:true (post-hoc readout: POST /jlens)"}}.dump(),
+                    "application/json");
+                return;
+            }
+            if (features || protocol) {
+                res.status = 400;
+                res.set_content(json{{"error",
+                    "lens is exclusive with features/state/protocol (one activation tap per request)"}}.dump(),
+                    "application/json");
+                return;
+            }
+            lens_on = true;
+        }
+
         // Encode inputs via the model's vocab (no context needed — fully concurrent).
         std::vector<int> prompt_ids, suffix_ids;
         int gap = 0;
@@ -300,14 +346,17 @@ int main(int argc, char** argv) {
 
         // One call into the runtime on a POOLED context (acquire blocks until one is free, so N
         // workers run N requests concurrently; the Lease releases it on any exit).
-        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens](
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens, lens_on, lens_layer](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
-            (*lease).set_emit_activations(features);  // white-box tap on for this request (off by default)
+            // white-box tap on for this request (off by default); the live lens implies it — the
+            // per-token StepActivations events ARE its input (consumed into jlens_live frames downstream).
+            (*lease).set_emit_activations(features || lens_on);
             // --sae: read at the SAE's own layer and ride each pass's top-k features on the stream.
             const bool sae_on = features && sae_serve.on;
             const int default_tap = (*lease).tap_layer();
             if (sae_on) (*lease).set_tap_layer(sae_serve.layer);
+            else if (lens_on) (*lease).set_tap_layer(lens_layer);  // the lens owns the tap (validated exclusive)
             const std::function<void(const Event&)> ev = with_sae_readout(on_event, sae_serve, sae_on);
             const ConceptProbes* probes = (features && concept_probes.ready()) ? &concept_probes : nullptr;
             const bool steering = !steer_concept.empty() && steer_coef != 0.0 && steer_probes.ready();
@@ -349,7 +398,7 @@ int main(int argc, char** argv) {
             auto cleanup = [&]() {
                 if (diff_prefix) (*lease).clear_diffusion_prefix();
                 if (steering || raw_steer) (*lease).clear_steer();
-                if (sae_on) (*lease).set_tap_layer(default_tap);
+                if (sae_on || lens_on) (*lease).set_tap_layer(default_tap);
                 (*lease).set_emit_activations(false);  // reset before returning the pooled context
             };
             try {
@@ -375,7 +424,8 @@ int main(int argc, char** argv) {
             // SSE: each §5.1 event becomes a `data: <json>\n\n` frame — the native streaming wire.
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [run, id, object, model, prompt_ids, suffix_ids, protocol, state_full, substrate, mask_token]
+                [run, id, object, model, prompt_ids, suffix_ids, protocol, state_full, substrate, mask_token,
+                 &jlens, lens_on, lens_layer, lens_topk, lens_every]
                 (size_t, httplib::DataSink& sink) {
                     auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
                     try {                                 // a generator throw here would otherwise escape into
@@ -397,7 +447,44 @@ int main(int argc, char** argv) {
                         sink.done();
                         return true;
                     }
+                    int lens_n = 0; bool lens_err_sent = false;
                     auto on_event = [&](const Event& e) {
+                        // F1 live lens: consume the raw StepActivations event (heavy, never forwarded in
+                        // lens mode) into a compact jlens_live frame — the J-lens "disposed to say" top-k
+                        // for the just-committed token, computed mid-generation. Readout shape mirrors
+                        // POST /jlens so consumers reuse one parser. A readout failure reports ONCE then
+                        // goes quiet (generation itself is never disturbed by a lens hiccup).
+                        if (lens_on) {
+                            if (const auto* sa = std::get_if<StepActivations>(&e)) {
+                                const bool due = (lens_n++ % lens_every) == 0;
+                                if (due && !sa->values.empty() && !sa->positions.empty()) {
+                                    std::vector<std::vector<std::pair<int, float>>> tk;
+                                    std::string lerr;
+                                    if (jlens.readout(sa->values.data(),
+                                                      static_cast<int>(sa->positions.size()),
+                                                      lens_layer, lens_topk, tk, lerr)) {
+                                        json rd = json::array();
+                                        for (const auto& row : tk) {
+                                            json rr = json::array();
+                                            for (const auto& pr : row)
+                                                rr.push_back({{"id", pr.first},
+                                                              {"piece", model->decode({pr.first})},
+                                                              {"score", pr.second}});
+                                            rd.push_back(rr);
+                                        }
+                                        json fr = {{"type", "jlens_live"}, {"t", sa->t},
+                                                   {"layer", lens_layer}, {"positions", sa->positions},
+                                                   {"readouts", rd}};
+                                        write("data: " + dump_json(fr) + "\n\n");
+                                    } else if (!lens_err_sent) {
+                                        lens_err_sent = true;
+                                        write("data: " + dump_json(json{{"type", "jlens_live"},
+                                                                        {"error", lerr}}) + "\n\n");
+                                    }
+                                }
+                                return;
+                            }
+                        }
                         write("data: " + sse_data(e, *model, prompt_ids, suffix_ids) + "\n\n");
                     };
                     GenerateResult r = run(on_event);

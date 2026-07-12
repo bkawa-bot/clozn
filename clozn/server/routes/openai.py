@@ -26,7 +26,9 @@ def try_post(h, p, body):
     msgs, mx = body.get("messages", []), int(body.get("max_tokens", 256))
     if body.get("stream") and getattr(ctx.SUB, "chat_stream", None):
         from clozn.server import sse
-        sse.sse_chat(h, msgs, mx, str(body.get("model", "clozn-qwen")))
+        # F1 live lens: clozn_lens {layer?, topk?, every?} (or true) is a clozn extension -- absent for
+        # standard OpenAI clients, so their streams stay byte-identical (same opt-in rule as clozn_trust).
+        sse.sse_chat(h, msgs, mx, str(body.get("model", "clozn-qwen")), lens=body.get("clozn_lens"))
         return True
     t0 = time.time()
     trace_steps = []                            # HF non-stream: capture a per-token trace (B3)
