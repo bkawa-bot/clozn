@@ -5,6 +5,7 @@ import { api } from "./api.mjs";
 import { ReplayModule } from "./modules/replay.mjs";
 import { MemoryModule } from "./modules/memory.mjs";
 import { PatchModule } from "./modules/patch.mjs";
+import { ExperimentModule } from "./modules/experiment.mjs";
 import { EditModule } from "./modules/edit.mjs";
 import { ScopeModule } from "./modules/scope.mjs";
 import { AtlasModule } from "./modules/atlas.mjs";
@@ -13,6 +14,7 @@ import { ModelsStub, SettingsStub } from "./modules/stubs.mjs";
 const MODULES = [
   { id: "replay",   nm: "Replay",   view: ReplayModule },
   { id: "patch",    nm: "Patch",    view: PatchModule },
+  { id: "experiment", nm: "Experiment", view: ExperimentModule },
   { id: "edit",     nm: "Edit",     view: EditModule },
   { id: "memory",   nm: "Memory",   view: MemoryModule },
   { id: "scope",    nm: "Scope",    view: ScopeModule },

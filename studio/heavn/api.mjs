@@ -65,6 +65,16 @@ export const api = {
   whatlearned: () => j("/memory/anchored/whatlearned", null, 15000),
   cardUrl: id => "/runs/" + enc(id) + "/card",                                 // F9
 
+  /* ── experiments (2026-07-13): the ONE experiment primitive -- "hold everything constant, change
+        one thing, compare, with a receipt" -- dispatches replay/counterfactual/receipt/branch/
+        swap_receipt behind one endpoint + one normalized envelope (clozn/experiments/experiment.py).
+        runExperiment uses postE (not post): a 400 (bad change spec), 404 (no run), or 503 (missing
+        substrate) all carry a real server-written reason the drawer should show verbatim, exactly
+        like narrate's own 503 handling -- a generic "didn't answer" toast would bury that. ── */
+  experimentTypes: () => j("/experiments/types", null, 15000),               // -> {types: {<type>: {label, needs, cost_hint}}}
+  runExperiment: (id, change, method) => postE("/runs/" + enc(id) + "/experiment",
+    { change, ...(method != null ? { method } : {}) }, 300000),
+
   /* ── readouts (POST-only — contracts §9: params ride the JSON body, never the query string) ── */
   jlens: (id, layer, topk) => post("/runs/" + enc(id) + "/jlens",
     { ...(layer != null ? { layer } : {}), ...(topk != null ? { topk } : {}) }, 60000),
