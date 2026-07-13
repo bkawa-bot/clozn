@@ -57,6 +57,7 @@ from clozn.cli.commands.explain import (cmd_explain, cmd_trace, cmd_branch, form
 from clozn.cli.commands.preferences import cmd_preferences, format_preferences                # noqa: E402
 from clozn.cli.commands.test import cmd_test                                                  # noqa: E402
 from clozn.cli.commands.quant_check import cmd_quant_check, add_subparser as _add_quant_check  # noqa: E402,F401
+from clozn.cli.commands.eval import cmd_eval, add_subparser as _add_eval                       # noqa: E402,F401
 
 
 def build_parser():
@@ -145,6 +146,7 @@ def build_parser():
     pte.add_argument("--port", type=int, default=0, help="Studio port for --live (default 8090)")
     pte.set_defaults(fn=cmd_test)
     _add_quant_check(sub)   # `clozn quant-check <A> <B>` — quant-ladder receipts (Tier-1)
+    _add_eval(sub)          # `clozn eval` — outcome-grounded calibration (Brier/ECE/risk-coverage)
     return p
 
 
