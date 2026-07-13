@@ -4,33 +4,46 @@ from __future__ import annotations
 from clozn.runs import receipt_footer
 
 
-def _run(confs):
-    return {"trace": {"tokens": [f"t{i}" for i in range(len(confs))], "confidence": list(confs)}}
+def _run(confs, **kw):
+    r = {"trace": {"tokens": [f"t{i}" for i in range(len(confs))], "confidence": list(confs)},
+         "finish_reason": "stop"}
+    r.update(kw)
+    return r
 
 
-def test_summary_counts_shaky_and_means():
-    s = receipt_footer.summary(_run([0.95, 0.9, 0.3, 0.92]))   # one shaky token (< LOW_CONF)
-    assert s["n_tokens"] == 4
-    assert s["mean_conf"] == round((0.95 + 0.9 + 0.3 + 0.92) / 4, 2)
-    assert s["n_shaky"] >= 1
+def _tie(top, alt, p_top, p_alt):
+    """A trace whose one token is a near-even split between two content words."""
+    return {"trace": {"tokens": [top], "confidence": [p_top],
+                      "alternatives": [[{"piece": top, "prob": p_top}, {"piece": alt, "prob": p_alt}]]},
+            "finish_reason": "stop"}
 
 
-def test_footer_flags_shaky_span_with_link():
-    f = receipt_footer.footer(_run([0.95, 0.9, 0.3, 0.2]), "http://host:8090/r/run_x")
-    assert "http://host:8090/r/run_x" in f
-    assert "worth a look" in f
-    assert receipt_footer.MARK in f
-    assert f.startswith("\n\n---\n")
+def test_footer_is_silent_on_an_ordinary_reply():
+    # EXCEPTION-ONLY: a fine, completed reply with no hard signal and no close call -> no footer
+    assert receipt_footer.footer(_run([0.95, 0.92, 0.9]), "http://h/r/x") == ""
 
 
-def test_footer_confident_when_no_shaky():
-    f = receipt_footer.footer(_run([0.95, 0.92, 0.9]), "http://h/r/x")
-    assert "confident throughout" in f
-    assert "worth a look" not in f
+def test_footer_fires_on_truncation():
+    f = receipt_footer.footer(_run([0.9, 0.9], finish_reason="length"), "http://h:8090/r/run_x")
+    assert "cut off mid-answer" in f and "http://h:8090/r/run_x" in f and receipt_footer.MARK in f
 
 
-def test_footer_empty_when_no_trace():
-    # diffusion / a stream that logged nothing -> no fabricated stat, no footer at all
+def test_footer_fires_on_error():
+    assert "errored" in receipt_footer.footer(_run([0.9], error="boom"), "http://h/r/x")
+
+
+def test_footer_names_a_close_call_not_a_confidence_number():
+    f = receipt_footer.footer(_tie("Rome", "Lyon", 0.44, 0.42), "http://h/r/x")
+    assert "close call" in f and "Lyon" in f and "Rome" in f
+    assert "conf" not in f.lower()                          # never a raw-confidence stat
+
+
+def test_footer_ignores_stylistic_punctuation_ties():
+    # a near-tie between punctuation / one-char tokens is not meaningful -> no footer
+    assert receipt_footer.footer(_tie("or", "(", 0.44, 0.42), "http://h/r/x") == ""
+
+
+def test_footer_empty_when_no_trace_or_junk():
     assert receipt_footer.footer({"trace": {"tokens": [], "confidence": []}}, "http://h/r/x") == ""
     assert receipt_footer.footer({}, "http://h/r/x") == ""
     assert receipt_footer.footer(None, "http://h/r/x") == ""
@@ -45,7 +58,8 @@ def test_summary_never_raises_on_junk():
 # ---- strip_footers: the context-contamination guard ----
 
 def test_strip_removes_our_own_footer_from_assistant_turns():
-    foot = receipt_footer.footer(_run([0.95, 0.9, 0.3]), "http://h:8090/r/run_x")
+    foot = receipt_footer.footer(_run([0.9], finish_reason="length"), "http://h:8090/r/run_x")
+    assert foot                                                # a real footer to strip
     msgs = [{"role": "user", "content": "q1"},
             {"role": "assistant", "content": "The answer is Rome." + foot},
             {"role": "user", "content": "q2"}]
@@ -62,7 +76,7 @@ def test_strip_is_a_noop_without_a_footer():
 
 
 def test_strip_never_touches_user_pasted_footers():
-    foot = receipt_footer.footer(_run([0.9, 0.9]), "http://h/r/x")
+    foot = receipt_footer.footer(_run([0.9], finish_reason="length"), "http://h/r/x")
     msgs = [{"role": "user", "content": "look at this: " + foot}]
     assert receipt_footer.strip_footers(msgs)[0]["content"] == msgs[0]["content"]
 

@@ -35,14 +35,10 @@ def test_failed_tiny_test_is_high():
     assert al and al.reason == "tiny_test_failed" and "has Paris" in al.headline
 
 
-def test_low_mean_conf_is_medium():
-    al = alerts.should_alert(_run("a", [0.4, 0.45, 0.5, 0.42]))
-    assert al and al.severity == "medium" and al.reason == "low_mean_conf"
-
-
-def test_single_very_uncertain_token_is_medium():
-    al = alerts.should_alert(_run("a", [0.95, 0.95, 0.2, 0.95]))   # mean high, one deep dip
-    assert al and al.reason == "shaky_span"
+def test_uncertainty_does_not_interrupt():
+    # HARD-signals only: a completed reply, however low-confidence, never earns a desktop toast
+    assert alerts.should_alert(_run("a", [0.4, 0.45, 0.5, 0.42])) is None
+    assert alerts.should_alert(_run("a", [0.95, 0.95, 0.2, 0.95])) is None
 
 
 def test_machine_traffic_is_skipped():
@@ -87,12 +83,12 @@ def test_prime_baselines_history_without_alerting():
     assert watcher.run_once(c, RecordingNotifier(), st, "http://h") == []
 
 
-def test_new_sketchy_run_fires_once_with_link():
+def test_new_hard_signal_run_fires_once_with_link():
     recs = {"r1": _run("r1", [0.9])}
     c = FakeClient([{"id": "r1"}], recs)
     st = watcher.WatchState(); watcher.prime(c, st)                  # baseline r1
-    # a new shaky run lands
-    recs["r2"] = _run("r2", [0.2, 0.3, 0.25], prompt="tricky q")
+    # a new HARD-signal run lands (truncated -- uncertainty alone would NOT fire)
+    recs["r2"] = _run("r2", [0.9, 0.9], finish="length", prompt="tricky q")
     c.summaries = [{"id": "r2", "source": "chat"}, {"id": "r1"}]
     note = RecordingNotifier()
     fired = watcher.run_once(c, note, st, "http://h:8090")

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-from clozn.runs import confidence_spans
+from clozn.runs import close_calls, confidence_spans
 
 MARK = "⟨clozn⟩"     # ⟨clozn⟩ -- the quiet in-band marker (backticked so it renders as code)
 
@@ -57,16 +57,21 @@ def summary(run: dict | None) -> dict:
 
 
 def footer(run: dict | None, link: str) -> str:
-    """The block appended to the reply, or "" when there's no trace to summarize (nothing honest to add).
-    Shape: a markdown rule, the ⟨clozn⟩ marker, a raw-confidence stat, and the per-run receipt link."""
-    s = summary(run)
-    if not s["n_tokens"]:
+    """The block appended to the reply -- EXCEPTION-ONLY: an ordinary, fine reply gets "" (silence is a
+    signal; the footer speaks only when it has something true to say). It fires on HARD facts (errored /
+    cut off mid-answer) and on genuine CLOSE CALLS (near-even two-way splits -- clozn.runs.close_calls,
+    tuned to ~3% of runs). It never reports raw chosen-token probability as a verdict: a close call names
+    the fork ("nearly X over Y"), a correlational locator you can branch-stability-test, never "wrong"."""
+    if not isinstance(run, dict):
         return ""
     bits = []
-    if s["mean_conf"] is not None:
-        bits.append(f"mean conf {s['mean_conf']:.2f}")
-    if s["n_shaky"]:
-        bits.append(f"{s['n_shaky']} span{'s' if s['n_shaky'] != 1 else ''} worth a look")
-    else:
-        bits.append("confident throughout")
-    return f"\n\n---\n`{MARK}` {' · '.join(bits)} · receipt → {link}"
+    if run.get("error"):
+        bits.append("the run errored")
+    elif run.get("finish_reason") == "length":
+        bits.append("cut off mid-answer (hit the token limit)")
+    cc = close_calls.summarize(close_calls.close_calls(run))
+    if cc:
+        bits.append(cc)
+    if not bits:
+        return ""                          # ordinary reply -> no footer at all
+    return f"\n\n---\n`{MARK}` {' · '.join(bits)} · look → {link}"
