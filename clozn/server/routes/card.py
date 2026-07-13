@@ -32,7 +32,8 @@ def try_get(h, p):
             bundle["lineage"] = runlog.lineage(rid)  # pure journal read (parent/children ids)
         except Exception:
             bundle["lineage"] = None
+        safe_rid = "".join(c for c in str(rid) if c.isalnum() or c in "_-")   # header-safe (defense in depth)
         h._send(200, render_card(bundle), "text/html; charset=utf-8",
-               extra_headers={"Content-Disposition": 'inline; filename="' + rid + '.card.html"'})
+               extra_headers={"Content-Disposition": 'inline; filename="' + safe_rid + '.card.html"'})
         return True
     return False

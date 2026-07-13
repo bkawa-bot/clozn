@@ -24,19 +24,31 @@ MARK = "⟨clozn⟩"     # ⟨clozn⟩ -- the quiet in-band marker (backticked s
 _FOOTER_RE = re.compile(r"\n*---\n`" + re.escape(MARK) + r"`[^\n]*\s*$")
 
 
+def _strip_text(s: str) -> str:
+    return _FOOTER_RE.sub("", s).rstrip()
+
+
 def strip_footers(messages: list) -> list:
     """Remove clozn's OWN receipt footers from incoming ASSISTANT messages (a copy; input untouched).
 
     Why this must exist (the context-contamination catch): in multi-turn chat the CLIENT echoes the whole
     conversation back -- including replies we footered on the way out. Without this, the model would see
-    `⟨clozn⟩ mean conf …` inside its own past turns and could imitate or be steered by it. Symmetry rule:
-    whatever clozn appends to a reply, it strips before the model ever reads it back. User/system
-    messages are never modified (if a USER pastes a footer deliberately, that's their content)."""
+    `⟨clozn⟩ …` inside its own past turns and could imitate or be steered by it. Symmetry rule: whatever
+    clozn appends to a reply, it strips before the model ever reads it back. User/system messages are
+    never modified (a USER who pastes a footer deliberately keeps it). Handles BOTH content shapes an
+    OpenAI-compatible client may send: a plain string, and the multi-part `content:[{type:text,text:…}]`
+    form (Open WebUI et al. send this even for plain text -- a real leak path caught in review)."""
     out = []
     for m in messages or []:
-        if isinstance(m, dict) and m.get("role") == "assistant" and isinstance(m.get("content"), str):
-            m = dict(m)
-            m["content"] = _FOOTER_RE.sub("", m["content"]).rstrip()
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            c = m.get("content")
+            if isinstance(c, str):
+                m = dict(m); m["content"] = _strip_text(c)
+            elif isinstance(c, list):
+                m = dict(m)
+                m["content"] = [({**p, "text": _strip_text(p["text"])}
+                                 if isinstance(p, dict) and isinstance(p.get("text"), str) else p)
+                                for p in c]
         out.append(m)
     return out
 

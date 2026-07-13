@@ -35,6 +35,15 @@ def test_bad_json_block_flagged_valid_not():
     assert not any("JSON" in s for s in signals.hard_signals(_run(good)))
 
 
+def test_bad_json_with_trailing_content_is_caught():
+    # valid JSON prefix but junk before the close fence -> the whole block isn't valid JSON -> flag
+    blk = "```json\n{\"a\": 1}\n// a trailing comment\n```"
+    assert any("JSON" in s for s in signals.hard_signals(_run(blk)))
+    # a non-JSON fenced code block (python) is never JSON-checked
+    py = "```python\nprint('hi')\n```"
+    assert not any("JSON" in s for s in signals.hard_signals(_run(py)))
+
+
 def test_is_organic_skips_machine_traffic():
     assert signals.is_organic(_run()) is True
     assert signals.is_organic(_run(source="replay")) is False

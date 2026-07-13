@@ -21,7 +21,10 @@ from clozn.memory.anchored import detect_loop
 _MACHINE_SOURCES = {"replay", "branch", "fork", "receipt", "receipts", "counterfactual", "rederive",
                     "swap_receipt", "anchored_receipt", "experiment"}
 
-_JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.S)
+# capture the WHOLE fenced block body (not just a {...}) so trailing junk before the close fence -- a
+# comment, a stray line -- makes the parse fail and the check fire, instead of matching only the valid
+# prefix and silently passing.
+_FENCE = re.compile(r"```(json)?\s*\n(.*?)```", re.S)
 
 
 def is_organic(run: dict) -> bool:
@@ -54,12 +57,14 @@ def hard_signals(run: dict | None) -> list[str]:
             out.append("returned an empty reply")
         elif detect_loop(pieces, window=8):
             out.append("got stuck repeating")
-        m = _JSON_FENCE.search(reply)
-        if m:
-            try:
-                json.loads(m.group(1))
-            except Exception:
-                out.append("the JSON block it returned doesn't parse")
+        for fm in _FENCE.finditer(reply):
+            lang, blk = fm.group(1), (fm.group(2) or "").strip()
+            if blk and (lang == "json" or blk[0] in "{["):    # a JSON block (declared, or looks like one)
+                try:
+                    json.loads(blk)
+                except Exception:
+                    out.append("the JSON block it returned doesn't parse")
+                    break
         return out
     except Exception:
         return []

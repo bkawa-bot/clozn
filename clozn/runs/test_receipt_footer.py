@@ -77,6 +77,16 @@ def test_strip_never_touches_user_pasted_footers():
     assert receipt_footer.strip_footers(msgs)[0]["content"] == msgs[0]["content"]
 
 
+def test_strip_handles_multipart_content():
+    # OpenAI "content-as-parts" (Open WebUI et al. send this even for plain text) -- the footer must be
+    # stripped from the text part, not leak back into context
+    foot = receipt_footer.footer(_run([0.9], finish_reason="length"), "http://h/r/x")
+    msgs = [{"role": "assistant", "content": [{"type": "text", "text": "The answer is Rome." + foot}]}]
+    out = receipt_footer.strip_footers(msgs)
+    assert out[0]["content"][0]["text"] == "The answer is Rome."
+    assert receipt_footer.MARK not in out[0]["content"][0]["text"]
+
+
 def test_strip_tolerates_junk_messages():
     out = receipt_footer.strip_footers([None, "str", {"role": "assistant"},
                                         {"role": "assistant", "content": 42}])

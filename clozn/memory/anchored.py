@@ -474,6 +474,12 @@ def compile_steer(bags: list[dict] | None = None, gates: dict | None = None,
     if not entries:
         return None
 
+    # Dimension guard: bags fit under a different lens/model (a different d_model) would make np.sum
+    # raise, and the caller's blanket except would then silently drop ALL anchored memory. Keep only the
+    # bags matching the first entry's width, so a stale bag skips itself instead of killing everything.
+    dim = len(entries[0][2])
+    entries = [e for e in entries if len(e[2]) == dim]
+
     total = np.sum([g * v for _, g, v in entries], axis=0)
     n = float(np.linalg.norm(total))
     if n < 1e-12:

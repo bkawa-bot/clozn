@@ -56,12 +56,15 @@ def close_calls(run: dict | None) -> list[dict]:
             return []
         out = []
         for i, cand in enumerate(alts):
-            if not isinstance(cand, list) or len(cand) < 2:
-                continue
-            p0, p1 = cand[0].get("prob"), cand[1].get("prob")
-            if not isinstance(p0, (int, float)) or not isinstance(p1, (int, float)):
-                continue
-            top, alt = _pieces(cand[0]), _pieces(cand[1])
+            try:
+                if not isinstance(cand, list) or len(cand) < 2:
+                    continue
+                p0, p1 = cand[0].get("prob"), cand[1].get("prob")
+                if not isinstance(p0, (int, float)) or not isinstance(p1, (int, float)):
+                    continue
+                top, alt = _pieces(cand[0]), _pieces(cand[1])
+            except Exception:
+                continue                           # a single malformed candidate skips itself, not the run
             if not (_contentful(top) and _contentful(alt)):
                 continue
             margin = float(p0) - float(p1)
