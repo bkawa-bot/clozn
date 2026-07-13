@@ -211,6 +211,24 @@ def test_detect_loop_fires_on_cycles_not_prose():
     assert not anchored.detect_loop(["a"] * 8, window=1)                   # degenerate window
 
 
+def test_halve_steer_scales_magnitude_keeps_direction_layer_and_bags():
+    comp = {"ok": True, "layer": anchored.LAYER, "vector": [1.0, 0.0], "coef": 10.0,
+            "steer_vec": [10.0, 0.0], "s_total": 0.5, "bags": [{"card_id": "a"}]}
+    half = anchored.halve_steer(comp)
+    assert half["s_total"] == pytest.approx(0.25)
+    assert half["coef"] == pytest.approx(5.0)
+    assert half["steer_vec"] == pytest.approx([5.0, 0.0])
+    assert half["layer"] == comp["layer"]
+    assert half["vector"] == comp["vector"]              # the raw unit direction is unchanged
+    assert half["bags"] == comp["bags"]
+    assert comp["steer_vec"] == [10.0, 0.0]              # a pure transform -- the input is never mutated
+
+
+def test_halve_steer_none_or_empty_is_a_noop():
+    assert anchored.halve_steer(None) is None
+    assert anchored.halve_steer({}) == {}
+
+
 # ------------------------------------------------------------------------------- store shape on disk
 
 def test_bag_json_is_flat_and_readable(store):

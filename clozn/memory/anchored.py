@@ -37,12 +37,16 @@ Seams (nothing here talks to an engine directly):
   * persistence mirrors clozn/memory/cards.py exactly: one flat JSON file (BAGS_PATH, module-level so
     tests repoint it), atomic writes, IO that NEVER raises -- a corrupt/missing store is an empty store.
 
-Runtime guard (X7_PRODUCT_DESIGN.md section 5): detect_loop() is the productized degeneracy flag. The
-substrate calling compile_steer() should run detect_loop over the generated pieces and, when it fires,
-ZERO the anchored steer for the rest of that reply (and flag the run) -- this module only provides the
-detector; the substrate wiring is deliberately not done here. (The design doc's fuller behavior --
-auto-retry once at s_total/2 with a "memory-retried" run flag -- is the lead's substrate-side follow-up;
-the detector below serves both policies.)
+Runtime guard (X7_PRODUCT_DESIGN.md section 5): detect_loop() is the productized degeneracy flag;
+halve_steer() is the retry payload. The substrate wiring lives in clozn/server/app.py
+(_anchored_loop_guard, called from EngineSubstrate.chat()/chat_stream()): when detect_loop() fires on a
+FULL-STRENGTH anchored injection, retry once at s_total/2 (halve_steer); if that still loops, do a final
+pass with the anchored steer ZEROED entirely. Every fired guard is recorded honestly in the run's
+mem_out["anchored_loop_guard"] and surfaces as a "memory-retried" / "memory-loop-guard" run flag --
+over-injection becomes a visible, self-healing event, never a mystery bad reply, and never a claim that
+the memory "worked". The streaming twin (chat_stream) can only detect-and-flag after the fact -- the
+engine sets the steer at generation-start and the client has already received the pieces by the time a
+loop would be detected, so there is no seamless mid-stream retry there.
 """
 from __future__ import annotations
 
@@ -559,6 +563,22 @@ def detect_loop(pieces, window: int = 8) -> bool:
         if all(tail[i] == tail[i - period] for i in range(period, w)):
             return True
     return False
+
+
+def halve_steer(comp: dict) -> dict:
+    """The loop guard's retry payload: `comp` (a compile_steer() result) with the injected MAGNITUDE
+    halved -- s_total/2, coef/2, steer_vec scaled by 0.5 -- while `vector` (the raw unit direction),
+    `layer`, and `bags` are unchanged. This is the substrate's auto-retry-once-at-half-strength policy
+    (X7_PRODUCT_DESIGN.md section 5): when detect_loop() fires on a full-strength injection, retry with
+    THIS payload before giving up and zeroing the steer entirely. A pure dict transform -- no store or
+    provider access, never raises on a well-formed compile_steer() result."""
+    if not comp:
+        return comp
+    out = dict(comp)
+    out["s_total"] = float(comp.get("s_total") or 0.0) / 2.0
+    out["coef"] = float(comp.get("coef") or 0.0) / 2.0
+    out["steer_vec"] = [float(x) * 0.5 for x in (comp.get("steer_vec") or [])]
+    return out
 
 
 # ======================================================================================== lens hash

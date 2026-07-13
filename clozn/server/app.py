@@ -579,28 +579,86 @@ def _anchored_gates(last_user, bags):
         return None
 
 
-def _apply_anchored_memory(kw: dict, mem_out: dict | None, last_user: str | None) -> None:
-    """Add X7/J-anchored memory to a live engine request when the raw steer slot is free."""
+def _apply_anchored_memory(kw: dict, mem_out: dict | None, last_user: str | None) -> dict | None:
+    """Add X7/J-anchored memory to a live engine request when the raw steer slot is free. Returns the
+    compile_steer() payload that was ACTUALLY injected into `kw` (steer_vec/coef/layer/s_total/vector/
+    bags), or None when nothing was injected -- no active bags, nothing composed, or the raw-steer slot
+    was already held by tone dials (mem_out["anchored_skipped"]). The loop guard (chat()/chat_stream()
+    below) uses this return to retry at half strength without recomposing from the store, and to know
+    whether the guard applies at all THIS turn (only when anchored memory actually rode this turn)."""
     try:
         from clozn.memory import anchored
         bags = anchored.active_bags()
         if not bags:
-            return
+            return None
         comp = anchored.compile_steer(bags, gates=_anchored_gates(last_user, bags))
         if not comp:
-            return
+            return None
         if kw.get("steer_vec"):
             if mem_out is not None:
                 mem_out["anchored_skipped"] = "tone dials held the raw-steer channel this turn"
-            return
+            return None
         kw["steer_vec"] = comp["steer_vec"]
         kw["steer"] = {"coef": 1.0, "layer": comp["layer"]}
         if mem_out is not None:
             mem_out["anchored"] = comp["bags"]
             mem_out["anchored_layer"] = comp["layer"]
             mem_out["anchored_s_total"] = comp.get("s_total")
+        return comp
     except Exception:
-        pass
+        return None
+
+
+def _anchored_loop_guard(engine, prompt, max_new, kw, samp, comp, reply, steps, finish, mem_out):
+    """The substrate wiring anchored.detect_loop()'s own docstring deliberately leaves undone
+    (X7_PRODUCT_DESIGN.md section 5) -- chat()'s non-streaming path only: detect_loop() over the pieces
+    JUST generated under a FULL-STRENGTH anchored injection (`comp`, the compile_steer() payload that
+    actually rode this turn -- callers only invoke this when comp is not None, i.e. anchored memory was
+    really injected, never on a skipped/absent one). A fired loop is OVER-INJECTION DEGENERACY, not a
+    quality signal either way -- this only MITIGATES it; it never claims the memory "worked" or "was
+    recalled" (clozn's honesty contract, X7_PRODUCT_DESIGN.md section 9).
+
+      1. clean (no loop): returns (reply, steps, finish) UNTOUCHED -- byte-identical to today, mem_out
+         gets no anchored_loop_guard key at all.
+      2. loop -> retry ONCE at s_total/2 (anchored.halve_steer -- same direction/layer/bags, half the
+         injected magnitude). Clean on retry: use the retry's (reply, steps, finish);
+         mem_out["anchored_loop_guard"] = {"fired": True, "action": "retried@s/2", "resolved": True},
+         and mem_out["anchored_s_total"] is corrected to the HALVED value that actually shaped the final
+         reply (the run record must describe what really happened, not the original full-strength ask).
+      3. still loops at half strength -> one final pass with the anchored steer ZEROED entirely (kw's
+         steer_vec/steer keys dropped -- the raw-steer slot was free before anchored memory claimed it,
+         so this is a genuinely unsteered generation, not "fall back to tone dials"). Whether THAT pass
+         is itself loop-free is checked too (never claim "resolved" without looking);
+         mem_out["anchored_loop_guard"] = {"fired": True, "action": "disabled", "resolved": <checked>},
+         mem_out["anchored_s_total"] = 0.0.
+
+    Every regeneration reuses the SAME prompt/max_new/sample regime as the original call -- only the
+    steer changes -- so a retry is a fair A/B against the original, not a different generation policy."""
+    from clozn.memory import anchored
+    pieces = [str(s.get("piece", "")) for s in (steps or [])]
+    if not anchored.detect_loop(pieces):
+        return reply, steps, finish
+
+    half = anchored.halve_steer(comp)
+    kw_half = dict(kw)
+    kw_half["steer_vec"] = half["steer_vec"]
+    kw_half["steer"] = {"coef": 1.0, "layer": half["layer"]}
+    reply2, steps2, finish2, _ = _engine_complete_traced(engine, prompt, max_new, kw_half, sample=samp)
+    pieces2 = [str(s.get("piece", "")) for s in (steps2 or [])]
+    if not anchored.detect_loop(pieces2):
+        if mem_out is not None:
+            mem_out["anchored_loop_guard"] = {"fired": True, "action": "retried@s/2", "resolved": True}
+            mem_out["anchored_s_total"] = half["s_total"]
+        return reply2, steps2, finish2
+
+    kw_zero = {k: v for k, v in kw.items() if k not in ("steer_vec", "steer")}
+    reply3, steps3, finish3, _ = _engine_complete_traced(engine, prompt, max_new, kw_zero, sample=samp)
+    pieces3 = [str(s.get("piece", "")) for s in (steps3 or [])]
+    if mem_out is not None:
+        mem_out["anchored_loop_guard"] = {"fired": True, "action": "disabled",
+                                          "resolved": not anchored.detect_loop(pieces3)}
+        mem_out["anchored_s_total"] = 0.0
+    return reply3, steps3, finish3
 
 
 def _inject_block(messages, block):
@@ -1906,14 +1964,17 @@ class EngineSubstrate(Substrate):
             if sv:
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
-        if apply_anchored:
-            _apply_anchored_memory(kw, mem_out, _last_user(messages))
+        comp = _apply_anchored_memory(kw, mem_out, _last_user(messages)) if apply_anchored else None
         if reference_tokens:                                # prove-all early-stop: halt when the answer changes
             kw["reference_tokens"] = [int(t) for t in reference_tokens if t is not None]
         reply_raw, steps, finish, divinfo = _engine_complete_traced(self.engine, prompt, max_new, kw,
                                                                     sample=samp)
         self._last_finish_reason = finish                   # stash for last_finish_reason() (the log path)
         self._last_diverged, self._last_diverged_at = divinfo  # stash for last_divergence()
+        if comp is not None:                                 # LOOP GUARD: only when anchored memory was
+            reply_raw, steps, finish = _anchored_loop_guard(  # ACTUALLY injected this turn (comp is not
+                self.engine, prompt, max_new, kw, samp, comp, reply_raw, steps, finish, mem_out)
+            self._last_finish_reason = finish                # None) -- see _anchored_loop_guard's docstring
         if trace_out is not None:
             trace_out.extend(steps)
         return reply_raw.strip()
@@ -2171,6 +2232,25 @@ class EngineSubstrate(Substrate):
                 self._last_finish_reason = runlog.finish_reason_from_frames(frames)
             except Exception:
                 self._last_finish_reason = None
+            # LOOP GUARD, streaming twin (X7_PRODUCT_DESIGN.md section 5): the engine sets the anchored
+            # steer at generation-START (body["steer_vec"] above) and every piece is yielded to the
+            # caller live over SSE -- by the time this `finally` runs, the client has ALREADY received
+            # the whole reply. There is no seamless mid-stream re-injection here (unlike chat()'s
+            # auto-retry-at-half-strength): the honest thing this path can do is DETECT the degeneracy
+            # after the fact and FLAG the run -- never fake a retry/self-heal capability streaming
+            # doesn't have. Only checked when anchored memory actually rode this turn (mem_out["anchored"]
+            # set, not anchored_skipped/absent) -- a degeneracy safety, never a claim the memory "worked".
+            if mem_out is not None and mem_out.get("anchored"):
+                try:
+                    from clozn.memory import anchored as _anchored_lg
+                    pieces = [str(s.get("piece", "")) for s in (self._last_stream_trace or [])]
+                    if _anchored_lg.detect_loop(pieces):
+                        mem_out["anchored_loop_guard"] = {
+                            "fired": True, "action": "flagged-only", "resolved": False,
+                            "note": ("streaming reply already reached the client -- detected after the "
+                                     "fact, no mid-stream retry is possible on this path")}
+                except Exception:
+                    pass
 
     def handle(self, path, body):
         r = self._memory(path, body)
@@ -2478,6 +2558,12 @@ def make_handler():
                             memd["anchored_s_total"] = round(float(mo["anchored_s_total"]), 4)
                     if mo.get("anchored_skipped"):
                         memd["anchored_skipped"] = str(mo["anchored_skipped"])
+                    if isinstance(mo.get("anchored_loop_guard"), dict):
+                        # the loop guard's honest self-healing record (X7_PRODUCT_DESIGN.md section 5) --
+                        # _flags() below turns this into the visible "memory-retried"/"memory-loop-guard"
+                        # run flag; never let a guard event go unrecorded just because no bag rode as
+                        # `applied` (anchored memory rides `anchored`, not prompt-mode `applied`).
+                        memd["anchored_loop_guard"] = dict(mo["anchored_loop_guard"])
                     if applied:                                  # bump exactly the cards that rode this turn
                         try:
                             import clozn.memory.cards as memory_cards

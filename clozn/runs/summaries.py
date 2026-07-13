@@ -36,6 +36,13 @@ def _flags(rec: dict) -> list[str]:
         f.append("anchored-memory")
     if mem.get("proposed_cards"):
         f.append("pending-memory")
+    alg = mem.get("anchored_loop_guard") or {}
+    if alg.get("fired"):
+        # X7_PRODUCT_DESIGN.md section 5: an anchored over-injection becomes a VISIBLE, self-healing
+        # run flag -- "memory-retried" when the halved-strength retry came back clean, else
+        # "memory-loop-guard" (the anchored steer had to be zeroed, or a stream could only detect and
+        # flag after the fact). Never implies the memory "worked" -- only that degeneracy was mitigated.
+        f.append("memory-retried" if alg.get("action") == "retried@s/2" else "memory-loop-guard")
     if (rec.get("behavior") or {}).get("active_dials"):
         f.append("steered")
     if rec.get("parent_run_id"):
