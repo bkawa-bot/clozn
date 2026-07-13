@@ -51,7 +51,7 @@ def _studio_python():
 
 
 def _studio_banner(base, health):
-    print(f"  Studio UI:        {fmt.BOLD}{base}/studio.html{fmt.RST}")
+    print(f"  Studio UI:        {fmt.BOLD}{base}/{fmt.RST}")
     print(f"  OpenAI endpoint:  {fmt.BOLD}{base}/v1{fmt.RST}   (point Open WebUI / Cursor / any client here)")
     print(f"  Lab / brain viz:  {base}/brain.html")
     if health:
@@ -68,7 +68,7 @@ def cmd_studio(args):
         print(f"{fmt.BOLD}Clozn Studio{fmt.RST} already running:")
         _studio_banner(base, h)
         if args.open:
-            _open_browser(f"{base}/studio.html")
+            _open_browser(f"{base}/")   # "/" 302s to the live app (studio/heavn/) -- see server/static.py
         return
     server = os.path.join(REPO, "clozn", "server", "app.py")
     if not os.path.isfile(server):
@@ -96,7 +96,7 @@ def cmd_studio(args):
     print(f"  {fmt.BOLD}Clozn Studio{fmt.RST} ready in {time.time()-t0:.0f}s\n")
     _studio_banner(base, h)
     if args.open:
-        _open_browser(f"{base}/studio.html")
+        _open_browser(f"{base}/")   # "/" 302s to the live app (studio/heavn/) -- see server/static.py
     print(f"\n  {fmt.DIM}your local model now runs under Clozn -- point any client at {base}/v1   -   "
           f"Ctrl-C to stop{fmt.RST}\n")
     try:
