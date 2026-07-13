@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-from clozn.runs import close_calls, confidence_spans
+from clozn.runs import close_calls, confidence_spans, signals
 
 MARK = "⟨clozn⟩"     # ⟨clozn⟩ -- the quiet in-band marker (backticked so it renders as code)
 
@@ -58,17 +58,15 @@ def summary(run: dict | None) -> dict:
 
 def footer(run: dict | None, link: str) -> str:
     """The block appended to the reply -- EXCEPTION-ONLY: an ordinary, fine reply gets "" (silence is a
-    signal; the footer speaks only when it has something true to say). It fires on HARD facts (errored /
-    cut off mid-answer) and on genuine CLOSE CALLS (near-even two-way splits -- clozn.runs.close_calls,
-    tuned to ~3% of runs). It never reports raw chosen-token probability as a verdict: a close call names
-    the fork ("nearly X over Y"), a correlational locator you can branch-stability-test, never "wrong"."""
+    signal; the footer speaks only when it has something true to say). Footers are now the ONE ambient
+    delivery surface (desktop push was dropped). It fires on HARD facts (clozn.runs.signals -- errored /
+    cut off / stuck repeating / empty / bad JSON, each a fact or a named check) and on genuine CLOSE
+    CALLS (near-even two-way splits -- clozn.runs.close_calls, tuned to ~3%). It never reports raw
+    chosen-token probability as a verdict: a close call names the fork ("nearly X over Y"), a
+    correlational locator you can branch-stability-test, never "wrong"."""
     if not isinstance(run, dict):
         return ""
-    bits = []
-    if run.get("error"):
-        bits.append("the run errored")
-    elif run.get("finish_reason") == "length":
-        bits.append("cut off mid-answer (hit the token limit)")
+    bits = signals.hard_signals(run)
     cc = close_calls.summarize(close_calls.close_calls(run))
     if cc:
         bits.append(cc)
