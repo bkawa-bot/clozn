@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-from clozn.runs import confidence_spans, signals
+from clozn.runs import close_calls, confidence_spans, signals
 
 MARK = "⟨clozn⟩"     # ⟨clozn⟩ -- the quiet in-band marker (backticked so it renders as code)
 
@@ -68,21 +68,40 @@ def summary(run: dict | None) -> dict:
             "line": confidence_spans.summarize(sp)}
 
 
+def _fork_bits(run: dict) -> list[str]:
+    """The thin, meaning-changing close-call slice (close_calls.meaningful: two different digits, or a
+    polarity flip -- ~4% of runs; the ~60% of harmless "as" vs "is" phrasing forks are excluded). A
+    CORRELATIONAL locator, phrased as a neutral observation ("coin-flip: X vs Y"), NEVER a failure claim --
+    it points at an answer-bearing token worth a branch-stability re-run, never says the answer is wrong."""
+    try:
+        calls = close_calls.meaningful(close_calls.close_calls(run))
+        if not calls:
+            return []
+        t = close_calls.tightest(calls)
+        if not (t and t.get("top") and t.get("alt")):
+            return []
+        bit = f"coin-flip: “{t['top']}” vs “{t['alt']}”"
+        if len(calls) > 1:
+            bit += f" (+{len(calls) - 1})"
+        return [bit]
+    except Exception:
+        return []
+
+
 def footer(run: dict | None, link: str) -> str:
     """The block appended to the reply -- EXCEPTION-ONLY: an ordinary, fine reply gets "" (silence is a
     signal; the footer speaks only when it has something true to say). Footers are the ONE ambient
-    delivery surface. It fires on HARD facts only (clozn.runs.signals -- errored / cut off / stuck
-    repeating / empty / bad JSON, each a fact or a named check).
+    delivery surface. It fires on HARD facts (clozn.runs.signals -- errored / cut off / stuck repeating /
+    empty / bad JSON, each a fact or a named check) PLUS the thin meaning-changing close-call slice
+    (_fork_bits: a coin-flip on a digit or a negation, ~4% of runs).
 
-    Close calls are DELIBERATELY NOT flagged here. The trace CAN support an honest near-tie now (the fix:
-    reconstruct {emitted} u alternatives and take the two co-leaders -- clozn/runs/close_calls.py), but
-    per-token close calls are COMMON under sampling (~a majority of runs have a harmless "as" vs "is" fork),
-    so they'd break the exception-only contract. They live in the studio as a locator instead. The rare,
-    meaning-changing slice (close_calls.meaningful: digit forks + polarity flips, ~4% of runs) could be a
-    footer signal if we ever want one, but it stays a locator (correlational, never a verdict) for now."""
+    Ordinary per-token close calls stay OUT -- they're COMMON under sampling (a harmless "as" vs "is" fork
+    fires on ~a majority of runs) and would break the exception-only contract; they live in the studio's
+    `forks` locator instead. Only the answer-changing slice earns a footer line, and it's phrased as a
+    neutral observation ("coin-flip: X vs Y"), correlational, never a verdict. The link is the CTA."""
     if not isinstance(run, dict):
         return ""
-    bits = signals.hard_signals(run)
+    bits = signals.hard_signals(run) + _fork_bits(run)
     if not bits:
         return ""                          # ordinary reply -> no footer at all
     return f"\n\n---\n`{MARK}` {' · '.join(bits)} · look → {link}"

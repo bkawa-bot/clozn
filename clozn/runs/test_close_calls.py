@@ -64,6 +64,13 @@ def test_meaningful_flags_digit_and_polarity_forks_only():
     assert [c["top"] for c in close_calls.meaningful(mixed)] == ["5"]
 
 
+def test_apostrophe_variants_are_not_a_polarity_flip():
+    # "'t" vs "’t" (straight vs curly apostrophe) is the SAME contraction ending, not a polarity flip --
+    # it's a close call but must NOT be flagged meaningful (else it false-fires on the footer).
+    calls = close_calls.close_calls(_trace(("'t", 0.44, [("’t", 0.42)])))
+    assert calls and calls[0]["meaningful"] is False
+
+
 def test_summarize_names_the_tightest_call():
     calls = close_calls.close_calls(_trace(("Rome", 0.44, [("Lyon", 0.42)]),
                                            ("bake", 0.45, [("make", 0.44)])))

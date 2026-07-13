@@ -54,7 +54,10 @@ def _is_digit(piece: str) -> bool:
 
 
 def _is_negation(piece: str) -> bool:
-    return (piece or "").strip().lower() in _NEGATIONS
+    # normalize curly/typographic apostrophes so "'t" and "’t" (the same contraction ending, different
+    # encodings) read as ONE negation -- else the pair looks like a polarity flip and false-fires.
+    p = (piece or "").strip().lower().replace("’", "'").replace("‘", "'").replace("＇", "'")
+    return p in _NEGATIONS
 
 
 def _is_meaningful(a: str, b: str) -> bool:

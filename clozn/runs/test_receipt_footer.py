@@ -32,11 +32,19 @@ def test_footer_fires_on_error():
     assert "errored" in receipt_footer.footer(_run([0.9], error="boom"), "http://h/r/x")
 
 
-def test_footer_never_reports_raw_confidence_or_close_calls():
-    # close calls stay OUT of the footer (too common under sampling to be exception-only) -- an ordinary
-    # reply, even a near-tie one, stays silent; the footer never prints a "conf"/"close call" claim.
-    f = receipt_footer.footer(_tie("Rome", "Lyon", 0.44, 0.42), "http://h/r/x")
-    assert f == ""
+def test_footer_stays_silent_on_an_ordinary_close_call():
+    # a near-tie between two ordinary content words ("Rome" vs "Lyon") is NOT meaning-changing -> silent.
+    # Only the thin answer-changing slice (digit/polarity) earns a footer line; raw confidence never does.
+    assert receipt_footer.footer(_tie("Rome", "Lyon", 0.44, 0.42), "http://h/r/x") == ""
+
+
+def test_footer_fires_on_a_meaningful_coin_flip():
+    # two different digits -> the answer's NUMBER was a coin-flip -> the thin slice fires, phrased as a
+    # neutral observation (never "wrong"), with both co-leaders named and the run link.
+    f = receipt_footer.footer(_tie("5", "0", 0.54, 0.45), "http://h:8090/r/run_x")
+    assert "coin-flip" in f and "5" in f and "0" in f
+    assert "http://h:8090/r/run_x" in f and receipt_footer.MARK in f
+    assert "wrong" not in f.lower()                        # correlational locator, never a verdict
 
 
 def test_footer_empty_when_no_trace_or_junk():
