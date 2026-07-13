@@ -13,9 +13,32 @@ Confidence is raw and uncalibrated: the footer says "worth a look", never "wrong
 """
 from __future__ import annotations
 
+import re
+
 from clozn.runs import confidence_spans
 
 MARK = "⟨clozn⟩"     # ⟨clozn⟩ -- the quiet in-band marker (backticked so it renders as code)
+
+# The footer, as a strippable pattern: from its own rule+marker line to the end of the message. Anchored
+# to the exact block footer() emits, so ordinary text that merely mentions clozn is never touched.
+_FOOTER_RE = re.compile(r"\n*---\n`" + re.escape(MARK) + r"`[^\n]*\s*$")
+
+
+def strip_footers(messages: list) -> list:
+    """Remove clozn's OWN receipt footers from incoming ASSISTANT messages (a copy; input untouched).
+
+    Why this must exist (the context-contamination catch): in multi-turn chat the CLIENT echoes the whole
+    conversation back -- including replies we footered on the way out. Without this, the model would see
+    `⟨clozn⟩ mean conf …` inside its own past turns and could imitate or be steered by it. Symmetry rule:
+    whatever clozn appends to a reply, it strips before the model ever reads it back. User/system
+    messages are never modified (if a USER pastes a footer deliberately, that's their content)."""
+    out = []
+    for m in messages or []:
+        if isinstance(m, dict) and m.get("role") == "assistant" and isinstance(m.get("content"), str):
+            m = dict(m)
+            m["content"] = _FOOTER_RE.sub("", m["content"]).rstrip()
+        out.append(m)
+    return out
 
 
 def summary(run: dict | None) -> dict:

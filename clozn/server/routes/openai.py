@@ -24,6 +24,11 @@ def try_post(h, p, body):
         h._json(503, {"error": "chat needs the qwen substrate"})
         return True
     msgs, mx = body.get("messages", []), int(body.get("max_tokens", 256))
+    # SYMMETRY (context-contamination guard): clients echo the whole conversation back, footers and all.
+    # Whatever clozn appended to a past reply, it strips here -- the model must never read its own
+    # receipt footers as context (it would imitate/steer on them). No-op when no footer ever rode.
+    from clozn.runs.receipt_footer import strip_footers
+    msgs = strip_footers(msgs)
     if body.get("stream") and getattr(ctx.SUB, "chat_stream", None):
         from clozn.server import sse
         from clozn.server.routes.receipt_link import receipt_enabled, alert_enabled
