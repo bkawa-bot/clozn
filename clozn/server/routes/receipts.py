@@ -9,6 +9,10 @@ from clozn.server import app as ctx
 
 
 def try_get(h, p):
+    if p == "/experiments/types":   # the experiment-type registry, for a UI "Experiment drawer" catalog
+        from clozn.experiments import experiment as clozn_experiment
+        h._json(200, {"types": clozn_experiment.catalog()})
+        return True
     if p.startswith("/runs/") and p.endswith("/export"):   # one-call download: run + M1 explain + trace
         import clozn.runs.store as runlog
         import clozn.receipts.explain as explain
@@ -205,6 +209,45 @@ def try_post(h, p, body):
             out = narrate.narrate(run, ctx.SUB, support_matcher=matcher)
         except Exception as e:
             h._json(500, {"error": f"narrate failed: {type(e).__name__}: {e}"})
+            return True
+        h._json(200, out)
+        return True
+    if p.startswith("/runs/") and p.endswith("/experiment"):   # ONE experiment primitive over replay/
+        # counterfactual/receipt/branch/swap_receipt -- dispatches on change.type, returns ONE envelope.
+        rid = p[len("/runs/"):-len("/experiment")]
+        import clozn.runs.store as runlog
+        run = runlog.get_run(rid)
+        if run is None:
+            h._json(404, {"error": "run not found"})
+            return True
+        from clozn.experiments import experiment as clozn_experiment
+        change = body.get("change")
+        ctype = change.get("type") if isinstance(change, dict) else None
+        if not isinstance(change, dict) or not ctype:
+            h._json(400, {"error": "need a change spec: {type, ...}"})
+            return True
+        if ctype not in clozn_experiment.REGISTRY:
+            h._json(400, {"error": f"unknown change.type: {ctype!r} (know: "
+                         f"{sorted(clozn_experiment.REGISTRY)})"})
+            return True
+        if not clozn_experiment.substrate_ok(ctype, ctx.SUB):
+            needs = clozn_experiment.REGISTRY[ctype]["substrate"]
+            msg = ("experiment needs the qwen substrate" if needs == "chat" else
+                  "experiment needs the engine substrate (.engine + .jlens)")
+            h._json(503, {"error": msg})
+            return True
+        method = body.get("method")
+        try:
+            out = clozn_experiment.run_experiment(run, change, method, ctx.SUB)
+        except ValueError as e:
+            h._json(400, {"error": str(e)})
+            return True
+        except Exception as e:
+            h._json(500, {"error": f"experiment failed: {type(e).__name__}: {e}"})
+            return True
+        if out is None:
+            h._json(500, {"error": "experiment failed (bad change spec, or the underlying "
+                         "op could not be generated)"})
             return True
         h._json(200, out)
         return True
