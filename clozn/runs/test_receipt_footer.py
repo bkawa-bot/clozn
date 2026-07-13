@@ -32,15 +32,11 @@ def test_footer_fires_on_error():
     assert "errored" in receipt_footer.footer(_run([0.9], error="boom"), "http://h/r/x")
 
 
-def test_footer_names_a_close_call_not_a_confidence_number():
+def test_footer_never_reports_raw_confidence_or_close_calls():
+    # close calls are pulled from the footer (misleading on the current trace) -- an ordinary reply,
+    # even a low-confidence one, stays silent; the footer never prints a "conf"/"close call" claim.
     f = receipt_footer.footer(_tie("Rome", "Lyon", 0.44, 0.42), "http://h/r/x")
-    assert "close call" in f and "Lyon" in f and "Rome" in f
-    assert "conf" not in f.lower()                          # never a raw-confidence stat
-
-
-def test_footer_ignores_stylistic_punctuation_ties():
-    # a near-tie between punctuation / one-char tokens is not meaningful -> no footer
-    assert receipt_footer.footer(_tie("or", "(", 0.44, 0.42), "http://h/r/x") == ""
+    assert f == ""
 
 
 def test_footer_empty_when_no_trace_or_junk():

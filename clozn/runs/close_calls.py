@@ -1,5 +1,19 @@
-"""Close calls -- the near-tie locator (the honest, free "where to probe" signal that replaces raw
-chosen-token probability as the headline).
+"""Close calls -- the near-tie locator.
+
+⚠ KNOWN BROKEN — NOT WIRED into any user-facing surface (a usage-test on 2026-07-13 caught it). Two
+problems, both needing an engine-trace fix before this can return honestly:
+  1. DATA: the recorded `alternatives` EXCLUDE the emitted token (it lives in `tokens`/`confidence`), so
+     comparing alternatives[0] vs [1] compares two roads-NOT-taken -- on every real close call it fired,
+     the emitted token was neither ("nearly 'Begin' over 'Always'" when the model actually said "How").
+  2. LOGIC: even with the emitted token present, a true near-tie is CHOSEN prob vs the top ALTERNATIVE
+     prob, not the top two alternatives. And `confidence` vs `alternatives.prob` are on inconsistent
+     scales (conf collapses to 1.0 under greedy), so they can't be compared naively yet.
+The honest signal needs the engine to record the emitted token IN the top-k with consistent softmax
+probs; then compare chosen-vs-runner-up. `topk_entropy` was evaluated as a fallback but is present on
+only ~27% of runs with no usable threshold. Kept here (with passing synthetic-data tests) so the fix has
+a home; do NOT re-wire into the footer/copy until the trace is fixed.
+
+Original design note below (the intended honest, free "where to probe" locator once the data supports it).
 
 A "close call" is a generation step where the top token and the runner-up were nearly as likely as each
 other: a coin-flip decision -- exactly where a branch-stability test would pay off. Computed PURELY from
