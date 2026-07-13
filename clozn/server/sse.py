@@ -12,7 +12,7 @@ import time
 from clozn.server import app as ctx
 
 
-def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
+def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, alert=False):
     """Stream one /v1/chat/completions reply as OpenAI-style `chat.completion.chunk` frames over SSE,
     then log the run. `handler` is the live BaseHTTPRequestHandler (needs .wfile + ._log_run).
 
@@ -82,16 +82,22 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
         rid = handler._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace,
                                mem_out=memout, finish_reason=fr,
                                finish_reason_fallback=None if fr else openai_fr)
-        if receipt and rid:                       # channel-1 footer, as one final content chunk
+        if (receipt or alert) and rid:            # channel-1 footer + channel-2 push, one shared fetch
             try:
                 import clozn.runs.store as _runlog
-                from clozn.runs import receipt_footer
+                run = _runlog.get_run(rid)
                 host = handler.headers.get("Host") or "127.0.0.1"
-                foot = receipt_footer.footer(_runlog.get_run(rid), f"http://{host}/r/{rid}")
-                if foot:
-                    chunk({"content": foot})
+                link = f"http://{host}/r/{rid}"
+                if receipt:                       # the footer, as one final content chunk
+                    from clozn.runs import receipt_footer
+                    foot = receipt_footer.footer(run, link)
+                    if foot:
+                        chunk({"content": foot})
+                if alert:                         # the inline desktop-toast push (daemon thread)
+                    from clozn.watch.push import push_if_alerting
+                    push_if_alerting(run, link)
             except Exception:
-                pass                              # additive -- a footer hiccup never breaks the stream
+                pass                              # additive -- a hiccup never breaks the stream
         chunk({}, finish=openai_fr)
         handler.wfile.write(b"data: [DONE]\n\n")
         handler.wfile.flush()

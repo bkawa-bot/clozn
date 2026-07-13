@@ -14,10 +14,15 @@ import clozn.memory.mode as memory_mode
 from clozn.server.static import HEAVN_INDEX
 
 RECEIPT_SETTING = "receipt_footer"
+ALERT_SETTING = "desktop_alert"
 
 
 def receipt_enabled() -> bool:
     return bool(memory_mode.get_setting(RECEIPT_SETTING, False))
+
+
+def alert_enabled() -> bool:
+    return bool(memory_mode.get_setting(ALERT_SETTING, False))
 
 
 def _safe_run_id(raw: str) -> str:
@@ -29,6 +34,9 @@ def _safe_run_id(raw: str) -> str:
 def try_get(h, p):
     if p == "/receipt/mode":
         h._json(200, {"receipt_footer": receipt_enabled()})
+        return True
+    if p == "/alert/mode":
+        h._json(200, {"desktop_alert": alert_enabled()})
         return True
     if p.startswith("/r/"):
         rid = _safe_run_id(p[len("/r/"):].strip("/"))
@@ -46,5 +54,11 @@ def try_post(h, p, body):
         if changed:
             memory_mode.set_setting(RECEIPT_SETTING, bool(body.get("receipt_footer")))
         h._json(200, {"receipt_footer": receipt_enabled(), "changed": changed})
+        return True
+    if p == "/alert/mode":       # server-side desktop push -- fire a native toast inline on a sketchy reply
+        changed = "desktop_alert" in body
+        if changed:
+            memory_mode.set_setting(ALERT_SETTING, bool(body.get("desktop_alert")))
+        h._json(200, {"desktop_alert": alert_enabled(), "changed": changed})
         return True
     return False

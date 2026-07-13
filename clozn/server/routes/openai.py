@@ -26,12 +26,13 @@ def try_post(h, p, body):
     msgs, mx = body.get("messages", []), int(body.get("max_tokens", 256))
     if body.get("stream") and getattr(ctx.SUB, "chat_stream", None):
         from clozn.server import sse
-        from clozn.server.routes.receipt_link import receipt_enabled
+        from clozn.server.routes.receipt_link import receipt_enabled, alert_enabled
         # F1 live lens: clozn_lens {layer?, topk?, every?} (or true) is a clozn extension -- absent for
         # standard OpenAI clients, so their streams stay byte-identical (same opt-in rule as clozn_trust).
-        # receipt: the same in-band footer as the non-stream path, emitted as a final content chunk.
+        # receipt: the in-band footer as a final content chunk. alert: the inline desktop-toast push.
         sse.sse_chat(h, msgs, mx, str(body.get("model", "clozn-qwen")), lens=body.get("clozn_lens"),
-                     receipt=body.get("clozn_receipt", receipt_enabled()))
+                     receipt=body.get("clozn_receipt", receipt_enabled()),
+                     alert=body.get("clozn_alert", alert_enabled()))
         return True
     t0 = time.time()
     trace_steps = []                            # HF non-stream: capture a per-token trace (B3)
@@ -59,24 +60,32 @@ def try_post(h, p, body):
     extra_headers = {"X-Clozn-Run-Id": rid} if rid else None
     if rid:
         resp["clozn_run_id"] = rid
-    # AMBIENT DELIVERY channel 1 (AMBIENT_DELIVERY.md): opt-in in-band receipt FOOTER -- a compact honest
-    # glass-box line + the /r/<id> permalink appended to the reply, so the receipt reaches the user INSIDE
-    # whatever client they pointed at clozn. OFF by default (clozn_receipt:true per request, or server-wide
-    # POST /receipt/mode); the logged run stays the un-footered reply, only the returned content carries it.
+    # AMBIENT DELIVERY (AMBIENT_DELIVERY.md): two opt-in, off-by-default deliveries that reach the user
+    # INSIDE whatever client they pointed at clozn. channel 1 -- the in-band receipt FOOTER (a compact
+    # honest glass-box line + the /r/<id> permalink appended to the reply). channel 2 (push path) -- a
+    # desktop TOAST fired inline when this reply is sketchy, no separate `clozn watch` process needed.
+    # The logged run stays the un-footered reply; only the returned content carries the footer.
     if rid:
         try:
-            from clozn.server.routes.receipt_link import receipt_enabled
-            if body.get("clozn_receipt", receipt_enabled()):
+            from clozn.server.routes.receipt_link import receipt_enabled, alert_enabled
+            want_receipt = body.get("clozn_receipt", receipt_enabled())
+            want_alert = body.get("clozn_alert", alert_enabled())
+            if want_receipt or want_alert:
                 import clozn.runs.store as _runlog
-                from clozn.runs import receipt_footer
+                run = _runlog.get_run(rid)                     # fetch once, share both deliveries
                 host = h.headers.get("Host") or "127.0.0.1"
                 link = f"http://{host}/r/{rid}"
-                foot = receipt_footer.footer(_runlog.get_run(rid), link)
-                if foot:
-                    resp["choices"][0]["message"]["content"] = reply + foot
-                    resp["clozn_receipt_url"] = link
+                if want_receipt:
+                    from clozn.runs import receipt_footer
+                    foot = receipt_footer.footer(run, link)
+                    if foot:
+                        resp["choices"][0]["message"]["content"] = reply + foot
+                        resp["clozn_receipt_url"] = link
+                if want_alert:
+                    from clozn.watch.push import push_if_alerting
+                    push_if_alerting(run, link)                # daemon-thread toast, never blocks the reply
         except Exception:
-            pass                          # the footer is additive -- a hiccup never breaks the reply
+            pass                          # both are additive -- a hiccup never breaks the reply
     # FRONTIER §1.1 "trust as an API field": when the caller OPTS IN (clozn_trust:true -- default
     # OFF, so a standard OpenAI response stays byte-unchanged / fully compatible), attach
     # claim-level confidence spans over the reply. Built by the SAME producer as
