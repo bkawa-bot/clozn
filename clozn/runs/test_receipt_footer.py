@@ -33,8 +33,8 @@ def test_footer_fires_on_error():
 
 
 def test_footer_never_reports_raw_confidence_or_close_calls():
-    # close calls are pulled from the footer (misleading on the current trace) -- an ordinary reply,
-    # even a low-confidence one, stays silent; the footer never prints a "conf"/"close call" claim.
+    # close calls stay OUT of the footer (too common under sampling to be exception-only) -- an ordinary
+    # reply, even a near-tie one, stays silent; the footer never prints a "conf"/"close call" claim.
     f = receipt_footer.footer(_tie("Rome", "Lyon", 0.44, 0.42), "http://h/r/x")
     assert f == ""
 

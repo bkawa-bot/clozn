@@ -356,9 +356,9 @@ def test_every_active_influence_entry_is_tagged_causal_verified_null(store):
 
 
 def test_explanation_top_level_shape(store):
-    """The three named panels (spec's M1 bullet list) plus a run_id for traceability -- nothing more,
-    nothing silently missing."""
+    """The named panels (spec's M1 bullet list: confidence, influences, concepts) plus `forks` (the
+    close-call locator) and a run_id for traceability -- nothing more, nothing silently missing."""
     rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a")
     out = explain.explain(store.get_run(rid))
-    assert set(out.keys()) == {"run_id", "confidence", "influences_active", "concepts"}
+    assert set(out.keys()) == {"run_id", "confidence", "influences_active", "concepts", "forks"}
     assert out["run_id"] == rid

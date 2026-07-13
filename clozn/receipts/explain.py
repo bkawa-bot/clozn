@@ -35,6 +35,7 @@ missing or malformed, so one bad field can't blank out the panels that DID assem
 from __future__ import annotations
 
 import clozn.memory.cards as memory_cards
+from clozn.runs import close_calls
 
 # Matches studio/pages/run.js's `LOW_CONF` (the token-timeline's "unsure" cutoff) -- ONE convention
 # read in both places, so the studio's visual "unsure" underline and this endpoint's "uncertain moment"
@@ -191,6 +192,22 @@ def _concepts(run: dict) -> dict:
     return {"available": True, "spans": cleaned}
 
 
+# ----------------------------------------------------------------------------------------------------- forks
+def _forks(run: dict) -> dict:
+    """Close calls -- steps where the two co-leading tokens near-tied (a coin-flip fork). CORRELATIONAL
+    locator, never a verdict: it points at WHERE a branch-stability test would pay off, never claims the
+    step was "wrong" or "fragile". Reconstructs each step's distribution from {emitted} u alternatives (the
+    emitted token is excluded from `alternatives`), so a fork is chosen-vs-strongest-rival. `meaningful_count`
+    is the answer-changing slice (digit forks + polarity flips); most forks are harmless phrasing splits."""
+    trace = _as_dict(run.get("trace"))
+    if not trace or not _as_list(trace.get("alternatives")):
+        return {"available": False, "note": _NO_TRACE_NOTE}
+    calls = close_calls.close_calls(run)
+    return {"available": True, "forks": calls,
+            "meaningful_count": len(close_calls.meaningful(calls)),
+            "summary": close_calls.summarize(calls)}
+
+
 # ------------------------------------------------------------------------------------------------------ API
 def explain(run: dict | None) -> dict:
     """Assemble the M1 explanation object for one run (as returned by runlog.get_run()). Never raises: a
@@ -210,9 +227,14 @@ def explain(run: dict | None) -> dict:
         concepts = _concepts(run)
     except Exception:
         concepts = {"available": False, "note": _NO_CONCEPTS_NOTE}
+    try:
+        forks = _forks(run)
+    except Exception:
+        forks = {"available": False, "note": _NO_TRACE_NOTE}
     return {
         "run_id": run.get("id"),
         "confidence": confidence,
         "influences_active": influences,
         "concepts": concepts,
+        "forks": forks,
     }

@@ -74,11 +74,12 @@ def footer(run: dict | None, link: str) -> str:
     delivery surface. It fires on HARD facts only (clozn.runs.signals -- errored / cut off / stuck
     repeating / empty / bad JSON, each a fact or a named check).
 
-    Close calls are DELIBERATELY NOT flagged here: a usage-test found the current trace can't support an
-    honest near-tie claim -- the emitted token is excluded from `alternatives`, so "nearly X over Y" named
-    two roads-NOT-taken, not what the model actually said (see clozn/runs/close_calls.py's warning). Better
-    to say nothing than a false fork. It comes back once the engine trace records the emitted token in the
-    distribution with consistent probabilities."""
+    Close calls are DELIBERATELY NOT flagged here. The trace CAN support an honest near-tie now (the fix:
+    reconstruct {emitted} u alternatives and take the two co-leaders -- clozn/runs/close_calls.py), but
+    per-token close calls are COMMON under sampling (~a majority of runs have a harmless "as" vs "is" fork),
+    so they'd break the exception-only contract. They live in the studio as a locator instead. The rare,
+    meaning-changing slice (close_calls.meaningful: digit forks + polarity flips, ~4% of runs) could be a
+    footer signal if we ever want one, but it stays a locator (correlational, never a verdict) for now."""
     if not isinstance(run, dict):
         return ""
     bits = signals.hard_signals(run)
