@@ -68,6 +68,53 @@ PROBES: list[dict] = [
     {"q": "What is the smallest prime number?", "gold": "2", "kind": "numeric"},
 ]
 
+# HARD_PROBES -- deliberately at the edge of a 7B's competence (multi-digit arithmetic, obscure capitals,
+# atomic numbers, exact dates). PROBES is nearly saturated on a strong 7B (little error to screen), so the
+# risk-coverage curve only has teeth on a set that actually induces graded errors -- that is this set's job.
+HARD_PROBES: list[dict] = [
+    # multi-digit arithmetic (small models slip, often confidently)
+    {"q": "What is 47 times 89? Answer with just the number.", "gold": "4183", "kind": "numeric"},
+    {"q": "What is 234 times 17? Answer with just the number.", "gold": "3978", "kind": "numeric"},
+    {"q": "What is 123 times 456? Answer with just the number.", "gold": "56088", "kind": "numeric"},
+    {"q": "What is 88 times 77? Answer with just the number.", "gold": "6776", "kind": "numeric"},
+    {"q": "What is 999 times 11? Answer with just the number.", "gold": "10989", "kind": "numeric"},
+    {"q": "What is 2 to the power of 15? Answer with just the number.", "gold": "32768", "kind": "numeric"},
+    {"q": "What is 15 times 15 times 15? Answer with just the number.", "gold": "3375", "kind": "numeric"},
+    {"q": "What is 1234 plus 5678? Answer with just the number.", "gold": "6912", "kind": "numeric"},
+    {"q": "What is 9999 minus 1234? Answer with just the number.", "gold": "8765", "kind": "numeric"},
+    {"q": "What is 45 times 67? Answer with just the number.", "gold": "3015", "kind": "numeric"},
+    # obscure capitals
+    {"q": "What is the capital of Bhutan?", "gold": "Thimphu", "kind": "exact"},
+    {"q": "What is the capital of Eritrea?", "gold": "Asmara", "kind": "exact"},
+    {"q": "What is the capital of Tajikistan?", "gold": "Dushanbe", "kind": "exact"},
+    {"q": "What is the capital of Suriname?", "gold": "Paramaribo", "kind": "exact"},
+    {"q": "What is the capital of Brunei?", "gold": "Bandar Seri Begawan", "kind": "exact"},
+    {"q": "What is the capital of Liechtenstein?", "gold": "Vaduz", "kind": "exact"},
+    {"q": "What is the capital of Mongolia?", "gold": "Ulaanbaatar", "kind": "exact", "aliases": ["Ulan Bator"]},
+    {"q": "What is the capital of Laos?", "gold": "Vientiane", "kind": "exact"},
+    {"q": "What is the capital of the country Georgia?", "gold": "Tbilisi", "kind": "exact"},
+    {"q": "What is the capital of Slovenia?", "gold": "Ljubljana", "kind": "exact"},
+    # atomic numbers / less-common science
+    {"q": "What is the atomic number of iron? Answer with just the number.", "gold": "26", "kind": "numeric"},
+    {"q": "What is the atomic number of gold? Answer with just the number.", "gold": "79", "kind": "numeric"},
+    {"q": "What is the atomic number of carbon? Answer with just the number.", "gold": "6", "kind": "numeric"},
+    {"q": "What is the chemical symbol for tungsten?", "gold": "W", "kind": "exact"},
+    {"q": "How many hearts does an octopus have? Answer with just the number.", "gold": "3", "kind": "numeric"},
+    {"q": "How many moons does Mars have? Answer with just the number.", "gold": "2", "kind": "numeric"},
+    {"q": "What is the largest moon of Saturn?", "gold": "Titan", "kind": "exact"},
+    {"q": "What is the most abundant gas in Earth's atmosphere?", "gold": "nitrogen", "kind": "exact"},
+    # exact dates / history
+    {"q": "In what year was the Magna Carta signed? Answer with just the year.", "gold": "1215", "kind": "numeric"},
+    {"q": "In what year did the French Revolution begin? Answer with just the year.", "gold": "1789", "kind": "numeric"},
+    {"q": "In what year did the Western Roman Empire fall? Answer with just the year.", "gold": "476", "kind": "numeric"},
+    {"q": "In what year was the US Declaration of Independence signed? Answer with just the year.", "gold": "1776", "kind": "numeric"},
+    # nth-of-a-sequence
+    {"q": "What is the 7th planet from the Sun?", "gold": "Uranus", "kind": "exact"},
+    {"q": "Who was the 3rd President of the United States?", "gold": "Jefferson", "kind": "exact", "aliases": ["Thomas Jefferson"]},
+    {"q": "Who was the 16th President of the United States?", "gold": "Lincoln", "kind": "exact", "aliases": ["Abraham Lincoln"]},
+    {"q": "What is the 5th element on the periodic table?", "gold": "boron", "kind": "exact"},
+]
+
 _SYSTEM = "You are a precise assistant. Answer the question as briefly as possible -- ideally a single word or number, with no explanation."
 
 
