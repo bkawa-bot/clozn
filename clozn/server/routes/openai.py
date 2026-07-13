@@ -26,9 +26,12 @@ def try_post(h, p, body):
     msgs, mx = body.get("messages", []), int(body.get("max_tokens", 256))
     if body.get("stream") and getattr(ctx.SUB, "chat_stream", None):
         from clozn.server import sse
+        from clozn.server.routes.receipt_link import receipt_enabled
         # F1 live lens: clozn_lens {layer?, topk?, every?} (or true) is a clozn extension -- absent for
         # standard OpenAI clients, so their streams stay byte-identical (same opt-in rule as clozn_trust).
-        sse.sse_chat(h, msgs, mx, str(body.get("model", "clozn-qwen")), lens=body.get("clozn_lens"))
+        # receipt: the same in-band footer as the non-stream path, emitted as a final content chunk.
+        sse.sse_chat(h, msgs, mx, str(body.get("model", "clozn-qwen")), lens=body.get("clozn_lens"),
+                     receipt=body.get("clozn_receipt", receipt_enabled()))
         return True
     t0 = time.time()
     trace_steps = []                            # HF non-stream: capture a per-token trace (B3)
@@ -56,6 +59,24 @@ def try_post(h, p, body):
     extra_headers = {"X-Clozn-Run-Id": rid} if rid else None
     if rid:
         resp["clozn_run_id"] = rid
+    # AMBIENT DELIVERY channel 1 (AMBIENT_DELIVERY.md): opt-in in-band receipt FOOTER -- a compact honest
+    # glass-box line + the /r/<id> permalink appended to the reply, so the receipt reaches the user INSIDE
+    # whatever client they pointed at clozn. OFF by default (clozn_receipt:true per request, or server-wide
+    # POST /receipt/mode); the logged run stays the un-footered reply, only the returned content carries it.
+    if rid:
+        try:
+            from clozn.server.routes.receipt_link import receipt_enabled
+            if body.get("clozn_receipt", receipt_enabled()):
+                import clozn.runs.store as _runlog
+                from clozn.runs import receipt_footer
+                host = h.headers.get("Host") or "127.0.0.1"
+                link = f"http://{host}/r/{rid}"
+                foot = receipt_footer.footer(_runlog.get_run(rid), link)
+                if foot:
+                    resp["choices"][0]["message"]["content"] = reply + foot
+                    resp["clozn_receipt_url"] = link
+        except Exception:
+            pass                          # the footer is additive -- a hiccup never breaks the reply
     # FRONTIER §1.1 "trust as an API field": when the caller OPTS IN (clozn_trust:true -- default
     # OFF, so a standard OpenAI response stays byte-unchanged / fully compatible), attach
     # claim-level confidence spans over the reply. Built by the SAME producer as

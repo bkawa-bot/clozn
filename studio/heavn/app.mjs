@@ -136,9 +136,17 @@ export async function loadRun(id){
 export async function boot(rootEl){
   render(html`<${App}/>`, rootEl);
   const list = await api.listRuns();
+  /* ambient delivery (channel 1): a receipt-footer link is /r/<id> -> /heavn/index.html?run=<id>.
+     Deep-link straight to that run so the shoulder-tap in the user's own client lands on the run. */
+  const deep = new URLSearchParams(location.search).get("run");
   if(list && Array.isArray(list.runs)){
     store.set({ live: true, runs: list.runs });
-    if(list.runs.length) await loadRun(list.runs[0].id);
+    if(deep){
+      const r = await loadRun(deep);                         // fetches directly; not limited to page 1
+      if(!r && list.runs.length) await loadRun(list.runs[0].id);
+    } else if(list.runs.length){
+      await loadRun(list.runs[0].id);
+    }
   } else {
     store.set({ live: false, runs: [{ ...SAMPLE }], full: { [SAMPLE.id]: SAMPLE },
                 currentId: SAMPLE.id, rec: SAMPLE });

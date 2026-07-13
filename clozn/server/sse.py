@@ -12,9 +12,14 @@ import time
 from clozn.server import app as ctx
 
 
-def sse_chat(handler, messages, max_new, model, lens=None):
+def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
     """Stream one /v1/chat/completions reply as OpenAI-style `chat.completion.chunk` frames over SSE,
     then log the run. `handler` is the live BaseHTTPRequestHandler (needs .wfile + ._log_run).
+
+    AMBIENT DELIVERY channel 1 (AMBIENT_DELIVERY.md): `receipt` (the request's opt-in `clozn_receipt`,
+    or the server-wide default) appends the in-band receipt footer as ONE final content chunk -- so the
+    run must be logged BEFORE the finish chunk (to have an id + trace for the /r/<id> link), unlike the
+    old order. Off => byte-identical to before.
 
     F1 LIVE LENS: `lens` (from the request's opt-in `clozn_lens` field -- absent for every standard
     OpenAI client, whose stream stays byte-identical) forwards to the substrate's chat_stream, and each
@@ -72,13 +77,24 @@ def sse_chat(handler, messages, max_new, model, lens=None):
             acc.append(piece); chunk({"content": piece})
         fr = ctx.SUB.last_finish_reason() if hasattr(ctx.SUB, "last_finish_reason") else None
         openai_fr = ctx._openai_finish_reason(fr)
+        # log the run FIRST (before the finish chunk) so the receipt footer can carry its /r/<id> link.
+        trace = ctx.SUB.last_stream_trace() if hasattr(ctx.SUB, "last_stream_trace") else None
+        rid = handler._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace,
+                               mem_out=memout, finish_reason=fr,
+                               finish_reason_fallback=None if fr else openai_fr)
+        if receipt and rid:                       # channel-1 footer, as one final content chunk
+            try:
+                import clozn.runs.store as _runlog
+                from clozn.runs import receipt_footer
+                host = handler.headers.get("Host") or "127.0.0.1"
+                foot = receipt_footer.footer(_runlog.get_run(rid), f"http://{host}/r/{rid}")
+                if foot:
+                    chunk({"content": foot})
+            except Exception:
+                pass                              # additive -- a footer hiccup never breaks the stream
         chunk({}, finish=openai_fr)
         handler.wfile.write(b"data: [DONE]\n\n")
         handler.wfile.flush()
-        trace = ctx.SUB.last_stream_trace() if hasattr(ctx.SUB, "last_stream_trace") else None
-        handler._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace, mem_out=memout,
-                         finish_reason=fr,
-                         finish_reason_fallback=None if fr else openai_fr)
     except Exception as e:
         handler._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e), mem_out=memout)
         try:
