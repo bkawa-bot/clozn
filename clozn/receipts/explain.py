@@ -145,12 +145,14 @@ def _influences_active(run: dict) -> dict:
     texts = _as_list(mem.get("cards_applied"))
     ids = _as_list(mem.get("applied_ids"))
     cards = [_card_entry(_card_text(t), ids[i] if i < len(ids) else None) for i, t in enumerate(texts)]
+    anchored = [a for a in _as_list(mem.get("anchored")) if isinstance(a, dict)]
 
     dials_raw = _as_dict(behavior.get("active_dials"))
     dials = [{"name": k, "value": v, "causal_verified": None} for k, v in dials_raw.items()]
 
-    out = {"cards": cards, "gate": mem.get("gate"), "mode": mem.get("mode"), "dials": dials}
-    if not cards:
+    out = {"cards": cards, "anchored": anchored, "gate": mem.get("gate"),
+           "mode": mem.get("mode"), "dials": dials}
+    if not cards and not anchored:
         # Prompt mode logs PER-TURN application: "none" there means the block wasn't injected on THIS turn
         # (topic-gated out, or strength 0) -- not that no cards exist at all. Say so explicitly rather than
         # let an empty list misread as "memory is unconfigured" (mirrors run.js's influenceCol note).

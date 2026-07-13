@@ -210,6 +210,17 @@ def test_influences_active_empty_cards_internalized_mode_note_differs(store):
     assert inf["note"] == "no memory applied"
 
 
+def test_influences_active_lists_anchored_memory_without_no_memory_note(store):
+    rid = store.record(source="engine_chat", messages=[{"role": "user", "content": "q"}], response="a",
+                       memory={"cards_applied": [], "mode": "prompt",
+                               "anchored": [{"card_id": "mem_tea", "gate": 0.5,
+                                             "alpha_top3": [{"token": "tea", "alpha": 0.7}]}]})
+    inf = explain.explain(store.get_run(rid))["influences_active"]
+    assert inf["cards"] == []
+    assert inf["anchored"][0]["card_id"] == "mem_tea"
+    assert "note" not in inf
+
+
 # ---------------------------------------------------------------------------------------- fixture: with-dials
 
 def test_influences_active_lists_active_dials_with_values_and_unverified_causality(store):

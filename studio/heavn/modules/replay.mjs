@@ -227,6 +227,10 @@ function Logs({ rec }){
   row("var(--blue)", "RUN", "recorded — " + (rec.id || ""));
   if((mem.cards_applied || []).length)
     row("var(--teal)", "MEMORY", `block injected · gate ${mem.gate != null ? (+mem.gate).toFixed(2) : "—"} · ${mem.cards_applied.length} card(s)`);
+  if((mem.anchored || []).length)
+    row("var(--lilac)", "ANCHOR", `J-space steer · L${mem.anchored_layer || 21} · ${mem.anchored.length} bag(s)`);
+  if(mem.anchored_skipped)
+    row("var(--coral)", "ANCHOR", mem.anchored_skipped, false);
   if(dials.length) row("var(--lilac2)", "STEER", "dials · " + dials.map(([k,v]) => k + " " + (+v).toFixed(1)).join(" · "));
   (rec.tiny_tests || []).forEach(tt =>
     row(tt.pass ? "var(--teal)" : "var(--coral)", "TEST", `expectation “${tt.name || "?"}” · ${tt.kind || "static"}`, !!tt.pass));
@@ -614,8 +618,8 @@ function Locators({ steps, mem, rec, w, innerW }){
   const W = innerW - 118 - 26, g = colGeom(w, W);
   const shaky = steps.findIndex(s => (s.conf ?? 1) < .5);
   return html`
-    ${(mem.cards_applied || []).length ? html`<span class="loc" style=${"left:" + (g[0].x0 + 2) + "px"}>
-      ▸ memory${mem.gate != null ? " " + (+mem.gate).toFixed(2) : ""}</span>` : null}
+    ${((mem.cards_applied || []).length || (mem.anchored || []).length) ? html`<span class="loc" style=${"left:" + (g[0].x0 + 2) + "px"}>
+      ▸ ${(mem.anchored || []).length ? "anchored" : "memory"}${mem.gate != null ? " " + (+mem.gate).toFixed(2) : ""}</span>` : null}
     ${shaky >= 0 && html`<span class="loc" style=${"left:" + g[shaky].x0 + "px"}>▸ low conf</span>`}
     <span class=${"loc" + (rec.finish_reason === "length" ? " bad" : "")} style="right:3px">
       ▸ ${rec.finish_reason || "end"}</span>`;
@@ -1203,6 +1207,7 @@ function LieDetector({ rec }){
 function Minfl({ rec }){
   const mem = rec.memory || {};
   const cards = mem.cards_applied || [];
+  const anchored = mem.anchored || [];
   return html`<div class="mod">
     <div class="mod-h"><span class="led"></span><span class="cap">memory influence</span>
       <span class="tail">top contributors</span></div>
@@ -1214,7 +1219,17 @@ function Minfl({ rec }){
           <span class="v">${rel != null ? (+rel).toFixed(2) : "—"}</span>
           <span class="bar"><i style=${"width:" + (rel != null ? Math.round(rel*100) : 0) + "%"}></i></span>
         </div>`; })
-      : html`<div class="steer-row"><span class="none">no memory rode this run</span></div>`}
+      : !anchored.length ? html`<div class="steer-row"><span class="none">no memory rode this run</span></div>` : null}
+      ${anchored.length ? html`<div class="none" style="padding:8px 14px 2px;text-transform:uppercase;letter-spacing:.1em">
+        anchored bags (${anchored.length})</div>` : null}
+      ${anchored.map(b => html`<div class="steer-row">
+        <span style="font-size:9.5px">${String(b.card_id || "anchored").slice(0, 32)}</span>
+        <span class="v">${b.gate != null ? (+b.gate).toFixed(2) : "—"}</span>
+        <span class="sub" style="grid-column:1/-1;gap:5px;flex-wrap:wrap">
+          ${(b.alpha_top3 || []).map(t => html`<span class="jchip d1" style="font-size:9px">
+            ${String(t.token || "").slice(0, 18)} ${t.alpha != null ? ((+t.alpha) >= 0 ? "+" : "") + (+t.alpha).toFixed(2) : ""}</span>`)}
+        </span>
+      </div>`)}
       ${mem.gate != null && html`<div class="steer-row">
         <span style="font-size:9.5px">topic gate</span>
         <span class="v">${(+mem.gate).toFixed(2)}</span>

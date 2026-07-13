@@ -1,8 +1,7 @@
 """Anchored-memory routes (X7 productized -- see clozn/memory/anchored.py for the validated envelope and
-the honesty contract). UNREGISTERED BY DESIGN: this module is not in clozn.server.app's _GET_ROUTES /
-_POST_ROUTES; the lead wires it in (one import + two list entries in app.py) together with the substrate
-composition/loop-guard wiring. Shape mirrors clozn/server/routes/memory.py exactly: try_get(h, p) /
-try_post(h, p, body) returning True when the path is claimed; unhappy paths are 200 + {"ok": False,
+the honesty contract). Registered from clozn.server.app with the other product route families. Shape
+mirrors clozn/server/routes/memory.py exactly: try_get(h, p) / try_post(h, p, body) returning True when the
+path is claimed; unhappy paths are 200 + {"ok": False,
 "reason": ...} (the memory.py convention), 400 only for malformed input.
 
   POST /memory/anchored/fit         {card_id, k?}      fit + persist a bag for an EXISTING card

@@ -40,6 +40,8 @@ sys.path.insert(0, RESEARCH)
 from clozn.server import app as cs          # noqa: E402
 import clozn.memory.cards as memory_cards                # noqa: E402
 import clozn.memory.mode as memory_mode                 # noqa: E402
+import clozn.memory.anchored as anchored_memory          # noqa: E402
+import clozn.memory.topic_gate as topic_gate             # noqa: E402
 from clozn.behavior.steering import EngineSteer   # noqa: E402
 
 
@@ -78,6 +80,9 @@ def iso(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "CLOZN_DIR", str(tmp_path))
     monkeypatch.setattr(memory_cards, "CARDS_PATH", str(tmp_path / "cards.json"))
     monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))
+    # the anchored-bag store too: a REAL bag in ~/.clozn/anchored_bags.json would honestly steer any
+    # apply_anchored=True chat here and leak machine state into these unit tests
+    monkeypatch.setattr(anchored_memory, "BAGS_PATH", str(tmp_path / "anchored_bags.json"))
     return tmp_path
 
 
@@ -273,6 +278,62 @@ def test_chat_falls_back_to_disk_dials_when_the_live_steer_has_no_strength(iso, 
 
     assert steer.vector_calls == [{"warm": 0.8}]
     assert fe.calls[-1]["params"]["steer_vec"] == [0.4, 0.5]
+
+
+def test_chat_can_apply_anchored_memory_when_live_path_opts_in(iso, monkeypatch):
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    bag = {"card_id": "mem_tea", "card_text": "likes tea gardens",
+           "vector": [1.0, 0.0], "on": True,
+           "terms": [{"token": "tea", "alpha": 0.7}, {"token": "gardens", "alpha": 0.2}]}
+    monkeypatch.setattr(anchored_memory, "active_bags", lambda: [bag])
+
+    class Gate:
+        def scalar(self, prompt, texts):
+            return 0.5
+
+    monkeypatch.setattr(topic_gate, "get_gate", lambda: Gate())
+    fe = FakeEngine()
+    sub = _bare_engine_substrate(fe, FakeSteer(strength={}, vec=None))
+    mem_out = {}
+
+    sub.chat([{"role": "user", "content": "tell me about tea"}],
+             mem_out=mem_out, apply_anchored=True)
+
+    params = fe.calls[-1]["params"]
+    assert params["steer"] == {"coef": 1.0, "layer": anchored_memory.LAYER}
+    assert params["steer_vec"][0] == pytest.approx(anchored_memory.SCALE * 0.5 * anchored_memory.BASE_NORM)
+    assert mem_out["anchored"][0]["card_id"] == "mem_tea"
+    assert mem_out["anchored"][0]["gate"] == pytest.approx(0.5)
+    assert mem_out["anchored_layer"] == anchored_memory.LAYER
+
+
+def test_chat_leaves_anchored_memory_off_by_default_for_replay_receipt_paths(iso, monkeypatch):
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    bag = {"card_id": "mem_tea", "card_text": "likes tea",
+           "vector": [1.0, 0.0], "on": True, "terms": [{"token": "tea", "alpha": 1.0}]}
+    monkeypatch.setattr(anchored_memory, "active_bags", lambda: [bag])
+    fe = FakeEngine()
+    sub = _bare_engine_substrate(fe, FakeSteer(strength={}, vec=None))
+
+    sub.chat([{"role": "user", "content": "hi"}])
+
+    assert "steer_vec" not in fe.calls[-1]["params"]
+
+
+def test_chat_records_anchor_skip_when_tone_dials_use_raw_steer_slot(iso, monkeypatch):
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    bag = {"card_id": "mem_tea", "card_text": "likes tea",
+           "vector": [1.0, 0.0], "on": True, "terms": [{"token": "tea", "alpha": 1.0}]}
+    monkeypatch.setattr(anchored_memory, "active_bags", lambda: [bag])
+    monkeypatch.setattr(topic_gate, "get_gate", lambda: type("Gate", (), {"scalar": lambda self, p, t: 1.0})())
+    fe = FakeEngine()
+    sub = _bare_engine_substrate(fe, FakeSteer(strength={"warm": 1.0}, vec=[0.1, 0.2], layer=14))
+    mem_out = {}
+
+    sub.chat([{"role": "user", "content": "hi"}], mem_out=mem_out, apply_anchored=True)
+
+    assert fe.calls[-1]["params"]["steer_vec"] == [0.1, 0.2]
+    assert mem_out["anchored_skipped"] == "tone dials held the raw-steer channel this turn"
 
 
 # ==================================================================================== _EngineMemory

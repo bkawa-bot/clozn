@@ -34,6 +34,8 @@ sys.path.insert(0, RESEARCH)
 from clozn.server import app as cs          # noqa: E402
 import clozn.memory.cards as memory_cards                # noqa: E402
 import clozn.memory.mode as memory_mode                 # noqa: E402
+import clozn.memory.anchored as anchored_memory          # noqa: E402
+import clozn.memory.topic_gate as topic_gate             # noqa: E402
 import urllib.request               # noqa: E402
 
 
@@ -44,6 +46,9 @@ def iso(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "CLOZN_DIR", str(tmp_path))
     monkeypatch.setattr(memory_cards, "CARDS_PATH", str(tmp_path / "cards.json"))
     monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))
+    # the anchored-bag store too: _apply_anchored_memory reads it on every chat_stream, so a REAL bag
+    # in ~/.clozn/anchored_bags.json would honestly steer these requests and flunk the no-steer tests
+    monkeypatch.setattr(anchored_memory, "BAGS_PATH", str(tmp_path / "anchored_bags.json"))
     return tmp_path
 
 
@@ -348,3 +353,26 @@ def test_chat_stream_skips_steer_vec_when_no_dial_is_active(iso, monkeypatch, fa
     assert steer.vector_calls == []                          # any(st.values()) is False -> never even asked
     body = json.loads(fake_urlopen[-1]["req"].data.decode("utf-8"))
     assert "steer_vec" not in body
+
+
+def test_chat_stream_forwards_anchored_memory_when_raw_steer_slot_is_free(iso, monkeypatch, fake_urlopen):
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    bag = {"card_id": "mem_space", "card_text": "loves space planets",
+           "vector": [0.0, 1.0], "on": True,
+           "terms": [{"token": "space", "alpha": 0.8}]}
+    monkeypatch.setattr(anchored_memory, "active_bags", lambda: [bag])
+
+    class Gate:
+        def scalar(self, prompt, texts):
+            return 0.25
+
+    monkeypatch.setattr(topic_gate, "get_gate", lambda: Gate())
+    sub = _bare_engine_substrate(FakeEngine())
+    mem_out = {}
+
+    list(sub.chat_stream([{"role": "user", "content": "tell me about planets"}], mem_out=mem_out))
+
+    body = json.loads(fake_urlopen[-1]["req"].data.decode("utf-8"))
+    assert body["steer"] == {"coef": 1.0, "layer": anchored_memory.LAYER}
+    assert body["steer_vec"][1] == pytest.approx(anchored_memory.SCALE * 0.25 * anchored_memory.BASE_NORM)
+    assert mem_out["anchored"][0]["card_id"] == "mem_space"

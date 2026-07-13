@@ -112,6 +112,29 @@ def test_log_run_forwards_final_prompt_to_the_record(store, monkeypatch):
     assert store.get_run(rid)["final_prompt"] == rendered
 
 
+def test_log_run_persists_anchored_memory_manifest(store, monkeypatch):
+    """Anchored bags are logged as memory that rode the turn even when no prompt card block was injected."""
+    import time
+    from clozn.server import app as cs
+    monkeypatch.setattr(cs, "SUB", None)
+    h = object.__new__(cs.make_handler())
+    h.headers = {"User-Agent": "pytest"}
+
+    rid = h._log_run("openai_api", [{"role": "user", "content": "tea?"}], "tea", "clozn-engine",
+                     time.time(),
+                     mem_out={"mode": "prompt", "applied": [], "gate": 0.0,
+                              "anchored": [{"card_id": "mem_tea", "gate": 0.5,
+                                            "alpha_top3": [{"token": "tea", "alpha": 0.7}]}],
+                              "anchored_layer": 21, "anchored_s_total": 0.25})
+
+    rec = store.get_run(rid)
+    assert rec["memory"]["anchored"][0]["card_id"] == "mem_tea"
+    assert rec["memory"]["anchored_layer"] == 21
+    assert rec["memory"]["anchored_s_total"] == pytest.approx(0.25)
+    assert "memory" in rec["flags"]
+    assert "anchored-memory" in rec["flags"]
+
+
 def test_prompt_summary_uses_last_user_message(store):
     rid = store.record(source="cli", messages=[
         {"role": "user", "content": "first"},

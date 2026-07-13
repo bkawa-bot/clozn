@@ -33,8 +33,10 @@ def try_post(h, p, body):
     t0 = time.time()
     trace_steps = []                            # HF non-stream: capture a per-token trace (B3)
     memout = {}                                 # prompt mode: what memory actually rode this turn
-    reply = ctx.SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0, trace_out=trace_steps,
-                         mem_out=memout)
+    chat_kw = {"trace_out": trace_steps, "mem_out": memout}
+    if isinstance(ctx.SUB, ctx.EngineSubstrate):
+        chat_kw["apply_anchored"] = True
+    reply = ctx.SUB.chat(msgs, mx, float(body.get("temperature", 0.7)) > 0, **chat_kw)
     fr = ctx.SUB.last_finish_reason() if hasattr(ctx.SUB, "last_finish_reason") else None
     openai_fr = ctx._openai_finish_reason(fr)
     # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}.

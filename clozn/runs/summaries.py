@@ -30,8 +30,10 @@ def _flags(rec: dict) -> list[str]:
     """Cheap UI flags derived from the record (the Runs page filters on these)."""
     f = []
     mem = rec.get("memory") or {}
-    if mem.get("cards_applied"):
+    if mem.get("cards_applied") or mem.get("anchored"):
         f.append("memory")
+    if mem.get("anchored"):
+        f.append("anchored-memory")
     if mem.get("proposed_cards"):
         f.append("pending-memory")
     if (rec.get("behavior") or {}).get("active_dials"):

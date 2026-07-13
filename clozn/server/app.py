@@ -561,6 +561,48 @@ def _prompt_block_for(mem, last_user, strength=None):
     return memory_mode.compile_prompt_block(texts), applied, g
 
 
+def _anchored_gates(last_user, bags):
+    """Per anchored bag topic gate, fail-open like prompt memory's topic gate."""
+    try:
+        from clozn.memory import topic_gate
+        gate = topic_gate.get_gate()
+        out = {}
+        for bag in bags or []:
+            if not isinstance(bag, dict):
+                continue
+            cid = bag.get("card_id")
+            text = str(bag.get("card_text") or "").strip()
+            if cid and text:
+                out[cid] = float(gate.scalar(last_user or "", [text]))
+        return out
+    except Exception:
+        return None
+
+
+def _apply_anchored_memory(kw: dict, mem_out: dict | None, last_user: str | None) -> None:
+    """Add X7/J-anchored memory to a live engine request when the raw steer slot is free."""
+    try:
+        from clozn.memory import anchored
+        bags = anchored.active_bags()
+        if not bags:
+            return
+        comp = anchored.compile_steer(bags, gates=_anchored_gates(last_user, bags))
+        if not comp:
+            return
+        if kw.get("steer_vec"):
+            if mem_out is not None:
+                mem_out["anchored_skipped"] = "tone dials held the raw-steer channel this turn"
+            return
+        kw["steer_vec"] = comp["steer_vec"]
+        kw["steer"] = {"coef": 1.0, "layer": comp["layer"]}
+        if mem_out is not None:
+            mem_out["anchored"] = comp["bags"]
+            mem_out["anchored_layer"] = comp["layer"]
+            mem_out["anchored_s_total"] = comp.get("s_total")
+    except Exception:
+        pass
+
+
 def _inject_block(messages, block):
     """`messages` with the memory block folded in as system context (a copy -- never mutates the
     caller's list). Appends to an existing system message (the client's own instructions keep first
@@ -1821,7 +1863,7 @@ class EngineSubstrate(Substrate):
         return EngineSteer._text(self.engine.complete(prompt, max_tokens=90))
 
     def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None,
-             reference_tokens=None):
+             reference_tokens=None, apply_anchored=False):
         """One stateless chat completion on the engine with memory (prompt-mode card block) + tone dials
         applied. Mirrors QwenSubstrate.chat's contract EXACTLY (same signature, same trace_out/mem_out
         fill) so the receipts/replay stack is backend-agnostic.
@@ -1841,6 +1883,8 @@ class EngineSubstrate(Substrate):
         arms) -- so the reply is a bit-exact PREFIX of what full generation would produce, plus a divergence
         verdict stashed for last_divergence(). This is a pure termination check -- decode/sampling (greedy
         or not) are otherwise untouched, so a diverged reply is still a bit-exact prefix either way."""
+        # `apply_anchored` is explicit so live OpenAI chat can use X7 anchored memory, while receipts/replay
+        # keep the pre-existing deterministic baseline unless they intentionally opt in.
         samp = _resolve_sampling(sample)
         self._last_generation_meta = _engine_generation_meta(max_new, stream=False, sample=samp)
         self._last_diverged = None
@@ -1862,6 +1906,8 @@ class EngineSubstrate(Substrate):
             if sv:
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
+        if apply_anchored:
+            _apply_anchored_memory(kw, mem_out, _last_user(messages))
         if reference_tokens:                                # prove-all early-stop: halt when the answer changes
             kw["reference_tokens"] = [int(t) for t in reference_tokens if t is not None]
         reply_raw, steps, finish, divinfo = _engine_complete_traced(self.engine, prompt, max_new, kw,
@@ -2007,8 +2053,8 @@ class EngineSubstrate(Substrate):
         return dict(meta)
 
     def chat_stream(self, messages, max_new=256, mem_out=None, lens=None, on_frame=None):
-        """Streaming twin of chat(): the SAME memory-block + tone-dial construction (kept in lockstep --
-        see chat()'s comments; do not let this drift from that logic), but opens the engine's
+        """Streaming twin of chat(): the SAME memory-block + tone-dial + anchored-memory construction
+        (kept in lockstep -- see chat()'s comments; do not let this drift from that logic), but opens the engine's
         /v1/completions with stream:True (mirrors _engine_complete_traced's request) and yields text as
         the engine commits it, instead of waiting on one blocking call. This is what makes /v1/chat/
         completions's SSE branch (_sse_chat, gated on `getattr(SUB, "chat_stream", None)`) fire on the
@@ -2054,24 +2100,8 @@ class EngineSubstrate(Substrate):
             if sv:
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
-        # F6 ANCHORED MEMORY (X7): active bags compose into ONE steer_vec at L21 and ride LIVE CHAT
-        # TURNS ONLY -- this method is never driven by receipts/replay (see docstring above), so the
-        # ablation machinery stays uncontaminated; chat() is deliberately NOT wired. One raw steer
-        # channel per request: when tone dials already hold it, they win and the skip is recorded.
-        try:
-            from clozn.memory import anchored as _anchored
-            _comp = _anchored.compile_steer()
-            if _comp:
-                if kw.get("steer_vec"):
-                    if mem_out is not None:
-                        mem_out["anchored_skipped"] = "tone dials held the raw-steer channel this turn"
-                else:
-                    kw["steer_vec"] = _comp["steer_vec"]
-                    kw["steer"] = {"coef": 1.0, "layer": _comp["layer"]}
-                    if mem_out is not None:
-                        mem_out["anchored"] = _comp["bags"]     # run-record receipt: what rode, at what gate
-        except Exception:
-            pass                                                 # anchored memory can never break chat
+        # F6 ANCHORED MEMORY (X7): active bags compose into ONE gated steer_vec at L21 and ride live chat.
+        _apply_anchored_memory(kw, mem_out, _last_user(messages))
         body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_new)
         if samp and samp.get("on"):     # S5: real sampling -- temperature/rep_penalty/seed from settings
             body["temperature"] = float(samp["temperature"])
@@ -2439,6 +2469,15 @@ def make_handler():
                         memd["gate"] = round(float(mo["gate"]), 4)
                     if mo.get("prompt_block"):
                         memd["prompt_block"] = str(mo["prompt_block"])
+                    anchored = [dict(a) for a in (mo.get("anchored") or []) if isinstance(a, dict)]
+                    if anchored:
+                        memd["anchored"] = anchored
+                        if mo.get("anchored_layer") is not None:
+                            memd["anchored_layer"] = int(mo["anchored_layer"])
+                        if mo.get("anchored_s_total") is not None:
+                            memd["anchored_s_total"] = round(float(mo["anchored_s_total"]), 4)
+                    if mo.get("anchored_skipped"):
+                        memd["anchored_skipped"] = str(mo["anchored_skipped"])
                     if applied:                                  # bump exactly the cards that rode this turn
                         try:
                             import clozn.memory.cards as memory_cards
