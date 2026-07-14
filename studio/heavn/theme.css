@@ -10,7 +10,7 @@
   --chrome-hi:rgba(255,255,255,.95);
   --edge:rgba(128,142,190,.32); --edge-soft:rgba(128,142,190,.16);
   --screen:#1E2447;
-  --flow:linear-gradient(90deg,#4C8DF0,#2CBFE8 34%,#5FC8BC 62%,#B6B0DA);
+  --flow:linear-gradient(90deg,#4C8DF0,#2CBFE8 28%,#5FC8BC 52%,#B6B0DA 76%,#E48CD8);
   --disp:"Chakra Petch","Space Grotesk","Segoe UI",sans-serif;
   --mono:"IBM Plex Mono","Cascadia Mono",ui-monospace,Consolas,monospace;
   --crt:"VT323","Cascadia Mono",ui-monospace,monospace;
@@ -22,10 +22,11 @@ body{font-family:var(--mono);color:var(--navy);font-size:12px;line-height:1.5;
   -webkit-font-smoothing:antialiased;min-height:100vh;padding:12px;
   background:
     radial-gradient(1000px 600px at 8% -5%, rgba(127,180,240,.34), transparent 60%),
-    radial-gradient(900px 560px at 96% 2%, rgba(182,176,218,.36), transparent 56%),
+    radial-gradient(900px 560px at 96% 2%, rgba(182,176,218,.38), transparent 56%),
+    radial-gradient(760px 520px at 90% 92%, rgba(240,150,190,.15), transparent 60%),   /* warm afterglow — the mockup's coral/magenta influence zone */
     radial-gradient(820px 620px at 50% 108%, rgba(95,200,188,.26), transparent 60%),
     radial-gradient(700px 420px at 76% 52%, rgba(143,168,232,.20), transparent 60%),
-    linear-gradient(165deg,#F3F5FC 0%,#EAEFF9 50%,#E9EDF8 100%)}
+    linear-gradient(165deg,#F4F6FD 0%,#EAEFF9 50%,#EDEBF7 100%)}
 body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;opacity:.35;
   background:repeating-linear-gradient(0deg,rgba(22,50,74,.02) 0 1px,transparent 1px 3px)}
 @keyframes clzPulse{0%,100%{opacity:.45}50%{opacity:1}}
