@@ -10,5 +10,5 @@ the interp primitives that must scale. This is what used to be the `cloze` repo.
   oracle the C++ core is validated against, and the CPU/iteration path.
 
 The engine never owns product opinions — it exposes the state-stream and the hooks; the
-[inspector](../inspector) owns all view/steer/memory surface. They meet only at the
-[protocol](../protocol).
+studio (the [`clozn/`](../clozn) package + [`studio/`](../studio)) owns all view/steer/memory
+surface. They meet only at the [protocol](../protocol).

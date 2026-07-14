@@ -1,6 +1,6 @@
 # The state-stream protocol — spec
 
-The one contract the [engine](../engine) emits and the [inspector](../inspector) consumes.
+The one contract the [engine](../engine) emits and the studio consumes.
 It collapses the two spines that were the same idea discovered twice:
 
 | Today | Becomes |
@@ -55,7 +55,7 @@ One forward pass's events fold into one `StateStep`:
 Clozn standardizes on one persisted readout event: `workspace_readout`.
 Do not add a separate `concept_readout` event unless a future producer needs
 different lifecycle semantics. Concepts, SAE features, probes, logit-lens
-tokens, and the shipped Jacobian Lens adapter (#115) all use `workspace_readout`
+tokens, and the shipped Jacobian Lens adapter all use `workspace_readout`
 and differentiate themselves with subtype fields.
 
 Canonical persisted shape:
@@ -163,7 +163,7 @@ Examples:
 }
 ```
 
-Shipped (#115 J2-J3): the engine's `POST /jlens` (`unembed(J_l @ h)` on the
+Shipped: the engine's `POST /jlens` (`unembed(J_l @ h)` on the
 GGUF's own final-norm + head) and the studio's `POST /jlens` /
 `POST /runs/<id>/jlens` proxy it; this event form is the opt-in
 `protocol: true` shape, `provider_type: jacobian_lens`, `readout_kind: token`.

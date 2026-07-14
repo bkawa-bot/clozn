@@ -1,6 +1,6 @@
 # protocol/ — the state-stream contract (the keystone)
 
-One vocabulary the [engine](../engine) emits and the [inspector](../inspector) consumes —
+One vocabulary the [engine](../engine) emits and the studio consumes —
 collapsing the two spines (the engine's §5.1 typed events and the inspector's `StateStep`)
 that were the same abstraction discovered twice. This is what makes Clozn *one* system
 instead of two inspectors.

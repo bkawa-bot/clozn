@@ -11,7 +11,7 @@ This first implementation is deliberately small:
 - If the engine concept path is unavailable but the Python Qwen + SAE brain stack is loaded, the server
   stores provider `sae/probe`.
 - The Studio Run Inspector displays the latest readout, provider name, token strip, and fogginess.
-- `inspector/demo/workspace_lens_trace.jsonl` is a tiny fixture trace for demos and schema examples.
+- `studio/workspace_lens_trace.jsonl` is a tiny fixture trace for demos and schema examples.
 
 Mock readouts are not auto-attached to real runs. The deterministic mock provider remains only for fixture
 or offline sample traces, where it should be treated as UI/sample data rather than interpretability evidence.
@@ -27,7 +27,7 @@ Future providers should keep the same payload shape and replace only the readout
 targets include logit lens, SAE probes, and linear probes. Do not label a provider with a `provider_type`
 it doesn't actually compute.
 
-**Jacobian Lens — shipped (#115 J2-J3, 2026-07-09).** The engine serves `POST /jlens`
+**Jacobian Lens — shipped.** The engine serves `POST /jlens`
 (`unembed(J_l @ h)` on the GGUF's own final-norm + head weights — forward-only, deterministic, no
 `W_U` sidecar); the Python studio backend proxies it (`POST /jlens`, `POST /runs/<id>/jlens`) and the
 Run Inspector's **"Disposed to say &middot; J-lens"** panel renders it, always alongside an unskippable
