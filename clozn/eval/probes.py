@@ -12,6 +12,7 @@ caller -- the OpenAI wire format carries no per-token probabilities.
 from __future__ import annotations
 
 import json
+import random
 import urllib.request
 
 # (question, gold, kind, aliases) -- aliases only for exact-match items with legitimate alternate spellings.
@@ -114,6 +115,38 @@ HARD_PROBES: list[dict] = [
     {"q": "Who was the 16th President of the United States?", "gold": "Lincoln", "kind": "exact", "aliases": ["Abraham Lincoln"]},
     {"q": "What is the 5th element on the periodic table?", "gold": "boron", "kind": "exact"},
 ]
+
+# ARITH_PROBES -- programmatically generated arithmetic with GUARANTEED-correct golds (Python computes
+# them) across escalating difficulty tiers. This is the antidote to the curated sets' problem: a strong 7B
+# saturates factual QA (few errors -> a degenerate risk-coverage curve), and hand-writing enough HARD
+# factual items risks gold errors that would corrupt the calibration. Arithmetic sidesteps both: a 7B nails
+# 2-digit sums (high confidence) but reliably slips on 3x3-digit products, so the set induces GRADED errors
+# with zero gold-error risk -- exactly what a non-degenerate curve needs. Deterministic (seeded), so
+# `clozn eval` is reproducible.
+_ARITH_TIERS = [                      # (tier name, operand generator) -- roughly easy -> hard for a 7B
+    ("add_2d",   lambda r: (r.randint(10, 99),   "+", r.randint(10, 99))),
+    ("sub_4d",   lambda r: (r.randint(1000, 9999), "-", r.randint(100, 999))),
+    ("mul_1x2",  lambda r: (r.randint(3, 9),     "*", r.randint(11, 99))),
+    ("mul_2x2",  lambda r: (r.randint(12, 99),   "*", r.randint(12, 99))),
+    ("mul_3x2",  lambda r: (r.randint(101, 999), "*", r.randint(12, 99))),
+    ("mul_3x3",  lambda r: (r.randint(101, 999), "*", r.randint(101, 999))),
+]
+
+
+def arithmetic_probes(n: int = 60, seed: int = 7) -> list[dict]:
+    """`n` arithmetic probes cycling the difficulty tiers, with exact golds. Seeded -> deterministic."""
+    rng = random.Random(seed)
+    out = []
+    for i in range(n):
+        name, gen = _ARITH_TIERS[i % len(_ARITH_TIERS)]
+        a, op, b = gen(rng)
+        val = a + b if op == "+" else (a - b if op == "-" else a * b)
+        out.append({"q": f"What is {a} {op} {b}? Answer with just the number.",
+                    "gold": str(val), "kind": "numeric", "tier": name})
+    return out
+
+
+ARITH_PROBES: list[dict] = arithmetic_probes()
 
 _SYSTEM = "You are a precise assistant. Answer the question as briefly as possible -- ideally a single word or number, with no explanation."
 

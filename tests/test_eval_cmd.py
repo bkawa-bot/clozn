@@ -19,10 +19,11 @@ def test_eval_is_registered():
 
 def test_eval_defaults_and_dispatch():
     ns = build_parser().parse_args(["eval"])
-    assert ns.which == "hard" and ns.score == "min"
+    assert ns.which == "arith" and ns.score == "min" and ns.target_error == 0.05
     assert ns.url.endswith(":8090") and ns.fn is cmd_eval
 
 
-def test_eval_accepts_set_and_score_choices():
-    ns = build_parser().parse_args(["eval", "--set", "easy", "--score", "mean", "--json"])
-    assert ns.which == "easy" and ns.score == "mean" and ns.json is True
+def test_eval_accepts_set_score_and_target_error():
+    ns = build_parser().parse_args(["eval", "--set", "all", "--score", "mean",
+                                    "--target-error", "0.1", "--json"])
+    assert ns.which == "all" and ns.score == "mean" and ns.target_error == 0.1 and ns.json is True

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 
-from clozn.eval import calibration as cal, outcome, probes
+from clozn.eval import calibration as cal, outcome, policy, probes
 from clozn.runs import actuary
 
 
@@ -39,8 +39,9 @@ def bench(base_url: str, which: str = "hard", score: str = "min") -> dict:
     """Run the chosen probe set live, pair each reply to its logged run trace, and return
     {rows, report, n, unmatched}. `score` picks the answer-span aggregate: 'min' (weakest token -- the
     standard selective-generation signal) or 'mean'."""
-    pset = {"easy": probes.PROBES, "hard": probes.HARD_PROBES,
-            "both": probes.PROBES + probes.HARD_PROBES}[which]
+    pset = {"easy": probes.PROBES, "hard": probes.HARD_PROBES, "arith": probes.ARITH_PROBES,
+            "both": probes.PROBES + probes.HARD_PROBES,
+            "all": probes.PROBES + probes.HARD_PROBES + probes.ARITH_PROBES}[which]
     results = probes.run_probes(base_url, pset)
     by_q = _newest_runs_by_prompt()
     rows, pairs, unmatched = [], [], 0
@@ -57,10 +58,10 @@ def bench(base_url: str, which: str = "hard", score: str = "min") -> dict:
         s = (min(confs) if score == "min" else sum(confs) / len(confs))
         pairs.append((s, correct))
         rows.append({"q": p["q"], "reply": reply, "gold": p["gold"], "correct": bool(correct), "score": round(s, 3)})
-    return {"rows": rows, "report": cal.report(pairs), "n": len(pairs), "unmatched": unmatched}
+    return {"rows": rows, "report": cal.report(pairs), "pairs": pairs, "n": len(pairs), "unmatched": unmatched}
 
 
-def _print(out: dict, which: str, score: str) -> None:
+def _print(out: dict, which: str, score: str, target_error: float = 0.05) -> None:
     rep = out["report"]
     print(f"\nclozn.eval.bench — set={which}  score={score}-token confidence  n={out['n']}"
           f"  (unmatched={out['unmatched']})")
@@ -76,17 +77,27 @@ def _print(out: dict, which: str, score: str) -> None:
         red = s["error_reduction_vs_full"]
         print(f"  selective @{cov:>2}% coverage: error={s['error_at_coverage']:.3f}"
               f"  (full={s['full_coverage_error']:.3f}, reduction={red})")
+    rec = policy.recommend(out.get("pairs", []), target_error=target_error)
+    ps = rec["summary"]
+    print(f"\n  policy @ target_error={target_error}:  answer_at={rec['answer_at']}  ask_at={rec['ask_at']}"
+          f"  (achievable={rec['achievable']})")
+    print(f"    answer {ps['n_answer']} / ask {ps['n_ask']} / abstain {ps['n_abstain']}"
+          f"   coverage={ps['coverage']}  answered_error={ps['answered_error']}")
+    print(f"    caught {ps['errors_caught']} wrong answers; withheld {ps['correct_withheld']} correct (the cost)")
     print("  note: small n — a directional demonstration, not a benchmark score.")
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Outcome-grounded calibration on a live clozn endpoint.")
     ap.add_argument("--url", default="http://127.0.0.1:8090", help="clozn studio base URL")
-    ap.add_argument("--set", dest="which", default="hard", choices=["easy", "hard", "both"])
+    ap.add_argument("--set", dest="which", default="arith",
+                    choices=["easy", "hard", "arith", "both", "all"])
     ap.add_argument("--score", default="min", choices=["min", "mean"])
+    ap.add_argument("--target-error", type=float, default=0.05, dest="target_error",
+                    help="the selective-generation error budget the policy is tuned to (default 0.05)")
     args = ap.parse_args(argv)
     out = bench(args.url, args.which, args.score)
-    _print(out, args.which, args.score)
+    _print(out, args.which, args.score, args.target_error)
     return 0
 
 

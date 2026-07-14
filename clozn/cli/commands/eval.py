@@ -24,10 +24,14 @@ def add_subparser(sub):
     pe = sub.add_parser("eval", help="outcome-grounded calibration: run a factual probe set through a live "
                         "studio and score Brier/ECE/risk-coverage against TRUTH (needs a running endpoint)")
     pe.add_argument("--url", default="http://127.0.0.1:8090", help="clozn studio base URL (default :8090)")
-    pe.add_argument("--set", dest="which", default="hard", choices=["easy", "hard", "both"],
-                    help="which built-in probe set (default: hard -- the set that induces graded errors)")
+    pe.add_argument("--set", dest="which", default="arith",
+                    choices=["easy", "hard", "arith", "both", "all"],
+                    help="which built-in probe set (default: arith -- programmatic, guaranteed golds, "
+                         "graded errors; 'easy'/'hard' are curated factual sets)")
     pe.add_argument("--score", default="min", choices=["min", "mean"],
                     help="answer-span aggregate used as the abstention signal (default: min token conf)")
+    pe.add_argument("--target-error", type=float, default=0.05, dest="target_error",
+                    help="the selective-generation error budget the recommended policy is tuned to (0.05)")
     pe.add_argument("--json", action="store_true", help="print the raw calibration report as JSON")
     pe.set_defaults(fn=cmd_eval)
     return pe
@@ -38,10 +42,14 @@ def cmd_eval(args):
     docstring). Delegates to clozn.eval.bench; prints the human report, or the raw report JSON with --json."""
     from clozn.eval import bench
 
+    from clozn.eval import policy
+
     out = bench.bench(args.url, args.which, args.score)
+    te = getattr(args, "target_error", 0.05)
     if getattr(args, "json", False):
         print(json.dumps({"n": out["n"], "unmatched": out["unmatched"], "report": out["report"],
+                          "policy": policy.recommend(out.get("pairs", []), target_error=te),
                           "rows": out["rows"]}, indent=2, default=str))
     else:
-        bench._print(out, args.which, args.score)
+        bench._print(out, args.which, args.score, te)
     return 0
