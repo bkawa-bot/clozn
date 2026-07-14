@@ -44,12 +44,13 @@ def bench(base_url: str, which: str = "hard", score: str = "min") -> dict:
             "all": probes.PROBES + probes.HARD_PROBES + probes.ARITH_PROBES}[which]
     results = probes.run_probes(base_url, pset)
     by_q = _newest_runs_by_prompt()
-    rows, pairs, unmatched = [], [], 0
+    rows, pairs, unmatched, model = [], [], 0, None
     for p in results:
         run = by_q.get(p["q"].strip())
         if not run:
             unmatched += 1
             continue
+        model = model or run.get("model")           # provenance: which model these numbers describe
         reply = run.get("response") or ""
         correct = outcome.grade(reply, p["gold"], p["kind"], aliases=p.get("aliases", []))
         confs = _answer_confidences(run.get("trace") or {})
@@ -58,7 +59,8 @@ def bench(base_url: str, which: str = "hard", score: str = "min") -> dict:
         s = (min(confs) if score == "min" else sum(confs) / len(confs))
         pairs.append((s, correct))
         rows.append({"q": p["q"], "reply": reply, "gold": p["gold"], "correct": bool(correct), "score": round(s, 3)})
-    return {"rows": rows, "report": cal.report(pairs), "pairs": pairs, "n": len(pairs), "unmatched": unmatched}
+    return {"rows": rows, "report": cal.report(pairs), "pairs": pairs, "n": len(pairs),
+            "unmatched": unmatched, "model": model}
 
 
 def _print(out: dict, which: str, score: str, target_error: float = 0.05) -> None:

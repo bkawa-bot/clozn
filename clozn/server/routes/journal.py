@@ -1,6 +1,12 @@
-"""The actuarial journal over HTTP: the full ActuaryReport (GET /journal/actuary) and calibrated trust
-spans for one run (POST /runs/<id>/trust_spans) -- run confidence mapped through the user's OWN
-journal-derived acceptance curve (clozn.runs.actuary + clozn.runs.calibrated_trust).
+"""The actuarial journal over HTTP: the full ActuaryReport (GET /journal/actuary), the OUTCOME-grounded
+calibration report (GET /journal/calibration), and calibrated trust spans for one run (POST
+/runs/<id>/trust_spans) -- run confidence mapped through the user's OWN journal-derived acceptance curve
+(clozn.runs.actuary + clozn.runs.calibrated_trust).
+
+Two calibration tiers sit side by side, each labelled: /journal/actuary is the PROXY curve (acceptance,
+always available, computed on-demand); /journal/calibration is the TRUTH curve (correctness on a labeled
+probe set + a selective-generation policy) -- it needs live generation, so it is PERSISTED by
+`clozn eval --save` (clozn.eval.store) and served from disk, or available:false until one is saved.
 
 Everything served here inherits actuary.py's honesty stance verbatim: "trusted" is a behavioral PROXY
 (the run was kept -- not errored/truncated/test-failed/re-rolled), never a verified-correctness figure.
@@ -47,6 +53,23 @@ def try_get(h, p):
         report, age = _report()
         out = dataclasses.asdict(report)      # nested dataclasses -> plain dicts; every `note` rides verbatim
         out["computed_ago_s"] = round(age, 1)
+        h._json(200, out)
+        return True
+    if p == "/journal/calibration":   # the TRUTH tier: correctness on a labeled probe set + selective policy
+        import time as _time
+        from clozn.eval import store as eval_store
+        rep = eval_store.load()
+        if not rep:
+            # 200, not an error: no eval saved yet is a clean, expected state. The PROXY curve at
+            # /journal/actuary is always available; this TRUTH tier waits for a `clozn eval --save`.
+            h._json(200, {"available": False,
+                          "note": "no outcome-grounded calibration saved yet -- run `clozn eval --save` "
+                                  "(needs a live studio) to populate this TRUTH-tier curve. It measures "
+                                  "correctness on a labeled probe set, not the acceptance proxy."})
+            return True
+        out = dict(rep)
+        out["available"] = True
+        out["saved_ago_s"] = round(max(0.0, _time.time() - float(out.get("saved_ts", _time.time()))), 1)
         h._json(200, out)
         return True
     return False

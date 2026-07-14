@@ -33,6 +33,8 @@ def add_subparser(sub):
     pe.add_argument("--target-error", type=float, default=0.05, dest="target_error",
                     help="the selective-generation error budget the recommended policy is tuned to (0.05)")
     pe.add_argument("--json", action="store_true", help="print the raw calibration report as JSON")
+    pe.add_argument("--save", action="store_true", help="persist this report so the studio can serve it "
+                    "as the TRUTH-tier curve at GET /journal/calibration (beside the proxy at /journal/actuary)")
     pe.set_defaults(fn=cmd_eval)
     return pe
 
@@ -46,10 +48,17 @@ def cmd_eval(args):
 
     out = bench.bench(args.url, args.which, args.score)
     te = getattr(args, "target_error", 0.05)
+    rec = policy.recommend(out.get("pairs", []), target_error=te)
     if getattr(args, "json", False):
         print(json.dumps({"n": out["n"], "unmatched": out["unmatched"], "report": out["report"],
-                          "policy": policy.recommend(out.get("pairs", []), target_error=te),
-                          "rows": out["rows"]}, indent=2, default=str))
+                          "policy": rec, "rows": out["rows"]}, indent=2, default=str))
     else:
         bench._print(out, args.which, args.score, te)
+    if getattr(args, "save", False):
+        from clozn.eval import store as eval_store
+        payload = {"set": args.which, "score": args.score, "target_error": te, "model": out.get("model"),
+                   "n": out["n"], "unmatched": out["unmatched"], "report": out["report"],
+                   "policy": rec, "rows": out["rows"]}
+        path = eval_store.save(payload)
+        print(f"\n  saved TRUTH-tier report -> {path}  (served at GET /journal/calibration)")
     return 0
