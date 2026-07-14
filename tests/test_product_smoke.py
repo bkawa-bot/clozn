@@ -1,15 +1,18 @@
 """Dependency-free tests for the managed product-runtime smoke harness."""
 from __future__ import annotations
 
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import textwrap
 import threading
 import unittest
+from unittest import mock
 
 from clozn.cli.commands import smoke
 from clozn.runs import store
@@ -94,6 +97,11 @@ class SmokeGatewayHandler(BaseHTTPRequestHandler):
                 "data: [DONE]\n\n"
             )
             self._send(200, frames, "text/event-stream")
+        elif self.path == f"/runs/{self.run_id}/receipts":
+            self._send(200, {"run_id": self.run_id, "mode": "forced",
+                             "forced_receipts": [], "skipped": []})
+        elif self.path == f"/runs/{self.run_id}/replay":
+            self._send(200, {"id": "run_child", "parent_run_id": self.run_id})
         else:
             self._send(404, {"error": self.path})
 
@@ -213,7 +221,30 @@ class ProductSmokeTests(unittest.TestCase):
         names = {check.name for check in report.checks}
         self.assertIn("OpenAI completion stream contains only standard chunks", names)
         self.assertIn("native stream preserves typed Clozn events", names)
-        self.assertIn("trace stored as a content-addressed blob", names)
+        self.assertIn("trace blob exists and matches recorded SHA-256", names)
+
+    def test_deep_exercise_uses_the_forced_receipt_contract(self):
+        report = smoke.Report()
+        base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        rid = smoke._exercise(base, 5, report, deep=True)
+        self.assertEqual(rid, SmokeGatewayHandler.run_id)
+        self.assertTrue(report.ok, report.render())
+        checks = {check.name: check for check in report.checks}
+        self.assertEqual(checks["forced causal receipts"].status, "pass")
+        self.assertEqual(checks["run replay produces a child"].status, "pass")
+
+    def test_persistence_check_rejects_a_blob_with_the_wrong_digest(self):
+        with closing(sqlite3.connect(store._db_path())) as db:
+            row = db.execute("SELECT payload_json FROM runs WHERE id = ?",
+                             (SmokeGatewayHandler.run_id,)).fetchone()
+        payload = json.loads(row[0])
+        blob = store._blob_path(payload["trace_ref"]["sha256"])
+        with open(blob, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        report = smoke.Report()
+        smoke._persistence_checks(report, SmokeGatewayHandler.run_id, "ready")
+        checks = {check.name: check for check in report.checks}
+        self.assertEqual(checks["trace blob exists and matches recorded SHA-256"].status, "fail")
 
     def test_exercise_the_real_gateway_against_a_fake_private_worker(self):
         worker = ThreadingHTTPServer(("127.0.0.1", 0), FakeWorkerHandler)
@@ -250,7 +281,10 @@ class ProductSmokeTests(unittest.TestCase):
             gateway_app.ENGINE, gateway_app.SUB, gateway_app.SUBNAME, static_routes.DEMO = old
 
     def test_managed_smoke_owns_restarts_and_cleans_the_real_process_tree(self):
-        worker_path = os.path.join(self.temp.name, "fake-cloze-server")
+        worker_script = os.path.join(self.temp.name, "fake-cloze-server.py")
+        worker_path = os.path.join(
+            self.temp.name, "fake-cloze-server.cmd" if os.name == "nt" else "fake-cloze-server"
+        )
         worker_source = textwrap.dedent(r'''
             #!/usr/bin/env python3
             import argparse
@@ -321,9 +355,14 @@ class ProductSmokeTests(unittest.TestCase):
 
             Server((args.host, args.port), Handler).serve_forever()
         ''').lstrip()
-        with open(worker_path, "w", encoding="utf-8") as handle:
+        source_path = worker_script if os.name == "nt" else worker_path
+        with open(source_path, "w", encoding="utf-8") as handle:
             handle.write(worker_source)
-        os.chmod(worker_path, 0o755)
+        if os.name == "nt":
+            with open(worker_path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(f'@echo off\r\n"{sys.executable}" "{worker_script}" %*\r\n')
+        else:
+            os.chmod(worker_path, 0o755)
 
         studio = os.path.join(self.temp.name, "managed-studio")
         os.makedirs(os.path.join(studio, "heavn"), exist_ok=True)
@@ -359,6 +398,7 @@ class ProductSmokeTests(unittest.TestCase):
         checks = {row["name"]: row for row in report["checks"]}
         self.assertEqual(checks["worker restart recovery"]["status"], "pass")
         self.assertEqual(checks["generation succeeds after worker restart"]["status"], "pass")
+        self.assertEqual(checks["managed runtime cleanup"]["status"], "pass")
         registry = os.path.join(home, ".clozn", "daemons.json")
         if os.path.isfile(registry):
             with open(registry, encoding="utf-8") as handle:
@@ -380,6 +420,33 @@ class ProductSmokeTests(unittest.TestCase):
             smoke._parse_base("https://127.0.0.1:8080")
         with self.assertRaises(ValueError):
             smoke._parse_base("http://127.0.0.1:8080/v1")
+
+    def test_managed_cleanup_reaches_the_emergency_fallback(self):
+        class StubbornProcess:
+            pid = 99123
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                raise TimeoutError("still running")
+
+            def kill(self):
+                pass
+
+        process = StubbornProcess()
+        entry = {"pid": process.pid, "gateway_pid": 99124, "worker_pid": 99125}
+        with (
+            mock.patch.object(smoke, "_runtime_entry", return_value=entry),
+            mock.patch.object(smoke.subprocess, "run"),
+            mock.patch.object(smoke, "_kill"),
+            mock.patch.object(smoke.os, "getpgid", return_value=process.pid, create=True),
+            mock.patch.object(smoke.os, "killpg", create=True),
+        ):
+            captured = smoke._stop_managed(8123, process)
+        self.assertEqual(captured, entry)
+        self.assertEqual(process.wait_calls, 2)
 
 
 if __name__ == "__main__":

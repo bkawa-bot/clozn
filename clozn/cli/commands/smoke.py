@@ -7,7 +7,9 @@ public protocols and SQLite artifacts, restarts the worker, and stops the whole 
 """
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
+import hashlib
 import json
 import os
 import shutil
@@ -23,7 +25,7 @@ from urllib.parse import urlparse
 
 from clozn.cli.commands.models import resolve_model
 from clozn.cli.engine_process import REPO, _free_port, _kill, _reg_read, find_engine
-from clozn.cli.runtime_process import gateway_health
+from clozn.cli.runtime_process import gateway_health, port_is_open
 
 
 @dataclass
@@ -361,15 +363,25 @@ def _persistence_checks(report: Report, rid: str, expected_text: str) -> None:
     report.add("persisted response matches API response", response_matches,
                f"source={run.get('source')} substrate={run.get('substrate')}")
     try:
-        with sqlite3.connect(store._db_path()) as db:
+        with closing(sqlite3.connect(store._db_path())) as db:
             row = db.execute("SELECT payload_json FROM runs WHERE id = ?", (rid,)).fetchone()
         payload = json.loads(row[0]) if row else {}
         digest = str((payload.get("trace_ref") or {}).get("sha256") or "")
         blob = store._blob_path(digest) if digest else ""
-        report.add("trace stored as a content-addressed blob", bool(blob and os.path.isfile(blob)),
-                   digest or "trace_ref missing")
+        actual = ""
+        if blob and os.path.isfile(blob):
+            hasher = hashlib.sha256()
+            with open(blob, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+            actual = hasher.hexdigest()
+        report.add(
+            "trace blob exists and matches recorded SHA-256",
+            bool(digest and actual == digest),
+            digest if actual == digest else f"recorded={digest or '?'} actual={actual or 'missing'}",
+        )
     except Exception as exc:
-        report.add("trace stored as a content-addressed blob", False, str(exc))
+        report.add("trace blob exists and matches recorded SHA-256", False, str(exc))
 
 
 def _exercise(base: str, timeout: float, report: Report, *, deep: bool = False) -> str | None:
@@ -468,8 +480,22 @@ def _exercise(base: str, timeout: float, report: Report, *, deep: bool = False) 
 
     if deep and rid:
         forced = client.post(f"/runs/{rid}/receipts", {"mode": "forced"})
-        report.add("forced causal receipts", forced.status == 200 and "receipts" in forced.json(),
-                   f"HTTP {forced.status}")
+        forced_doc = forced.json()
+        forced_rows = forced_doc.get("forced_receipts")
+        skipped_rows = forced_doc.get("skipped")
+        forced_ok = (
+            forced.status == 200
+            and forced_doc.get("mode") == "forced"
+            and isinstance(forced_rows, list)
+            and isinstance(skipped_rows, list)
+        )
+        report.add(
+            "forced causal receipts",
+            forced_ok,
+            f"HTTP {forced.status} mode={forced_doc.get('mode') or '?'} "
+            f"receipts={len(forced_rows) if isinstance(forced_rows, list) else '?'} "
+            f"skipped={len(skipped_rows) if isinstance(skipped_rows, list) else '?'}",
+        )
         replay = client.post(f"/runs/{rid}/replay", {"changes": {"greedy": True}})
         replay_doc = replay.json()
         report.add("run replay produces a child", replay.status == 200 and bool(replay_doc.get("id")),
@@ -525,7 +551,77 @@ def _restart_worker(port: int, client: Client, timeout: float, report: Report) -
                    f"HTTP {post.status}; readiness transition observed={saw_not_ready}")
 
 
-def _stop_managed(port: int, process: subprocess.Popen) -> None:
+def _pid_alive(pid) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+            kernel32.GetExitCodeProcess.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32))
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_uint32()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return False
+                return exit_code.value == 259  # STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _cleanup_state(port: int, process: subprocess.Popen, entry: dict) -> tuple[bool, str]:
+    pids = {
+        int(value)
+        for key in ("pid", "gateway_pid", "worker_pid")
+        if (value := entry.get(key)) is not None and str(value).isdigit()
+    }
+    live_pids = sorted(pid for pid in pids if _pid_alive(pid))
+    worker_port = int(entry.get("worker_port") or 0)
+    open_ports = [candidate for candidate in (int(port), worker_port)
+                  if candidate and port_is_open(candidate)]
+    registered = _runtime_entry(port, timeout=0.2) is not None
+    supervisor_alive = process.poll() is None
+    ok = not registered and not supervisor_alive and not live_pids and not open_ports
+    detail = (
+        f"registry={'present' if registered else 'clear'} "
+        f"supervisor={'alive' if supervisor_alive else 'stopped'} "
+        f"live_pids={live_pids or 'none'} open_ports={open_ports or 'none'}"
+    )
+    return ok, detail
+
+
+def _wait_for_cleanup(port: int, process: subprocess.Popen, entry: dict,
+                      timeout: float = 10.0) -> tuple[bool, str]:
+    deadline = time.monotonic() + timeout
+    state = (False, "cleanup not checked")
+    while time.monotonic() < deadline:
+        state = _cleanup_state(port, process, entry)
+        if state[0]:
+            return state
+        time.sleep(0.1)
+    return _cleanup_state(port, process, entry)
+
+
+def _stop_managed(port: int, process: subprocess.Popen) -> dict:
     entry = _runtime_entry(port, timeout=2.0)
     try:
         subprocess.run(
@@ -540,7 +636,7 @@ def _stop_managed(port: int, process: subprocess.Popen) -> None:
         pass
     try:
         process.wait(timeout=8)
-        return
+        return entry or {}
     except Exception:
         pass
     for key in ("gateway_pid", "worker_pid", "pid"):
@@ -562,6 +658,7 @@ def _stop_managed(port: int, process: subprocess.Popen) -> None:
                 os.killpg(os.getpgid(process.pid), signal.SIGKILL)
         except Exception:
             pass
+    return entry or {}
 
 
 def _parse_base(url: str) -> tuple[str, int]:
@@ -659,7 +756,9 @@ def cmd_smoke(args):
             report.skip("worker restart recovery", "disabled (automatic only for managed smoke)")
     finally:
         if managed and process is not None:
-            _stop_managed(port, process)
+            cleanup_entry = _stop_managed(port, process)
+            cleanup_ok, cleanup_detail = _wait_for_cleanup(port, process, cleanup_entry)
+            report.add("managed runtime cleanup", cleanup_ok, cleanup_detail)
         if temp is not None:
             temp.cleanup()
 

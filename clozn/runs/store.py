@@ -6,6 +6,7 @@ blob.  Old ``run_*.json`` journals are accepted only through :func:`import_json_
 """
 from __future__ import annotations
 
+from contextlib import closing
 import glob
 import hashlib
 import json
@@ -55,7 +56,7 @@ def _blob_root() -> str:
 def _ensure() -> None:
     os.makedirs(RUNS_DIR, exist_ok=True)
     os.makedirs(_blob_root(), exist_ok=True)
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.executescript(
             """
             CREATE TABLE IF NOT EXISTS schema_meta (
@@ -184,7 +185,7 @@ def _put(rec: dict, *, replace: bool = False, ignore: bool = False) -> bool:
         statement = _INSERT.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1)
     elif ignore:
         statement = _INSERT.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         before = db.total_changes
         db.execute(statement, _row_values(rec, payload_json))
         return db.total_changes > before
@@ -242,7 +243,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
 
 def _prune() -> None:
     _ensure()
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.execute(
             "DELETE FROM runs WHERE id IN ("
             "SELECT id FROM runs ORDER BY created_ts DESC, id DESC LIMIT -1 OFFSET ?)",
@@ -254,7 +255,7 @@ def list_runs(limit: int = 50, *, include_replays: bool = True) -> list[dict]:
     """Newest-first summaries, filtered and limited in SQLite rather than in Python."""
     _ensure()
     where = "" if include_replays else "WHERE source <> 'replay'"
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         rows = db.execute(
             f"SELECT payload_json FROM runs {where} ORDER BY created_ts DESC, id DESC LIMIT ?",
             (max(0, int(limit)),),
@@ -272,7 +273,7 @@ def get_run(rid: str) -> dict | None:
     if not _valid_rid(rid):
         return None
     _ensure()
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         row = db.execute("SELECT payload_json FROM runs WHERE id = ?", (rid,)).fetchone()
     if row is None:
         return None
@@ -301,7 +302,7 @@ def iter_runs(*, limit: int | None = None) -> list[dict]:
     if limit is not None:
         sql += " LIMIT ?"
         params = (max(0, int(limit)),)
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         rows = db.execute(sql, params).fetchall()
     out = []
     for row in rows:

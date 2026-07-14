@@ -3,8 +3,8 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliar
 set "PATH=%PATH%;C:\Program Files\CMake\bin;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
 cd /d "%~dp0"
 echo === configure (CPU ggml+serve) ===
-cmake -S . -B build-serve -G Ninja -DCMAKE_BUILD_TYPE=Release -DCLOZE_BUILD_GGML=ON -DCLOZE_BUILD_SERVE=ON
+cmake -S . -B build-serve -G Ninja -DCMAKE_BUILD_TYPE=Release -DCLOZE_BUILD_GGML=ON -DCLOZE_BUILD_SERVE=ON -DGGML_CUDA=OFF
 if errorlevel 1 (echo CONFIGURE_FAILED & exit /b 2)
 echo === build ===
-cmake --build build-serve
+cmake --build build-serve --target cloze-server
 echo === BUILD_DONE exit=%errorlevel% ===

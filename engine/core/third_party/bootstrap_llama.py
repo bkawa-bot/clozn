@@ -37,14 +37,64 @@ def _run(cmd: list[str], cwd: str | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
+def _patches() -> list[str]:
+    return sorted(f for f in os.listdir(PATCH_DIR) if f.endswith(".patch"))
+
+
+def _verify() -> bool:
+    """Verify that DEST is the pinned checkout with every tracked patch applied."""
+    git_dir = os.path.join(DEST, ".git")
+    if not os.path.isdir(git_dir):
+        print(
+            f"ERROR: {DEST} has no Git metadata, so its pinned source revision cannot be verified. "
+            "Run with --force to reconstruct it.",
+            file=sys.stderr,
+        )
+        return False
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=DEST, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    if head != COMMIT:
+        print(
+            f"ERROR: llama.cpp HEAD is {head[:12]}, expected {COMMIT[:12]}. "
+            "Run with --force to reconstruct it.",
+            file=sys.stderr,
+        )
+        return False
+
+    for patch in _patches():
+        path = os.path.join(PATCH_DIR, patch)
+        checked = subprocess.run(
+            ["git", "apply", "--check", "--reverse", path],
+            cwd=DEST,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if checked.returncode != 0:
+            print(
+                f"ERROR: tracked patch is not applied cleanly: {patch}\n{checked.stderr.strip()}",
+                file=sys.stderr,
+            )
+            return False
+
+    checked = subprocess.run(["git", "diff", "--check"], cwd=DEST)
+    if checked.returncode != 0:
+        print("ERROR: patched llama.cpp tree fails git diff --check", file=sys.stderr)
+        return False
+
+    print(f"verified llama.cpp @ {TAG} ({COMMIT[:12]}) + {len(_patches())} tracked patch(es)")
+    return True
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Reconstruct vendored llama.cpp @ pinned commit + CLOZE patches.")
     ap.add_argument("--force", action="store_true", help="remove any existing llama.cpp and re-clone")
     args = ap.parse_args(argv)
 
     if os.path.isdir(DEST) and os.listdir(DEST) and not args.force:
-        print(f"llama.cpp already present at {DEST}\n  (use --force to wipe and re-fetch). Nothing to do.")
-        return 0
+        return 0 if _verify() else 1
     if os.path.isdir(DEST):
         shutil.rmtree(DEST)
 
@@ -58,14 +108,16 @@ def main(argv=None) -> int:
               f"re-pin COMMIT before trusting the build.", file=sys.stderr)
         return 1
 
-    patches = sorted(f for f in os.listdir(PATCH_DIR) if f.endswith(".patch"))
+    patches = _patches()
     for p in patches:
         path = os.path.join(PATCH_DIR, p)
         _run(["git", "apply", "--check", path], cwd=DEST)      # fail loudly if the base drifted
         _run(["git", "apply", path], cwd=DEST)
         print(f"  applied {p}")
 
-    print(f"\nOK: llama.cpp @ {TAG} ({COMMIT[:12]}) + {len(patches)} patch(es) ready at {DEST}")
+    if not _verify():
+        return 1
+    print(f"\nOK: llama.cpp ready at {DEST}")
     return 0
 
 

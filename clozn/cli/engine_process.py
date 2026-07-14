@@ -30,7 +30,12 @@ BUILDS = [("build-gpu", True), ("build-cuda", True),
 
 
 def find_engine(prefer_gpu=True) -> tuple[str, list[str], bool]:
-    """-> (exe_path, dll_dirs, is_gpu). Raises if no build exists."""
+    """-> (exe_path, dll_dirs, is_gpu).
+
+    ``prefer_gpu=True`` prefers a GPU build but may fall back to CPU.  ``False`` is
+    the implementation of the CLI's documented ``--cpu`` contract and therefore
+    refuses to return a GPU worker.
+    """
     from clozn.cli import main as ctx
     override = os.environ.get("CLOZN_ENGINE_BIN")
     if override:
@@ -40,6 +45,11 @@ def find_engine(prefer_gpu=True) -> tuple[str, list[str], bool]:
         root = os.path.dirname(exe)
         bins = [path for path in (root, os.path.join(root, "bin")) if os.path.isdir(path)]
         gpu = os.environ.get("CLOZN_ENGINE_GPU", "").strip().lower() in ("1", "true", "yes", "on")
+        if not prefer_gpu and gpu:
+            raise ctx.CloznError(
+                "--cpu was requested, but CLOZN_ENGINE_BIN is marked as a GPU worker; "
+                "point it at a CPU build or unset CLOZN_ENGINE_GPU"
+            )
         return exe, bins, gpu
     cands = []
     for sub, gpu in BUILDS:
@@ -55,7 +65,15 @@ def find_engine(prefer_gpu=True) -> tuple[str, list[str], bool]:
                 break
     if not cands:
         raise ctx.CloznError("no engine found. See docs/DEVELOPMENT.md, or set CLOZN_ENGINE_BIN.")
-    cands.sort(key=lambda c: (0 if c[2] else 1) if prefer_gpu else (1 if c[2] else 0))
+    if not prefer_gpu:
+        cands = [candidate for candidate in cands if not candidate[2]]
+        if not cands:
+            raise ctx.CloznError(
+                "--cpu was requested, but no CPU engine build was found. "
+                "Build engine/core/build-serve as described in docs/DEVELOPMENT.md."
+            )
+    else:
+        cands.sort(key=lambda candidate: 0 if candidate[2] else 1)
     return cands[0]
 
 

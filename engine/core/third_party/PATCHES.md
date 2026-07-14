@@ -23,6 +23,11 @@ patch's pre-image blob hashes — `include/llama.h` `27e4806`, `src/llama-contex
     python engine/core/third_party/bootstrap_llama.py          # shallow-clone the pin + apply patches
     python engine/core/third_party/bootstrap_llama.py --force  # wipe and redo
 
+Every invocation verifies an existing tree rather than trusting a nonempty directory. The checkout must
+retain its `.git` metadata, resolve to the pinned commit, pass `git diff --check`, and allow every tracked
+patch to be reverse-applied. An unverifiable or drifted tree is refused and must be reconstructed with
+`--force`.
+
 ## The patch (`patches/0001-llama_get_logits_tensor.patch`)
 
 One small **additive** change (marked `CLOZE PATCH` in-source across `include/llama.h` +

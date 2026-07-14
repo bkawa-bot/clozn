@@ -123,6 +123,26 @@ def raw_gateway_request(method: str, *, path="/jlens", body=b"", headers=None):
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_force_cpu_refuses_a_gpu_only_build(self):
+        with tempfile.TemporaryDirectory(prefix="clozn-engine-select-") as root:
+            gpu_root = os.path.join(root, "build-gpu")
+            os.makedirs(gpu_root)
+            open(os.path.join(gpu_root, "cloze-server.exe"), "wb").close()
+            with mock.patch.object(engine_process, "ENGINE_CORE", root):
+                with self.assertRaisesRegex(Exception, "no CPU engine build"):
+                    engine_process.find_engine(prefer_gpu=False)
+
+    def test_force_cpu_selects_the_cpu_build(self):
+        with tempfile.TemporaryDirectory(prefix="clozn-engine-select-") as root:
+            for build in ("build-gpu", "build-serve"):
+                build_root = os.path.join(root, build)
+                os.makedirs(build_root)
+                open(os.path.join(build_root, "cloze-server.exe"), "wb").close()
+            with mock.patch.object(engine_process, "ENGINE_CORE", root):
+                executable, _dlls, gpu = engine_process.find_engine(prefer_gpu=False)
+            self.assertFalse(gpu)
+            self.assertIn("build-serve", executable)
+
     def test_runtime_config_copies_and_freezes_flags(self):
         flags = {"mask": 7}
         config = runtime_process.RuntimeConfig(model="m.gguf", public_port=8080, flags=flags)

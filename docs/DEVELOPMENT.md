@@ -14,6 +14,9 @@ It reports all missing inputs together. A source checkout needs four things:
 3. a C++17 toolchain plus CMake 3.18 or newer; and
 4. at least one GGUF known to `clozn models`.
 
+The reproducible reference model, immutable download URL, SHA-256, license, clean Linux commands, and
+manual/nightly workflow are documented in [`REAL_RUNTIME_SMOKE.md`](REAL_RUNTIME_SMOKE.md).
+
 ## Reconstruct and build the CPU worker
 
 The upstream runtime is intentionally not copied into this repository. Reconstruct the exact pin and
