@@ -97,7 +97,7 @@ def iso(tmp_path, monkeypatch):
 def _make_sub(monkeypatch, model, steer_layer=14):
     eng = _HealthSteerEngine(model)
     steer = _FakeSteerLayer(layer=steer_layer)
-    monkeypatch.setattr(cs, "ENGINE_QWEN", eng)
+    monkeypatch.setattr(cs, "ENGINE", eng)
     monkeypatch.setattr(cs, "_engine_steer", lambda: steer)
     return cs.EngineSubstrate(), steer
 

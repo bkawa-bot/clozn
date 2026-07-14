@@ -56,8 +56,8 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # a branch re-generates -> needs the qwen substrate
-            h._json(503, {"error": "branch needs the qwen substrate"})
+        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # a branch regenerates through the product model
+            h._json(503, {"error": "branch requires a ready product model worker"})
             return True
         if "turn" not in body:
             h._json(400, {"error": "need a branch turn"})

@@ -46,6 +46,7 @@ LEGACY_PREFIX_PATHS = [os.path.join(_CLOZN, "studio_memory.pt"),
                        os.path.join(_CLOZN, "studio_dream_memory.pt")]
 
 MODES = ("prompt", "internalized")
+PRODUCT_MODES = ("prompt",)
 
 BLOCK_STYLES = ("soft", "strict")
 DEFAULT_BLOCK_STYLE = "soft"      # unchanged wording; strict is opt-in (see module docstring)
@@ -64,8 +65,9 @@ def _load_settings() -> dict:
 
 
 def get_mode() -> str:
-    """The active memory mode: the persisted choice if one exists, else the migration default
-    ("internalized" iff a trained prefix already lives on disk, "prompt" for a fresh install)."""
+    """Return prompt-card mode in product processes; honor the persisted lab choice otherwise."""
+    if os.environ.get("CLOZN_RUNTIME_KIND") == "product":
+        return "prompt"
     mode = _load_settings().get("memory_mode")
     if mode in MODES:
         return mode
@@ -78,9 +80,10 @@ def get_mode() -> str:
 
 
 def set_mode(mode: str) -> bool:
-    """Persist the mode choice (merging into any other settings keys). False on an invalid mode or IO
-    failure (never raises) -- the caller reports, the request survives."""
-    if mode not in MODES:
+    """Persist a valid mode; product processes refuse the lab-only internalized mode."""
+    if mode not in MODES or (
+        os.environ.get("CLOZN_RUNTIME_KIND") == "product" and mode not in PRODUCT_MODES
+    ):
         return False
     return set_setting("memory_mode", mode)
 

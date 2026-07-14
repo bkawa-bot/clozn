@@ -12,7 +12,9 @@ from clozn.server import app as ctx
 def try_get(h, p):
     if p == "/memory/mode":          # which mechanism carries the cards (works on ANY substrate)
         import clozn.memory.mode as memory_mode
-        h._json(200, {"mode": ctx._memory_mode(), "modes": list(memory_mode.MODES)})
+        modes = memory_mode.MODES if getattr(ctx, "RUNTIME_KIND", "product") == "lab" \
+            else memory_mode.PRODUCT_MODES
+        h._json(200, {"mode": ctx._memory_mode(), "modes": list(modes)})
         return True
     if p.startswith("/memory/") and p.endswith("/runs"):   # E1: which runs used this card
         cid = p[len("/memory/"):-len("/runs")]
@@ -25,6 +27,10 @@ def try_post(h, p, body):
     if p == "/memory/mode":   # swap the memory mechanism (persisted; takes effect immediately)
         import clozn.memory.mode as memory_mode
         mode = str(body.get("mode", "")).strip().lower()
+        if getattr(ctx, "RUNTIME_KIND", "product") != "lab" and mode != "prompt":
+            h._json(410, {"error": "internalized soft-prefix memory is lab-only",
+                          "active": "prompt", "hint": "use `clozn lab qwen` for prefix experiments"})
+            return True
         if mode not in memory_mode.MODES:
             h._json(400, {"error": f"unknown mode (want one of {list(memory_mode.MODES)})"})
             return True

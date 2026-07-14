@@ -1,8 +1,8 @@
 """Engine-backed chat + steering + model routing, and the two studio chat surfaces that log a run
 (POST /say for the HF/qwen memory model, POST /denoise for the Dream diffusion window). `/engine/*` here
 covers WRITE/generation calls (as opposed to the pure readouts in routes/readouts.py): observe (edit a
-residual, watch the prediction move), the tone dials applied via the engine (axes + A/B check), and THE
-HYBRID engine chat (GGUF generation with the HF-trained memory prefix/prompt-block injected). `/say` and
+residual, watch the prediction move), the tone dials applied via the engine (axes + A/B check), and
+native GGUF chat with prompt-card memory. `/say` and
 `/denoise` dispatch to whichever substrate is active (SUB.handle) and additionally log the run -- unlike
 the fully generic SUB.handle(path, body) fallback (still in clozn.server.app's do_POST), these two shape
 a specific response AND capture a trace/memory record for the Run Inspector. Mechanical extraction of the
@@ -76,12 +76,12 @@ def try_post(h, p, body):
         from clozn.behavior.steering.axes import AXES
         es = ctx._engine_steer()
         h._json(200, {"axes": [{"name": k, "poles": AXES[k]["poles"]} for k in AXES],
-                     "ready": bool(es and es.ready), "engine": bool(ctx.ENGINE_QWEN)})
+                     "ready": bool(es and es.ready), "engine": bool(ctx.ENGINE)})
         return True
     if p == "/engine/steer/check":   # A/B one dial on the engine GGUF: baseline vs steered generation
         es = ctx._engine_steer()
         if es is None:
-            h._json(502, {"error": "no engine configured (set CLOZN_ENGINE_QWEN_PORT)"})
+            h._json(502, {"error": "model worker unavailable (CLOZN_ENGINE_PORT)"})
             return True
         try:
             prompt = str(body.get("prompt", "Tell me about the city at night."))[:300]
@@ -94,8 +94,8 @@ def try_post(h, p, body):
         except Exception as e:
             h._json(502, {"error": f"engine-steer: {e}"})
         return True
-    if p == "/engine/chat":   # THE HYBRID: chat on the GGUF via the engine, with the HF-trained memory injected
-        if ctx.ENGINE_QWEN is None:
+    if p == "/engine/chat":   # Native chat alias: GGUF generation with prompt-card memory
+        if ctx.ENGINE is None:
             h._json(502, {"error": "no engine configured"})
             return True
         msgs = body.get("messages", [])
@@ -105,42 +105,14 @@ def try_post(h, p, body):
             mx = int(body.get("max_tokens", 220))
             kw = {}
             mem = getattr(ctx.SUB, "memory", None) if ctx.SUB else None
-            if ctx._memory_mode() == "prompt":
-                # PROMPT MODE on the engine: the cards ride as the system block INSIDE the chat
-                # template (compiled straight from the card store -- no HF model needed at all),
-                # and the trained prefix is NOT injected. Strength maps to on/off; the topic gate
-                # omits the block off-topic, exactly as on the HF path. This also means a FRESH
-                # install (no trained prefix) finally gets memory over the engine.
-                ms = float(getattr(mem, "memory_strength", 1.0)) if mem is not None \
-                    else ctx._disk_memory()[1]
-                block, applied, gate = ctx._prompt_block_for(mem, ctx._last_user(msgs), strength=ms)
-                assembled = ctx._inject_block(msgs, block)
-                memout.update(mode="prompt", applied=applied, gate=gate, strength=ms,
-                              prompt_block=block, assembled_messages=assembled)
-                prompt = ctx._engine_tmpl(ctx.ENGINE_QWEN, assembled)   # the loaded GGUF's own template, not Qwen ChatML
-            else:
-                prompt = ctx._engine_tmpl(ctx.ENGINE_QWEN, msgs)        # (the internalized-prefix path is Qwen-trained,
-                #                                                  but the CHAT TEMPLATE is still the model's own)
-                # MEMORY: the live HF prefix if a qwen substrate is loaded, else the SAVED prefix from
-                # disk -- so engine-chat works with NO HF model resident (the pure-engine substrate).
-                if mem is not None and getattr(mem, "prefix", None) is not None:
-                    prefix = mem.prefix.detach().float().cpu()
-                    ms = float(getattr(mem, "memory_strength", 1.0))
-                else:
-                    prefix, ms = ctx._disk_memory()
-                # TOPIC RELEVANCE gate on the injection strength (mirror the HF chat's gate="auto"):
-                # scale ms by how on-topic the last user turn is vs the active rules. Only when a LIVE
-                # memory with rules is present (the qwen substrate) -- the pure-engine/disk path has no
-                # rule texts to gate against, so it degrades to no-gating (rel==1.0), the prior
-                # behavior. Defensive: any failure leaves ms unscaled.
-                try:
-                    if mem is not None and getattr(mem, "rules", None):
-                        ms = ms * float(mem._gate(ctx._last_user(msgs)))
-                except Exception:
-                    pass
-                if prefix is not None:             # inject the trained soft prefix (dial x relevance)
-                    kw = {"prefix_embd": (prefix * ms).flatten().tolist(),
-                          "prefix_rows": int(prefix.shape[0])}
+            # Product memory is always the legible card block. Soft-prefix training/application lives
+            # only in the lab, so this route cannot import Torch or inject a stale .pt artifact.
+            ms = float(getattr(mem, "memory_strength", 1.0)) if mem is not None else 1.0
+            block, applied, gate = ctx._prompt_block_for(mem, ctx._last_user(msgs), strength=ms)
+            assembled = ctx._inject_block(msgs, block)
+            memout.update(mode="prompt", applied=applied, gate=gate, strength=ms,
+                          prompt_block=block, assembled_messages=assembled)
+            prompt = ctx._engine_tmpl(ctx.ENGINE, assembled)
             # backlog #5: record the EXACT rendered chat-template string the model saw (both memory
             # modes render one). _log_run reads memout["final_prompt"] -> the run record's final_prompt.
             memout["final_prompt"] = prompt
@@ -158,14 +130,14 @@ def try_post(h, p, body):
             # Generate + capture a per-token trace alongside (B3). Reply is byte-identical to the
             # plain complete(); the trace feeds the Run Inspector timeline. steps=[] (diffusion, or a
             # stream hiccup) -> runlog stores a clean empty trace.
-            reply_raw, steps, finish, _divinfo = ctx._engine_complete_traced(ctx.ENGINE_QWEN, prompt, mx, kw)
+            reply_raw, steps, finish, _divinfo = ctx._engine_complete_traced(ctx.ENGINE, prompt, mx, kw)
             reply = reply_raw.strip()
             # Pass the raw step list; runlog.record normalizes it -> {tokens, confidence, alternatives}.
             h._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0, trace=steps,
                        mem_out=memout, finish_reason=finish)
-            # "memory" == did memory actually ride this reply (block in prompt mode, prefix otherwise)
+            # "memory" == did the prompt-card block actually ride this reply.
             h._json(200, {"reply": reply,
-                         "memory": bool(memout.get("applied")) or bool(kw.get("prefix_embd")),
+                         "memory": bool(memout.get("applied")),
                          "tone": bool(kw.get("steer_vec")), "via": "engine (GGUF)"})
         except Exception as e:
             h._log_run("engine_chat", msgs, "", "clozn-qwen (engine)", t0, error=str(e), mem_out=memout)

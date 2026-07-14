@@ -2,7 +2,7 @@
 
 Run the factual probe set through a LIVE clozn endpoint and print outcome-grounded calibration (Brier /
 ECE-vs-truth / risk-coverage for selective generation). This is the reproducible version of the harness in
-eval.calibration: it needs a running clozn studio because the per-item score is the model's answer-span
+eval.calibration: it needs a running Clozn gateway because the per-item score is the model's answer-span
 confidence, read from each probe's logged run trace (the OpenAI wire format omits per-token probabilities).
 
 Honesty: the built-in sets are SMALL (tens of items). Treat the numbers as a directional demonstration
@@ -68,7 +68,7 @@ def _print(out: dict, which: str, score: str, target_error: float = 0.05) -> Non
     print(f"\nclozn.eval.bench — set={which}  score={score}-token confidence  n={out['n']}"
           f"  (unmatched={out['unmatched']})")
     if not rep.get("available"):
-        print("  no gradeable items (is the studio running and logging traces?)")
+        print("  no gradeable items (is the Clozn gateway running and logging traces?)")
         return
     for r in sorted(out["rows"], key=lambda r: r["score"]):     # least-confident first — the abstain tail
         tag = "OK  " if r["correct"] else "MISS"
@@ -91,7 +91,7 @@ def _print(out: dict, which: str, score: str, target_error: float = 0.05) -> Non
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Outcome-grounded calibration on a live clozn endpoint.")
-    ap.add_argument("--url", default="http://127.0.0.1:8090", help="clozn studio base URL")
+    ap.add_argument("--url", default="http://127.0.0.1:8080", help="Clozn gateway base URL")
     ap.add_argument("--set", dest="which", default="arith",
                     choices=["easy", "hard", "arith", "both", "all"])
     ap.add_argument("--score", default="min", choices=["min", "mean"])

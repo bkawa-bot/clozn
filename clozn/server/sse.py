@@ -7,9 +7,11 @@ Reads the live substrate via `clozn.server.app` (not a captured import) so a sub
 directly in app.py.
 """
 import json
+import secrets
 import time
 
 from clozn.server import app as ctx
+from clozn.server.http_policy import send_cors_headers
 
 
 def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
@@ -30,18 +32,24 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")
     handler.send_header("Cache-Control", "no-cache")
-    handler.send_header("Access-Control-Allow-Origin", "*")
+    send_cors_headers(handler)
     handler.end_headers()
 
-    def chunk(delta, finish=None):
-        o = {"id": "chatcmpl-clozn", "object": "chat.completion.chunk", "model": model,
+    stream_id = "chatcmpl-" + secrets.token_hex(8)
+    created = int(time.time())
+
+    def chunk(delta, finish=None, extension=None):
+        o = {"id": stream_id, "object": "chat.completion.chunk", "created": created, "model": model,
              "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        if extension:
+            o.update(extension)
         handler.wfile.write(("data: " + json.dumps(o) + "\n\n").encode("utf-8"))
         handler.wfile.flush()
 
-    def side_frame(obj):        # a non-OpenAI side-channel frame (clients that don't know it skip it)
-        handler.wfile.write(("data: " + json.dumps({"clozn_lens": obj}) + "\n\n").encode("utf-8"))
-        handler.wfile.flush()
+    def side_frame(obj):
+        # Keep the opt-in extension inside a valid chat.completion.chunk envelope. Strict clients can
+        # ignore the extra top-level field without encountering a foreign event shape on /v1/*.
+        chunk({}, extension={"clozn_lens": obj})
 
     lens_kw = {}
     if lens:

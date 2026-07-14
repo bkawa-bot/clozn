@@ -19,7 +19,7 @@ from clozn.server import app as ctx
 
 
 def _provider():
-    """The live DirProvider, or None when no engine is configured (CLOZN_ENGINE_QWEN_PORT unset).
+    """The live DirProvider, or None when the product model worker is unavailable.
     Module-level on purpose: tests monkeypatch this one seam to a fake provider."""
     cs = ctx._engine_concept_steer()
     if cs is None:
@@ -57,7 +57,7 @@ def try_post(h, p, body):
         provider = _provider()
         if provider is None:
             h._json(200, {"ok": False, "reason": "anchored fit needs a running engine with a J-lens "
-                                                 "sidecar (CLOZN_ENGINE_QWEN_PORT + --jlens)"})
+                                                 "sidecar (CLOZN_ENGINE_PORT + --jlens)"})
             return True
         try:
             k = int(body.get("k", anchored.K_DEFAULT))

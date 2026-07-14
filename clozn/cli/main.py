@@ -7,8 +7,8 @@ The fast runtime is the C++ engine (cloze-server.exe). This wraps it so the dail
     clozn serve <model> [--port 8080]  bring up the OpenAI-compatible endpoint, print the base URL
     clozn models                       discover local GGUFs and the backend that would run them
 
-Stdlib only (urllib/subprocess/json) -- no torch, no pip install -- so it stays dependency-free and quick.
-It finds the engine build (GPU preferred), puts the right DLLs on PATH, picks per-model flags (diffusion
+The CLI/supervisor path uses no Torch. It finds the engine build (GPU preferred), puts the right DLLs on
+PATH, picks per-model flags (diffusion
 mask tokens, etc.), reports honestly what it's running on, and fails with one actionable line instead of a
 stack trace. Model dirs: $CLOZN_MODELS, ~/.clozn/models, <repo>/models, ~/.clozn/config.json["model_dirs"].
 
@@ -37,13 +37,12 @@ class CloznError(Exception):
 # full circular-import trace this depends on. Order also matters *between* these: commands.serve/run/explain
 # import names directly off commands.models (and commands.run), so models/run must load first.
 #
-# Several of these (_free_port, _save_trace, format_explain, _SPARK, ...) exist here purely as stable
+# Several of these (_free_port, format_explain, _SPARK, ...) exist here purely as stable
 # re-exports: CLI tests written against the pre-split flat module call `clozn.cli.main.<name>` directly, and
 # since none of them are mutated globals (they're functions/constants, not DIM/BOLD/RST/COLOR), a plain
 # import is safe -- a function always reads its OWN defining module's globals, never a stale copy of them.
 from clozn.cli import formatting as fmt                                                       # noqa: E402
 from clozn.cli.engine_process import _free_port                                               # noqa: E402
-from clozn.cli.trace_io import _save_trace                                                    # noqa: E402
 from clozn.cli.formatting import _C_BLUE, _C_HOT, _C_PALE, _SPARK, _conf_rgb, _heatmap_lines   # noqa: E402,F401
 from clozn.cli.formatting import _paint, _paint_sparkline, _sparkline, _stream_token           # noqa: E402,F401
 from clozn.cli.commands.models import cmd_models, cmd_pull, cmd_plan, format_plan              # noqa: E402
@@ -58,6 +57,9 @@ from clozn.cli.commands.preferences import cmd_preferences, format_preferences  
 from clozn.cli.commands.test import cmd_test                                                  # noqa: E402
 from clozn.cli.commands.quant_check import cmd_quant_check, add_subparser as _add_quant_check  # noqa: E402,F401
 from clozn.cli.commands.eval import cmd_eval, add_subparser as _add_eval                       # noqa: E402,F401
+from clozn.cli.commands.migrate import cmd_migrate_runs                                        # noqa: E402
+from clozn.cli.commands.lab import cmd_lab                                                      # noqa: E402
+from clozn.cli.commands.smoke import cmd_smoke                                                  # noqa: E402
 
 
 def build_parser():
@@ -101,17 +103,39 @@ def build_parser():
                           "bandwidth assumption -- not implemented yet (prints a stub explaining why), "
                           "never boots anything")
     ppl.set_defaults(fn=cmd_plan)
-    pst = sub.add_parser("studio", help="launch Clozn Studio (the glass-box UI + the endpoint your tools connect to)")
-    pst.add_argument("substrate", nargs="?", default=None, help="qwen (default) | dream | engine")
+    pst = sub.add_parser("studio", help="attach to the Studio served by a running Clozn runtime")
     pst.add_argument("--port", type=int, default=0); pst.add_argument("--open", action="store_true", help="open the UI in your browser")
     pst.set_defaults(fn=cmd_studio)
-    sub.add_parser("ps", help="list running serve daemons").set_defaults(fn=cmd_ps)
-    pstop = sub.add_parser("stop", help="stop a serve daemon (by model name, port, or 'all')")
+    plab = sub.add_parser("lab", help="launch an optional PyTorch workbench (never a product API)")
+    plab.add_argument("substrate", choices=("qwen", "dream"))
+    plab.add_argument("--port", type=int, default=0)
+    plab.add_argument("--open", action="store_true", help="open the workbench in your browser")
+    plab.set_defaults(fn=cmd_lab)
+    psmoke = sub.add_parser("smoke", help="live acceptance test for the one-gateway product runtime")
+    psmoke.add_argument("model", nargs="?", help="model name/path; omitted when attaching with --url")
+    psmoke.add_argument("--url", default=None, help="attach to an existing gateway instead of launching one")
+    psmoke.add_argument("--port", type=int, default=0, help="managed gateway port (default: choose a free port)")
+    psmoke.add_argument("--cpu", action="store_true", help="force the CPU worker build")
+    psmoke.add_argument("--preflight", action="store_true", help="only audit model/build/asset prerequisites")
+    psmoke.add_argument("--deep", action="store_true", help="also exercise forced receipts and replay")
+    restart = psmoke.add_mutually_exclusive_group()
+    restart.add_argument("--restart-worker", dest="restart_worker", action="store_true",
+                         help="kill and recover the registered private worker")
+    restart.add_argument("--no-restart-worker", dest="restart_worker", action="store_false",
+                         help="skip the worker recovery check")
+    psmoke.add_argument("--timeout", type=float, default=120.0, help="per-request timeout in seconds")
+    psmoke.add_argument("--startup-timeout", type=float, default=240.0,
+                        help="startup/restart timeout in seconds")
+    psmoke.add_argument("--json", action="store_true", help="print a machine-readable report")
+    psmoke.set_defaults(fn=cmd_smoke, restart_worker=None)
+    sub.add_parser("ps", help="list running product runtimes").set_defaults(fn=cmd_ps)
+    pstop = sub.add_parser("stop", help="stop a product runtime (by model name, port, or 'all')")
     pstop.add_argument("which"); pstop.set_defaults(fn=cmd_stop)
+    pmig = sub.add_parser("migrate-runs", help="one-shot import of the old run_*.json journal into SQLite")
+    pmig.add_argument("path", nargs="?", default=None, help="legacy JSON directory (default ~/.clozn/runs)")
+    pmig.set_defaults(fn=cmd_migrate_runs)
     pt = sub.add_parser("trace", help="inspect the last run journal entry's confidence timeline")
     pt.add_argument("--list", action="store_true", help="list recent run journal entries instead of showing the last")
-    pt.add_argument("--legacy-cache", action="store_true",
-                    help="read the old ~/.clozn/traces cache instead of the shared ~/.clozn/runs journal")
     pt.set_defaults(fn=cmd_trace)
     pb = sub.add_parser("branch", help="re-run from an uncertain point on the alternative (the road not taken)")
     pb.add_argument("--at", type=int, default=None, help="token index to fork at (default: the most uncertain)")
@@ -119,20 +143,20 @@ def build_parser():
     pb.add_argument("--max", type=int, default=80); pb.add_argument("--cpu", action="store_true")
     pb.set_defaults(fn=cmd_branch)
     pe = sub.add_parser("explain", help="explain a run: hesitations, active influences, concepts "
-                        "(needs `clozn studio` running)")
+                        "(needs a running Clozn gateway)")
     pe.add_argument("run_id", nargs="?", default=None, help="run id, as shown in the Studio's Runs list")
     pe.add_argument("--last", action="store_true", help="use the most recently recorded run")
-    pe.add_argument("--port", type=int, default=0, help="Studio port (default 8090)")
+    pe.add_argument("--port", type=int, default=0, help="Clozn gateway port (default 8080)")
     pe.add_argument("--why", action="store_true", help="also generate the accountable-self narration (M4): "
                     "a receipt-constrained \"why\", diffed against an independent judge and flagged wherever "
                     "it overclaims. Opt-in -- unlike the rest of `explain`, this GENERATES (two model calls; "
-                    "needs the qwen substrate loaded in `clozn studio`)")
+                    "needs a running Clozn gateway)")
     pe.set_defaults(fn=cmd_explain)
     ppref = sub.add_parser("preferences", help="review learned-preference suggestions the model proposes "
-                           "from your quick-repairs (needs `clozn studio` running)")
+                           "from your quick-repairs (needs a running Clozn gateway)")
     ppref.add_argument("--approve", metavar="ID", default=None, help="approve a proposal by id (persists the dial)")
     ppref.add_argument("--dismiss", metavar="ID", default=None, help="dismiss a proposal by id")
-    ppref.add_argument("--port", type=int, default=0, help="Studio port (default 8090)")
+    ppref.add_argument("--port", type=int, default=0, help="Clozn gateway port (default 8080)")
     ppref.set_defaults(fn=cmd_preferences)
     pte = sub.add_parser("test", help="run tiny-test assertions against a stored run (the receipt/replay seams)")
     pte.add_argument("file", help="path to a JSON tiny-test spec (see clozn/testkit/runner.py's module docstring)")
@@ -141,9 +165,9 @@ def build_parser():
     pte.add_argument("--attach", action="store_true",
                      help="write results into each touched run's tiny_tests field (rides the receipt_bundle export)")
     pte.add_argument("--live", action="store_true",
-                     help="permit causal (leans_on) assertions to run against a live Studio substrate; "
+                     help="permit causal (leans_on) assertions to run against a live product gateway; "
                           "without it they're honestly skipped ('needs --live'), never silently passed")
-    pte.add_argument("--port", type=int, default=0, help="Studio port for --live (default 8090)")
+    pte.add_argument("--port", type=int, default=0, help="Clozn gateway port for --live (default 8080)")
     pte.set_defaults(fn=cmd_test)
     _add_quant_check(sub)   # `clozn quant-check <A> <B>` — quant-ladder receipts (Tier-1)
     _add_eval(sub)          # `clozn eval` — outcome-grounded calibration (Brier/ECE/risk-coverage)

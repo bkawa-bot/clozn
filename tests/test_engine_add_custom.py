@@ -231,10 +231,10 @@ def iso(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_engine(monkeypatch):
-    """clozn_server.ENGINE_QWEN -> a fresh _FakeEC; ENGINE_STEER reset so _engine_steer() builds a real
+    """clozn_server.ENGINE -> a fresh _FakeEC; ENGINE_STEER reset so _engine_steer() builds a real
     steering.EngineSteer on it (construction + load_library make no harvest call; only compute() would)."""
     fe = _FakeEC()
-    monkeypatch.setattr(cs, "ENGINE_QWEN", fe)
+    monkeypatch.setattr(cs, "ENGINE", fe)
     monkeypatch.setattr(cs, "ENGINE_STEER", None)
     return fe
 

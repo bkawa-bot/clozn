@@ -33,10 +33,14 @@ def main():
         _checks.append(bool(cond))
         print(f"  {'PASS' if cond else 'FAIL'}  {name}", flush=True)
 
-    # --- clozn_server: the substrate base + the two substrates (imports without torch) --------------
+    # --- product gateway: importing it must remain Torch-free ---------------------------------------
     from clozn.server import app as cs
 
     ok("Substrate base has _memory + _steer", has_all(cs.Substrate, ("_memory", "_steer")))
+    ok("EngineSubstrate is the product adapter", issubclass(cs.EngineSubstrate, cs.Substrate))
+    ok("product gateway import does not load torch", "torch" not in sys.modules)
+
+    # Lab adapter class definitions remain importable without loading their optional dependencies.
     ok("QwenSubstrate(Substrate)", issubclass(cs.QwenSubstrate, cs.Substrate))
     ok("DreamSubstrate(Substrate)", issubclass(cs.DreamSubstrate, cs.Substrate))
     ok("QwenSubstrate: chat + chat_stream + _gen + _handle/handle",
@@ -47,41 +51,42 @@ def main():
     import clozn.behavior.steering as steering
 
     ok("10 base tone axes", len(steering.AXES) == 10)
-    ok("SteeringControl: compute/set/engage/save_state/load_state",
-       has_all(steering.SteeringControl, ("compute", "set", "engage", "disengage", "save_state", "load_state")))
-    ok("DreamSteering(SteeringControl)", issubclass(steering.DreamSteering, steering.SteeringControl))
     ok("EngineSteer: compute/set/generate (tone dials on any GGUF via the engine)",
        has_all(steering.EngineSteer, ("compute", "set", "generate")))
 
-    # --- memory: AR soft-prefix + diffusion soft-prefix --------------------------------------------
-    import clozn.substrates.dream_memory as dream_memory
+    # --- optional PyTorch lab ----------------------------------------------------------------------
+    import importlib.util
+    if importlib.util.find_spec("torch") and importlib.util.find_spec("transformers"):
+        ok("SteeringControl: compute/set/engage/save_state/load_state",
+           has_all(steering.SteeringControl,
+                   ("compute", "set", "engage", "disengage", "save_state", "load_state")))
+        ok("DreamSteering(SteeringControl)", issubclass(steering.DreamSteering, steering.SteeringControl))
 
-    ok("DreamMemory: consolidate/denoise/save/load/reset",
-       has_all(dream_memory.DreamMemory, ("consolidate", "denoise", "save", "load", "reset")))
-    ok("PrefixAdapter: forward + config", has_all(dream_memory.PrefixAdapter, ("forward", "encode", "decode")))
+        import clozn.substrates.dream_memory as dream_memory
+        ok("DreamMemory: consolidate/denoise/save/load/reset",
+           has_all(dream_memory.DreamMemory, ("consolidate", "denoise", "save", "load", "reset")))
+        ok("PrefixAdapter: forward + config",
+           has_all(dream_memory.PrefixAdapter, ("forward", "encode", "decode")))
 
-    import clozn.substrates.self_teach as self_teach_server
+        import clozn.substrates.self_teach as self_teach_server
+        ok("SelfTeach: say/consolidate/save/load/_generate",
+           has_all(self_teach_server.SelfTeach, ("say", "consolidate", "save", "load", "_generate")))
 
-    ok("SelfTeach: say/consolidate/save/load/_generate",
-       has_all(self_teach_server.SelfTeach, ("say", "consolidate", "save", "load", "_generate")))
+        import clozn.readouts.brain as brain_readout
+        ok("BrainReadout: think/concepts_only/concepts_from_engine",
+           has_all(brain_readout.BrainReadout, ("think", "concepts_only", "concepts_from_engine")))
 
-    # --- brain readout (concepts) + the rest -------------------------------------------------------
-    import clozn.readouts.brain as brain_readout
+        from clozn.readouts import sae7b
+        ok("sae7b: GpuSAE/load7b/feats7b", has_all(sae7b, ("GpuSAE", "load7b", "feats7b")))
 
-    ok("BrainReadout: think/concepts_only/concepts_from_engine",
-       has_all(brain_readout.BrainReadout, ("think", "concepts_only", "concepts_from_engine")))
-
-    from clozn.readouts import sae7b
-
-    ok("sae7b: GpuSAE/load7b/feats7b", has_all(sae7b, ("GpuSAE", "load7b", "feats7b")))
+        import clozn.substrates.denoise as denoise_server
+        ok("denoise_server.trace_for", hasattr(denoise_server, "trace_for"))
+    else:
+        print("  SKIP  optional PyTorch lab modules (install lab dependencies to exercise)", flush=True)
 
     from clozn.readouts import atlas_concepts
 
     ok("atlas_concepts.content_word", hasattr(atlas_concepts, "content_word"))
-
-    import clozn.substrates.denoise as denoise_server
-
-    ok("denoise_server.trace_for", hasattr(denoise_server, "trace_for"))
 
     passed = sum(_checks)
     print(f"\n{passed}/{len(_checks)} checks passed", flush=True)

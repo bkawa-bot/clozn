@@ -22,10 +22,9 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        # a fork teacher-forces a raw prompt prefix -> needs the ENGINE seam (sub.engine.complete),
-        # not just chat(): the torch substrate can't splice a partial assistant reply.
+        # A fork teacher-forces a raw prompt prefix through the private worker seam.
         if not (ctx.SUB and getattr(ctx.SUB, "engine", None)):
-            h._json(503, {"error": "fork needs the engine substrate"})
+            h._json(503, {"error": "fork requires a ready product model worker"})
             return True
         if "position" not in body:
             h._json(400, {"error": "need a fork position (an index into the reply's trace tokens)"})

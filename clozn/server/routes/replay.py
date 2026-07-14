@@ -14,8 +14,8 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # replay generates -> needs the qwen (chat) substrate
-            h._json(503, {"error": "replay needs the qwen substrate"})
+        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # replay regenerates through the product model
+            h._json(503, {"error": "replay requires a ready product model worker"})
             return True
         changes = body.get("changes_applied", body.get("changes")) or {}
         try:
@@ -36,8 +36,8 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # both arms regenerate -> needs the qwen substrate
-            h._json(503, {"error": "counterfactual needs the qwen substrate"})
+        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # both arms regenerate through the product model
+            h._json(503, {"error": "counterfactual requires a ready product model worker"})
             return True
         overrides = body.get("behavior_overrides")
         if not isinstance(overrides, dict) or not overrides:

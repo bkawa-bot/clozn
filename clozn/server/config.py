@@ -16,6 +16,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))     # clozn/server/config.py -> repo root is two levels up
 sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "lab"))    # so the dream substrate can import cloze_lab
 sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "client"))  # the engine white-box SDK
-DEMO = os.path.join(REPO_ROOT, "studio")
+DEMO = os.path.abspath(os.path.expanduser(
+    os.environ.get("CLOZN_STUDIO_DIR", os.path.join(REPO_ROOT, "studio"))
+))
 
 CLOZN_DIR = os.path.join(os.path.expanduser("~"), ".clozn")     # studio memory + personality persist here

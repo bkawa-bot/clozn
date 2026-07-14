@@ -74,14 +74,12 @@ PROMPT_GATE_MIN = 0.05     # gate below this -> the block is OMITTED for the tur
 
 
 def _memory_mode():
-    """The active memory mode ("prompt" | "internalized"). Fail-safe: any hiccup reading the setting
-    resolves to "internalized" -- the long-standing prefix behavior -- so a broken settings file can
-    never silently swap the mechanism under a live personality."""
+    """Product always uses prompt cards; the optional lab can still select internalized memory."""
     try:
         import clozn.memory.mode as memory_mode
         return memory_mode.get_mode()
     except Exception:
-        return "internalized"
+        return "internalized" if getattr(ctx, "RUNTIME_KIND", "product") == "lab" else "prompt"
 
 
 def _last_user(messages):
@@ -328,5 +326,4 @@ def _mem_sync_rules(m, reconsolidate=True, force=False):
                 pass
             m.rules = []                          # reset() may clear rules; keep them in sync
     return {"changed": changed, "rules": list(new_rules), "consolidate": result}
-
 

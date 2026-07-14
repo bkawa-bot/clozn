@@ -1,8 +1,8 @@
 """commands.run -- `clozn run`: one-shot or interactive (Ollama-style REPL) generation against a model,
 reusing a warm `clozn serve` daemon when one is up. Owns the prompting/streaming plumbing (chat templates,
 the AR SSE stream, the diffusion non-stream path) and the trace-capture side effect of every turn: each
-reply is paired into a replayable per-token trace and written to both the legacy trace cache and the
-shared run journal (clozn.runs.store), which Studio and `clozn trace`/`clozn explain` read.
+reply is paired into a replayable per-token trace and written to the SQLite run journal
+(clozn.runs.store), which Studio and `clozn trace`/`clozn explain` read.
 
 HOME lives on `clozn.cli.main`; imported INSIDE cmd_run (not at module level) for the same circular-import
 reason documented in engine_process.py's module docstring.
@@ -17,8 +17,8 @@ import urllib.request
 
 from clozn.cli import formatting as fmt
 from clozn.cli.commands.models import _flags_for, _friendly, resolve_model
-from clozn.cli.engine_process import _find_warm, _free_port, spawn_engine
-from clozn.cli.trace_io import _runid, _save_trace
+from clozn.cli.engine_process import _find_warm, _free_port
+from clozn.cli.runtime_process import RuntimeConfig, spawn_runtime
 
 SYS = "You are a helpful assistant."
 
@@ -51,7 +51,7 @@ def _chat_wrap(prompt: str, family: str = "qwen") -> str:
 
 
 def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
-    """POST /v1/completions (stream); print each committed token. -> (count, trace steps w/ conf + alts).
+    """POST /api/clozn/generate (stream); print committed tokens and retain native events.
 
     heat=True paints each token as it lands by its confidence (the denoise heatmap, live); False (default)
     is the plain, byte-for-byte-unchanged stream. Painting also no-ops when color is off (piped/NO_COLOR),
@@ -64,7 +64,7 @@ def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
     stop cause so CLI runs get a real `finish_reason` in the run journal, same as Studio's chat path.
     -> (token count, steps, finish_reason)."""
     body = json.dumps({"prompt": prompt, "max_tokens": max_tokens, "stream": True}).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", data=body,
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/clozn/generate", data=body,
                                  headers={"Content-Type": "application/json"})
     n = 0
     frames = []                                             # every parsed SSE frame, for the shared accumulator
@@ -120,17 +120,17 @@ def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
 
 
 def _complete_once_raw(port: int, prompt: str, max_tokens: int) -> dict:
-    """Non-streaming /v1/completions -- the raw parsed JSON response (choices[0] carries text + the
+    """Non-streaming /api/clozn/generate -- the raw completion response (choices[0] carries text + the
     engine's real finish_reason)."""
     body = json.dumps({"prompt": prompt, "max_tokens": max_tokens}).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", data=body,
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/clozn/generate", data=body,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as resp:
         return json.loads(resp.read())
 
 
 def complete_once(port: int, prompt: str, max_tokens: int) -> str:
-    """Non-streaming /v1/completions (used for diffusion, which commits out of reading order)."""
+    """Non-streaming native generation (used for diffusion, which commits out of reading order)."""
     r = _complete_once_raw(port, prompt, max_tokens)
     return (r.get("choices") or [{}])[0].get("text", "")
 
@@ -146,8 +146,6 @@ def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, h
         if heat and fmt.COLOR:                             # a legend + how many tokens wavered, after the reply
             lows = sum(1 for s in steps if fmt._num(s.get("conf")) < 0.5)
             print(f"{fmt._conf_legend()}   {fmt.DIM}{lows} wavered{fmt.RST}", file=sys.stderr)
-        _save_trace({"id": _runid(), "model": model_name, "prompt": prompt_for_trace,
-                     "backend": "GPU" if gpu else "CPU", "mode": mode, "n": n, "t": time.time()}, steps)
         resp = "".join(s["piece"] for s in steps).strip()
     else:
         r = _complete_once_raw(port, text, max_tokens)
@@ -221,18 +219,24 @@ def cmd_run(args):
         flags["eos"] = args.eos
     fam = flags.get("tmpl", "qwen")
     warm = None if args.cpu else _find_warm(model)     # reuse a live `clozn serve` instead of reloading
-    proc = logf = None
+    stack = worker_log = gateway_log = None
     if warm:
         port, gpu, mode = warm
         print(f"{fmt.DIM}- {_friendly(model)} warm on port {port} ({'GPU' if gpu else 'CPU'}, {mode}){fmt.RST}",
               file=sys.stderr, flush=True)
     else:
         os.makedirs(ctx.HOME, exist_ok=True)
-        logf = open(os.path.join(ctx.HOME, "engine-run.log"), "w")
+        worker_log = open(os.path.join(ctx.HOME, "worker-run.log"), "w", encoding="utf-8")
+        gateway_log = open(os.path.join(ctx.HOME, "gateway-run.log"), "w", encoding="utf-8")
         port = args.port or _free_port()
         print(f"{fmt.DIM}- loading {_friendly(model)} …{fmt.RST}", file=sys.stderr, flush=True)
         t0 = time.time()
-        proc, health, gpu = spawn_engine(model, port, flags, prefer_gpu=not args.cpu, logf=logf)
+        stack = spawn_runtime(
+            RuntimeConfig(model=model, public_port=port, flags=flags, prefer_gpu=not args.cpu),
+            worker_log=worker_log,
+            gateway_log=gateway_log,
+        )
+        health, gpu = stack.worker_health, stack.gpu
         mode = health.get("mode", "?")
         print(f"{fmt.DIM}- {_friendly(model)} on {'GPU' if gpu else 'CPU'} build ({mode}), "
               f"ready in {time.time()-t0:.1f}s{fmt.RST}", file=sys.stderr, flush=True)
@@ -247,11 +251,9 @@ def cmd_run(args):
         else:                                                  # interactive REPL (Ollama-style)
             _repl(port, mode, flags, fam, gpu, model, args.max, heat=args.heat)
     finally:
-        if proc:                                       # only tear down an engine WE spawned; leave warm ones up
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
-        if logf:
-            logf.close()
+        if stack:                                      # leave a warm `serve` stack up; stop only our temporary one
+            stack.stop()
+        if worker_log:
+            worker_log.close()
+        if gateway_log:
+            gateway_log.close()

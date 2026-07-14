@@ -17,10 +17,10 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        # both regen arms regenerate greedy -> needs the qwen substrate (the same gate /receipt applies
-        # for regen/both); the forced arm degrades honestly INSIDE the receipt when score_tokens is absent.
+        # Both regen arms use the product model (the same gate /receipt applies for regen/both); the
+        # forced arm degrades honestly INSIDE the receipt when score_tokens is absent.
         if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):
-            h._json(503, {"error": "span_receipt needs the qwen substrate"})
+            h._json(503, {"error": "span_receipt requires a ready product model worker"})
             return True
         from clozn.receipts.span_receipt import SpanSpecError, span_receipt
         try:

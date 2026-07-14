@@ -1,24 +1,12 @@
 """Parent/child lineage and run-family lookup."""
 from __future__ import annotations
 
-import json
-
 from . import store
 
 
 def _load_runs() -> list[dict]:
-    """Best-effort load of every persisted run; corrupt files are ignored like list_runs()."""
-    store._ensure()
-    out = []
-    for f in store._files():
-        try:
-            with open(f, encoding="utf-8") as fh:
-                r = json.load(fh)
-            if isinstance(r, dict) and r.get("id"):
-                out.append(r)
-        except Exception:
-            pass
-    return out
+    """Load full records from the authoritative SQLite journal."""
+    return [run for run in store.iter_runs() if isinstance(run, dict) and run.get("id")]
 
 
 def _change_label(run: dict) -> str | None:

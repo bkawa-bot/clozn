@@ -2,7 +2,7 @@
 (POST /engine/harvest), a per-layer activation summary (POST /engine/layers), and the brain's SAE
 concepts read from the engine's Qwen GGUF (POST /engine/concepts). Mechanical extraction of the matching
 `if p == "/engine/..."` branches out of clozn.server.app's do_POST; behavior unchanged. -> clozn.readouts
-(+ the raw ENGINE/ENGINE_QWEN clients on clozn.server.app).
+(through the one raw ENGINE client on clozn.server.app).
 """
 import numpy as np
 
@@ -25,13 +25,14 @@ def try_post(h, p, body):
         except Exception as e:
             h._json(502, {"error": f"engine-layers: {e}"})
         return True
-    if p == "/engine/concepts":   # the brain's concepts, but read from the Qwen GGUF engine (harvest L15 + SAE)
+    if p == "/engine/concepts":   # named SAE concepts remain a PyTorch lab visualization
         try:
             if not (ctx.SUB and getattr(ctx.SUB, "brain", None)):
-                h._json(409, {"error": "concepts need the qwen substrate (it holds the SAE)"})
+                h._json(409, {"error": "named SAE concepts are available in `clozn lab qwen`; "
+                                       "the product runtime exposes raw engine readouts"})
                 return True
             h._json(200, ctx.SUB.brain.concepts_from_engine(
-                str(body.get("text", ""))[:300], ctx.ENGINE_QWEN, int(body.get("layer", 15))))
+                str(body.get("text", ""))[:300], ctx.ENGINE, int(body.get("layer", 15))))
         except Exception as e:
             h._json(502, {"error": f"engine-qwen: {e}"})
         return True

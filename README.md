@@ -16,25 +16,43 @@ not a black box you prompt, a glass box you inspect — and can hold to account.
 
 ## Quickstart
 
-Run a local model in one command. `clozn` wraps the C++ engine: it finds your build (GPU if present),
-puts the right DLLs on PATH, streams tokens, reports honestly what it's running on, and fails with one
-clear line instead of a stack trace. Stdlib only — no `pip install`.
+Run a local model in one command. `clozn` starts one public, Torch-free product gateway and one private
+C++ model worker. It finds your build (GPU if present), streams tokens, reports honestly what it is
+running on, and fails with one clear line instead of a stack trace.
 
 ```bash
 clozn pull llama-1b                       # download a model (qwen / mistral / gemma-2b / owner/repo/file.gguf)
 clozn models                              # discover local GGUFs + the backend that would run them
 clozn run llama-1b "Explain entropy."     # one-shot, streams tokens to the terminal
-clozn serve qwen --port 8080              # OpenAI-compatible endpoint — point any client at /v1
-clozn studio                              # the white-box UI + the endpoint your tools connect to
+clozn serve qwen --port 8080              # gateway + private worker; API and Studio on :8080
+clozn studio --open                       # attach a browser to that already-running gateway
+clozn lab qwen --open                     # optional PyTorch workbench; deliberately no /v1 API
 clozn ps                                  # what's running    ·    clozn stop qwen   to stop it
 ```
+
+Before changing the runtime, run its managed acceptance gate:
+
+```bash
+clozn smoke qwen --preflight              # report every missing build/model/asset prerequisite
+clozn smoke qwen                          # test APIs + SQLite, restart the worker, then clean up
+clozn smoke qwen --deep                   # also exercise forced receipts and replay
+```
+
+`clozn smoke --url http://127.0.0.1:8080` attaches non-destructively to an existing gateway. Managed
+smoke owns the stack it starts, verifies that the private worker can be replaced without changing the
+public gateway, and stops the complete process tree when finished.
 
 Chat templates come from each model's own GGUF (Qwen / Llama-3 / Mistral / Gemma / …), applied
 engine-side, so pulled models chat coherently — not just Qwen. Drop the prompt — `clozn run llama-1b` —
 for an interactive chat (multi-turn; `/reset` clears, `/bye` quits).
 
 `clozn run` reuses a running `serve` for that model (warm, no reload); otherwise it spawns a temporary
-engine and tears it down after. Stale daemon entries self-heal (a dead one fails its health check).
+gateway/worker pair and tears it down after. Product commands never bypass the gateway to call a warm
+worker directly. `clozn serve` supervises the private worker and restarts it after an unexpected exit.
+
+OpenAI clients use `/v1/chat/completions`, `/v1/completions`, and `/v1/models`. Clozn's CLI and Studio
+instrumentation use `/api/clozn/generate`, which preserves the native state-event stream. Native event
+frames never leak into an OpenAI completion stream.
 
 Every run is debuggable — and provable — after the fact. The engine streams per-token confidence + the
 alternatives it weighed; open a run in Studio's **Run Inspector** for **causal receipts** (which memory
@@ -47,11 +65,13 @@ clozn branch                              # re-run from the most uncertain token
 clozn test cases.json                     # run-level assertions over the receipt/replay seams
 ```
 
-`clozn trace` reads the same `~/.clozn/runs` journal that Studio's Runs page and Run Inspector use.
+`clozn trace` reads the same SQLite journal that Studio's Runs page and Run Inspector use. Queryable run
+metadata lives in `~/.clozn/runs/runs.sqlite3`; large traces are immutable, content-addressed blobs under
+`~/.clozn/runs/blobs/sha256`. To import an old beta JSON journal once, run `clozn migrate-runs`.
 `clozn test` runs user-authored checks against a stored run: static ones (`contains` / `finish_reason` /
 `min_confidence` / `card_applied` / …) read the run alone; the causal `leans_on` check re-runs the real
 ablation and honestly **skips** (never a silent pass) unless you pass `--live`. Point any OpenAI client
-at `clozn serve`/`clozn studio`; pass `"clozn_trust": true` in a chat request to get per-claim confidence
+at `clozn serve`; pass `"clozn_trust": true` in a chat request to get per-claim confidence
 spans back on the wire (labeled uncalibrated).
 
 `clozn run …` works once the repo root is on PATH; otherwise `python -m clozn run …`. Put GGUFs in

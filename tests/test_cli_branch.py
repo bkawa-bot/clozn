@@ -16,7 +16,6 @@ text instead of making an HTTP call.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -31,6 +30,7 @@ sys.path.insert(0, REPO)
 import clozn.cli.main as cli  # noqa: E402
 import clozn.cli.formatting as fmt  # noqa: E402
 import clozn.cli.commands.explain as explain  # noqa: E402
+import clozn.runs.store as runlog  # noqa: E402
 
 
 @pytest.fixture
@@ -46,16 +46,15 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(explain, "resolve_model", lambda arg: "fake-model.gguf")
     monkeypatch.setattr(explain, "_flags_for", lambda model: {"chat": False})
     monkeypatch.setattr(explain, "_friendly", lambda model: "fake-model")
+    monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
     return Path(cli.HOME)
 
 
 def _write_trace(home: Path, steps, prompt="hi", rid="t1"):
-    trace_dir = home / "traces"
-    trace_dir.mkdir(parents=True, exist_ok=True)
-    (trace_dir / f"{rid}.json").write_text(
-        json.dumps({"meta": {"id": rid, "model": "fake-model", "prompt": prompt}, "steps": steps}),
-        encoding="utf-8",
-    )
+    runlog.record(source="cli", client="cli", model="fake-model", substrate="engine",
+                  messages=[{"role": "user", "content": prompt}],
+                  response="".join(s.get("piece", s.get("text", "")) for s in steps),
+                  trace=runlog.steps_to_trace(steps))
 
 
 def _args(*, at=None, pick=0, max=32, cpu=False):

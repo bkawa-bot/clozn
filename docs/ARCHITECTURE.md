@@ -40,6 +40,53 @@ inspector); the product package owns all view/steer/memory surface; they meet on
 protocol. The engine's C++ viz survives as a *reference* view; the canonical UI is the
 studio, consuming the same stream.
 
+## Process model
+
+`clozn serve MODEL --port 8080` owns exactly two processes:
+
+1. a public, Torch-free Python gateway on the requested port; and
+2. a C++ model worker on a random loopback-only port.
+
+The worker is an implementation detail, not another serving product. The gateway is the only public
+URL and owns OpenAI compatibility, Studio, memory, receipts, runs, and readouts. It receives the worker
+port through `CLOZN_ENGINE_PORT`; there is no second engine variable or selectable product substrate.
+The CLI supervisor starts the worker first, waits for health, starts the gateway, waits for `/readyz`,
+and restarts the worker after an unexpected exit. `clozn studio` only attaches to this gateway.
+POST operations pass through a bounded serialized queue because generation evidence, memory, and steering
+are currently shared runtime state; health, Studio assets, and GET-only run inspection remain concurrent.
+
+PyTorch is a lab dependency for training and calibration. Lab jobs write forward-only artifacts that the
+product can apply. The retained Qwen/Dream visual workbench is launched explicitly with `clozn lab`; its
+HTTP process rejects all `/v1/*` and `/api/clozn/*` routes, so it is not a competing chat API.
+
+## Public and native APIs
+
+- `/v1/models`, `/v1/chat/completions`, and `/v1/completions` are client-facing OpenAI surfaces.
+- `/api/clozn/generate` is the namespaced native stream consumed by Clozn tooling. It carries typed
+  state events such as token commits and lens frames.
+- The gateway translates worker events for `/v1/completions`; native event frames never appear on
+  `/v1/*`. Opt-in chat extensions such as live lens data stay inside a standard
+  `chat.completion.chunk` envelope.
+
+## Persistence
+
+SQLite is authoritative for queryable run metadata, lineage, status, and the complete run document.
+Large normalized traces live as immutable SHA-256-addressed JSON blobs. The old per-run JSON journal has
+an explicit one-shot importer (`clozn migrate-runs`) and is never read or dual-written during normal use.
+
+## Product acceptance gate
+
+`clozn smoke MODEL` launches the real `clozn serve` command on a free port and treats the complete
+process tree as a black box. It verifies liveness/readiness, Studio delivery, model discovery, OpenAI
+chat, the normalized OpenAI chat and completion streams, the native Clozn event stream, HTTP run lookup, run
+explanation, the SQLite row, and its SHA-256 trace blob. It then terminates only the registered private
+worker, waits for a replacement PID behind the unchanged gateway PID, proves generation still works,
+and stops the stack. `--deep` adds forced receipts and replay; `--preflight` reports missing build,
+model, vendored-source, compiler, CMake, and Studio-asset prerequisites without starting anything.
+
+This is the release boundary test for the topology. Unit tests may replace the worker, but they cannot
+replace a successful smoke run against a real GGUF.
+
 ## The keystone — `protocol/` (the state-stream)
 
 - **`StateStep`** — one frame of the model's evolving state: `{t, substrate, slots, values,

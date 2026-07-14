@@ -1,11 +1,11 @@
 """commands.eval -- `clozn eval [--set easy|hard|both]`: outcome-grounded calibration on a live endpoint.
 
-The thin CLI shell around clozn.eval.bench: run the built-in factual probe set through a RUNNING clozn
-studio, grade each answer against gold (eval.outcome), read each reply's answer-span confidence from its
+The thin CLI shell around clozn.eval.bench: run the built-in factual probe set through a RUNNING Clozn
+gateway, grade each answer against gold (eval.outcome), read each reply's answer-span confidence from its
 logged run trace, and print Brier / ECE-vs-truth / a risk-coverage curve for selective generation. This
 is the TRUTH tier actuary.py flags as missing -- calibration against correctness, not the acceptance proxy.
 
-Needs a running studio (default http://127.0.0.1:8090); it reads per-token confidence from the run
+Needs a running Clozn gateway (default http://127.0.0.1:8080); it reads per-token confidence from the run
 journal, which the OpenAI wire format omits. Small built-in n -- a directional demonstration that the
 model's own confidence separates its right answers from its wrong ones, not a benchmark score.
 
@@ -22,8 +22,8 @@ def add_subparser(sub):
     """Register `clozn eval` on an argparse subparsers object (own function so its wiring is testable
     without dispatching; mirrors commands.quant_check.add_subparser)."""
     pe = sub.add_parser("eval", help="outcome-grounded calibration: run a factual probe set through a live "
-                        "studio and score Brier/ECE/risk-coverage against TRUTH (needs a running endpoint)")
-    pe.add_argument("--url", default="http://127.0.0.1:8090", help="clozn studio base URL (default :8090)")
+                        "gateway and score Brier/ECE/risk-coverage against TRUTH (needs a running endpoint)")
+    pe.add_argument("--url", default="http://127.0.0.1:8080", help="Clozn gateway base URL (default :8080)")
     pe.add_argument("--set", dest="which", default="arith",
                     choices=["easy", "hard", "arith", "both", "all"],
                     help="which built-in probe set (default: arith -- programmatic, guaranteed golds, "
@@ -40,7 +40,7 @@ def add_subparser(sub):
 
 
 def cmd_eval(args):
-    """`clozn eval [--set ...] [--score ...] [--json]` -- LIVE: needs a running clozn studio (see module
+    """`clozn eval [--set ...] [--score ...] [--json]` -- LIVE: needs a running Clozn gateway (see module
     docstring). Delegates to clozn.eval.bench; prints the human report, or the raw report JSON with --json."""
     from clozn.eval import bench
 

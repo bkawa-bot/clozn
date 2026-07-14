@@ -1,52 +1,7 @@
-"""trace_io -- CLI-side trace persistence and the shared run-journal <-> terminal-render bridge.
-
-Every AR run is persisted to ~/.clozn/runs through clozn.runs.store; Studio and `clozn trace` read that
-same journal. AR runs also keep writing the older ~/.clozn/traces/<id>.json cache for branch/back-compat;
-`clozn trace --legacy-cache` can inspect it, but the shared runlog is the default source of truth.
-
-HOME lives on `clozn.cli.main`; every function here that needs it does `from clozn.cli import main as ctx`
-INSIDE the function body (never at module level -- main.py imports this module at ITS OWN module level, so
-a module-level back-reference here would deadlock the first time something imports clozn.cli.trace_io
-before clozn.cli.main has been touched; see engine_process.py's docstring for the full trace) and reads
-`ctx.HOME` at call time, so a test's `monkeypatch.setattr(clozn.cli.main, "HOME", ...)` is observed here
-too. Rendering reads the color globals the same way -- `from clozn.cli import formatting as fmt` (safe at
-module level: formatting.py has no back-reference to main.py), then `fmt.BOLD` etc. at the point of use.
-"""
+"""Terminal rendering bridge for traces stored in the canonical SQLite run journal."""
 from __future__ import annotations
 
-import glob
-import json
-import os
-import time
-
 from clozn.cli import formatting as fmt
-
-
-def _runid() -> str:
-    return f"{int(time.time())}-{os.getpid() % 1000:03d}"
-
-
-def _save_trace(meta: dict, steps: list) -> str:
-    from clozn.cli import main as ctx
-    d = os.path.join(ctx.HOME, "traces")
-    os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, meta["id"] + ".json")
-    try:
-        json.dump({"meta": meta, "steps": steps}, open(path, "w"))
-    except Exception:
-        return ""
-    return path
-
-
-def _trace_cache_files() -> list[str]:
-    """Trace cache files, oldest -> newest, so callers can rely on files[-1] being the most RECENT one.
-
-    Sorted by mtime, not filename -- lexicographic name order silently breaks the moment a non-timestamp
-    filename lands in the cache dir (e.g. a stray `new-trace.json`, which sorts after every real
-    `<unix-ts>-<pid>.json` name in ASCII order regardless of when it was actually written)."""
-    from clozn.cli import main as ctx
-    d = os.path.join(ctx.HOME, "traces")
-    return sorted(glob.glob(os.path.join(d, "*.json")), key=os.path.getmtime)
 
 
 def _render_trace(meta: dict, steps: list):
@@ -100,21 +55,6 @@ def _render_trace(meta: dict, steps: list):
     print("-" * 62)
     tail = " -> " + ", ".join((s.get("piece", s.get("text", "")) or "").strip() for s in lows[:6]) if lows else ""
     print(f"{fmt.DIM}{len(lows)} uncertain moment(s){tail}{fmt.RST}")
-
-
-def _cmd_trace_legacy(args):
-    files = _trace_cache_files()
-    if not files:
-        print('no legacy trace cache entries yet -- run something first:  clozn run qwen "..."'); return
-    if args.list:
-        print(f"{'WHEN':<18} {'MODEL':<11} {'TOK':>4}  PROMPT")
-        for f in files[-12:]:
-            m = json.load(open(f)).get("meta", {})
-            print(f"{m.get('id', ''):<18} {m.get('model', ''):<11} {m.get('n', 0):>4}  {m.get('prompt', '')[:46]}")
-        return
-    tr = json.load(open(files[-1]))
-    m, steps = tr.get("meta", {}), tr.get("steps", [])
-    _render_trace(m, steps)
 
 
 def _import_runlog():

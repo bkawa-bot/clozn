@@ -23,17 +23,16 @@ import urllib.request
 from clozn.cli import formatting as fmt
 from clozn.cli.commands.models import _flags_for, _friendly, resolve_model
 from clozn.cli.commands.run import _chat_wrap, complete_once
-from clozn.cli.engine_process import _find_warm, _free_port, spawn_engine
-from clozn.cli.trace_io import (_cmd_trace_legacy, _import_runlog, _list_runlog_traces, _render_trace,
-                                _runlog_trace_meta, _runlog_trace_steps, _trace_cache_files)
+from clozn.cli.engine_process import _find_warm, _free_port
+from clozn.cli.runtime_process import RuntimeConfig, spawn_runtime
+from clozn.cli.trace_io import (_import_runlog, _list_runlog_traces, _render_trace,
+                                _runlog_trace_meta, _runlog_trace_steps)
 
 
 # ----------------------------------------------------------------------------- trace / branch
 
 def cmd_trace(args):
     from clozn.cli import main as ctx
-    if getattr(args, "legacy_cache", False):
-        return _cmd_trace_legacy(args)
     try:
         runlog = _import_runlog()
         # include_replays=False: don't let an internal leave-one-out/redundancy re-generation from a
@@ -42,12 +41,9 @@ def cmd_trace(args):
         # user actually did.
         rows = runlog.list_runs(limit=12 if args.list else 1, include_replays=False)
     except Exception as e:
-        raise ctx.CloznError(f"could not read the run journal (~/.clozn/runs): {e}")
+        raise ctx.CloznError(f"could not read the SQLite run journal: {e}")
     if not rows:
-        hint = ""
-        if _trace_cache_files():
-            hint = "  Legacy trace cache entries exist; use: clozn trace --legacy-cache"
-        print(f'no runs yet -- run something first:  clozn run qwen "..."{hint}')
+        print('no runs yet -- run something first:  clozn run qwen "..."')
         return
     if args.list:
         _list_runlog_traces(runlog, limit=12)
@@ -62,14 +58,22 @@ def cmd_trace(args):
 def cmd_branch(args):
     """Take the road not taken: re-run from an uncertain point with the alternative the model nearly chose.
 
-    Text-level (re-runs prompt + kept tokens + the alt through /v1/completions), so token boundaries can
+    Text-level (re-runs prompt + kept tokens + the alt through /api/clozn/generate), so token boundaries can
     shift a hair -- but it shows, concretely, 'what if it had said X instead'. The seed of branch-a-bad-answer."""
     from clozn.cli import main as ctx
-    files = _trace_cache_files()
-    if not files:
-        raise ctx.CloznError('no trace yet -- run something first:  clozn run qwen "..."')
-    tr = json.load(open(files[-1])); meta = tr.get("meta", {})
-    steps = [s for s in tr.get("steps", []) if (s.get("piece", s.get("text", "")) or "").strip()]   # branch on real tokens
+    try:
+        runlog = _import_runlog()
+        rows = runlog.list_runs(limit=1, include_replays=False)
+        run = runlog.get_run(rows[0]["id"]) if rows else None
+    except Exception as exc:
+        raise ctx.CloznError(f"could not read the run journal: {exc}")
+    if not run:
+        raise ctx.CloznError('no run yet -- run something first:  clozn run qwen "..."')
+    prompt = next((m.get("content", "") for m in reversed(run.get("messages") or [])
+                   if isinstance(m, dict) and m.get("role") == "user"), "")
+    meta = {"id": run.get("id"), "model": run.get("model"), "prompt": prompt}
+    steps = [s for s in _runlog_trace_steps(run)
+             if (s.get("piece", s.get("text", "")) or "").strip()]   # branch on real tokens
     if not steps:
         raise ctx.CloznError("the last trace has no branchable tokens.")
     idx = (max(0, min(args.at, len(steps) - 1)) if args.at is not None
@@ -91,28 +95,32 @@ def cmd_branch(args):
           f"  ->  branch on {fmt.BOLD}{alt_piece.strip()!r}{fmt.RST} ({fmt._num(alt.get('prob')):.2f})")
     original = fmt._oneline("".join(s.get("piece", s.get("text", "")) for s in steps).strip())
     print(f"  {fmt.DIM}original:{fmt.RST} {original[:130]}")
-    warm = _find_warm(model); proc = logf = None
+    warm = _find_warm(model); stack = worker_log = gateway_log = None
     if warm:
         port = warm[0]
     else:
-        os.makedirs(ctx.HOME, exist_ok=True); logf = open(os.path.join(ctx.HOME, "engine-run.log"), "w")
+        os.makedirs(ctx.HOME, exist_ok=True)
+        worker_log = open(os.path.join(ctx.HOME, "worker-run.log"), "w", encoding="utf-8")
+        gateway_log = open(os.path.join(ctx.HOME, "gateway-run.log"), "w", encoding="utf-8")
         port = _free_port()
         print(f"{fmt.DIM}  - loading {_friendly(model)} …{fmt.RST}", file=sys.stderr, flush=True)
-        proc, _h, _g = spawn_engine(model, port, flags, prefer_gpu=not args.cpu, logf=logf)
+        stack = spawn_runtime(
+            RuntimeConfig(model=model, public_port=port, flags=flags, prefer_gpu=not args.cpu),
+            worker_log=worker_log,
+            gateway_log=gateway_log,
+        )
     try:
         # rstrip only: a leading space here is the separator between the alt piece and the continuation
         # (word-piece tokenization keeps it as part of `cont`) -- an eager .strip() used to eat it, running
         # the two together ("...suddenlyand it lived...") in the line printed below.
         cont = complete_once(port, prefix, args.max).rstrip()
     finally:
-        if proc:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
-        if logf:
-            logf.close()
+        if stack:
+            stack.stop()
+        if worker_log:
+            worker_log.close()
+        if gateway_log:
+            gateway_log.close()
     branch_text = fmt._oneline((kept + alt_piece + cont).strip())
     print(f"  {fmt.BOLD}branch:{fmt.RST}   {branch_text[:160]}")
 
@@ -194,7 +202,7 @@ def _format_concepts(conc: dict) -> list[str]:
     out = [f"{fmt.BOLD}concepts{fmt.RST}"]
     if not conc.get("available"):
         out.append(f"  {fmt.DIM}not available -- "
-                   f"{conc.get('note', 'concept readout needs the qwen/PyTorch substrate (SAE)')}{fmt.RST}")
+                   f"{conc.get('note', 'no named concept readout was captured for this run')}{fmt.RST}")
         return out
     spans = [s for s in fmt._as_list(conc.get("spans")) if isinstance(s, dict)]
     if not spans:
@@ -274,7 +282,10 @@ def _fetch_explain(port: int, run_id: str) -> dict:
             msg = str(e)
         raise ctx.CloznError(f"explain failed ({e.code}): {msg}")
     except urllib.error.URLError as e:
-        raise ctx.CloznError(f"couldn't reach the Studio on port {port} ({e.reason}). Start it first:  clozn studio")
+        raise ctx.CloznError(
+            f"couldn't reach the Clozn gateway on port {port} ({e.reason}). "
+            "Start it first:  clozn serve <model>"
+        )
     except Exception as e:
         raise ctx.CloznError(f"explain failed: {e}")
 
@@ -293,8 +304,8 @@ def _fetch_explain(port: int, run_id: str) -> dict:
 def _fetch_narrate(port: int, run_id: str) -> dict:
     """POST /runs/<id>/narrate on the Studio backend -- M4's accountable-self narration (clozn.receipts.narrate).
     Unlike _fetch_explain (M1, free), this generates -- two model calls -- so it gets a longer timeout. A
-    clean CloznError (one line, no traceback) when the Studio isn't up, the run doesn't resolve, or the qwen
-    substrate isn't loaded (503), matching _fetch_explain's error style exactly."""
+    clean CloznError (one line, no traceback) when the gateway isn't up, the run doesn't resolve, or its
+    model worker isn't ready (503), matching _fetch_explain's error style exactly."""
     from clozn.cli import main as ctx
     url = f"http://127.0.0.1:{port}/runs/{run_id}/narrate"
     req = urllib.request.Request(url, data=b"{}", method="POST", headers={"Content-Type": "application/json"})
@@ -308,7 +319,10 @@ def _fetch_narrate(port: int, run_id: str) -> dict:
             msg = str(e)
         raise ctx.CloznError(f"narrate failed ({e.code}): {msg}")
     except urllib.error.URLError as e:
-        raise ctx.CloznError(f"couldn't reach the Studio on port {port} ({e.reason}). Start it first:  clozn studio")
+        raise ctx.CloznError(
+            f"couldn't reach the Clozn gateway on port {port} ({e.reason}). "
+            "Start it first:  clozn serve <model>"
+        )
     except Exception as e:
         raise ctx.CloznError(f"narrate failed: {e}")
 
@@ -382,7 +396,7 @@ def cmd_explain(args):
     if not rid:
         raise ctx.CloznError("give a run id, or pass --last for the most recent one "
                              "(see ids in the Studio's Runs list, or run something first:  clozn run qwen \"...\")")
-    port = args.port or 8090
+    port = args.port or 8080
     print(format_explain(_fetch_explain(port, rid)))
     if args.why:
         print()

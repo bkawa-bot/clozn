@@ -11,12 +11,18 @@ as local models improve; this is the instrument waiting for them.
 ## Run it
 
 ```bash
-clozn studio          # launches the backend + engine and opens the app
+clozn serve qwen --port 8080   # starts the product gateway + its private worker
+clozn studio --open            # attaches to that gateway; never loads another model
 ```
 
-Any OpenAI client works too — point it at `http://localhost:8090/v1`
+Any OpenAI client works too — point it at `http://localhost:8080/v1`
 (`/v1/chat/completions`, `/v1/models`). Every reply already has the memory + tone applied, and
 every reply is logged as a run you can open in the Run Inspector afterwards.
+
+There is no Studio-specific serving engine. Training, calibration, soft-prefix experiments, and other
+PyTorch work are lab jobs that emit forward-only artifacts; they cannot be selected on the product port.
+The retained visual workbenches run explicitly as `clozn lab qwen|dream --open` on their own port and
+refuse both `/v1/*` and `/api/clozn/*` so they cannot accidentally become a second product API.
 
 ## The two controls
 

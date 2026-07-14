@@ -79,15 +79,18 @@ def test_record_final_prompt_defaults_to_none(store):
     assert rec["final_prompt"] is None
 
 
-def test_legacy_run_without_final_prompt_loads_fine(store):
-    """A run persisted BEFORE this field existed must still load; a reader uses run.get('final_prompt')."""
+def test_explicit_import_loads_legacy_run_without_final_prompt(store, tmp_path):
+    """Legacy JSON is imported once; normal reads never fall back to it implicitly."""
     import json
-    os.makedirs(store.RUNS_DIR, exist_ok=True)
+    legacy_dir = tmp_path / "legacy-runs"
+    legacy_dir.mkdir()
     legacy = {"id": "run_legacy_000000", "source": "engine_chat",
               "messages": [{"role": "user", "content": "hi"}], "response": "hey",
               "assembled_messages": [{"role": "user", "content": "hi"}]}   # NOTE: no "final_prompt" key
-    with open(os.path.join(store.RUNS_DIR, "run_legacy_000000.json"), "w", encoding="utf-8") as f:
+    with open(legacy_dir / "run_legacy_000000.json", "w", encoding="utf-8") as f:
         json.dump(legacy, f)
+    assert store.get_run("run_legacy_000000") is None
+    assert store.import_json_dir(str(legacy_dir))["imported"] == 1
     rec = store.get_run("run_legacy_000000")
     assert rec is not None                                  # loads without crashing
     assert rec.get("final_prompt") is None                 # absent -> None via .get(), the documented fallback

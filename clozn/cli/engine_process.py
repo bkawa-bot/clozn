@@ -32,6 +32,15 @@ BUILDS = [("build-gpu", True), ("build-cuda", True),
 def find_engine(prefer_gpu=True) -> tuple[str, list[str], bool]:
     """-> (exe_path, dll_dirs, is_gpu). Raises if no build exists."""
     from clozn.cli import main as ctx
+    override = os.environ.get("CLOZN_ENGINE_BIN")
+    if override:
+        exe = os.path.abspath(os.path.expanduser(override))
+        if not os.path.isfile(exe):
+            raise ctx.CloznError(f"CLOZN_ENGINE_BIN does not point to a file: {exe}")
+        root = os.path.dirname(exe)
+        bins = [path for path in (root, os.path.join(root, "bin")) if os.path.isdir(path)]
+        gpu = os.environ.get("CLOZN_ENGINE_GPU", "").strip().lower() in ("1", "true", "yes", "on")
+        return exe, bins, gpu
     cands = []
     for sub, gpu in BUILDS:
         root = os.path.join(ENGINE_CORE, sub)
@@ -45,8 +54,7 @@ def find_engine(prefer_gpu=True) -> tuple[str, list[str], bool]:
                 cands.append((exe, bins, gpu))
                 break
     if not cands:
-        raise ctx.CloznError("no engine found. Build it:  cd engine/core  then  build_gpu.bat (GPU) "
-                             "or build_serve.bat (CPU).")
+        raise ctx.CloznError("no engine found. See docs/DEVELOPMENT.md, or set CLOZN_ENGINE_BIN.")
     cands.sort(key=lambda c: (0 if c[2] else 1) if prefer_gpu else (1 if c[2] else 0))
     return cands[0]
 
@@ -88,10 +96,25 @@ def _launch_args(exe: str, model: str, port: int, flags: dict, gpu: bool) -> lis
 
 def _health(port: int, timeout=3.0):
     try:
-        r = urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=timeout)
-        return json.loads(r.read())
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=timeout) as response:
+            return json.loads(response.read())
     except Exception:
         return None
+
+
+def _terminate_process(proc, timeout: float = 5.0) -> None:
+    """Best-effort child cleanup, including interrupted startup."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except Exception:
+        try:
+            proc.kill()
+            proc.wait(timeout=timeout)
+        except Exception:
+            pass
 
 
 def spawn_engine(model: str, port: int, flags: dict, *, prefer_gpu=True, logf=None, boot_timeout=180):
@@ -101,16 +124,19 @@ def spawn_engine(model: str, port: int, flags: dict, *, prefer_gpu=True, logf=No
     args = _launch_args(exe, model, port, flags, gpu)
     proc = subprocess.Popen(args, env=_env_with_dlls(dll_dirs, gpu),
                             stdout=logf or subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    t0 = time.time()
-    while time.time() - t0 < boot_timeout:
-        if proc.poll() is not None:                            # died before healthy
-            raise ctx.CloznError(f"engine exited (code {proc.returncode}). {_log_tail(logf)}")
-        h = _health(port)
-        if h and h.get("status") == "ok":
-            return proc, h, gpu
-        time.sleep(0.3)
-    proc.terminate()
-    raise ctx.CloznError(f"engine did not become healthy within {boot_timeout}s. {_log_tail(logf)}")
+    started = time.monotonic()
+    try:
+        while time.monotonic() - started < boot_timeout:
+            if proc.poll() is not None:                        # died before healthy
+                raise ctx.CloznError(f"engine exited (code {proc.returncode}). {_log_tail(logf)}")
+            h = _health(port)
+            if h and h.get("status") == "ok":
+                return proc, h, gpu
+            time.sleep(0.3)
+        raise ctx.CloznError(f"engine did not become healthy within {boot_timeout}s. {_log_tail(logf)}")
+    except BaseException:
+        _terminate_process(proc)
+        raise
 
 
 def _log_tail(logf, n=400):
@@ -126,7 +152,7 @@ def _log_tail(logf, n=400):
 
 # --------------------------------------------------------------- warm-daemon registry (clozn serve <-> run)
 # `clozn serve` records {port -> model/gpu/mode} here; `clozn run` reuses a live one instead of reloading.
-# Stale entries self-heal: a dead serve fails the /health check in _find_warm and is ignored (then pruned).
+# Stale entries self-heal: a dead gateway fails /readyz in _find_warm and is ignored (then pruned).
 
 def _reg_path() -> str:
     from clozn.cli import main as ctx
@@ -135,22 +161,27 @@ def _reg_path() -> str:
 
 def _reg_read() -> dict:
     try:
-        return json.load(open(_reg_path()))
+        with open(_reg_path(), encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
     except Exception:
         return {}
 
 
 def _reg_write(d: dict):
     from clozn.cli import main as ctx
+    from clozn._io import atomic_write_json
     os.makedirs(ctx.HOME, exist_ok=True)
     try:
-        json.dump(d, open(_reg_path(), "w"))
+        atomic_write_json(_reg_path(), d)
     except Exception:
         pass
 
 
-def _register(model: str, port: int, gpu: bool, mode: str, pid: int):
-    d = _reg_read(); d[str(port)] = {"model": model, "gpu": gpu, "mode": mode, "pid": pid}; _reg_write(d)
+def _register(model: str, port: int, gpu: bool, mode: str, pid: int, **runtime_fields):
+    d = _reg_read()
+    d[str(port)] = {"model": model, "gpu": gpu, "mode": mode, "pid": pid, **runtime_fields}
+    _reg_write(d)
 
 
 def _kill(pid: int):
@@ -171,11 +202,13 @@ def _unregister(port: int):
 
 
 def _find_warm(model: str):
-    """A live `clozn serve` for this exact model -> (port, gpu, mode), pruning dead entries. Else None."""
+    """A live product gateway for this exact model -> (public_port, gpu, mode), else None."""
+    from clozn.cli.runtime_process import gateway_health
+
     d = _reg_read(); hit = None; dirty = False
     for port, ent in list(d.items()):
-        h = _health(int(port), timeout=1.0)
-        if not (h and h.get("status") == "ok"):
+        h = gateway_health(int(port), timeout=1.0)
+        if not h:
             d.pop(port, None); dirty = True; continue           # prune the dead
         if ent.get("model") == model and hit is None:
             hit = (int(port), bool(ent.get("gpu")), ent.get("mode", h.get("mode", "?")))

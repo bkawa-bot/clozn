@@ -3,7 +3,7 @@ engine, NO PyTorch model resident (clozn_server.EngineSubstrate / RUNTIME_SPLIT.
 what lets /v1/chat/completions (and, via SUB.chat(), the whole receipts/replay/explain/narrate/
 counterfactual stack) run on the fast engine instead of a loaded Qwen-7B.
 
-Model-free throughout -- no C++ engine process, no GPU, no real socket. clozn_server.ENGINE_QWEN is
+Model-free throughout -- no C++ engine process, no GPU, no real socket. clozn_server.ENGINE is
 monkeypatched to a FakeEngine whose `.base` points at a closed local port (127.0.0.1:1, with a short
 `.timeout`): _engine_complete_traced's streaming attempt fails fast (no DNS lookup, an immediate refused/
 timed-out connect) and falls through to its own pre-existing plain-.complete() fallback -- the "stream
@@ -12,8 +12,7 @@ FakeEngine-backed test below actually exercises; it is NOT itself under test her
 test_trace_capture.py for _engine_complete_traced's own streaming-path coverage).
 
 Covers:
-  * EngineSubstrate.__init__ / load_substrate("engine"): builds for real when ENGINE_QWEN is configured;
-    raises when it isn't; load_substrate degrades that to None (+ a stderr note) rather than crashing boot.
+  * EngineSubstrate.__init__: builds when ENGINE is configured and raises when it is not.
   * EngineSubstrate.chat(): returns the engine's text (stripped); fills mem_out/trace_out exactly like
     QwenSubstrate.chat; folds the prompt-mode memory block into the rendered chat-template prompt (and
     omits it when there is none); forwards the active dials' steer_vec (falling back to disk when the
@@ -88,11 +87,11 @@ def iso(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_engine(monkeypatch):
-    """clozn_server.ENGINE_QWEN -> a fresh FakeEngine; ENGINE_STEER reset to None so _engine_steer()
+    """clozn_server.ENGINE -> a fresh FakeEngine; ENGINE_STEER reset to None so _engine_steer()
     builds a real steering.EngineSteer on it (construction itself makes no network call -- .compute()
     would, but nothing here has a reason to call it)."""
     fe = FakeEngine()
-    monkeypatch.setattr(cs, "ENGINE_QWEN", fe)
+    monkeypatch.setattr(cs, "ENGINE", fe)
     monkeypatch.setattr(cs, "ENGINE_STEER", None)
     return fe
 
@@ -104,26 +103,19 @@ def _no_block(mem, last_user, strength=None):
 # ==================================================================================== construction
 
 def test_engine_substrate_needs_a_configured_engine(monkeypatch):
-    monkeypatch.setattr(cs, "ENGINE_QWEN", None)
+    monkeypatch.setattr(cs, "ENGINE", None)
     with pytest.raises(RuntimeError):
         cs.EngineSubstrate()
 
 
-def test_load_substrate_engine_builds_a_real_engine_substrate(iso, fake_engine):
-    sub = cs.load_substrate("engine")
+def test_engine_substrate_builds_a_real_product_adapter(iso, fake_engine):
+    sub = cs.EngineSubstrate()
     assert isinstance(sub, cs.EngineSubstrate)
     assert sub.name == "engine"
     assert sub.engine is fake_engine
     assert sub.brain is None                       # no SAE on the pure-engine substrate
     assert isinstance(sub.steer, EngineSteer)
     assert sub.memory is sub._mem
-
-
-def test_load_substrate_engine_degrades_to_none_when_unconfigured(iso, monkeypatch, capsys):
-    monkeypatch.setattr(cs, "ENGINE_QWEN", None)
-    sub = cs.load_substrate("engine")
-    assert sub is None
-    assert "engine substrate unavailable" in capsys.readouterr().err
 
 
 # ==================================================================================== chat() basics
@@ -516,7 +508,7 @@ def test_engine_memory_state_shape(iso, monkeypatch):
 
 class _FakeEC:
     """A stand-in engine client for steering.EngineSteer ITSELF (distinct from FakeEngine above, which
-    stands in for clozn_server's module-level ENGINE_QWEN) -- just enough for generate()'s no-dial path
+    stands in for clozn_server's module-level ENGINE) -- just enough for generate()'s no-dial path
     (.complete) vs its dialed path (.intervene), so engage()'s gating is observable without a real
     engine or a harvested axis vector."""
 

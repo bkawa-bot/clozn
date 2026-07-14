@@ -25,8 +25,8 @@ def _fetch_preferences(port: int) -> dict:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
     except urllib.error.URLError as e:
-        raise ctx.CloznError(f"couldn't reach the Studio on port {port} ({getattr(e, 'reason', e)}). "
-                             f"Start it first:  clozn studio")
+        raise ctx.CloznError(f"couldn't reach the Clozn gateway on port {port} "
+                             f"({getattr(e, 'reason', e)}). Start it first:  clozn serve <model>")
     except Exception as e:
         raise ctx.CloznError(f"preferences failed: {e}")
 
@@ -46,8 +46,8 @@ def _resolve_preference(port: int, pid: str, action: str) -> dict:
             msg = str(e)
         raise ctx.CloznError(f"{action} failed ({e.code}): {msg}")
     except urllib.error.URLError as e:
-        raise ctx.CloznError(f"couldn't reach the Studio on port {port} ({getattr(e, 'reason', e)}). "
-                             f"Start it first:  clozn studio")
+        raise ctx.CloznError(f"couldn't reach the Clozn gateway on port {port} "
+                             f"({getattr(e, 'reason', e)}). Start it first:  clozn serve <model>")
 
 
 def format_preferences(data: dict) -> str:
@@ -69,7 +69,7 @@ def format_preferences(data: dict) -> str:
 
 
 def cmd_preferences(args):
-    port = args.port or 8090
+    port = args.port or 8080
     pid = args.approve or args.dismiss
     if pid:
         action = "approve" if args.approve else "dismiss"

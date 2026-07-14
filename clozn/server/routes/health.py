@@ -1,20 +1,31 @@
-"""Health/state/config surface: which substrate is active (+ switching it), the engine's own health,
-the instrument's `/state` snapshot, and the capture-tier setting. Mechanical extraction of the matching
-`if p == ...` branches out of clozn.server.app's do_GET/do_POST; behavior unchanged.
-
-Reads shared server state (SUB/SUBNAME/ENGINE/switch_substrate/...) off `clozn.server.app` at call time
-(never a captured import) so a substrate swap -- or a test's `monkeypatch.setattr(app, "SUB", ...)` --
-is observed exactly as it was before this lived inline.
-"""
-import threading
-import time
+"""Liveness, readiness, and product runtime state."""
 
 from clozn.server import app as ctx
 
 
 def try_get(h, p):
+    if p == "/healthz":
+        h._json(200, {"status": "ok", "service": "clozn"})
+        return True
+    if p == "/readyz":
+        if ctx.SUB is None or ctx.ENGINE is None:
+            h._json(503, {"status": "not_ready", "service": "clozn", "reason": "model worker unavailable"})
+            return True
+        try:
+            worker = ctx.ENGINE.health()
+        except Exception as e:
+            h._json(503, {"status": "not_ready", "service": "clozn", "reason": str(e)})
+            return True
+        if worker.get("status") != "ok":
+            h._json(503, {"status": "not_ready", "service": "clozn", "worker": worker})
+            return True
+        queue = ctx.POST_GATE.snapshot() if getattr(ctx, "POST_GATE", None) else None
+        h._json(200, {"status": "ok", "service": "clozn", "active": "engine",
+                      "model": worker.get("model"), "mode": worker.get("mode"), "worker": worker,
+                      "queue": queue})
+        return True
     if p == "/substrate":
-        h._json(200, {"active": ctx.SUBNAME, "available": ["qwen", "dream"]})
+        h._json(200, {"active": "engine", "available": ["engine"]})
         return True
     if p == "/engine/health":
         try:
@@ -35,15 +46,8 @@ def try_get(h, p):
 
 def try_post(h, p, body):
     if p == "/substrate":
-        name = str(body.get("name", "qwen"))
-        if name == ctx.SUBNAME:
-            h._json(200, {"active": ctx.SUBNAME, "switched": False})
-            return True
-        if name not in ("qwen", "dream"):
-            h._json(400, {"error": "unknown substrate"})
-            return True
-        h._json(200, {"active": name, "switched": True, "note": "reloading -- poll /substrate"})
-        threading.Thread(target=lambda: (time.sleep(0.4), ctx.switch_substrate(name)), daemon=True).start()
+        h._json(410, {"error": "the product runtime no longer switches serving engines",
+                      "active": "engine", "hint": "run training and calibration as lab jobs"})
         return True
     if p == "/capture/tier":
         from clozn.runs import capture_mode

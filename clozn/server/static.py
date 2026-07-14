@@ -31,10 +31,17 @@ def try_get(handler, path):
         handler._send(302, "", "text/plain; charset=utf-8", {"Location": HEAVN_INDEX})
         return True
     if path.endswith((".html", ".css", ".js", ".mjs")):
-        fn = os.path.normpath(os.path.join(DEMO, path.lstrip("/")))   # serve subdirs (pages/, heavn/) too, safely
-        if fn.startswith(os.path.normpath(DEMO)) and os.path.isfile(fn):
+        root = os.path.abspath(DEMO)
+        fn = os.path.abspath(os.path.join(root, path.lstrip("/")))   # serve subdirs (pages/, heavn/) too
+        try:
+            contained = os.path.commonpath((root, fn)) == root
+        except (OSError, ValueError):
+            contained = False
+        if contained and os.path.isfile(fn):
             ct = ("text/html" if path.endswith(".html") else
                   "text/css" if path.endswith(".css") else "application/javascript")   # .js and .mjs (ES modules)
-            handler._send(200, open(fn, encoding="utf-8").read(), ct + "; charset=utf-8")
+            with open(fn, encoding="utf-8") as handle:
+                content = handle.read()
+            handler._send(200, content, ct + "; charset=utf-8")
             return True
     return False

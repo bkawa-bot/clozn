@@ -1,15 +1,9 @@
-"""clozn.server.app -- the unified studio backend. One port, one model, the whole white-box surface.
+"""The single public Clozn product gateway.
 
-  substrate 'qwen' (default): ONE Qwen-7B serves BOTH the brain (/think -- concepts the model engages)
-                              AND the memory (/say /consolidate /check /whatlearned) -- they share the
-                              single loaded model, so the instrument's brain and memory tabs are both live.
-  substrate 'dream':          Dream-7B serves /denoise (the diffusion window).
-
-Only one 7B fits the GPU, so switching substrates re-execs the process with the other one (a clean GPU);
-the instrument shows the active substrate and offers the switch. Serves the instrument + every window
-from studio, so the iframes' fetches all land here.
-
-    cloze .venv python -m clozn.server.app --port 8090
+``clozn serve`` starts this Torch-free process after its private C++ model worker is
+healthy.  All product HTTP surfaces—OpenAI compatibility, Studio, runs, memory,
+receipts, steering, and readouts—live here.  Training and calibration are offline lab
+jobs and cannot be selected as alternate serving substrates.
 """
 import argparse
 import json
@@ -19,6 +13,9 @@ import subprocess
 import sys
 import threading
 import time
+
+os.environ.setdefault("CLOZN_RUNTIME_KIND", "product")
+RUNTIME_KIND = os.environ["CLOZN_RUNTIME_KIND"]
 
 # `python -m clozn.server.app` executes this file as `__main__`, a SEPARATE module object from
 # `clozn.server.app` in sys.modules terms. Every route module below does `from clozn.server import app
@@ -32,15 +29,24 @@ import time
 sys.modules.setdefault("clozn.server.app", sys.modules[__name__])
 
 from clozn.server.config import HERE, REPO_ROOT, DEMO, CLOZN_DIR   # noqa: E402 (side effects: sys.path/env/stdout)
+from clozn.server.http_policy import (                            # noqa: E402
+    DEFAULT_ALLOW_HEADERS, max_request_bytes, origin_allowed, request_origin, send_cors_headers,
+)
+from clozn.server.request_gate import RequestGate                 # noqa: E402
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
 
+POST_GATE = RequestGate.from_env()
+
 try:
     from cloze_engine import EngineClient, EngineError
-    ENGINE = EngineClient(port=int(os.environ.get("CLOZN_ENGINE_PORT", "8091")))            # the live C++ runtime
-    ENGINE_QWEN = EngineClient(port=int(os.environ.get("CLOZN_ENGINE_QWEN_PORT", "8092")))  # a Qwen GGUF engine -> concepts
+    # Product startup has exactly one model worker.  Requiring the supervisor-provided port here avoids
+    # silently constructing clients for two guessed ports and makes a directly-launched gateway fail
+    # closed.  Offline imports/tests still work with ENGINE=None.
+    _ENGINE_PORT = os.environ.get("CLOZN_ENGINE_PORT")
+    ENGINE = EngineClient(port=int(_ENGINE_PORT)) if _ENGINE_PORT else None
 except Exception:
-    ENGINE = ENGINE_QWEN = None
+    ENGINE = None
     class EngineError(RuntimeError):   # fallback so `except EngineError` resolves even if the SDK import failed
         pass
 
@@ -271,27 +277,27 @@ def _jlens_envelope(res, run_id, text_source, want_protocol=False):
     return out
 
 
-ENGINE_STEER = None        # lazy EngineSteer on the Qwen GGUF engine -- tone dials on the C++ runtime, any GGUF
+ENGINE_STEER = None        # lazy EngineSteer on the one GGUF engine -- tone dials work on any AR GGUF
 
 
 def _engine_steer():
     global ENGINE_STEER
-    if ENGINE_STEER is None and ENGINE_QWEN is not None:
+    if ENGINE_STEER is None and ENGINE is not None:
         from clozn.behavior.steering.engine_adapter import EngineSteer
-        ENGINE_STEER = EngineSteer(ENGINE_QWEN)
+        ENGINE_STEER = EngineSteer(ENGINE)
     return ENGINE_STEER
 
 
-ENGINE_CONCEPT_STEER = None   # lazy ConceptSteer(ENGINE_QWEN) -- Tier-1 #1's any-concept dial (dir(c)), see
+ENGINE_CONCEPT_STEER = None   # lazy ConceptSteer(ENGINE) -- Tier-1 #1's any-concept dial (dir(c)), see
                               # clozn/behavior/steering/concept_dir.py. Mirrors _engine_steer() above; a
                               # SEPARATE mechanism (dir(c), zero calibration) from the tone-dial EngineSteer.
 
 
 def _engine_concept_steer():
     global ENGINE_CONCEPT_STEER
-    if ENGINE_CONCEPT_STEER is None and ENGINE_QWEN is not None:
+    if ENGINE_CONCEPT_STEER is None and ENGINE is not None:
         from clozn.behavior.steering.concept_dir import ConceptSteer
-        ENGINE_CONCEPT_STEER = ConceptSteer(ENGINE_QWEN)
+        ENGINE_CONCEPT_STEER = ConceptSteer(ENGINE)
     return ENGINE_CONCEPT_STEER
 
 
@@ -322,21 +328,6 @@ def _engine_tmpl(engine, messages):
     engine too old to expose /apply_template, must surface -- silently mis-formatting the prompt is the
     exact bug this removes. Callers that need a soft degrade catch EngineError themselves."""
     return engine.apply_template(messages)
-
-
-def _disk_memory():
-    """The trained memory prefix + strength, read from disk -- so engine-chat needs NO HF model resident.
-    The prefix is just saved vectors; only TRAINING a new one needs PyTorch's gradients."""
-    import torch
-    path = _pers("studio_memory.pt")
-    if not os.path.isfile(path):
-        return None, 1.0
-    try:
-        d = torch.load(path, map_location="cpu")
-        pre = d.get("prefix")
-        return (pre.float() if pre is not None else None), float(d.get("memory_strength", 1.0))
-    except Exception:
-        return None, 1.0
 
 
 def _disk_dials():
@@ -550,7 +541,7 @@ from clozn.server.facts_store import SlotBox, _FACT_RE, _mine_fact              
 
 ARGS = None
 SUB = None         # the active substrate object
-SUBNAME = "qwen"
+SUBNAME = "engine"  # product server has one substrate; PyTorch model work lives in the lab
 
 SLOTS = None
 
@@ -682,7 +673,7 @@ def _start_retrain(m, action, card_id, force=False):
 # app.py remains the canonical module: routes read ctx.<name> and tests patch cs.<name> on THIS module.
 from clozn.server.substrates import (                                                    # noqa: E402
     Substrate, QwenSubstrate, DreamSubstrate, EngineSubstrate, _EngineMemory,
-    load_substrate, switch_substrate, _quant_from_name, _model_family_from_name,
+    _quant_from_name, _model_family_from_name,
     _engine_model_info, _engine_complete_traced, _ENGINE_MODELS, _ENGINE_MODEL_DEFAULT,
 )
 
@@ -744,7 +735,7 @@ def make_handler():
             b = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
             self.send_header("Content-Type", ctype)
-            self.send_header("Access-Control-Allow-Origin", "*")
+            send_cors_headers(self)
             if extra_headers:                            # additive + optional: no caller passed this before,
                 for k, v in extra_headers.items():        # so today's callers get byte-identical output
                     self.send_header(str(k), str(v))
@@ -754,6 +745,30 @@ def make_handler():
 
         def _json(self, code, o, extra_headers=None):
             self._send(code, json.dumps(o), "application/json", extra_headers=extra_headers)
+
+        def _reject_untrusted_origin(self):
+            origin = request_origin(self)
+            if origin and not origin_allowed(origin):
+                self._json(403, {"error": "browser origin is not allowed"})
+                return True
+            return False
+
+        def do_OPTIONS(self):
+            """CORS preflight without opening localhost to arbitrary web origins."""
+            origin = request_origin(self)
+            if origin and not origin_allowed(origin):
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(204)
+            send_cors_headers(self)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            requested = self.headers.get("Access-Control-Request-Headers")
+            self.send_header("Access-Control-Allow-Headers", requested or DEFAULT_ALLOW_HEADERS)
+            self.send_header("Access-Control-Max-Age", "600")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def _client(self, ua):
             ua = (ua or "").lower()
@@ -781,9 +796,9 @@ def make_handler():
                 from clozn.readouts import workspace_lens
                 if not norm_trace or not norm_trace.get("tokens"):
                     return []
-                if ENGINE_QWEN is not None:
+                if ENGINE is not None:
                     try:
-                        data = SUB.brain.concepts_from_engine(text, ENGINE_QWEN, 15)
+                        data = SUB.brain.concepts_from_engine(text, ENGINE, 15)
                         return workspace_lens.readouts_from_concepts(
                             rid, norm_trace, data, provider="engine_concepts", layer=data.get("layer"))
                     except Exception:
@@ -970,6 +985,8 @@ def make_handler():
                 pass
 
         def do_GET(self):
+            if self._reject_untrusted_origin():
+                return
             p = self.path.split("?")[0]
             for mod in _GET_ROUTES:
                 if mod.try_get(self, p):
@@ -977,7 +994,28 @@ def make_handler():
             self._json(404, {"error": "GET " + p})
 
         def do_POST(self):
-            n = int(self.headers.get("Content-Length", 0))
+            if self._reject_untrusted_origin():
+                return
+            if self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
+                self._json(501, {"error": "chunked request bodies are not supported"})
+                return
+            raw_length = self.headers.get("Content-Length")
+            try:
+                n = int(raw_length or 0)
+            except (TypeError, ValueError):
+                self.close_connection = True
+                self._json(400, {"error": "invalid Content-Length"})
+                return
+            if n < 0:
+                self.close_connection = True
+                self._json(400, {"error": "invalid Content-Length"})
+                return
+            limit = max_request_bytes()
+            if n > limit:
+                self.close_connection = True
+                self._json(413, {"error": f"request body exceeds the {limit}-byte limit"})
+                return
             try:
                 body = json.loads(self.rfile.read(n) or b"{}")
             except Exception:
@@ -991,6 +1029,20 @@ def make_handler():
                 self._json(400, {"error": "JSON body must be an object"})
                 return
             p = self.path.split("?")[0].rstrip("/") or "/"
+            rejected = POST_GATE.acquire()
+            if rejected:
+                status = 429 if rejected == "full" else 503
+                message = ("request queue is full" if rejected == "full" else
+                           "request timed out while waiting for the model")
+                self._json(status, {"error": {"message": message, "type": "server_busy"}},
+                           extra_headers={"Retry-After": "1"})
+                return
+            try:
+                self._dispatch_post(p, body)
+            finally:
+                POST_GATE.release()
+
+        def _dispatch_post(self, p, body):
             for mod in _POST_ROUTES:
                 if mod.try_post(self, p, body):
                     return
@@ -1010,17 +1062,20 @@ def make_handler():
 
 
 def main():
-    global ARGS, SUB, SUBNAME
+    global ARGS, SUB, SUBNAME, RUNTIME_KIND
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8090)
+    ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--substrate", default="qwen", choices=("qwen", "dream", "engine"))
     ARGS = ap.parse_args()
-    SUBNAME = ARGS.substrate
-    print(f"clozn server: loading '{SUBNAME}' substrate ...", flush=True)
-    SUB = load_substrate(SUBNAME)
+    if ENGINE is None:
+        ap.error("CLOZN_ENGINE_PORT is missing; launch the product with `clozn serve <model>`")
+    os.environ["CLOZN_RUNTIME_KIND"] = "product"
+    RUNTIME_KIND = "product"
+    SUBNAME = "engine"
+    print("clozn gateway: connecting to private model worker ...", flush=True)
+    SUB = EngineSubstrate()
     srv = ThreadingHTTPServer((ARGS.host, ARGS.port), make_handler())
-    print(f"\n  CLOZN instrument -> http://{ARGS.host}:{ARGS.port}/   (substrate: {SUBNAME})\n", flush=True)
+    print(f"\n  Clozn -> http://{ARGS.host}:{ARGS.port}/\n", flush=True)
     srv.serve_forever()
 
 

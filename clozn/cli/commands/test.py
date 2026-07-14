@@ -37,10 +37,10 @@ def _load_test_spec(path: str):
 
 
 def _fetch_live_receipt(port: int, run_id: str, influence: dict):
-    """POST /runs/<id>/receipt on a running `clozn studio` -- the SAME rigorous, both-arms-greedy causal
+    """POST /runs/<id>/receipt on a running product gateway -- the SAME rigorous, both-arms-greedy causal
     receipt receipts.receipt() computes in-process there (clozn.server.app), fetched over the loopback HTTP
-    bridge instead of needing an in-process substrate inside this CLI. Returns None on ANY failure (Studio
-    not up, run not found, no substrate loaded, bad influence spec) -- never raises: testkit's honesty rule
+    bridge instead of needing an in-process model inside this CLI. Returns None on ANY failure (gateway
+    not up, run not found, worker unavailable, bad influence spec) -- never raises: testkit's honesty rule
     (judge_receipt) turns a None receipt into an honest 'skipped' assertion, not a crashed `clozn test` run."""
     url = f"http://127.0.0.1:{port}/runs/{run_id}/receipt"
     body = json.dumps({"influence": influence}).encode()
@@ -103,7 +103,7 @@ def cmd_test(args):
 
     fetch_receipt = None
     if args.live:
-        port = args.port or 8090
+        port = args.port or 8080
         fetch_receipt = lambda run, influence: _fetch_live_receipt(port, run.get("id"), influence)
 
     suite = testkit.run_suite(spec, get_run=testkit.default_get_run, sub=None, fetch_receipt=fetch_receipt)

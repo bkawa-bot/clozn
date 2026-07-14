@@ -43,7 +43,7 @@ from clozn.runs import close_calls
 LOW_CONF = 0.5
 
 _NO_TRACE_NOTE = "token trace captured on the engine path"
-_NO_CONCEPTS_NOTE = "concept readout needs the qwen/PyTorch substrate (SAE) — not available on this run."
+_NO_CONCEPTS_NOTE = "no named concept readout was captured for this run."
 
 
 def _as_list(x) -> list:

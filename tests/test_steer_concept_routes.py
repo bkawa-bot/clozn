@@ -12,7 +12,7 @@ ALONGSIDE the existing tone-dial routes (/steer/set, /steer/check, /steer/custom
                         ConceptSteer has no engage()/disengage() persistent-patch mechanism -- it rides
                         the SAME raw-vector wire /intervene already serves, see concept_dir.py's demo).
 
-Model-free and GPU-free: clozn.server.app.ENGINE_QWEN is monkeypatched to a FakeEngineClient (harvest/
+Model-free and GPU-free: clozn.server.app.ENGINE is monkeypatched to a FakeEngineClient (harvest/
 complete/intervene/score -- harvest is needed because Substrate._steer's shared _ensure_steer() always
 harvests the tone-dial axes ONCE per process before any /steer/* branch runs, exactly like the existing
 /steer/custom route tests, see test_engine_add_custom.py); ENGINE_CONCEPT_STEER is a REAL ConceptSteer
@@ -159,11 +159,11 @@ def iso(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_concept_engine(iso, monkeypatch):
-    """clozn.server.app.ENGINE_QWEN -> a fresh FakeEngineClient; ENGINE_STEER/ENGINE_CONCEPT_STEER reset
+    """clozn.server.app.ENGINE -> a fresh FakeEngineClient; ENGINE_STEER/ENGINE_CONCEPT_STEER reset
     so _engine_steer()/_engine_concept_steer() build fresh on it. SUB -> a real EngineSubstrate on top,
     so /steer/concept/* is dispatched exactly the way a live studio request would be."""
     ec = FakeEngineClient()
-    monkeypatch.setattr(cs, "ENGINE_QWEN", ec)
+    monkeypatch.setattr(cs, "ENGINE", ec)
     monkeypatch.setattr(cs, "ENGINE_STEER", None)
     monkeypatch.setattr(cs, "ENGINE_CONCEPT_STEER", None)
     sub = cs.EngineSubstrate()
@@ -193,14 +193,14 @@ def wired_concept_steer(fake_concept_engine, fixture_source, monkeypatch):
 # ==================================================================================== _engine_concept_steer() -- mirrors _engine_steer()
 
 def test_engine_concept_steer_is_none_when_engine_unconfigured(monkeypatch):
-    monkeypatch.setattr(cs, "ENGINE_QWEN", None)
+    monkeypatch.setattr(cs, "ENGINE", None)
     monkeypatch.setattr(cs, "ENGINE_CONCEPT_STEER", None)
     assert cs._engine_concept_steer() is None
 
 
 def test_engine_concept_steer_builds_once_and_caches(monkeypatch):
     ec = FakeEngineClient()
-    monkeypatch.setattr(cs, "ENGINE_QWEN", ec)
+    monkeypatch.setattr(cs, "ENGINE", ec)
     monkeypatch.setattr(cs, "ENGINE_CONCEPT_STEER", None)
     first = cs._engine_concept_steer()
     assert isinstance(first, concept_dir.ConceptSteer)
@@ -214,7 +214,7 @@ def test_engine_concept_steer_builds_once_and_caches(monkeypatch):
 def test_steer_concept_set_needs_a_running_engine(fake_concept_engine, monkeypatch):
     monkeypatch.setattr(cs, "_engine_concept_steer", lambda: None)
     out = _post("/steer/concept/set", {"concept": "ocean"})
-    assert out == {"error": "concept dials need a running engine (CLOZN_ENGINE_QWEN_PORT)"}
+    assert out == {"error": "concept dials need the product model worker (CLOZN_ENGINE_PORT)"}
 
 
 def test_steer_concept_set_needs_a_concept_word(wired_concept_steer):

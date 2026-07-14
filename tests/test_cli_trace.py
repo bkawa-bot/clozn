@@ -1,8 +1,4 @@
-"""Model-free tests for `clozn trace` source selection.
-
-The default trace command must read the same ~/.clozn/runs journal as Studio. The old
-~/.clozn/traces cache remains available through --legacy-cache and must not be pruned by new writes.
-"""
+"""Model-free tests for `clozn trace` over the canonical SQLite run journal."""
 from __future__ import annotations
 
 import json
@@ -34,8 +30,8 @@ def isolated(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _args(*, list=False, legacy_cache=False):
-    return SimpleNamespace(list=list, legacy_cache=legacy_cache)
+def _args(*, list=False):
+    return SimpleNamespace(list=list)
 
 
 def _write_legacy(home: Path, *, rid="legacy-1", prompt="old prompt"):
@@ -117,101 +113,27 @@ def test_trace_shows_token_id_logprob_and_topk_entropy_with_honest_labels(isolat
     assert " H " not in out and "H 0." not in out       # never the true-entropy label for a top-k value
 
 
-def test_trace_legacy_cache_flag_still_reads_old_trace_files(isolated, capsys):
-    _write_legacy(Path(cli.HOME), prompt="legacy prompt")
-    runlog.record(source="studio_chat", client="studio", model="new-model",
-                  messages=[{"role": "user", "content": "new prompt"}], response="New answer",
-                  trace={"tokens": ["New"], "confidence": [0.9]}, started=2000.0, ended=2000.1)
-
-    cli.cmd_trace(_args(legacy_cache=True))
-
-    out = capsys.readouterr().out
-    assert "legacy prompt" in out
-    assert "almost: older 0.19" in out
-    assert "new prompt" not in out
-
-
-def test_save_trace_does_not_prune_legacy_cache_files(isolated):
-    trace_dir = Path(cli.HOME) / "traces"
-    trace_dir.mkdir(parents=True, exist_ok=True)
-    for i in range(30):
-        (trace_dir / f"old-{i:02d}.json").write_text("{}", encoding="utf-8")
-
-    cli._save_trace({"id": "new-trace"}, [])
-
-    assert (trace_dir / "new-trace.json").exists()
-    assert len(list(trace_dir.glob("*.json"))) == 31
-
-
-def test_trace_cache_files_sorts_by_mtime_not_filename(isolated):
-    """Regression: a stray non-timestamp filename (e.g. `new-trace.json`, left over from some other
-    process writing straight into the traces dir) must not be picked as "the latest trace" just because
-    it sorts last lexicographically -- ASCII puts digits before lowercase letters, so `new-trace.json`
-    sorts after every real `<unix-ts>-<pid>.json` name regardless of when it was actually written.
-    `clozn branch` relies on `_trace_cache_files()[-1]` being the most RECENTLY WRITTEN file."""
-    import clozn.cli.trace_io as trace_io
-
-    trace_dir = Path(cli.HOME) / "traces"
-    trace_dir.mkdir(parents=True, exist_ok=True)
-
-    old_real = trace_dir / "1700000000-001.json"
-    old_real.write_text(json.dumps({"meta": {"id": "1700000000-001"}, "steps": [{"piece": "old"}]}),
-                         encoding="utf-8")
-    os.utime(old_real, (1_700_000_000, 1_700_000_000))
-
-    stray = trace_dir / "new-trace.json"                # written in between, but sorts last by NAME
-    stray.write_text(json.dumps({"meta": {"id": "new-trace"}, "steps": []}), encoding="utf-8")
-    os.utime(stray, (1_700_000_500, 1_700_000_500))
-
-    latest_real = trace_dir / "1700001000-002.json"      # the actually-latest trace, by write time
-    latest_real.write_text(json.dumps({"meta": {"id": "1700001000-002"}, "steps": [{"piece": "new"}]}),
-                            encoding="utf-8")
-    os.utime(latest_real, (1_700_001_000, 1_700_001_000))
-
-    files = trace_io._trace_cache_files()
-
-    assert files[-1] == str(latest_real)
-
-
-def test_trace_parser_exposes_legacy_cache_flag():
-    args = cli.build_parser().parse_args(["trace", "--legacy-cache"])
-    assert args.legacy_cache is True
-
-
-# --------------------------------------------------------------------- degenerate `{}` run file (bug #3)
-# A bare `{}` written straight to a run_*.json file (e.g. some external tool, or a half-written record)
-# summarizes to id=None; that None used to reach store.get_run's `rid + ".json"` and blow up with
-# `TypeError: unsupported operand type(s) for +: 'NoneType' and 'str'`. Fixed transitively by #1's
-# get_run() rejecting a non-string rid instead of raising -- confirmed end-to-end here through the real
-# CLI entry points, not just the store layer.
+# ----------------------------------------------------------- stray legacy JSON is never an implicit data source
 
 def _write_bare_run(runs_dir: Path, name="run_bare"):
     os.makedirs(runs_dir, exist_ok=True)
     (runs_dir / f"{name}.json").write_text("{}", encoding="utf-8")
 
 
-def test_trace_does_not_crash_with_a_bare_run_file(isolated, capsys):
-    """`clozn trace` (single-run mode) with ONLY a degenerate {} run present must fail cleanly (a
-    CloznError -- "latest run disappeared") rather than raise a raw TypeError."""
+def test_trace_ignores_a_bare_legacy_json_file(isolated, capsys):
     _write_bare_run(Path(runlog.RUNS_DIR))
-    import clozn.cli.main as cli_main
-
-    with pytest.raises(cli_main.CloznError):
-        cli.cmd_trace(_args())
+    cli.cmd_trace(_args())
+    assert "no runs yet" in capsys.readouterr().out
 
 
-def test_trace_list_does_not_crash_with_a_bare_run_file(isolated, capsys):
-    """`clozn trace --list` must not crash either -- it has no early return on a missing/None id, it just
-    renders whatever it can for that row."""
+def test_trace_list_ignores_a_bare_legacy_json_file(isolated, capsys):
     _write_bare_run(Path(runlog.RUNS_DIR))
     cli.cmd_trace(_args(list=True))
     out = capsys.readouterr().out
-    assert "WHEN" in out                        # the header row printed; no traceback
+    assert "no runs yet" in out
 
 
-def test_trace_list_does_not_crash_with_a_bare_run_file_alongside_a_real_one(isolated, capsys):
-    """The mixed case: a real run + a degenerate one in the same journal, `--list` renders both rows
-    without crashing, and the real run's own row is still intact."""
+def test_trace_list_ignores_bare_json_alongside_a_sqlite_run(isolated, capsys):
     _write_bare_run(Path(runlog.RUNS_DIR), name="run_aaaa_bare")
     runlog.record(source="cli", messages=[{"role": "user", "content": "a real prompt"}], response="hey",
                  started=2000.0, ended=2000.1)

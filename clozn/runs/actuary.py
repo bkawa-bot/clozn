@@ -311,19 +311,9 @@ def analyze(runs: list[dict], *, organic_only: bool = True) -> ActuaryReport:
 
 
 def load_runs() -> list[dict]:
-    """Read every persisted FULL run record from ~/.clozn/runs (list_runs is summary-only; the actuary
-    needs traces, so we read the files directly). Thin + import-local so the pure functions stay
-    filesystem-free and unit-testable."""
-    import json
+    """Read every full run from the authoritative SQLite journal."""
     from . import store
-    runs = []
-    for f in sorted(store._files()):
-        try:
-            with open(f, encoding="utf-8") as fh:
-                runs.append(json.load(fh))
-        except Exception:
-            continue
-    return runs
+    return store.iter_runs()
 
 
 def load_and_analyze() -> ActuaryReport:

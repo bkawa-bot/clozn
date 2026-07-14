@@ -1,8 +1,8 @@
-"""clozn.server.substrates -- the model substrates behind the studio server.
+"""Model adapters shared by the product runtime and offline lab code.
 
-One `Substrate` interface, three implementations -- QwenSubstrate (HF/PyTorch), DreamSubstrate
-(diffusion), EngineSubstrate (the C++ GGUF engine, the daily driver) -- plus the engine model registry
-and the traced completion wrapper. Extracted from clozn.server.app; the app module remains the seam:
+``EngineSubstrate`` is the only product-serving adapter.  ``QwenSubstrate`` and
+``DreamSubstrate`` remain as PyTorch lab implementations for training/calibration work;
+the product gateway has no loader or switch route that can activate them.  The app module remains the seam:
 mutable server state (SUB/SUBNAME/ENGINE*/SLOTS/...) and the helpers routes and tests patch live there,
 and this module reads them through `ctx` (late-bound, so a monkeypatch on the app module is always
 seen). app re-exports every public name here, so `from clozn.server import app as cs; cs.EngineSubstrate`
@@ -219,7 +219,7 @@ class Substrate:
             import clozn.behavior.steering.concept_dir as concept_dir
             cs = ctx._engine_concept_steer()
             if cs is None:
-                return {"error": "concept dials need a running engine (CLOZN_ENGINE_QWEN_PORT)"}
+                return {"error": "concept dials need the product model worker (CLOZN_ENGINE_PORT)"}
             concept = str(body.get("concept", "")).strip()
             if not concept:
                 return {"error": "need a concept word"}
@@ -231,7 +231,7 @@ class Substrate:
             import clozn.behavior.steering.concept_dir as concept_dir
             cs = ctx._engine_concept_steer()
             if cs is None:
-                return {"error": "concept dials need a running engine (CLOZN_ENGINE_QWEN_PORT)"}
+                return {"error": "concept dials need the product model worker (CLOZN_ENGINE_PORT)"}
             concept = str(body.get("concept", "")).strip()
             if not concept:
                 return {"error": "need a concept word"}
@@ -643,9 +643,9 @@ class EngineSubstrate(Substrate):
     name = "engine"
 
     def __init__(self):
-        if ctx.ENGINE_QWEN is None:
-            raise RuntimeError("engine substrate needs a running GGUF engine (set CLOZN_ENGINE_QWEN_PORT)")
-        self.engine = ctx.ENGINE_QWEN
+        if ctx.ENGINE is None:
+            raise RuntimeError("engine substrate needs the supervised GGUF worker (set CLOZN_ENGINE_PORT)")
+        self.engine = ctx.ENGINE
         self.steer = ctx._engine_steer()            # an EngineSteer on the GGUF (tone dials via steer_vec)
         if self.steer is not None:               # metadata-only: the shipped library's names/poles/max, so
             try:                                  # they show up in /steer/axes immediately (their direction
@@ -1031,23 +1031,6 @@ class EngineSubstrate(Substrate):
                 "cards": len(memory_cards.list_cards() or [])}
 
 
-def load_substrate(name):
-    if name == "engine":
-        try:
-            return EngineSubstrate()
-        except Exception as e:
-            print(f"[substrate] engine substrate unavailable ({e}); running with SUB=None", file=sys.stderr)
-            return None
-    return QwenSubstrate() if name == "qwen" else DreamSubstrate()
-
-
-def switch_substrate(name):
-    """Re-exec the whole process with the new substrate -> a clean GPU (the only honest way; one 7B fits)."""
-    py = sys.executable
-    os.execv(py, [py, os.path.abspath(__file__), "--substrate", name, "--port", str(ctx.ARGS.port),
-                  "--host", ctx.ARGS.host])
-
-
 def _quant_from_name(name):
     """Pull the GGUF quant tag (Q4_K_M, Q8_0, IQ4_XS, F16, ...) out of a model filename, or None. GGUF
     files name their quantization in the basename, so this is the one bit of repro metadata we can read
@@ -1173,5 +1156,3 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw, sample=None):
     finish = ch[0].get("finish_reason") if (ch and isinstance(ch[0], dict)) else None
     divinfo = (r.get("diverged"), r.get("diverged_at")) if isinstance(r, dict) else (None, None)
     return (ch[0].get("text", "") if ch else str(r)), [], finish, divinfo
-
-

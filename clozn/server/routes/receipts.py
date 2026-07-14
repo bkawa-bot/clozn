@@ -61,10 +61,10 @@ def try_post(h, p, body):
         if mode not in ("regen", "forced", "both"):
             h._json(400, {"error": "mode must be one of regen|forced|both"})
             return True
-        # regen/both regenerate both arms -> needs the qwen substrate; forced-only never
-        # generates (S3: teacher-forced /score on the engine substrate) -- no chat needed.
+        # regen/both regenerate both arms through the product model; forced-only never generates
+        # (S3: teacher-forced /score on the worker) -- no chat needed.
         if mode in ("regen", "both") and not (ctx.SUB and getattr(ctx.SUB, "chat", None)):
-            h._json(503, {"error": "receipts need the qwen substrate"})
+            h._json(503, {"error": "receipts require a ready product model worker"})
             return True
         from clozn import receipts
         try:
@@ -84,7 +84,7 @@ def try_post(h, p, body):
             h._json(400, {"error": "mode must be one of regen|forced|both"})
             return True
         if mode in ("regen", "both") and not (ctx.SUB and getattr(ctx.SUB, "chat", None)):
-            h._json(503, {"error": "receipt needs the qwen substrate"})
+            h._json(503, {"error": "receipt requires a ready product model worker"})
             return True
         influence = body.get("influence")
         if not isinstance(influence, dict) or not influence:
@@ -111,7 +111,7 @@ def try_post(h, p, body):
             h._json(404, {"error": "run not found"})
             return True
         if not (ctx.SUB and getattr(ctx.SUB, "engine", None) and getattr(ctx.SUB, "jlens", None)):
-            h._json(503, {"error": "swap_receipt needs the engine substrate (.engine + .jlens)"})
+            h._json(503, {"error": "swap_receipt requires the product worker with J-lens enabled"})
             return True
         to_concept = str(body.get("to_concept", "")).strip()
         if not to_concept:
@@ -133,7 +133,7 @@ def try_post(h, p, body):
             h._json(404, {"error": "run not found"})
             return True
         if not (ctx.SUB and getattr(ctx.SUB, "score_tokens", None)):
-            h._json(503, {"error": "rederive needs the engine substrate (score_tokens)"})
+            h._json(503, {"error": "rederive requires worker token scoring"})
             return True
         import clozn.receipts.rederive as rederive
         try:
@@ -155,9 +155,9 @@ def try_post(h, p, body):
         layer = body.get("layer")
         topk = int(body.get("topk", 5) or 5)
         want_protocol = bool(body.get("protocol", False))
-        if not (ctx.SUB and getattr(ctx.SUB, "jlens", None)):   # non-engine substrate -> clean 200 absence
+        if not (ctx.SUB and getattr(ctx.SUB, "jlens", None)):
             h._json(200, {"available": False, "run_id": None,
-                         "reason": "the active substrate has no J-lens (needs the engine substrate)"})
+                         "reason": "the product model worker has no J-lens"})
             return True
         res = ctx.SUB.jlens(text, layer=layer, topk=topk)
         h._json(200, ctx._jlens_envelope(res, run_id=None, text_source="input", want_protocol=want_protocol))
@@ -171,7 +171,7 @@ def try_post(h, p, body):
             return True
         if not (ctx.SUB and getattr(ctx.SUB, "jlens", None)):
             h._json(200, {"available": False, "run_id": rid,
-                         "reason": "the active substrate has no J-lens (needs the engine substrate)"})
+                         "reason": "the product model worker has no J-lens"})
             return True
         text, text_source = ctx._jlens_run_text(run)          # prefer the stored response; note the source
         if not text:
@@ -191,8 +191,8 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # constrained + unconstrained BOTH generate -> needs qwen
-            h._json(503, {"error": "narration needs the qwen substrate"})
+        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # constrained + unconstrained both generate
+            h._json(503, {"error": "narration requires a ready product model worker"})
             return True
         import clozn.receipts.narrate as narrate
         matcher = narrate.lexical_default            # the weak keyword proxy -- the LABELED fallback judge
@@ -232,8 +232,8 @@ def try_post(h, p, body):
             return True
         if not clozn_experiment.substrate_ok(ctype, ctx.SUB):
             needs = clozn_experiment.REGISTRY[ctype]["substrate"]
-            msg = ("experiment needs the qwen substrate" if needs == "chat" else
-                  "experiment needs the engine substrate (.engine + .jlens)")
+            msg = ("experiment requires a ready product model worker" if needs == "chat" else
+                   "experiment requires the product worker with J-lens enabled")
             h._json(503, {"error": msg})
             return True
         method = body.get("method")
