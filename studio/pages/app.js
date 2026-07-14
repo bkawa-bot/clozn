@@ -247,7 +247,6 @@
       el("span", { class: "spec", id: "spec-model" }, ["model —"]),
       el("span", { class: "spec grow" }, []),
       el("a", { href: "studio.html", class: "spec speclink", title: "the original chat + memory + dials surface" }, ["classic studio ↗"]),
-      el("a", { href: "../../index.html", class: "spec speclink" }, ["all windows ↗"]),
     ]);
 
     app.appendChild(masthead);

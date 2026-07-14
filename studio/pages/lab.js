@@ -113,9 +113,7 @@
         S.el("p", { class: "lab-foot" }, [
           "Prefer everything in one window? The ",
           S.el("a", { href: "instrument.html", target: "_blank", rel: "noopener" }, ["combined instrument ↗"]),
-          " hosts all three of these with a substrate switcher. And the ",
-          S.el("a", { href: "../../index.html", target: "_blank", rel: "noopener" }, ["window index ↗"]),
-          " lists every standalone clozn surface.",
+          " hosts all three of these with a substrate switcher.",
         ]),
       ])
     );

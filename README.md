@@ -1,4 +1,4 @@
-# Clozn — WIP!!!
+# Clozn
 
 **A local-first, glass-box runtime for the models you run yourself — view, steer, and *prove*.**
 Watch a model think (per-token confidence + the alternatives it weighed), steer its tone, carry memory
@@ -67,7 +67,7 @@ first: `cd engine/core && build_gpu.bat` (GPU, CUDA) or `build_serve.bat` (CPU).
 | `studio/`   | the white-box UI — the Run Inspector (receipts, trace, lineage, memory, tone dials, J-lens readouts), served by the backend |
 | `protocol/` | the one state-stream contract the engine emits and the studio consumes |
 | `docs/`     | architecture, the consolidated roadmap, and the honest technical account |
-| `tests/`    | the model-free product suite · `scripts/` dev tooling · `examples/` traces & fixtures |
+| `tests/`    | the model-free product suite · `scripts/` dev tooling |
 
 The legibility-science spikes and findings (the interpretability-tax thread) live in a separate
 local-only sibling repo: `../clozn-research`.

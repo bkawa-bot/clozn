@@ -109,10 +109,6 @@ Keep links **sparse** (threshold hard) — a few hundred to a couple thousand ed
 mind; tens of thousands turn into a hairball. Dense **intra**-community links + a few
 **evocative cross**-community bridges is the look you want.
 
-A generator for the seed lives in the session scratchpad (`gen_brain_data.py`); it shows the
-exact ring + chord intra-lobe density and the curated cross-lobe bridge pattern, and also
-emits `brain_data.js` (an ES-module form of the same data, handy if you serve over http).
-
 ---
 
 ## Interactions

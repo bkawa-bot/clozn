@@ -4,30 +4,32 @@ The design docs, indexed. Read top-down: the synthesis first, then the per-layer
 
 ## Start here
 
-- **[../ARCHITECTURE.md](../ARCHITECTURE.md)** — the synthesis: one product, the layers, the
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the synthesis: one product, the layers, the
   state-stream protocol, the interp maturity ladder. *How the whole thing fits.*
-- **[../ROADMAP.md](../ROADMAP.md)** — the plan from here to the memory frontier, phased and
-  tasked.
+- **[ROADMAP.md](ROADMAP.md)** — the consolidated map: what's done, the v1 cut, what's next.
 
 ## Per-layer design
 
 - **[DESIGN.md](DESIGN.md)** — the **engine** runtime architecture (scheduler §5, the L0 ggml
   adapter, the KV-cache tiers, the white-box taps). The deep "how the runtime works"; the
   engine code's `DESIGN §x` references point here. *(Written when the engine was the standalone
-  `cloze` repo — read "cloze" as "the engine layer." A pass to retitle it for the monorepo is a
-  tracked follow-up.)*
+  `cloze` repo — read "cloze" as "the engine layer.")*
 - **[TECHNICAL.md](TECHNICAL.md)** — the honest engineering account of the engine: what's fast,
   what it cost in quality, the measurements behind every claim.
-- **[../inspector/DESIGN.md](../inspector/DESIGN.md)** — the **inspector** architecture: the
-  state-stream spine, the ops, the substrate-agnostic `StateSource` seam, the memory verbs.
-- **[../research/HANDOFF.md](../research/HANDOFF.md)** — the **research** thesis: compression
-  under constraint, the legible-interior bet, the open cruxes.
+- **[STUDIO.md](STUDIO.md)** — the studio UI: pages, panels, and what each surface shows.
+- **[MODEL_SUPPORT.md](MODEL_SUPPORT.md)** — which model families run, and on which paths.
+- **[WORKSPACE_LENS.md](WORKSPACE_LENS.md)** — the J-lens: how it's fitted, what it can and
+  cannot claim, and the trace fixture format.
+- **[EXPLAIN_THIS_ANSWER_SPEC.md](EXPLAIN_THIS_ANSWER_SPEC.md)** — the explain/receipts spec
+  (M1 assembly, causal receipts, the honesty rules the endpoints enforce).
+- **[RUNTIME_SPLIT.md](RUNTIME_SPLIT.md)** — how the Python package splits between the pure
+  library and the served runtime.
 
 ## Protocol
 
-- **[../protocol/README.md](../protocol/README.md)** — the state-stream contract (the keystone
-  that collapses the engine's events and the inspector's `StateStep` into one). Authored in
-  Roadmap phase 1.
+- **[../protocol/README.md](../protocol/README.md)** — the state-stream contract the engine
+  emits and the studio consumes.
 
-The four [non-negotiable invariants](../ARCHITECTURE.md#carried-over-invariants-non-negotiable)
-(honesty-first, the seam, tests-as-oracle, substrate-agnostic) hold across all of the above.
+The four non-negotiable invariants (honesty-first, the seam, tests-as-oracle,
+substrate-agnostic) hold across all of the above — see
+[ARCHITECTURE.md](ARCHITECTURE.md).
