@@ -11,6 +11,9 @@
   --edge:rgba(128,142,190,.32); --edge-soft:rgba(128,142,190,.16);
   --screen:#1E2447;
   --flow:linear-gradient(90deg,#4C8DF0,#2CBFE8 28%,#5FC8BC 52%,#B6B0DA 76%,#E48CD8);
+  /* iridescent oil-slick — the holographic sheen on SELECTION / FOCUS states (pink→lilac→peri→mint) */
+  --iri:linear-gradient(105deg,rgba(228,140,216,.26),rgba(182,176,218,.24) 34%,rgba(143,168,232,.22) 62%,rgba(95,200,188,.24));
+  --iri-soft:linear-gradient(105deg,rgba(228,140,216,.13),rgba(182,176,218,.12) 34%,rgba(143,168,232,.11) 62%,rgba(95,200,188,.12));
   --disp:"Chakra Petch","Space Grotesk","Segoe UI",sans-serif;
   --mono:"IBM Plex Mono","Cascadia Mono",ui-monospace,Consolas,monospace;
   --crt:"VT323","Cascadia Mono",ui-monospace,monospace;
@@ -102,8 +105,10 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .navrow .nm{font-family:var(--disp);font-size:10.5px;font-weight:500;letter-spacing:.16em;
   text-transform:uppercase;color:var(--slate)}
 .navrow .mark{font-size:10px;color:var(--teal);text-align:right}
-.navrow:hover{background:rgba(95,200,188,.07)}
-.navrow.on{border-left-color:var(--teal);background:linear-gradient(90deg,rgba(95,200,188,.14),transparent)}
+.navrow:hover{background:var(--iri-soft)}
+.navrow.on{width:auto;margin:3px 8px;border-radius:12px;border-left-color:transparent;border-bottom-color:transparent;
+  background:var(--iri);
+  box-shadow:0 6px 18px rgba(150,155,210,.20), inset 0 1px 0 rgba(255,255,255,.78), 0 0 0 1px rgba(255,255,255,.6)}
 .navrow.on .nled{background:var(--teal);box-shadow:0 0 8px var(--teal)}
 .navrow.on .nm{color:var(--navy);font-weight:600}
 .navfoot{padding:12px 15px;border-top:1px solid var(--edge-soft);font-size:9.5px;line-height:1.75;color:var(--mist)}
@@ -271,7 +276,9 @@ details[open].leader summary::before{content:"▾"}
 .runstrip{display:flex;gap:8px;overflow-x:auto;padding:2px 13px 10px}
 .runchip{flex:none;width:148px;text-align:left;border-radius:9px;border:1px solid var(--edge-soft);
   padding:7px 9px;background:linear-gradient(180deg,rgba(255,255,255,.7),rgba(230,243,249,.5))}
-.runchip.on{border-color:rgba(44,191,232,.7);box-shadow:0 3px 12px rgba(44,191,232,.3), inset 0 1px 0 #fff}
+.runchip.on{border-color:rgba(255,255,255,.7);
+  background:var(--iri-soft),linear-gradient(180deg,rgba(255,255,255,.7),rgba(230,243,249,.5));
+  box-shadow:0 4px 14px rgba(150,155,210,.22), inset 0 1px 0 #fff, 0 0 0 1px rgba(182,176,218,.45)}
 .runchip .t{font-size:9px;font-weight:600;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
 .runchip canvas{display:block;width:100%;height:15px;margin:4px 0 2px}
 .runchip .m{font-size:7.5px;color:var(--mist);letter-spacing:.05em;text-transform:uppercase}
