@@ -379,7 +379,7 @@ def test_chat_stream_forwards_anchored_memory_when_raw_steer_slot_is_free(iso, m
 
 
 # ==================================================================================== the anchored-memory loop guard (streaming twin)
-# X7_PRODUCT_DESIGN.md section 5: the engine sets the anchored steer at generation-START and every piece
+# The loop-guard policy: the engine sets the anchored steer at generation-START and every piece
 # is yielded to the caller live, so by the time a loop could be detected the client has already received
 # the whole reply -- there is no seamless mid-stream retry here (unlike chat()'s auto-retry-at-half-
 # strength in test_engine_substrate.py). This path can only detect the degeneracy after the fact and flag

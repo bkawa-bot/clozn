@@ -1,10 +1,10 @@
-"""commands.quant_check -- `clozn quant-check <A.gguf> <B.gguf>` (Tier 1, notes/FABLE_HANDOFF.md Sec 4
-"Quant-check"): "did this quant lobotomize my model?" as one command.
+"""commands.quant_check -- `clozn quant-check <A.gguf> <B.gguf>` (Tier 1, "Quant-check"): "did this
+quant lobotomize my model?" as one command.
 
 Wraps the VALIDATED, committed `clozn/receipts/quant_receipts.py` (commit `1f223fa`; live-run once for
-real in `notes/quant_receipts/LIVE_RESULTS.md`) into a CLI verb: boot the SAME model as two GGUF files
+real) into a CLI verb: boot the SAME model as two GGUF files
 (A = reference, e.g. Q8_0/fp16; B = the quant under test, e.g. Q4_K_M or Q2_K) on two engine
-processes/ports (llama.cpp is one-model-per-process, notes/quant_receipts/README.md), gather N runs
+processes/ports (llama.cpp is one-model-per-process), gather N runs
 (fresh greedy generations under A, or the N most recent runs from the run journal with --from-log),
 teacher-force each run's own answer under BOTH via /score, and diff per-token with
 `quant_receipts.quant_receipt_for_run` / `diff_quant_scores` -- reused completely unmodified.
@@ -29,33 +29,17 @@ FakeScoreSub, `aggregate_receipts`/`format_ladder` against FIXTURE receipts (bui
 `quant_receipts.diff_quant_scores` on fixture score arrays, exactly like that module's own tests), and
 `add_subparser`'s argparse wiring.
 
-DEFERRED (this task): the actual LIVE two-engine smoke -- `cmd_quant_check` really booting two
-`cloze-server.exe` processes and scoring a real model over the wire. It is written, reachable, and
-documented below, but this session's GPU is busy with another experiment, so it is never invoked by
-this module's own tests and must not be run here. Once a GPU is free:
+DEFERRED: the actual LIVE two-engine smoke -- `cmd_quant_check` really booting two `cloze-server.exe`
+processes and scoring a real model over the wire. It is written and reachable, but needs a free GPU and
+two engine processes, so it is never invoked by this module's own tests. Once a GPU is free:
 
     clozn quant-check <Q8_0.gguf> <Q4_K_M.gguf> --runs 8
     clozn quant-check <Q8_0.gguf> <Q2_K.gguf> --from-log --runs 20
 
--------------------------------------------------------------------------------------------------------
-Registration edit for clozn/cli/main.py (DOCUMENTED here, NOT performed -- main.py is off-limits this
-session; its owner wires this in):
-
-  1. Alongside main.py's other `from clozn.cli.commands.X import ...` lines (the block currently ending
-     with `from clozn.cli.commands.test import cmd_test`), add:
-
-         from clozn.cli.commands.quant_check import cmd_quant_check, add_subparser as _add_quant_check
-
-  2. Inside `build_parser()`, alongside the other `sub.add_parser(...)` blocks (e.g. right after the
-     `pte = sub.add_parser("test", ...)` block, before `return p`), add ONE line:
-
-         _add_quant_check(sub)
-
-That's the whole edit: `add_subparser` (this module) builds its OWN `quant-check` subparser (model_a,
-model_b, --runs, --from-log, --topk, --max-tokens, --port-a, --port-b, --cpu, --json) and already calls
-`.set_defaults(fn=cmd_quant_check)` itself, so `main()`'s existing `args.fn(args)` dispatch needs no
-other change.
--------------------------------------------------------------------------------------------------------
+`add_subparser` (this module) builds its OWN `quant-check` subparser (model_a, model_b, --runs,
+--from-log, --topk, --max-tokens, --port-a, --port-b, --cpu, --json) and calls
+`.set_defaults(fn=cmd_quant_check)` itself; it is registered in `clozn/cli/main.py` alongside the other
+subcommands, so `main()`'s `args.fn(args)` dispatch needs no other change.
 """
 from __future__ import annotations
 
@@ -70,9 +54,9 @@ import clozn.receipts.quant_receipts as qr
 
 # ---------------------------------------------------------------------------------- default prompt table
 # Used by the "generate fresh runs" path (no --from-log): a small, varied, hand-picked set mirroring the
-# behavior categories notes/quant_receipts/LIVE_RESULTS.md's live ladder used (factual/code/reasoning/
-# refusal/formatting/arithmetic/json) -- chosen for behavior VARIETY, not statistical power (same caveat
-# that file states explicitly for its own 19-prompt sample). `--runs N` takes the first N of these; N
+# behavior categories a live ladder run used (factual/code/reasoning/
+# refusal/formatting/arithmetic/json) -- chosen for behavior VARIETY, not statistical power (the same
+# caveat applies here as for any small hand-picked, 19-prompt sample). `--runs N` takes the first N of these; N
 # above len(_DEFAULT_PROMPTS) is capped, never cycled/repeated (use --from-log for a bigger real sample).
 _DEFAULT_PROMPTS = [
     ("factual_qa", "What is the capital of France?"),
@@ -200,9 +184,9 @@ def generate_fresh_run(sub_a: "_EngineScoreSub", category: str, prompt: str, *, 
     """LIVE (needs sub_a.engine up -- a real EngineClient in production, a fake in tests): generate ONE
     greedy completion under A, then score that SAME text back on A to fix the exact continuation token
     ids from A's own tokenizer -- the "generate under the reference quant, then teacher-force everywhere
-    else" methodology notes/quant_receipts/LIVE_RESULTS.md ran for real (see that file's "How" section:
-    prompt -> /v1/completions on the reference -> /score on the reference fixes the continuation ids ->
-    /score the SAME ids on the other quant). Returns a run-shaped dict (messages/response/
+    else" methodology already run for real (prompt -> /v1/completions on the reference -> /score on the
+    reference fixes the continuation ids -> /score the SAME ids on the other quant). Returns a run-shaped
+    dict (messages/response/
     trace.token_ids/category) that `quant_receipts.quant_receipt_for_run` can consume via
     `rederive.with_arm_conditions`, or None if generation or the fixing /score call produced nothing
     usable (empty text, or a token id came back missing/None). Never raises."""
@@ -416,10 +400,9 @@ def add_subparser(sub):
 
 
 def cmd_quant_check(args):
-    """`clozn quant-check <A.gguf> <B.gguf> [--runs N | --from-log]` -- THE LIVE PATH. See this module's
-    top docstring: DEFERRED for this task (a GPU experiment is running elsewhere on this machine) --
-    written and reachable, never invoked by this module's own test suite. Once wired into
-    clozn/cli/main.py (see the documented registration edit) and a GPU is free:
+    """`clozn quant-check <A.gguf> <B.gguf> [--runs N | --from-log]` -- THE LIVE PATH. Written and
+    reachable, but deferred: needs a free GPU and two engine processes, so it is never invoked by this
+    module's own test suite. Once a GPU is free:
 
         clozn quant-check <Q8_0.gguf> <Q4_K_M.gguf> --runs 8
         clozn quant-check <Q8_0.gguf> <Q2_K.gguf> --from-log --runs 20

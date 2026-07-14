@@ -2,9 +2,9 @@
    Honesty rules carried over from replay.mjs: no mock data on live runs, server reason strings
    surfaced verbatim, every mutation refreshes from the server rather than optimistically patching,
    live-mode guards on writes (this is a local single-user instrument, not a demo).
-   Contracts: notes/HEAVN_API_CONTRACTS.md §14 (Memory CRUD), §13 (propose-memory), §23 Gotchas
-   (esp. #1's /memory route corrections and #13's /memory/edit resync-key omission — this module
-   doesn't call /memory/edit, but the same "check key presence, not shape" spirit applies below). */
+   Known gotchas: the /memory route's corrections, and /memory/edit's resync-key omission
+   (this module doesn't call /memory/edit, but the same "check key presence, not shape" spirit
+   applies below). */
 import { html, useState, useEffect } from "../vendor/preact-standalone.mjs";
 import { store, useStore, toast } from "../state.mjs";
 import { api } from "../api.mjs";

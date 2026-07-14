@@ -16,7 +16,7 @@ _FORCED_CAVEAT = (
     "does NOT mean the answer would have been different without it. Regen mode answers 'would the "
     "greedy answer have changed?' (counterfactual text); forced mode answers 'how much did THIS answer "
     "rely on it?' (dependence). Both are interventions; they measure different outcomes -- read them "
-    "side by side, never interchangeably. (REPRODUCE_AND_PROVE_PLAN.md: 'the sub-threshold receipt'.)"
+    "side by side, never interchangeably ('the sub-threshold receipt')."
 )
 
 _FORCED_NOTE = (

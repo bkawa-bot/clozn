@@ -1,16 +1,15 @@
-"""anchored.py -- ANCHORED MEMORY (X7 productized, notes/X7_PRODUCT_DESIGN.md): a card's memory as a
+"""anchored.py -- ANCHORED MEMORY (X7 productized): a card's memory as a
 k-sparse bag of NAMED word-directions, so "what do you remember?" is a LOOKUP (the alpha table), never a
 generation, and deleting a word from memory is a REAL edit (remove the direction, refit the rest).
 
     bag      = k-sparse {token: alpha} fit by OMP against the centroid of the card's content-word
-               dir(token)s (clozn.analysis.microscope.decompose -- the SAME algorithm
-               notes/x7_legible_memory/alpha_learning.py:fit_topk validated live)
+               dir(token)s (clozn.analysis.microscope.decompose -- the SAME algorithm validated live)
     bag_vec  = normalize( sum_i alpha_i * dir(token_i) )                    (stored at fit time)
     compose  = v = normalize( sum_i g_i * normalize(bag_i) ), injected ONCE per generation at
-               coef = s_total * BASE_NORM, s_total = SCALE * max_i(g_i)     (X7_PRODUCT_DESIGN.md section 4:
+               coef = s_total * BASE_NORM, s_total = SCALE * max_i(g_i)     (the composition rule:
                the injection budget is ~one residual's worth TOTAL, never per-card)
 
-THE VALIDATED ENVELOPE (hard -- notes/x7_legible_memory/LIVE_RESULTS.md, live tax curve 2026-07-11):
+THE VALIDATED ENVELOPE (measured live, 2026-07):
   * CONTENT traits anchor: parity with the trained free prefix at k >= 4, s = 0.5 (space: tax ~0 at
     k=4/8/32; baking: modest tax +0.33-0.67). Coherent (no loops) from k >= 4.
   * RULE/STYLE traits FAIL at every k (concise: tax +0.80-0.95 -- injecting the token "concise" can NAME
@@ -19,7 +18,7 @@ THE VALIDATED ENVELOPE (hard -- notes/x7_legible_memory/LIVE_RESULTS.md, live ta
   * Operating point: L21, s=0.5, k in [4, 16] (K_DEFAULT=4 is the measured parity point; K_MAX=8 here,
     the conservative middle of the sweet spot). s=0.25 is coherent but too weak for content expression.
 
-HONESTY (binding, X7_PRODUCT_DESIGN.md section 9): never "the model remembers X" -- X is injected as
+HONESTY (binding): never "the model remembers X" -- X is injected as
 weighted concept directions. The alpha table IS what is injected, not what is "known"; whatlearned() is a
 pure read of the stored decomposition (WHATLEARNED_NOTE ships in every response). A refused style card is
 a MEASURED boundary, not a policy choice.
@@ -37,7 +36,7 @@ Seams (nothing here talks to an engine directly):
   * persistence mirrors clozn/memory/cards.py exactly: one flat JSON file (BAGS_PATH, module-level so
     tests repoint it), atomic writes, IO that NEVER raises -- a corrupt/missing store is an empty store.
 
-Runtime guard (X7_PRODUCT_DESIGN.md section 5): detect_loop() is the productized degeneracy flag;
+Runtime guard: detect_loop() is the productized degeneracy flag;
 halve_steer() is the retry payload. The substrate wiring lives in clozn/server/app.py
 (_anchored_loop_guard, called from EngineSubstrate.chat()/chat_stream()): when detect_loop() fires on a
 FULL-STRENGTH anchored injection, retry once at s_total/2 (halve_steer); if that still loops, do a final
@@ -63,7 +62,7 @@ from clozn.analysis import microscope
 # ================================================================== the validated envelope (constants)
 
 # The fitted/validated injection layer: dir(c) causally raises token c's logprob at L21 at all tested
-# scales, content-specifically (notes/keystone_dirc/README.md GREENLIT 2026-07-11); the whole X7 tax
+# scales, content-specifically (measured and greenlit); the whole X7 tax
 # curve ran at L21. L2 fails outright; L25 needs s<=0.5 and was not used for the memory run.
 LAYER = 21
 
@@ -81,7 +80,7 @@ BASE_NORM = 146.68
 K_DEFAULT = 4     # the measured parity point for content traits (LIVE_RESULTS.md: space PARITY at k=4)
 K_MAX = 8         # conservative middle of the validated k in [4, 16] sweet spot
 
-# X7_PRODUCT_DESIGN.md section 3 step 1: >= 3 content candidates must resolve to directions for a card
+# Anchoring requires >= 3 content candidates must resolve to directions for a card
 # to be anchorable at all; below that it stays prompt-mode (deterministic, explainable, no model call).
 MIN_CONTENT_WORDS = 3
 
@@ -168,7 +167,7 @@ class ConceptSteerDirProvider:
     dir(c) = normalize(J_l^T @ W_U[c]) at the given layer. compute() never raises (labeled blocked dicts)
     and caches per (concept, layer), so a bag re-fit is cheap. Any failure -- multi-token word, engine
     down, no J-lens sidecar -- becomes None here, which decompose/fit simply skips (drop-the-word is the
-    honest default for multi-token words, per X7_PRODUCT_DESIGN.md section 3 step 2)."""
+    honest default for multi-token words)."""
 
     def __init__(self, concept_steer, layer: int = LAYER):
         self.cs = concept_steer
@@ -307,7 +306,7 @@ def _bag_vector(terms, dirs: dict) -> np.ndarray | None:
 def fit_bag(card: dict, provider, k: int = K_DEFAULT, *, lens_manifest_hash: str | None = None) -> dict:
     """Fit an anchored bag for a card. PURE (no store write -- callers put_bag() the result).
 
-    The X7 recipe (X7_PRODUCT_DESIGN.md section 3): dictionary = the card's own content words resolved to
+    The recipe: dictionary = the card's own content words resolved to
     unit dir(token)s through `provider`; target = the centroid of those directions (the validated target;
     the raw-residual target was tried and REJECTED in the lab -- sign-arbitrary alphas); fit = OMP top-k
     via microscope.decompose (the same algorithm alpha_learning.fit_topk validated live, ms on CPU).
@@ -332,7 +331,7 @@ def fit_bag(card: dict, provider, k: int = K_DEFAULT, *, lens_manifest_hash: str
         return {"refused": True, "card_id": card_id,
                 "reason": (f"only {len(dirs)} content word(s) resolved to single-token directions "
                            f"(need >= {MIN_CONTENT_WORDS}) -- this card stays prompt-mode "
-                           "(X7_PRODUCT_DESIGN.md section 3 step 1)")}
+                           "(needs >= 3 anchorable content words)")}
 
     try:
         k_eff = max(1, min(int(k), K_MAX))
@@ -431,7 +430,7 @@ def delete_term(card_id: str, token: str, provider) -> dict:
 def compile_steer(bags: list[dict] | None = None, gates: dict | None = None,
                   scale: float = SCALE) -> dict | None:
     """Compose every active bag into ONE steer payload under the fixed X7 budget
-    (X7_PRODUCT_DESIGN.md section 4 -- total injection is ~one residual's worth, NEVER per-card):
+    (budget rule -- total injection is ~one residual's worth, NEVER per-card):
 
         v       = normalize( sum_i g_i * normalize(bag_i.vector) )
         s_total = scale * max_i(g_i)          (the budget scales with the most-relevant memory)
@@ -547,7 +546,7 @@ def whatlearned(bags: list[dict] | None = None) -> dict:
 # ==================================================================================== the loop guard
 
 def detect_loop(pieces, window: int = 8) -> bool:
-    """Runtime degeneracy guard (X7_PRODUCT_DESIGN.md section 5, productizing the lab's max-word-share
+    """Runtime degeneracy guard (productizing the lab's max-word-share
     loop flag): True when the last `window` generated pieces are a VERBATIM repeated cycle -- i.e. they
     are periodic with some period p <= window//2 (so at least two full cycles are present). Fires on
     'the cake the cake the cake the cake' and on a single stuttered token; never on ordinary prose,
@@ -575,7 +574,7 @@ def halve_steer(comp: dict) -> dict:
     """The loop guard's retry payload: `comp` (a compile_steer() result) with the injected MAGNITUDE
     halved -- s_total/2, coef/2, steer_vec scaled by 0.5 -- while `vector` (the raw unit direction),
     `layer`, and `bags` are unchanged. This is the substrate's auto-retry-once-at-half-strength policy
-    (X7_PRODUCT_DESIGN.md section 5): when detect_loop() fires on a full-strength injection, retry with
+    policy: when detect_loop() fires on a full-strength injection, retry with
     THIS payload before giving up and zeroing the steer entirely. A pure dict transform -- no store or
     provider access, never raises on a well-formed compile_steer() result."""
     if not comp:
@@ -592,7 +591,7 @@ def halve_steer(comp: dict) -> dict:
 def lens_manifest_hash(jlens_dir: str | None = None) -> str | None:
     """sha256[:12] of the J-lens manifest bytes (~/.clozn/jlens/manifest.json, honoring CLOZN_JLENS_DIR
     -- same resolution as concept_dir._default_jlens_dir). Stored on each bag so a refit/model change
-    makes stale bags detectable (X7_PRODUCT_DESIGN.md section 2: self-invalidating, re-fit is ms).
+    makes stale bags detectable (self-invalidating; a re-fit costs milliseconds).
     Never raises; None when the manifest is unavailable."""
     try:
         d = jlens_dir or os.environ.get("CLOZN_JLENS_DIR") or os.path.join(

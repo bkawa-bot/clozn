@@ -276,7 +276,7 @@ class EngineClient:
               continuation_ids: Optional[Sequence[int]] = None, continuation: Optional[str] = None,
               topk: int = 0, steer: Optional[dict] = None, steer_vec: Optional[ArrayLike] = None) -> dict:
         """POST /score: teacher-forced per-token logprob of a continuation under given conditions --
-        NEVER sampling (the reproduce-and-prove foundation; see notes/REPRODUCE_AND_PROVE_PLAN.md).
+        NEVER sampling (the reproduce-and-prove foundation).
         One causal decode of prompt++continuation on the engine reads back, for each continuation
         token, the log-softmax probability the model assigned to the token it was actually forced to
         see next -- usable both to verify a generated reply (self-consistency) and to measure how
@@ -308,8 +308,8 @@ class EngineClient:
 
     def jlens(self, text: str, layer: Optional[int] = None, topk: int = 5) -> dict:
         """POST /jlens: the J-lens (Jacobian-lens) readout -- per position, the top-k tokens that
-        position is 'disposed to say later' (Anthropic 2026, transferred to this GGUF; see
-        notes/JLENS_ENGINE_PLAN.md). Deterministic linear read, NO sampling. `layer` selects a fitted
+        position is 'disposed to say later' (Anthropic 2026, transferred to this GGUF).
+        Deterministic linear read, NO sampling. `layer` selects a fitted
         sidecar (omit -> the engine's default tap); an unloaded layer 400s with the available layers.
         Returns {layer, n_tokens, tokens:[piece...], readouts:[[{id,piece,score}...topk]...n_tokens]}."""
         body: dict = {"text": text, "topk": int(topk)}

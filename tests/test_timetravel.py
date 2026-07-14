@@ -1,4 +1,4 @@
-"""test_timetravel -- MODEL-FREE tests for the time-travel debugger (NEXT_STEPS #6).
+"""test_timetravel -- MODEL-FREE tests for the time-travel debugger.
 
 No model, no GPU, no torch: research/timetravel.py imports only stdlib (torch is lazy, inside the one
 live-cache method we don't exercise here). Covers the bounded snapshot store's bookkeeping (ring cap,

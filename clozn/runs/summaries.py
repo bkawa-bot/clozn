@@ -38,7 +38,7 @@ def _flags(rec: dict) -> list[str]:
         f.append("pending-memory")
     alg = mem.get("anchored_loop_guard") or {}
     if alg.get("fired"):
-        # X7_PRODUCT_DESIGN.md section 5: an anchored over-injection becomes a VISIBLE, self-healing
+        # An anchored over-injection becomes a VISIBLE, self-healing
         # run flag -- "memory-retried" when the halved-strength retry came back clean, else
         # "memory-loop-guard" (the anchored steer had to be zeroed, or a stream could only detect and
         # flag after the fact). Never implies the memory "worked" -- only that degeneracy was mitigated.

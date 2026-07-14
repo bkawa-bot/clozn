@@ -1,4 +1,4 @@
-"""memory_mode -- which mechanism carries the studio's memory cards (notes/MEMORY_MODE_SWAP_SPEC.md).
+"""memory_mode -- which mechanism carries the studio's memory cards.
 
 Two modes, one persisted setting in ~/.clozn/studio_settings.json:
 
@@ -13,10 +13,10 @@ Migration rule (don't silently change a live personality): when no mode was ever
 trained prefix on disk (~/.clozn/studio_memory.pt / studio_dream_memory.pt) resolves to "internalized"
 until the user toggles; a fresh install resolves to "prompt".
 
-BLOCK STYLE (NEXT_STEPS #9): a second, independent persisted setting, "block_style" -- "soft" (default,
+BLOCK STYLE: a second, independent persisted setting, "block_style" -- "soft" (default,
 unchanged) | "strict". Both are prompt-mode wording variants of the SAME rules; block_style never
 affects "internalized" mode (the prefix has no prompt block to reword). The measured problem
-(self_audit_gap_findings.md, A/B follow-up): the soft block's "...use it naturally to tailor how you
+(measured in an A/B follow-up): the soft block's "...use it naturally to tailor how you
 respond" phrasing is a distillation-target wording that a strong instruction-follower (7B) over-satisfies
 but a 1.5B under-fires on plain neutral probes -- two of four traits (space, question) came out
 PREFIX-STRONGER at 1.5B, inverting the 7B verdict (PROMPT >= PREFIX everywhere). "strict" states the same
@@ -140,7 +140,7 @@ def active_cards(exclude_ids=()) -> list[dict] | None:
 def compile_prompt_block(texts: list[str], style: str | None = None) -> str:
     """The active card texts as ONE system block -- what prompt mode prepends to every gated-in turn.
 
-    `style` selects the wording: "soft" (default) or "strict" (NEXT_STEPS #9). None (the default, and
+    `style` selects the wording: "soft" (default) or "strict". None (the default, and
     every pre-existing call site's behaviour) reads the persisted setting via get_block_style() -- so
     this signature is back-compatible: no caller needs to change to keep behaving exactly as before.
     Pass an explicit style to override the setting (e.g. the A/B rig comparing both on one process).
@@ -151,7 +151,7 @@ def compile_prompt_block(texts: list[str], style: str | None = None) -> str:
     black-box A/B rests on it). Never reword "soft" -- add a new style instead.
 
     "strict" -- the SAME rules as direct imperatives, no "use it naturally to tailor" hedge. Measured
-    motivation (self_audit_gap_findings.md A/B follow-up): that softer framing is under-satisfied by a
+    motivation (the measured A/B follow-up): that softer framing is under-satisfied by a
     1.5B on plain neutral probes (2/4 traits inverted vs the trained prefix there, though 7B satisfied it
     fine) -- strict tests whether stating the rules as instructions closes that gap. Not a distillation
     target; free to reword independently of "soft"/consolidate's sys_rule.

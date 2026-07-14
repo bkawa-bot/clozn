@@ -337,7 +337,7 @@ def test_chat_records_anchor_skip_when_tone_dials_use_raw_steer_slot(iso, monkey
 
 
 # ==================================================================================== the anchored-memory loop guard
-# X7_PRODUCT_DESIGN.md section 5's substrate wiring: chat()'s non-streaming path only ever generates
+# The loop-guard policy's substrate wiring: chat()'s non-streaming path only ever generates
 # through the module-level cs._engine_complete_traced (FakeEngine's own .complete()/.apply_template are
 # irrelevant here) -- monkeypatching THAT one seam to a canned call-by-call responder lets these tests
 # drive the guard's retry/zero/flag behavior without any real per-token engine trace.

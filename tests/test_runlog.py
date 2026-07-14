@@ -136,7 +136,7 @@ def test_log_run_persists_anchored_memory_manifest(store, monkeypatch):
 
 
 def test_log_run_persists_anchored_loop_guard_retried(store, monkeypatch):
-    """The loop guard's honest self-healing record (X7_PRODUCT_DESIGN.md section 5) rides the run record
+    """The loop guard's honest self-healing record rides the run record
     exactly like anchored/anchored_layer/anchored_s_total do -- and turns into the visible "memory-retried"
     run flag."""
     import time

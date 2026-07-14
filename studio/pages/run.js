@@ -1084,7 +1084,7 @@
     h += '<div class="ri-out" id="ri-out"></div>';
     // --- #6: rewind & branch from here. Pick a turn to rewind to; the branch RE-GENERATES from the
     //     truncated transcript (optionally with a different question at that turn) and is recorded as a
-    //     CHILD run. The KV cache makes this byte-exact + cheap (kv_timetravel_findings.md); state-surgery
+    //     CHILD run. The KV cache makes this byte-exact + cheap (measured); state-surgery
     //     is Lab-only (half-life < 1 turn). Uses the SAME compare renderer as replay. ---
     var turns = messageTurns(run);
     if (turns.length) {

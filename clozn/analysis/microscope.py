@@ -4,11 +4,11 @@ torch, no network, no engine.
 
     target ~= sum_i alpha_i * dictionary[token_i]      (k terms, greedy top-k selection)
 
-This is the same math notes/x7_legible_memory/alpha_learning.py:fit_topk already validated for ONE use
-case (fitting a memory bag against a token-direction dictionary): greedy Orthogonal Matching Pursuit,
-refitting all selected alphas jointly by least squares every step. This module ports that algorithm and
-generalizes it into a standalone, reusable primitive -- any vector, any named dictionary, not just memory
-bags. See notes/microscope_uses.md for the four production targets this unlocks.
+This is the same math already validated for ONE use case (fitting a memory bag against a
+token-direction dictionary): greedy Orthogonal Matching Pursuit, refitting all selected alphas jointly
+by least squares every step. This module ports that algorithm and generalizes it into a standalone,
+reusable primitive -- any vector, any named dictionary, not just memory bags, unlocking several other
+production targets beyond the original use case.
 
 HONESTY (load-bearing, read before trusting a receipt):
 
@@ -16,15 +16,15 @@ HONESTY (load-bearing, read before trusting a receipt):
   reconstruct this direction" -- NOT "what the vector means". A linear basis always produces SOME
   decomposition: handed an arbitrary vector and a big enough dictionary, OMP will confidently return a
   plausible-looking top-k list even when the vector has no real relationship to language at all (the
-  "standing lens caveat", restated from notes/x7_legible_memory/LIVE_RESULTS.md: "A linear lens always
-  outputs something. Plausible-looking readouts are not evidence by themselves"). `reconstruction_cos`
+  "standing lens caveat": "A linear lens always outputs something. Plausible-looking readouts are not
+  evidence by themselves"). `reconstruction_cos`
   and `explained_variance` are the honesty dial -- a low value means the dictionary doesn't actually span
   the target well, and the top words should not be trusted as "what it's made of" so much as "the least-
   bad words available".
 
-  SIGN CAVEAT (from LIVE_RESULTS.md's X7 run, restated here because it generalizes beyond memory bags): a
+  SIGN CAVEAT (from an X7 run, restated here because it generalizes beyond memory bags): a
   RAW RESIDUAL-STREAM target (e.g. a mean-pooled hidden state harvested off some text) gives SIGN-ARBITRARY
-  alphas -- LIVE_RESULTS.md found negative weights on the most central content words (loaf, comet,
+  alphas -- that run found negative weights on the most central content words (loaf, comet,
   asteroid) when fitting against a raw harvested residual, because a raw residual is dominated by
   position/syntax/high-norm-sink structure and its projection onto a token-direction dictionary is mostly
   noise. The honest targets for this module are DIFFERENCE or CENTROID vectors that are already meaningful

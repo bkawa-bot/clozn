@@ -1,5 +1,5 @@
-"""quant_receipts.py -- QUANT-RECEIPTS (notes/FRONTIER_BETS.md Sec 1.2, notes/quant_receipts/README.md):
-"did Q4 lobotomize my model?" Replay a user's own recorded run under TWO quant files of the SAME model,
+"""quant_receipts.py -- QUANT-RECEIPTS: "did Q4 lobotomize my model?" Replay a user's own recorded run
+under TWO quant files of the SAME model,
 teacher-force the identical stored answer tokens under both via /score (reused UNCHANGED -- the two arms
 are just two model files, nothing new on the wire), and diff per-token: "Q4_K_M preserved your runs; Q3
 broke exactly these refusal/formatting behaviors, at these tokens."
@@ -238,8 +238,8 @@ def _summarize(positions: list, *, label_a: str, label_b: str) -> dict:
 
 
 def quant_receipt_for_run(run: dict, sub_a, sub_b, *, label_a: str, label_b: str, topk: int = 8) -> dict | None:
-    """SEAM for the live path (DEFERRED -- see module docstring and notes/quant_receipts/README.md; not
-    wired to any server route, never run against a real engine here). Reconstructs `run`'s own recorded
+    """SEAM for the live path (DEFERRED -- see module docstring; not wired to any server route, never
+    run against a real engine here). Reconstructs `run`'s own recorded
     forced-scoring conditions via rederive.with_arm_conditions -- exactly the same reconstruction
     rederive.py/forced.py already use -- then scores that SAME continuation on two substrates via
     rederive.score_arm (duck-typed against `.score_tokens`, just like rederive.py itself). In production

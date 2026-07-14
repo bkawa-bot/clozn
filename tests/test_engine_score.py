@@ -1,5 +1,5 @@
-"""/score seam (S0/S1 of notes/REPRODUCE_AND_PROVE_PLAN.md): teacher-forced per-token logprob scoring,
-reachable from Python and shaped for the receipts stack (rederive.py, forced receipts -- S2/S3, not yet
+"""/score seam: teacher-forced per-token logprob scoring,
+reachable from Python and shaped for the receipts stack (rederive.py, forced receipts -- not yet
 built here). Two layers under test:
 
   * cloze_engine.EngineClient.score -- the thin SDK wrapper: request-body construction (prompt vs
@@ -217,9 +217,9 @@ def test_score_tokens_tolerates_a_degraded_reply():
     assert sub.score_tokens([{"role": "user", "content": "hi"}], [1], block=None) == []
 
 
-# ============================================== S3: continuation TEXT fallback + raw steer_vec passthrough
-# (notes/REPRODUCE_AND_PROVE_PLAN.md rederive.py / forced receipts -- an old/light-tier run whose trace
-# lacks per-token ids falls back to scoring the stored `response` as continuation TEXT; the S3 null-floor
+# ============================================== continuation TEXT fallback + raw steer_vec passthrough
+# (rederive.py / forced receipts -- an old/light-tier run whose trace
+# lacks per-token ids falls back to scoring the stored `response` as continuation TEXT; the null-floor
 # control needs a raw steer direction with no named dial behind it.)
 
 def test_score_tokens_continuation_text_fallback_when_no_ids():

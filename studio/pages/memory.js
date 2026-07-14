@@ -26,7 +26,7 @@
  * (the backend's retraining flag is a constant idle) and the copy stops promising a slow prefix fold;
  * the strength slider relabels to an honest on/off (its value doesn't scale anything there).
  *
- * PROVENANCE (NEXT_STEPS #1, the OBEY defense -- dream_consolidation_findings.md law #4: a fluent,
+ * PROVENANCE (the OBEY defense -- a fluent,
  * plausible card can still be a hallucination or an injected instruction; a reviewer needs a checkable
  * link to what the user actually said, not just the model's cleaned-up gloss). A card proposed from a
  * run carries source_turn (index into that run's messages) + quoted_span (the verbatim cited text)
@@ -291,7 +291,7 @@
     return (s === "low" || s === "none" || s === "false") ? "" : s || (r === true ? "flagged" : "");
   }
 
-  // ---- provenance (NEXT_STEPS #1, the OBEY defense) ---------------------------------------------
+  // ---- provenance (the OBEY defense) -------------------------------------------------------------
   // Mirrors research/memory_cards.py's has_provenance()/is_provenance_claim_unbacked() EXACTLY -- a
   // card is provenance-backed iff it cites a run AND carries a non-empty verbatim quote. A card that
   // cites no run at all (a manually-typed /memory/add) is a different, self-authored category: neither
@@ -376,7 +376,7 @@
   }
 
   // ---- provenance block: "you said this" (quote + link) or "no provenance" (flagged) --------------
-  // The card-review answer to dream_consolidation_findings.md law #4 -- a fluent, plausible card can
+  // The card-review answer to a measured failure mode -- a fluent, plausible card can
   // still be a hallucination or an injected instruction; the only thing that catches it is a checkable
   // link back to what the user actually said, not another plausibility read. null when the card makes
   // no provenance claim at all (a manually-typed /memory/add -- self-authored, not a failure to flag).
@@ -671,7 +671,7 @@
   // Qwen-7B = the studio config) found prompt-carried cards expressed all four tested traits at least
   // as strongly as the trained prefix. Scale-scoped on purpose -- at 1.5B two traits inverted, so the
   // line names the model and keeps the small-N caveat. Don't widen it without a new run.
-  // NEXT_STEPS #9 note: prompt mode's block wording has a second variant now (memory_mode.compile_
+  // Note: prompt mode's block wording has a second variant now (memory_mode.compile_
   // prompt_block's "soft"/"strict" style, picked by the block_style setting) -- there is NO toggle for
   // it here yet (server-side/config only), so the honest one-liner below says so rather than implying a
   // switch exists.
@@ -714,7 +714,7 @@
         S.el("span", { class: "mline" }, [
           "At 1.5B two of those four traits inverted instead (the soft block's wording under-fires on" +
           " a smaller model); a stricter block wording exists to test that (block_style, not yet" +
-          " exposed as a toggle here) — see self_audit_gap_findings.md before assuming it transfers.",
+          " exposed as a toggle here) — measured on one model only, don't assume it transfers.",
         ]),
         S.el("span", { class: "mline" }, [
           isPrompt
@@ -942,7 +942,7 @@
       }
 
       // provenance: "you said this" (quote + link to the run) when backed, or a flag when a card claims
-      // a run but can't back the claim up (NEXT_STEPS #1 -- see provenanceBlock). Shown in every zone --
+      // a run but can't back the claim up (see provenanceBlock). Shown in every zone --
       // it's a durable fact about the card, not just a pending-review concern.
       var pblock = provenanceBlock(c);
       if (pblock) {
@@ -979,7 +979,7 @@
       if (busy) b.disabled = true;
       return b;
     }
-    // Approve, guarded client-side to match the server's refusal (NEXT_STEPS #1): a card that claims a
+    // Approve, guarded client-side to match the server's refusal: a card that claims a
     // run but has no quoted_span is never auto-approvable. Disabling here is defense in depth -- the
     // server (_card_status) is the real authority and refuses it too either way.
     function approveBtn() {
@@ -1312,7 +1312,7 @@
   }
 
   // ============================================================================================
-  // FACTS TIER (slot memory) -- NEXT_STEPS #5. A verbatim (cue -> answer) store INSIDE the model,
+  // FACTS TIER (slot memory). A verbatim (cue -> answer) store INSIDE the model,
   // distinct from the trait cards above. OFF by default (the latency rule: a slot read is an extra
   // forward, kept off the 7B hot path until you turn it on). All endpoints null-safe -- the panel
   // renders (as "unavailable") on an older backend, and every action degrades to a friendly note.

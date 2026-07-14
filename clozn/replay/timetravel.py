@@ -1,6 +1,6 @@
 """timetravel -- the time-travel debugger: per-turn KV snapshots + rewind/branch, recorded as child runs.
 
-NEXT_STEPS #6. The rig (kv_timetravel.py / kv_timetravel_findings.md) proved the load-bearing mechanism:
+The offline rig proved the load-bearing mechanism:
 a transformer's `past_key_values`, treated as first-class addressable STATE, is byte-exact
 checkpoint/branch-able (Phase 1: a branch from a kept cache == a fresh full recompute, token-for-token at
 depth 2/5/10) and CPU-offloadable and nearly free (a branch re-prefills a CONSTANT ~27 tokens vs 883 at

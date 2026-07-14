@@ -1,5 +1,5 @@
 """test_concept_dir.py -- clozn/behavior/steering/concept_dir.py (the any-concept dial: dir(c) =
-normalize(J_l^T @ W_U[c]), notes/FABLE_HANDOFF.md Build 1).
+normalize(J_l^T @ W_U[c])).
 
 Model-free and GPU-free throughout, per the task's guardrails (a GPU experiment is running
 elsewhere; this module boots no engine):
@@ -296,7 +296,7 @@ def test_dir_c_raises_on_degenerate_direction():
 
 
 # ==================================================================================== dir_c_from_row + fetch_unembed_row_from_engine
-# (the engine-route path's own math/plumbing -- notes/FABLE_HANDOFF.md Build 1's fix: dir(c) from
+# (the engine-route path's own math/plumbing -- the fix that lets dir(c) work from
 # ONE already-fetched W_U row instead of the full [vocab, d_model] matrix.)
 
 def test_dir_c_from_row_matches_dir_c_given_the_same_row():
@@ -480,7 +480,7 @@ def test_compute_blocked_unembed_unavailable_when_engine_has_no_row_and_no_lab_e
 
 
 def test_compute_succeeds_via_engine_unembed_row_with_no_lab_export_configured(tmp_path, monkeypatch):
-    """THE fix (notes/FABLE_HANDOFF.md Build 1): dir(c) now works with ONLY the shipped J-lens
+    """THE fix: dir(c) now works with ONLY the shipped J-lens
     sidecar + a running engine -- no lab-only unembed export needed at all. Hands ConceptSteer a
     full orthogonal W_U ONLY via the fake engine's /jlens/unembed_row (never via
     unembed_dir/CLOZN_DIRC_UNEMBED_DIR, which stay unset), then checks the resulting dir(c)

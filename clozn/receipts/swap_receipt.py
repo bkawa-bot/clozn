@@ -1,4 +1,4 @@
-"""swap_receipt.py -- SWAP-RECEIPTS (notes/FABLE_HANDOFF.md Build 2): a MECHANISM-level causal
+"""swap_receipt.py -- SWAP-RECEIPTS: a MECHANISM-level causal
 receipt, ported from the validated research script
 (../clozn-jlens-work/scripts/run_j5a_swap.py -- J5a verdict: PASS, 93% coherent re-route at
 scale~=0.5, random-null flat).
@@ -325,8 +325,8 @@ def swap_receipt(run: dict, from_hint, to_concept: str, sub, *,
 
 # ============================================================================== CLI: --demo (LIVE smoke, DEFERRED)
 #
-# Real, runnable code -- but this session's guardrails explicitly DEFER exercising it (a GPU
-# experiment is running elsewhere; do not boot the engine). tests/test_swap_receipt.py already
+# Real, runnable code -- but deferred: needs a running engine, so it is not exercised by this module's
+# own tests. tests/test_swap_receipt.py already
 # covers the whole receipt model-free/GPU-free against fixtures + a FakeEngineClient; this is only
 # for a human to run LATER against a real cloze-server, once BOTH exist:
 #   1. a running cloze-server, started with --jlens <dir> (a real J-lens sidecar loaded);

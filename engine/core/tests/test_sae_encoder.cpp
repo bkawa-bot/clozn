@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
                     rows, gemv_ms, ms);
     }
 
-    // --- perf-only receipt at 2x rows (NEXT_STEPS item 10's before/after target size) ---
+    // --- perf-only receipt at 2x rows (the before/after target size) ---
     // Tiles the same `x` rows to synthesize a 2*rows-row batch. Timing only -- no new expect()s,
     // so this cannot change PASS/FAIL; it exists to track the GEMV vectorization's effect at a
     // second row count without touching dump_sae_vectors.py or the oracle artifacts.

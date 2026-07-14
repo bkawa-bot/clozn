@@ -1,7 +1,6 @@
 /* app.js -- the Clozn Studio shell: sidebar IA + hash router + shared helpers.
  *
- * One coherent shell (see notes/STUDIO_PRODUCT_ROADMAP.md "Recommended Studio structure").
- * The sidebar is fixed: Agent / Runs / Memory / Behavior / Lab / Settings. The hash router
+ * One coherent shell. The sidebar is fixed: Agent / Runs / Memory / Behavior / Lab / Settings. The hash router
  * (#/agent, #/runs, #/run/<id>, ...) mounts a page module into <main id="view">. Page modules
  * live in pages/*.js and self-register via CloznStudio.register(name, {title, render}); they are
  * pure consumers of the backend -- this file owns navigation, fetch plumbing, and the frame.
@@ -285,7 +284,7 @@
   // ---- persona picker (masthead): which profile bundle (research/profiles.py) is applied ----------
   // A profile chip (first letter of the active profile's name, "·" when none) + a plain <select> of
   // every saved profile. Choosing a DIFFERENT one POSTs /profiles/switch -- cards replace, dials
-  // replace, instant in prompt mode (see notes/MEMORY_MODE_SWAP_SPEC.md + profiles.py). Creating/
+  // replace, instant in prompt mode (see profiles.py). Creating/
   // exporting/importing bundles lives on the Settings page; this widget only lists + switches.
   var persona = { profiles: [], active: null, switching: false };
 

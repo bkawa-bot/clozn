@@ -1,4 +1,4 @@
-"""rederive.py -- S3 (notes/REPRODUCE_AND_PROVE_PLAN.md): deterministic teacher-forced re-derivation of
+"""rederive.py -- deterministic teacher-forced re-derivation of
 a stored run's exact answer + per-token internals, built entirely from the run record and
 EngineSubstrate.score_tokens (S0/S1) -- NO generation anywhere, ever.
 

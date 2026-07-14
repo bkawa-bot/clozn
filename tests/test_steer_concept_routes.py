@@ -1,7 +1,7 @@
 """test_steer_concept_routes.py -- POST /steer/concept/set + /steer/concept/check
-(clozn.server.app.Substrate._steer), the last-mile studio wiring for Tier-1 #1 (FABLE_HANDOFF.md):
+(clozn.server.app.Substrate._steer), the last-mile studio wiring for
 the any-concept dial (dir(c), clozn/behavior/steering/concept_dir.py's ConceptSteer) dropped in
-ALONGSIDE the existing tone-dial routes (/steer/set, /steer/check, /steer/custom), so Fable's UI can
+ALONGSIDE the existing tone-dial routes (/steer/set, /steer/check, /steer/custom), so the studio UI can
 "type a word -> steer" the same way it already drives the pole-pair tone dials.
 
   /steer/concept/set   {concept, strength?} -> ConceptSteer.steer_toward(concept, strength): a built

@@ -1,4 +1,4 @@
-"""test_facts_server -- the /facts/* studio endpoints + SlotBox wiring (NEXT_STEPS #5, MODEL-FREE).
+"""test_facts_server -- the /facts/* studio endpoints + SlotBox wiring (MODEL-FREE).
 
 No model, no GPU. We drive the REAL clozn_server do_POST handler (the object.__new__(H) no-socket trick,
 same as test_profiles_server) against a FAKE substrate whose .memory exposes a stand-in model/tok, with

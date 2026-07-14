@@ -144,7 +144,7 @@ def test_approve_activates_card_adds_to_rules_and_consolidates(iso):
     assert set(mem.consolidate_calls[-1]) == {"likes tea", "wants bullet points"}
 
 
-# ---- provenance gate on approve (NEXT_STEPS #1, the OBEY defense) -----------------------------------
+# ---- provenance gate on approve (the OBEY defense) -----------------------------------------------------
 # A manually-typed /memory/add card names no run at all -- it's self-authored, not a provenance FAILURE
 # (memory_cards.is_provenance_claim_unbacked is False for it), so it approves normally above. The gate
 # targets only a card that CLAIMS a run (source_run_id set, as a real propose-memory card would) but has

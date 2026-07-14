@@ -108,8 +108,8 @@ class TopicGate:
                 from sentence_transformers import SentenceTransformer
                 import sys
                 # First-use signal: the 80MB embedder load takes a few seconds and is otherwise SILENT,
-                # so from the outside a first memory-gated turn reads as a hang (usage-test papercut:
-                # notes/papercuts_lazyinit.md). Printed after the import succeeds so a machine without
+                # so from the outside a first memory-gated turn reads as a hang (a known usage-test
+                # papercut). Printed after the import succeeds so a machine without
                 # sentence-transformers -- which degrades to no-gating below -- never sees a misleading
                 # "loading" line. stderr + ASCII-only (Windows console cp1252 chokes on unicode).
                 print(f"[memory] loading the topic-gate model ({self.model_name}); "

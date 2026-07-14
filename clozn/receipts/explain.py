@@ -9,7 +9,7 @@ be trusted to answer about itself):
   * confidence         -- the token trace's "uncertain moments" (tokens below LOW_CONF), each with its
                           recorded alternatives, plus a one-line "N hesitations" count. NEVER a single
                           aggregate confidence % -- that scalar self-report probe is dead (it saturates at
-                          every scale; self_audit_gap_findings.md and friends). {"available": false, ...}
+                          every scale -- a measured dead end). {"available": false, ...}
                           when the run carries no per-token trace at all (the HF chat path may not).
   * influences_active -- the memory manifest's cards (each resolved to its provenance quote + turn via
                           memory_cards, by id) and gate value, plus the active tone dials. Every entry is

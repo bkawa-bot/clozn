@@ -50,7 +50,7 @@ Per active influence, a "prove it" that runs the **rigorous** receipt (fixing th
 regenerate BOTH arms greedy — greedy-WITH the influence AND greedy-WITHOUT — and diff *those two* (the
 stored sampled reply is context, never a term in the subtraction). Uses `replay.py`; marks
 `causal_verified:true`. A "prove all" batches the leave-one-out arms into one forward pass (the
-batched-receipts win — free at bf16; re-verify at 7B nf4 per `local_efficiency_findings.md`). **Redundancy
+batched-receipts win — free at bf16; re-verify at 7B nf4 before relying on it there). **Redundancy
 guard:** if dropping A alone and B alone each show ~no effect but dropping both together does, report
 "A+B are redundant; together they drive this" instead of "neither mattered" (leave-one-out's blind spot).
 Cost note honestly surfaced: a front-of-context card ablation re-prefills the whole context (KV can't be

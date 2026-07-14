@@ -1,4 +1,4 @@
-"""test_quant_check -- clozn/cli/commands/quant_check.py (Tier 1 wrap, notes/FABLE_HANDOFF.md Sec 4):
+"""test_quant_check -- clozn/cli/commands/quant_check.py (Tier 1 wrap):
 the `clozn quant-check` CLI verb around the already-validated clozn/receipts/quant_receipts.py.
 
 Model-free / GPU-free throughout, mirroring tests/test_quant_receipts.py's own discipline: no real

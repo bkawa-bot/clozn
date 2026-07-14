@@ -21,7 +21,7 @@ are just numpy, not a restricted asset):
   * dir_c(token_id, layer) = normalize(J_l.T @ W_U[token_id]), optionally scaled to a realistic
     residual magnitude (`scale * typical_norm`).
 
-*** THE BLOCKER, AND THE FIX (notes/FABLE_HANDOFF.md Build 1) ***
+*** THE BLOCKER, AND THE FIX ***
 J_l ships in the product today: ~/.clozn/jlens/J_layer{L}.f16 (the SAME raw fp16 sidecar the C++
 engine's JlensServe::load reads for /jlens -- see engine/core/serve/server_shared.hpp). This
 module reads it directly with plain numpy (load_jlens_jacobians below) -- no engine round trip
@@ -100,7 +100,7 @@ BLOCKER_NOTE = (
     "a directory holding norm_weight.npy [d_model] fp32 + lm_head_weight.npy [vocab, d_model] "
     "fp32 + unembed_meta.json {rms_norm_eps} (e.g. ../clozn-jlens-work/artifacts) as an explicit "
     "override/fallback -- there is no baked-in default for that path, only the engine route is "
-    "on by default. (notes/FABLE_HANDOFF.md Build 1 -- was a hard blocker before the engine route "
+    "on by default. (This was a hard blocker before the engine route "
     "shipped; now only degrades here on an actual engine/config failure.)"
 )
 
@@ -625,8 +625,8 @@ def _selftest() -> int:
 
 
 def _demo(args) -> int:
-    """LIVE smoke -- DEFERRED this session (see the section docstring above). Needs a running
-    cloze-server (with --jlens) and a configured unembed export; never invoked automatically."""
+    """LIVE smoke -- deferred: needs a running cloze-server (with --jlens) and a configured unembed
+    export; never invoked automatically."""
     here = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.abspath(os.path.join(here, "..", "..", ".."))
     import sys as _sys

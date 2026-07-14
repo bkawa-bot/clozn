@@ -1,4 +1,4 @@
-"""self_report_reliability.py -- X1 (notes/ROADMAP.md): grade the audited model's stated reason for a reply
+"""self_report_reliability.py -- grade the audited model's stated reason for a reply
 against the CAUSAL receipt (core.prove_all's leave-one-out ablation), not against mere presence.
 
 THE GAP THIS CLOSES. explain.explain()'s influences_active lists everything that was PRESENT on a run --

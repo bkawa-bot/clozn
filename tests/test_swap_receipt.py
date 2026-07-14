@@ -1,5 +1,5 @@
-"""test_swap_receipt.py -- clozn/receipts/swap_receipt.py (SWAP-RECEIPTS, notes/FABLE_HANDOFF.md
-Build 2): read a run's disposition, inject dir(to_concept) at L21 during regeneration, diff vs
+"""test_swap_receipt.py -- clozn/receipts/swap_receipt.py (SWAP-RECEIPTS): read a run's disposition,
+inject dir(to_concept) at L21 during regeneration, diff vs
 baseline + a random-equal-norm null.
 
 Model-free and GPU-free throughout (a GPU experiment is running elsewhere; this suite boots no

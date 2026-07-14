@@ -1,4 +1,4 @@
-"""test_memory_mode -- the memory-mode swap (notes/MEMORY_MODE_SWAP_SPEC.md), model-free.
+"""test_memory_mode -- the memory-mode swap, model-free.
 
 No model, no GPU, no embedder. Three layers under test:
 
@@ -174,7 +174,7 @@ def test_set_setting_bad_value_raises_cleanly_and_prior_settings_survive(iso):
     assert on_disk == {"memory_mode": "internalized", "block_style": "strict", "memory_strength": 0.7}
 
 
-# ---- memory_mode: block_style setting (NEXT_STEPS #9) ------------------------------------------------
+# ---- memory_mode: block_style setting ------------------------------------------------------------------
 
 def test_block_style_defaults_to_soft(iso):
     assert memory_mode.get_block_style() == "soft"
@@ -248,7 +248,7 @@ def test_empty_texts_compile_to_no_block(iso):
     assert memory_mode.compile_prompt_block(["", "  "]) == ""
 
 
-# ---- memory_mode: strict block variant (NEXT_STEPS #9) -------------------------------------------------
+# ---- memory_mode: strict block variant -------------------------------------------------------------------
 
 def test_no_style_arg_defaults_to_soft_and_is_unchanged(iso):
     # every EXISTING call site (clozn_server.py, phantom_kv.py) calls compile_prompt_block(texts) with no

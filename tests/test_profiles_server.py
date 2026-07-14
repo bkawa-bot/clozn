@@ -1,4 +1,4 @@
-"""test_profiles_server -- the /profiles/* studio endpoints (NEXT_STEPS #4, profiles studio UI).
+"""test_profiles_server -- the /profiles/* studio endpoints (profiles studio UI).
 
 No model, no GPU. We drive the REAL clozn_server.do_GET/do_POST handler (the same object.__new__(H)
 no-socket trick test_propose_memory.py uses) against:

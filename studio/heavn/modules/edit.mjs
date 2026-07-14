@@ -1,7 +1,7 @@
 /* heavnOS · EDIT — the Glass Edit (pin & resolve). W5.
    The impossible-elsewhere op: re-mask selected spans and re-solve them under FULL bidirectional
    attention — the resolve follows your pins and context; it does NOT take instructions (there is
-   no instruction channel in the engine — FABLE_HANDOFF; the honest constraint is displayed).
+   no instruction channel in the engine; the honest constraint is displayed).
    Engine op: POST /v1/revise {text, spans:[{start,end}] BYTE offsets, steps, grow, ...} — exists
    ONLY on the C++ engine (contracts §20 confirms no studio passthrough today) and ONLY in
    diffusion mode (400 on autoregressive). Transport here: try a studio passthrough

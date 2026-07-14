@@ -86,9 +86,9 @@ def try_post(h, p, body):
         if text is None:
             h._json(200, {"proposed": False, "reason": "no durable preference found in this run"})
             return True
-        # PROVENANCE (NEXT_STEPS #1, the OBEY defense): the model just synthesized `text` as a
+        # PROVENANCE (the OBEY defense): the model just synthesized `text` as a
         # third-person summary of the conversation -- it can be a plausible-sounding hallucination
-        # (dream_consolidation_findings.md law #4) or a faithfully-mined injected instruction. Cite
+        # (a measured failure mode) or a faithfully-mined injected instruction. Cite
         # the actual user words it was drawn from so a reviewer (and has_provenance()) can check the
         # claim, not just read the model's word for it.
         turn, span = ctx._provenance_of(run["messages"])

@@ -52,7 +52,7 @@ _BANNED_KEYS = {"confidence_pct", "confidence_score", "avg_confidence", "average
 def _assert_no_aggregate_confidence(obj, path="explanation"):
     """Walk the WHOLE returned object -- not just the top-level "confidence" key -- and assert no
     aggregate-confidence-shaped key exists anywhere. The dead scalar self-report probe (EXPLAIN_THIS_
-    ANSWER_SPEC.md's principle section; self_audit_gap_findings.md) must never sneak back in under a
+    ANSWER_SPEC.md's principle section) must never sneak back in under a
     different key name, nested anywhere in the tree."""
     if isinstance(obj, dict):
         for k, v in obj.items():

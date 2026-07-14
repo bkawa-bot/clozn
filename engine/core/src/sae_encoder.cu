@@ -177,7 +177,7 @@ struct SaeEncoder::Impl {
     int32_t* d_idx = nullptr;       // [rows * k]
     float* d_val = nullptr;         // [rows * k]
     char* d_picked = nullptr;       // [rows * d_sae] sae_topk's "already selected" scratch mask --
-                                    // hoisted here (NEXT_STEPS item 10b) so encode_topk's hot path
+                                    // hoisted here so encode_topk's hot path
                                     // never pays sae_topk()'s own cudaMalloc/cudaFree + forced sync.
     int ws_rows = 0, ws_k = 0;
 

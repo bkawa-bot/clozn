@@ -1,4 +1,4 @@
-"""clozn_server.py -- the UNIFIED instrument. One port, one model, the whole white-box surface.
+"""clozn.server.app -- the unified studio backend. One port, one model, the whole white-box surface.
 
   substrate 'qwen' (default): ONE Qwen-7B serves BOTH the brain (/think -- concepts the model engages)
                               AND the memory (/say /consolidate /check /whatlearned) -- they share the
@@ -459,7 +459,7 @@ QUOTE_SPAN_MAX = 240   # a "you said this" quote is for recognizing your own wor
 
 
 def _provenance_of(messages):
-    """The (source_turn, quoted_span) pair for a card proposed from `messages` (roadmap NEXT_STEPS #1, the
+    """The (source_turn, quoted_span) pair for a card proposed from `messages` (the
     OBEY defense -- see memory_cards.has_provenance). source_turn is the index of the LAST user message in
     the list (mirrors _last_user's "most recent user turn" convention, and matches dream_consolidation.py's
     `"turn": i` = index into a run's messages); quoted_span is that message's own verbatim text, truncated
@@ -611,12 +611,12 @@ def _apply_anchored_memory(kw: dict, mem_out: dict | None, last_user: str | None
 
 def _anchored_loop_guard(engine, prompt, max_new, kw, samp, comp, reply, steps, finish, mem_out):
     """The substrate wiring anchored.detect_loop()'s own docstring deliberately leaves undone
-    (X7_PRODUCT_DESIGN.md section 5) -- chat()'s non-streaming path only: detect_loop() over the pieces
+    -- chat()'s non-streaming path only: detect_loop() over the pieces
     JUST generated under a FULL-STRENGTH anchored injection (`comp`, the compile_steer() payload that
     actually rode this turn -- callers only invoke this when comp is not None, i.e. anchored memory was
     really injected, never on a skipped/absent one). A fired loop is OVER-INJECTION DEGENERACY, not a
     quality signal either way -- this only MITIGATES it; it never claims the memory "worked" or "was
-    recalled" (clozn's honesty contract, X7_PRODUCT_DESIGN.md section 9).
+    recalled" (clozn's honesty contract).
 
       1. clean (no loop): returns (reply, steps, finish) UNTOUCHED -- byte-identical to today, mem_out
          gets no anchored_loop_guard key at all.
@@ -745,7 +745,7 @@ def _mem_sync_rules(m, reconsolidate=True, force=False):
     return {"changed": changed, "rules": list(new_rules), "consolidate": result}
 
 
-# ------- profiles: named persona bundles (NEXT_STEPS #4) -> cards + dials on the LIVE substrate -----
+# ------- profiles: named persona bundles -> cards + dials on the LIVE substrate ---------------------
 # profiles.py is the model-free CRUD + compile layer (source bundles: card texts, dial settings, custom-
 # dial recipes, fact pairs -- see its docstring). This is the thin wiring that hands it the live objects
 # a switch needs (SUB._mem for cards/rules, SUB.steer for dials) and reports what actually happened.
@@ -856,7 +856,7 @@ def prompt_block_preview(p) -> str:
     return profiles.prompt_block(p)
 
 
-# ------- the FACTS tier: slot-memory store wired to the studio (NEXT_STEPS #5) ----------------------
+# ------- the FACTS tier: slot-memory store wired to the studio ----------------------------------------
 # slotmem_qwen.SlotMem is the explicit, editable, honest-about-ignorance fact store (centered-key
 # addressing, surprise-gated writes, confidence-gate abstention -- proven 0.95 flat to N=200). SlotBox
 # is the thin studio wiring: it lazily builds ONE SlotMem SHARING the substrate's Qwen-7B (SUB.memory
@@ -1094,7 +1094,7 @@ class SlotBox:
 # substrate swap is picked up automatically). None until the first substrate boots.
 SLOTS = None
 
-# One process-wide time-travel SnapshotStore (NEXT_STEPS #6): the bounded, CPU-offloaded ring of per-turn
+# One process-wide time-travel SnapshotStore: the bounded, CPU-offloaded ring of per-turn
 # KV snapshots. Built lazily from timetravel.get_config() (cap / byte-budget). Only ever holds real KV
 # payloads when the `timetravel_snapshots` gate is ON (the RAM rule); branch RECORDING (the transcript
 # transform -> child run) does not need it and works regardless. None until first requested.
@@ -1358,7 +1358,7 @@ class Substrate:
         the response returns immediately. The card keeps its FINAL status; a separate _RETRAIN flag carries
         the in-flight signal. _start_retrain no-ops when the active set didn't actually move (prefix safe).
 
-        PROVENANCE GATE (NEXT_STEPS #1): 'approve' is refused for a card that CLAIMS a run (source_run_id
+        PROVENANCE GATE: 'approve' is refused for a card that CLAIMS a run (source_run_id
         set) but carries no quoted_span to back that claim up -- memory_cards.is_provenance_claim_unbacked.
         This is never auto-approvable; the reviewer sees why via the reason string (the Memory page also
         flags it so this should rarely even be attempted). reject/disable/enable are NOT gated -- you must
@@ -1988,7 +1988,7 @@ class EngineSubstrate(Substrate):
     def score_tokens(self, messages, continuation_ids=None, *, continuation=None, block=None,
                      steer_strengths=None, steer_vec=None, topk=0):
         """Teacher-forced per-token logprob of a continuation under EXPLICIT (block,
-        steer_strengths) conditions -- the S1 seam notes/REPRODUCE_AND_PROVE_PLAN.md's forced-scoring
+        steer_strengths) conditions -- the seam the forced-scoring
         stack (rederive.py, forced receipts) builds on. Assembles the prompt EXACTLY like chat()
         (_inject_block + _engine_tmpl -- the loaded model's own chat template) and the steer_vec EXACTLY
         like chat() (self.steer.steer_vector),
@@ -2232,7 +2232,7 @@ class EngineSubstrate(Substrate):
                 self._last_finish_reason = runlog.finish_reason_from_frames(frames)
             except Exception:
                 self._last_finish_reason = None
-            # LOOP GUARD, streaming twin (X7_PRODUCT_DESIGN.md section 5): the engine sets the anchored
+            # LOOP GUARD, streaming twin: the engine sets the anchored
             # steer at generation-START (body["steer_vec"] above) and every piece is yielded to the
             # caller live over SSE -- by the time this `finally` runs, the client has ALREADY received
             # the whole reply. There is no seamless mid-stream re-injection here (unlike chat()'s
@@ -2434,7 +2434,7 @@ from clozn.server.routes import feedback as _feedback_routes          # noqa: E4
 from clozn.server.routes import openai as _openai_routes              # noqa: E402
 from clozn.server.routes import engine as _engine_routes              # noqa: E402
 from clozn.server.routes import readouts as _readouts_routes          # noqa: E402
-# The F-wave route families (2026-07-12): span receipts (F4), fork-at-token (F3), journal actuary +
+# Inspector route families: span receipts, fork-at-token, journal actuary +
 # calibrated trust spans (F2), shareable card (F9), anchored memory (F6), model diff (F8).
 from clozn.server.routes import span_receipts as _span_receipt_routes  # noqa: E402
 from clozn.server.routes import fork as _fork_routes                   # noqa: E402
@@ -2562,7 +2562,7 @@ def make_handler():
                     if mo.get("anchored_skipped"):
                         memd["anchored_skipped"] = str(mo["anchored_skipped"])
                     if isinstance(mo.get("anchored_loop_guard"), dict):
-                        # the loop guard's honest self-healing record (X7_PRODUCT_DESIGN.md section 5) --
+                        # the loop guard's honest self-healing record --
                         # _flags() below turns this into the visible "memory-retried"/"memory-loop-guard"
                         # run flag; never let a guard event go unrecorded just because no bag rode as
                         # `applied` (anchored memory rides `anchored`, not prompt-mode `applied`).
@@ -2594,7 +2594,7 @@ def make_handler():
                             pass
                 else:
                     memd = {"mode": mode}                        # runlog records the mode on EVERY run
-                # FACTS tier (NEXT_STEPS #5): only when memory_facts is on -- otherwise zero cost, the
+                # FACTS tier: only when memory_facts is on -- otherwise zero cost, the
                 # latency rule. A chat turn (not the pure /think etc.) gets a surprise-gated AUTO-WRITE
                 # (mine one declarative fact; the gate refuses what the model already knows) and a READ
                 # RECEIPT (what the store would fire + slot_ms), both folded into the run's memory record

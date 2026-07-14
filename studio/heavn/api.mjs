@@ -1,5 +1,4 @@
-/* heavnOS api — one client for the clozn server. Field names follow the server's own shapes;
-   see notes/HEAVN_API_CONTRACTS.md (generated from the route source) — reconcile here if they drift.
+/* heavnOS api — one client for the clozn server. Field names follow the server's own route shapes.
    Every function returns null on failure rather than throwing; callers render honest absence. */
 
 async function j(path, opts, timeoutMs = 30000){
@@ -49,7 +48,7 @@ export const api = {
   narrate:  id => postE("/runs/" + enc(id) + "/narrate", {}, 300000), // __status rides (503 = needs qwen)
   proposeMemory: id => post("/runs/" + enc(id) + "/propose-memory", {}, 60000),
 
-  /* ── the F-wave (2026-07-12) ── */
+  /* ── inspector features ── */
   trustSpans: id => post("/runs/" + enc(id) + "/trust_spans", {}, 60000),      // F2: journal-calibrated
   fork: (id, position, token) => post("/runs/" + enc(id) + "/fork",
                                       { position, token }, 300000),            // F3: child run back

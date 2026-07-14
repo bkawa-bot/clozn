@@ -1,4 +1,4 @@
-"""test_rederive -- clozn/rederive.py (S3, notes/REPRODUCE_AND_PROVE_PLAN.md): deterministic
+"""test_rederive -- clozn/rederive.py: deterministic
 teacher-forced re-derivation of a stored run's exact answer, built entirely from the run record and
 `sub.score_tokens` -- NO generation anywhere.
 

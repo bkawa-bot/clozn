@@ -18,7 +18,7 @@ of diff.
 LAW #6 (a 7B-calibrated dial derails a 1.5B; every receipt needs a coherence/sanity axis): a slider that
 lets a user push a dial past where THIS model can absorb it must not report "huge delta = huge effect" --
 a huge delta can just as easily be the model degenerating into repetition or a script switch
-(voice_middle_findings.md's "Russian mid-sentence" case; steer_vs_prompt_findings.md's "degeneration can
+(the measured "Russian mid-sentence" case; the measured "degeneration can
 GAME a lexical steering eval"). So every counterfactual carries a `coherence` field: a crude text-only
 degeneration/repetition proxy computed on the counterfactual arm (the one that might be over-dosed). It
 duplicates -- does not import -- memory_disorders.is_degenerate's exact checks: this module's build spec
@@ -76,7 +76,7 @@ _DOSE_NOTE = (
 # ============================================================================================== coherence
 # A crude, eyeball-informed, NOT-learned degeneration/repetition proxy -- mirrors memory_disorders.py's
 # is_degenerate() checks exactly (empty output / immediate 3-gram word repetition / character runaway /
-# script switch -- the failure modes voice_middle_findings.md and steer_vs_prompt_findings.md actually
+# script switch -- the failure modes the steering experiments actually
 # eyeballed at small-model dial extremes). Duplicated rather than imported: this module's build spec
 # restricts it to importing receipts/replay only (memory_disorders.py is explicitly out of scope here).
 _FOREIGN_MIN = 3

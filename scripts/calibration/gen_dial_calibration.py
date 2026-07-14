@@ -8,7 +8,7 @@ _dial_calibration / _with_calibration) to serve each dial's calibrated `max` + `
 `works`, and behavior.js uses those to cap the slider + show the "works 0.25-1.0 ..." hint.
 
 No model / no GPU: the ranges are already baked into research/dial_library_shipped.json's `ship_range`
-(the human-curated conservative range from the autocalibrate sweep, dial_library_findings.md). This is a
+(the human-curated conservative range from the autocalibrate sweep). This is a
 pure JSON transform, so it's split out from deploy_dial_library.py (which needs the loaded 7B to compute
 the 27 directions). Run either order; both are idempotent overwrites of their own file.
 

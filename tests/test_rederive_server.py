@@ -1,5 +1,4 @@
-"""test_rederive_server -- POST /runs/<id>/rederive, the S3 endpoint wiring
-(notes/REPRODUCE_AND_PROVE_PLAN.md).
+"""test_rederive_server -- POST /runs/<id>/rederive, the endpoint wiring.
 
 No model, no GPU: drives the REAL clozn_server do_POST handler (the object.__new__(H) no-socket trick --
 mirrors test_receipts_server.py's own conventions) against an isolated runlog store, with a FAKE

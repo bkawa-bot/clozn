@@ -1,12 +1,12 @@
 """facts_mode -- the on/off gate + per-profile store paths for the slot-memory FACTS tier.
 
 The facts tier (slotmem_qwen.SlotMem: centered-key addressing, surprise-gated writes, confidence-gate
-abstention -- proven in slotmem_qwen_findings.md, 0.95 flat to N=200) is the studio's EXPLICIT,
+abstention -- measured at 0.95 flat to N=200) is the studio's EXPLICIT,
 editable, honest-about-ignorance fact store, distinct from the trait-card memory (memory_mode.py) that
 carries dispositions. A fact is a verbatim (cue -> answer) pair, stored inside the model as a key/value
 slot; the store is a print-able list.
 
-CRITICAL LATENCY RULE (from NEXT_STEPS #5): a slot read is an EXTRA forward at the tap layer -- it must
+CRITICAL LATENCY RULE: a slot read is an EXTRA forward at the tap layer -- it must
 stay OFF the 7B hot path until measured. So the whole feature is gated behind ONE persisted setting,
 `memory_facts` in ~/.clozn/studio_settings.json, DEFAULT OFF. Only when it is "on" does the server build
 the slot substrate, auto-write from conversation, or emit a read receipt (and it logs the per-turn slot_ms
@@ -29,7 +29,7 @@ from clozn.memory import mode as memory_mode  # the single settings file + its n
 # Where per-profile slot stores live. A module global so tests can repoint it at a tmp dir.
 PROFILES_DIR = os.path.join(os.path.expanduser("~"), ".clozn", "profiles")
 
-# The tap layer for the studio's slot store. 18/28 is the validated default (slotmem_qwen_findings.md:
+# The tap layer for the studio's slot store. 18/28 is the validated default (measured:
 # L14 reads too lexical, L22 loses verbatim control; 18 is the band's sweet spot on this exact 7B-nf4).
 # A store written at layer L refuses to load into a SlotMem tapping another (keys are residuals OF a layer),
 # so this is the one place the studio's layer choice is named.

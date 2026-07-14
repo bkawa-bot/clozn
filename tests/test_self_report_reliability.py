@@ -248,8 +248,8 @@ def test_real_nli_matcher_accepts_causal_explanation_shape_unchanged():
     """MEASURED, not assumed: a claim phrased to match the card's own grammatical subject ("you are
     vegetarian", mirroring "The user is vegetarian") entails cleanly (~0.98); the SAME claim phrased purely
     from the assistant's side ("I kept the recipe vegetarian", no "you") scores ~0.001 against the identical
-    premise -- a real, reportable ceiling of this matcher for memory-card claims (subject mismatch), noted
-    in notes/x1/RESULT.md's caveats, not papered over here."""
+    premise -- a real, reportable ceiling of this matcher for memory-card claims (subject mismatch),
+    not papered over here."""
     import clozn.receipts.semantic_matcher as sm
     if not sm.available():
         pytest.skip("cross-encoder NLI unavailable (sentence-transformers / checkpoint missing)")

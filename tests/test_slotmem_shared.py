@@ -1,7 +1,7 @@
 """test_slotmem_shared -- SlotMem.from_shared builds on an ALREADY-LOADED backbone (MODEL-FREE).
 
 The studio wires the fact store to reuse the substrate's Qwen-7B (SUB.memory.model) rather than loading
-a second model (NEXT_STEPS #5). from_shared is that seam. This test proves it works WITHOUT a real model
+a second model. from_shared is that seam. This test proves it works WITHOUT a real model
 by handing it a tiny fake backbone (a deterministic linear stand-in) that exposes exactly the surface
 SlotMem touches: `.model.layers[L].register_forward_hook`, `.lm_head.weight`, and a forward returning
 `hidden_states` / `logits`. The load-bearing invariants: from_shared does NOT load a model (no HF, no

@@ -1,4 +1,4 @@
-/* settings.js -- the Settings page.  Issue I1 + NEXT_STEPS #4 (profiles studio UI).
+/* settings.js -- the Settings page (profiles studio UI).
  *
  * Deliberately boring + safe local config, over ONLY endpoints that already exist (no invented calls):
  *   GET  /substrate        -> {active, available:[...]}      (SAFE read -- see the note below)
@@ -13,7 +13,7 @@
  * a Dream session would silently re-exec into Qwen. The read here is therefore GET /substrate (which safely
  * returns {active, available}); POST /substrate is used ONLY for a deliberate switch with an explicit name.
  *
- * PROFILES (research/profiles.py, notes/MEMORY_MODE_SWAP_SPEC.md): named persona bundles -- card texts +
+ * PROFILES (research/profiles.py): named persona bundles -- card texts +
  * dial settings + custom-dial recipes + fact pairs, portable JSON. This page covers list / create / export
  * / import; the masthead (pages/app.js) covers the day-to-day SWITCH (a persona picker + chip), and each
  * row here also offers Switch as a convenience (the masthead dropdown is easy to miss). "Create" saves a
@@ -345,11 +345,11 @@
     else { el.textContent = String(n); el.className = "n"; }
   }
 
-  // ---- Profiles card: list / create-from-current / switch / export / import (NEXT_STEPS #4) --------
+  // ---- Profiles card: list / create-from-current / switch / export / import ------------------------
   // A profile (research/profiles.py) is a named, portable bundle: the active card texts + dial values
   // at the moment it was saved. This card lists what's saved, lets you snapshot the studio's CURRENT
-  // cards+dials under a new name, switch to a saved one (cards replace, dials replace -- see
-  // notes/MEMORY_MODE_SWAP_SPEC.md), and export/import bundles as plain JSON files.
+  // cards+dials under a new name, switch to a saved one (cards replace, dials replace), and
+  // export/import bundles as plain JSON files.
   function profilesCard(ctx) {
     var list = S.el("ul", { class: "set-plist", id: "set-plist" }, []);
     var msg = S.el("div", { class: "set-pmsg", id: "set-pmsg" }, []);

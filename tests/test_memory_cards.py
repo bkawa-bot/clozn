@@ -156,7 +156,7 @@ def test_delete(store):
     assert store.delete("mem_never") is False
 
 
-# ---- provenance (NEXT_STEPS #1, the OBEY defense) ---------------------------------------------------
+# ---- provenance (the OBEY defense) -------------------------------------------------------------------
 
 def test_has_provenance_true_with_run_and_quote(store):
     c = store.create("prefers concise answers", source_run_id="run_1", source_turn=2,

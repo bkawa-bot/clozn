@@ -161,7 +161,7 @@ void sae_topk(
     // the parity test), fall back to the original per-call alloc/free so those
     // callers are untouched. A caller with a workspace (cloze/sae.hpp) passes its
     // own buffer and this path skips the cudaMalloc + forced sync + cudaFree
-    // entirely -- exactly the hoist NEXT_STEPS item 10b calls for.
+    // entirely -- exactly the hoist the caller-owned workspace calls for.
     char* d_picked = picked_scratch;
     const bool owns_scratch = (d_picked == nullptr);
     if (owns_scratch)

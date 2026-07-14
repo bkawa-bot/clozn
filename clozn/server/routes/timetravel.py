@@ -1,4 +1,4 @@
-"""Time-travel debugger surface (NEXT_STEPS #6): the snapshot gate + ring config + store stats
+"""Time-travel debugger surface: the snapshot gate + ring config + store stats
 (GET/POST /timetravel/mode, POST /timetravel/stats), and rewinding & branching from a turn
 (POST /runs/<id>/branch) into a child run. The snapshot ring holds KV state in CPU RAM, so it is behind
 ONE persisted setting (`timetravel_snapshots`, DEFAULT OFF -- the RAM rule); branch RECORDING does NOT

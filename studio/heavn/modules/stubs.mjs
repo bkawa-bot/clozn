@@ -1,4 +1,4 @@
-/* heavnOS · honest stubs for the modules that open in later phases (W3–W6).
+/* honest stubs for the modules that open in later phases.
    Each names what it will be and which endpoints already exist — no fake UI, no dead controls. */
 import { html } from "../vendor/preact-standalone.mjs";
 

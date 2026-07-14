@@ -359,7 +359,7 @@ def test_prove_all_degrades_when_substrate_is_none(iso):
 
 
 # ============================================================================================================
-# ============================================ S3: forced-mode receipts (notes/REPRODUCE_AND_PROVE_PLAN.md) ==
+# ============================================ forced-mode receipts ==
 # ============================================================================================================
 # A GRADED, per-token DEPENDENCE measurement via teacher-forced scoring (rederive.score_arm) -- no
 # generation, no qwen substrate needed. Model-free: a ForcedFakeSub's .score_tokens is a deterministic

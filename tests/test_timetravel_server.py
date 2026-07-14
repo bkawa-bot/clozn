@@ -1,4 +1,4 @@
-"""test_timetravel_server -- the time-travel debugger's studio endpoints (NEXT_STEPS #6, MODEL-FREE).
+"""test_timetravel_server -- the time-travel debugger's studio endpoints (MODEL-FREE).
 
 No model, no GPU. Drives the REAL clozn_server do_GET/do_POST handlers (the object.__new__(H) no-socket
 trick, same as test_facts_server) against a FAKE substrate whose .chat() echoes the transcript it saw, so

@@ -6,7 +6,7 @@ soft-prefix (see active_texts); 'pending' cards await review, 'disabled' are kep
 are tombstoned. The latent prefix / soft-state itself lives elsewhere (self_teach_server) -- this module
 owns only the card metadata + CRUD.
 
-Provenance (NEXT_STEPS #1, the OBEY defense -- dream_consolidation_findings.md law #4: a fluent,
+Provenance (the OBEY defense -- a measured failure mode: a fluent,
 plausible card can still be a hallucination or an injected instruction; plausibility gates don't catch
 it, only a checkable link to what the user actually said does): a card proposed from a run carries
 `source_turn` (index into that run's messages) + `quoted_span` (the verbatim cited text) alongside
@@ -69,7 +69,7 @@ def create(text: str, status: str = "pending", source_run_id: str | None = None,
     """Create + persist a card; return it (or None on IO failure).
 
     `source_turn` + `quoted_span` are the PROVENANCE pair (roadmap: the OBEY defense, see
-    dream_consolidation_findings.md law #4 -- a fluent, plausible card can still be a hallucination or an
+    a measured failure mode -- a fluent, plausible card can still be a hallucination or an
     injected instruction; the only real defense is a checkable link to what the user actually said).
     `source_turn` is the index of the cited message within its run's `messages` list; `quoted_span` is the
     verbatim (possibly truncated) text of that message. Both default empty/None for cards that don't claim

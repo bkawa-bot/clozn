@@ -1,4 +1,4 @@
-"""test_timetravel_determinism -- the DETERMINISM RECEIPT for the time-travel debugger (NEXT_STEPS #6).
+"""test_timetravel_determinism -- the DETERMINISM RECEIPT for the time-travel debugger.
 
 The load-bearing scientific claim v1 owes: a branch (rewind to an earlier turn from a CPU-offloaded KV
 SNAPSHOT, splice an alternate user turn, continue WITHOUT re-prefilling the shared past) reproduces a

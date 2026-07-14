@@ -42,7 +42,7 @@ class EngineSteer:
         seeds = axes.SEED_PROMPTS if seeds is None else seeds
         # First-use signal: harvesting every base + library dial direction is ~30-40s of sequential
         # engine round-trips and is otherwise SILENT, so a first dial-touching turn reads as a hang
-        # (usage-test papercut: notes/papercuts_lazyinit.md). stderr + ASCII-only (Windows cp1252).
+        # (a known usage-test papercut). stderr + ASCII-only (Windows cp1252).
         import sys
         n_dials = len(axes.AXES) + sum(1 for n in self.custom if n not in self.vecs)
         print(f"[steer] harvesting {n_dials} tone-dial directions; first use, ~30-40s...",

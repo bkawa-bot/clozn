@@ -1,5 +1,5 @@
-"""test_quant_receipts -- clozn/receipts/quant_receipts.py (QUANT-RECEIPTS, notes/FRONTIER_BETS.md Sec
-1.2, notes/quant_receipts/README.md): "did Q4 lobotomize my model?"
+"""test_quant_receipts -- clozn/receipts/quant_receipts.py (QUANT-RECEIPTS): "did Q4 lobotomize my
+model?"
 
 Model-free throughout, on FIXTURE /score-shaped arrays (`[{"id","piece","logprob","topk"?}, ...]` --
 exactly what engine/core/serve/routes_whitebox.cpp's /score handler and

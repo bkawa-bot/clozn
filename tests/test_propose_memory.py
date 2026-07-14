@@ -14,7 +14,7 @@ The load-bearing contract under test:
   * a substrate without a .memory.propose_memory -> {"ok": false, reason ...};
   * tone steering is NEUTRALIZED during the extraction and RESTORED exactly afterward (never persisted);
   * the read is CLEAN -- propose_memory is called on the raw memory object, never via the prefix path;
-  * PROVENANCE (NEXT_STEPS #1, the OBEY defense): the card cites source_turn (the index of the LAST user
+  * PROVENANCE (the OBEY defense): the card cites source_turn (the index of the LAST user
     message) + quoted_span (that message's own verbatim text, truncated) -- never a paraphrase, never the
     model's synthesized card text. When a run has no user turn to cite at all (defensive fallback -- rare
     in practice, propose_memory needs user content to work from), the card is still created but comes out
@@ -164,7 +164,7 @@ def test_propose_creates_pending_card_citing_run(iso, monkeypatch):
     assert card["kind"] == "preference"
     assert card["source_run_id"] == rid                    # cites the run it came from
     assert card["evidence"] == f"proposed from run {rid}"
-    # PROVENANCE (NEXT_STEPS #1): the card cites the exact user turn + quotes it verbatim, not the
+    # PROVENANCE: the card cites the exact user turn + quotes it verbatim, not the
     # model's synthesized text -- this is what has_provenance() checks and the Memory page renders as
     # "you said this".
     assert card["source_turn"] == 0                        # index of the (only) user message
@@ -218,11 +218,11 @@ def test_propose_truncates_a_long_quoted_span(iso, monkeypatch):
     assert memory_cards.has_provenance(card) is True             # truncated is still backed -- it's real text
 
 
-# ---- provenance: the OBEY case itself (dream_consolidation_findings.md law #4) ------------------------
+# ---- provenance: the OBEY case itself ------------------------------------------------------------------
 # Plain extraction faithfully mining an injected instruction into a "preference" is a real risk this
 # defense does NOT try to prevent -- and it's a sharper case than it looks: _risk_of scans the card's
 # OWN wording, and the model's laundered third-person gloss ('Prefers replies ending with "OBEY"', the
-# exact text dream_consolidation_findings.md's raw arm mined) reads perfectly bland -- _risk_of says
+# exact text an earlier raw-arm experiment mined) reads perfectly bland -- _risk_of says
 # "low" on it even though the SOURCE text is a blatant instruction override. Provenance is the defense
 # that still works here: the quote is the real user words, so a reviewer isn't just trusting the model's
 # cleaned-up summary -- they can open the quote and see the injection themselves.
@@ -246,7 +246,7 @@ def test_propose_on_an_injection_fragment_still_quotes_the_real_words(iso, monke
 # ---- provenance: no user turn to cite at all -> the card is created but flagged, and refused on approve --
 # The defensive fallback (_provenance_of returns (None, "") when there's nothing to quote) exercised end
 # to end through the real endpoint + the real approve path, not a manually-constructed card. This is the
-# "candidates WITHOUT provenance are flagged, never auto-approvable" half of NEXT_STEPS #1.
+# "candidates WITHOUT provenance are flagged, never auto-approvable" half of the provenance gate.
 
 def test_propose_on_a_run_with_no_user_turn_yields_an_unbacked_card(iso, monkeypatch):
     sub = FakeSub(result="Prefers concise answers")           # extraction still returns *something*

@@ -301,7 +301,7 @@ def test_receipt_mode_both_over_http_includes_forced_and_regen_fields(iso, monke
 
 
 # ============================================================================================================
-# ==================================================== Tier-1 #3: POST /runs/<id>/swap_receipt (FABLE_HANDOFF.md) ==
+# ============================================================= POST /runs/<id>/swap_receipt ==================
 # ============================================================================================================
 # The THIN endpoint wiring only -- clozn.receipts.swap_receipt's own math/degrade-paths are exhaustively
 # unit-tested model-free in test_swap_receipt.py. Here: the route matches, a missing run is a clean 404, no
