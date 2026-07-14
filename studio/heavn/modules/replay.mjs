@@ -575,7 +575,8 @@ function Arrangement({ rec }){
             style=${"--l:" + Math.round(Math.abs(leaning[i]) / leanMax * 14)}></span>`}
         </div>`)}
       </div>
-      ${sel != null && html`<${Pop} step=${steps[sel]} i=${sel} w=${w} plateW=${plateW} pad=${pad} arrRef=${arrRef} rec=${rec}/>`}
+      ${sel != null && html`<${Pop} step=${steps[sel]} i=${sel} w=${w} plateW=${plateW} pad=${pad} arrRef=${arrRef} rec=${rec}
+          jl=${jl} jlBusy=${jlBusy} onReadJl=${() => loadJl(rec, setJl, setJlBusy, 21)}/>`}
       </div>
     </div>
 
@@ -625,17 +626,28 @@ function Locators({ steps, mem, rec, w, innerW }){
       ▸ ${rec.finish_reason || "end"}</span>`;
 }
 
-function Pop({ step, i, w, plateW, pad, arrRef, rec }){
+/* ── click-a-span SIGNALS popover — the entry point: click a token of the reply, see its signals,
+      one-click into an Experiment. Every signal renders ONLY when its data exists (honest absence,
+      never a fabricated value); every honesty label matches replay.mjs / experiment.mjs. `jl` is the
+      Arrangement's loaded J-lens (byPos/layer), or `false` (no lens fitted), or null (not read yet). ── */
+function Pop({ step, i, w, plateW, pad, arrRef, rec, jl, jlBusy, onReadJl }){
   const ref = useRef(null);
-  const busy = useStore(x => x.busy.fork);
+  const forkBusy = useStore(x => x.busy.fork);
   useEffect(() => {
     const arr = arrRef.current, el = ref.current;
     if(!arr || !el) return;
     const g = colGeom(w, arr.clientWidth - plateW - pad*2);
-    el.style.left = Math.max(4, Math.min(arr.clientWidth - 205, plateW + pad + g[i].xc - 95)) + "px";
+    el.style.left = Math.max(4, Math.min(arr.clientWidth - 244, plateW + pad + g[i].xc - 116)) + "px";
     el.style.top = "34px";
   }, [i]);
-  const alts = (step.alts || []).slice(0,3);
+  const alts = (step.alts || []).slice(0, 3);
+  const spanText = (step.piece || "").trim();
+  const disp = (jl && jl.byPos) ? jl.byPos[i] : null;          // disposed pieces at this position (or null)
+  const lensAbsent = jl === false;                             // a lens was asked for and honestly isn't fitted
+  const mem = rec.memory || {};
+  const cards = mem.cards_applied || [], appliedIds = mem.applied_ids || [];
+  const dials = Object.entries((rec.behavior || {}).active_dials || {}).filter(([, v]) => v);
+
   /* F3: click an almost-said token to FORK reality from this position (greedy continuation) */
   const fork = async piece => {
     if(rec && guardSample(rec)) return;
@@ -647,22 +659,64 @@ function Pop({ step, i, w, plateW, pad, arrRef, rec }){
       msg: "fork didn't answer — is the engine up?" } }); return; }
     await adoptChild(res, "fork", ` · “${piece.trim()}” at ${i}`);
   };
-  return html`<div class="pop" ref=${ref} onClick=${e => e.stopPropagation()}>
-    <h4>what it almost played</h4>
-    <div class="alt win"><span>${(step.piece || "").trim()}</span>
-      <b>${step.conf != null ? step.conf.toFixed(2) : "—"}</b></div>
-    ${alts.length ? alts.map(a => {
+  /* the ACTION: deep-link into the Experiment drawer, pre-filled, via the store handoff */
+  const openExp = (ctype, fields) => {
+    if(rec._sample){ toast("live runs only — this is the sample reel"); return; }
+    store.set({ pendingExperiment: { ctype, fields: fields || {}, method: "" }, route: "experiment" });
+    toast("opening Experiment — " + ctype + " pre-filled");
+  };
+  const userTurns = (rec.messages || rec.assembled_messages || []).filter(x => x.role === "user").length;
+  const forkTurn = Math.max(0, userTurns - 1);
+
+  return html`<div class="pop signals" ref=${ref} onClick=${e => e.stopPropagation()}>
+    <h4>signals · token ${i}</h4>
+
+    <div class="sig-lbl">confidence — raw, uncalibrated</div>
+    <div class="alt win"><span>${spanText || "·"}</span>
+      <b title="raw model probability for the committed token — UNCALIBRATED; self-confidence is not correctness">
+        ${step.conf != null ? step.conf.toFixed(2) : "—"}</b></div>
+
+    <div class="sig-lbl">almost said${alts.length ? "" : " — none recorded"}</div>
+    ${alts.map(a => {
         const piece = ((a.piece ?? a.text ?? "") + "");
         return html`<div class="alt">
           <span>${piece.trim() || "·"}</span>
           <span>${a.prob != null ? (+a.prob).toFixed(2) : ""}</span>
-          ${piece && rec && !rec._sample && html`<button class="spd"
-            style="height:17px;font-size:7.5px;padding:0 5px" disabled=${busy}
+          ${piece && !rec._sample && html`<button class="spd"
+            style="height:17px;font-size:7.5px;padding:0 5px" disabled=${forkBusy}
             onClick=${e => { e.stopPropagation(); fork(piece); }}>⑂ fork</button>`}
-        </div>`; })
-      : html`<div class="alt"><span style="font-style:italic">no alternatives recorded</span></div>`}
-    ${alts.length ? html`<div style="font-size:7.5px;color:var(--mist);padding-top:3px">
-      fork = force that token at this position, continue greedy → a child run</div>` : null}
+        </div>`; })}
+
+    <div class="sig-lbl">disposed to say${jl && jl.layer != null ? " · J-lens L" + jl.layer : " · J-lens"}</div>
+    ${lensAbsent
+      ? html`<span class="none" style="font-size:9px">no lens fitted for this model — nothing to read with (blank ≠ nothing)</span>`
+      : disp && disp.length
+        ? html`<div class="sig-run">${disp.slice(0, 3).map(p =>
+            html`<span class="jchip d1">${String(p).trim() || "·"}</span>`)}</div>`
+        : (jl && jl.byPos)
+          ? html`<span class="none" style="font-size:9px">no disposition read at this position</span>`
+          : html`<button class="spd" style="font-size:8.5px" disabled=${jlBusy}
+              onClick=${e => { e.stopPropagation(); onReadJl && onReadJl(); }}>
+              ${jlBusy ? "reading…" : "read disposition"}</button>`}
+    ${!lensAbsent && html`<div class="sig-note">a disposition read, NOT the literal thought · lens-blind to abstractions</div>`}
+
+    <div class="sig-lbl">active on this run</div>
+    <div class="sig-run">
+      ${cards.length ? html`<span class="jchip">memory · ${cards.length} card${cards.length > 1 ? "s" : ""}</span>`
+        : html`<span class="none" style="font-size:9px">memory: none rode</span>`}
+      ${dials.length ? dials.map(([k, v]) => html`<span class="jchip">${k} ${(+v).toFixed(1)}</span>`)
+        : html`<span class="none" style="font-size:9px">dials: none</span>`}
+    </div>
+
+    ${!rec._sample && html`<div class="sig-lbl">experiment on this span</div>
+    <div class="sig-actions">
+      <button class="spd" onClick=${() => openExp("edit_turn", { turn: forkTurn })}>fork from here</button>
+      <button class="spd" onClick=${() => openExp("ablate_memory", {})}>turn memory off</button>
+      ${spanText && html`<button class="spd"
+        onClick=${() => openExp("swap_concept", { to_concept: spanText, from_hint: spanText })}>swap “${spanText}”</button>`}
+      ${appliedIds.length && cards.length ? html`<button class="spd"
+        onClick=${() => openExp("ablate_card", { card_id: appliedIds[0] })}>prove a card</button>` : null}
+    </div>`}
   </div>`;
 }
 

@@ -233,8 +233,17 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .pop{position:absolute;width:190px;background:linear-gradient(180deg,#fff,#EAF4FA);border:1px solid var(--edge);
   border-radius:10px;box-shadow:0 14px 30px rgba(60,90,120,.25), inset 0 1px 0 #fff;padding:9px 11px;z-index:20;text-align:left}
 .pop h4{font-size:7.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--mist);margin-bottom:5px;font-family:var(--disp)}
-.pop .alt{display:flex;justify-content:space-between;font-size:10px;color:var(--slate);padding:1px 0}
+.pop .alt{display:flex;justify-content:space-between;align-items:center;gap:5px;font-size:10px;color:var(--slate);padding:1px 0}
 .pop .alt.win{color:var(--navy)}.pop .alt.win b{color:#1B7F74;font-weight:600}
+/* click-a-span signals popover: a widened .pop with labeled signal sections + one-click actions */
+.pop.signals{width:236px;max-height:min(74vh,520px);overflow-y:auto}
+.pop .sig-lbl{font-size:7px;letter-spacing:.16em;text-transform:uppercase;color:var(--mist);
+  font-family:var(--disp);margin:8px 0 3px;padding-top:6px;border-top:1px dashed var(--edge-soft)}
+.pop .sig-lbl:first-of-type{border-top:none;padding-top:0;margin-top:4px}
+.pop .sig-note{font-size:7px;color:var(--mist);line-height:1.5;margin-top:3px;font-style:italic}
+.pop .sig-run{display:flex;flex-wrap:wrap;gap:4px}
+.pop .sig-actions{display:flex;flex-wrap:wrap;gap:5px;margin-top:2px}
+.pop .sig-actions .spd{font-size:8.5px;height:auto;padding:3px 7px}
 .provenance{padding:5px 14px 10px;font-size:8px;color:var(--mist);line-height:1.7}
 .provenance b{color:var(--slate)}
 details.leader{margin:10px 13px 0;border:1px solid var(--edge-soft);border-radius:9px;background:rgba(255,255,255,.5)}

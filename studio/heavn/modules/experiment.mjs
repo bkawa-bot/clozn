@@ -3,8 +3,8 @@
    nine change-types (ablate_card, ablate_memory, ablate_dial, set_dial, swap_concept, edit_turn,
    reroll, toggle_greedy, anchored_recall) behind ONE normalized envelope -- this module is a thin,
    honest client over it: enumerate the catalog, fill a change spec, show the cost BEFORE running,
-   run, render the envelope in layered form. Contracts: clozn/experiments/experiment.py (envelope +
-   REGISTRY, read for the exact shape), notes/HEAVN_API_CONTRACTS.md §0 (dispatch/error conventions).
+   run, render the envelope in layered form. Contract: clozn/experiments/experiment.py (envelope +
+   REGISTRY, read for the exact shape + the dispatch/error conventions).
 
    HONESTY rules carried over from patch.mjs/replay.mjs (do not weaken these):
    - has_effect / causal_verified are TRI-STATE (true/false/null). null is NEVER a green check or a
@@ -15,7 +15,7 @@
      swap_receipt's res.blocked handling in patch.mjs.
    - the catalog's cost_hint renders before a run is possible; the envelope's own grounded cost
      (passes/note/est_seconds) renders again after, next to the result. */
-import { html, useState, useEffect } from "../vendor/preact-standalone.mjs";
+import { html, useState, useEffect, useRef } from "../vendor/preact-standalone.mjs";
 import { store, useStore, toast } from "../state.mjs";
 import { api } from "../api.mjs";
 
@@ -62,18 +62,44 @@ export function ExperimentModule(){
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState(null);
   const [err, setErr] = useState(null);
+  /* click-a-span handoff: {ctype, fields, method} stashed here on mount, applied by the ctype-reset
+     effect below ONCE ctype actually equals its ctype (so it survives that effect's own clear) */
+  const pendingRef = useRef(null);
 
   useEffect(() => { (async () => {
     const r = await api.experimentTypes();
     setTypes(r && r.types ? r.types : {});
   })(); }, []);
 
+  /* consume a click-a-span deep-link ONCE on mount: pre-select its change-type (the ctype effect then
+     applies the stashed fields). A span's "open in Experiment" action set this in the store before
+     switching the nav tab here. */
+  useEffect(() => {
+    const p = store.get().pendingExperiment;
+    if(p && p.ctype){
+      pendingRef.current = { ctype: p.ctype, fields: p.fields || {}, method: p.method || "" };
+      store.set({ pendingExperiment: null });   // consumed -- never re-applies on a later remount
+      setCtype(p.ctype);
+    }
+  }, []);
+
   useEffect(() => {
     if(!ctype && types && Object.keys(types).length) setCtype(Object.keys(types)[0]);
   }, [types]);
 
-  /* switching change-type resets the form + any stale result -- never carry a receipt across specs */
-  useEffect(() => { setFields({}); setMethod(""); setRes(null); setErr(null); }, [ctype]);
+  /* switching change-type resets the form + any stale result -- never carry a receipt across specs.
+     EXCEPTION: a pending click-a-span handoff FOR THIS ctype pre-fills the form instead of clearing
+     (keyed on ctype so it fires exactly when ctype has become the handoff's type, not before). */
+  useEffect(() => {
+    setMethod(""); setRes(null); setErr(null);
+    if(pendingRef.current && pendingRef.current.ctype === ctype){
+      setFields(pendingRef.current.fields);
+      setMethod(pendingRef.current.method);
+      pendingRef.current = null;
+    } else {
+      setFields({});
+    }
+  }, [ctype]);
 
   const entry = (types && ctype) ? types[ctype] : null;
   const needs = entry ? entry.needs : [];
