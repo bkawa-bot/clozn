@@ -235,6 +235,39 @@ def _kill(pid: int):
         pass
 
 
+def _pid_alive(pid) -> bool:
+    """True iff the process is still running -- READ-ONLY, never signals it (os.kill(pid, 0) tries to
+    terminate on Windows, so use tasklist there instead)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                                 capture_output=True, text=True, timeout=5)
+            return str(pid) in out.stdout
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def _await_dead(pids, timeout: float = 5.0) -> None:
+    """Block up to `timeout` for every pid to exit, so a caller can prune the registry with no live
+    supervisor left to race its write (best-effort; returns at the deadline regardless)."""
+    remaining = {int(p) for p in pids if str(p).isdigit()}
+    deadline = time.monotonic() + max(0.0, timeout)
+    while remaining and time.monotonic() < deadline:
+        remaining = {p for p in remaining if _pid_alive(p)}
+        if remaining:
+            time.sleep(0.15)
+
+
 def _unregister(port: int):
     d = _reg_read()
     if d.pop(str(port), None) is not None:

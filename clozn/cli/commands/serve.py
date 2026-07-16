@@ -8,7 +8,7 @@ import time
 
 from clozn.cli import formatting as fmt
 from clozn.cli.commands.models import _flags_for, _friendly, resolve_model
-from clozn.cli.engine_process import _kill, _reg_read, _reg_write, _register, _unregister
+from clozn.cli.engine_process import _kill, _reg_read, _reg_write, _register, _unregister, _await_dead
 from clozn.cli.runtime_process import RuntimeConfig, gateway_health, spawn_runtime
 
 
@@ -136,6 +136,7 @@ def cmd_stop(args):
     ]
     if not targets:
         raise ctx.CloznError(f"no running runtime matches '{args.which}'. See: clozn ps")
+    killed_pids: set[int] = set()
     for port, entry in targets:
         # Ask the supervisor to stop first so its finally block owns the normal shutdown. Children are
         # still signalled explicitly as a fallback for a wedged/dead supervisor and for old registry rows.
@@ -147,6 +148,14 @@ def cmd_stop(args):
                 _kill(int(pid))
                 if key == "pid":
                     time.sleep(0.2)
-        registry.pop(port, None)
+        killed_pids |= seen
         print(f"stopped {_friendly(entry.get('model', '?'))} on port {port}")
+    # Prune AUTHORITATIVELY, after the processes are actually gone. A force-killed supervisor (Windows
+    # taskkill /F) can run its own dying unregister / worker-restart write and resurrect a now-dead row
+    # AFTER our write, leaving a stale entry that only self-heals lazily on the next `clozn ps`. Wait
+    # them out, then re-read + drop the stopped ports so no live writer can lose the update.
+    _await_dead(killed_pids, timeout=5.0)
+    registry = _reg_read()
+    for port, _ in targets:
+        registry.pop(port, None)
     _reg_write(registry)
