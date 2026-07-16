@@ -53,6 +53,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))   # repo root -- clozn_server/steering moved into the clozn/ package
 
 from clozn.server import app as cs      # noqa: E402  -- cheap: no model load at import time (mirrors test_dial_*.py)
+from clozn.lab.substrates import QwenSubstrate   # noqa: E402  -- lab adapter (relocated); import is torch-free, .name/() only
 from clozn.behavior.steering.axes import AXES      # noqa: E402  -- AXES-only; no CUDA/model needed
 
 SHIPPED_LIBRARY_PATH = os.path.join(HERE, "..", "..", "clozn", "data", "dial_library_shipped.json")
@@ -100,7 +101,7 @@ def existing_user_custom_names() -> set:
     the Behavior page's "make your own dial" panel / POST /steer/custom), read directly with no model
     needed. Used only to detect a name COLLISION before deploying a library dial of the same name -- this
     script never writes to this file. Missing/broken file -> empty set."""
-    path = cs._pers(f"studio_custom_{cs.QwenSubstrate.name}.json")
+    path = cs._pers(f"studio_custom_{QwenSubstrate.name}.json")
     if not os.path.isfile(path):
         return set()
     try:
@@ -157,7 +158,7 @@ def deploy(force: bool = False) -> dict:
     _print_plan(to_add, skip_deployed, skip_collision)
 
     print("[deploy] booting the studio substrate (loads the nf4 7B -- may take a minute)...", flush=True)
-    sub = cs.QwenSubstrate()      # __init__ already loads studio_custom_qwen.json + studio_library.json
+    sub = QwenSubstrate()      # __init__ already loads studio_custom_qwen.json + studio_library.json
     sub._ensure_steer()           # calibrate steer.base/resid_norm before any add_custom call (matches
                                    # how the live /steer/custom endpoint always runs _ensure_steer first)
 

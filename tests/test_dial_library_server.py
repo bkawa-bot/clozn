@@ -43,6 +43,7 @@ sys.path.insert(0, REPO_ROOT)                                    # repo root, fo
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts", "calibration"))  # deploy_dial_library.py lives in scripts/calibration/
 
 from clozn.server import app as cs          # noqa: E402
+from clozn.lab.substrates import QwenSubstrate   # noqa: E402  (relocated out of the product server)
 import deploy_dial_library as ddl  # noqa: E402
 from clozn.behavior.steering import AXES          # noqa: E402
 
@@ -68,7 +69,7 @@ def _write_library(tmp_path, table):
 
 
 def _write_user_customs(tmp_path, table):
-    _write_json(os.path.join(str(tmp_path), f"studio_custom_{cs.QwenSubstrate.name}.json"), table)
+    _write_json(os.path.join(str(tmp_path), f"studio_custom_{QwenSubstrate.name}.json"), table)
 
 
 # ==================================================================================== load_shipped_library
@@ -144,7 +145,7 @@ def test_existing_user_custom_names_reads_the_written_keys(iso, tmp_path):
 
 
 def test_existing_user_custom_names_corrupt_file_is_empty_set_never_raises(iso, tmp_path):
-    with open(os.path.join(str(tmp_path), f"studio_custom_{cs.QwenSubstrate.name}.json"), "w",
+    with open(os.path.join(str(tmp_path), f"studio_custom_{QwenSubstrate.name}.json"), "w",
               encoding="utf-8") as f:
         f.write("{not valid json")
     assert ddl.existing_user_custom_names() == set()

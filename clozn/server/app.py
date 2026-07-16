@@ -682,7 +682,7 @@ def _start_retrain(m, action, card_id, force=False):
 # ------- substrates: extracted to clozn/server/substrates.py; re-exported here (the seam) -----------
 # app.py remains the canonical module: routes read ctx.<name> and tests patch cs.<name> on THIS module.
 from clozn.server.substrates import (                                                    # noqa: E402
-    Substrate, QwenSubstrate, DreamSubstrate, EngineSubstrate, _EngineMemory,
+    Substrate, EngineSubstrate, _EngineMemory,      # Qwen/Dream lab substrates now live in clozn/lab/substrates.py
     _quant_from_name, _model_family_from_name,
     _engine_model_info, _engine_complete_traced, _ENGINE_MODELS, _ENGINE_MODEL_DEFAULT,
 )

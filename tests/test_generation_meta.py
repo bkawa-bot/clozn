@@ -21,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from clozn.server import app as cs   # noqa: E402
+from clozn.lab.substrates import QwenSubstrate   # noqa: E402  (relocated out of the product server)
 
 
 def test_without_unknowns_drops_none_but_keeps_honest_falsy_values():
@@ -76,7 +77,7 @@ def test_engine_generation_meta_forced_greedy_regime_is_honest():
 def test_qwen_substrate_run_meta_uses_the_honest_generation_meta_before_any_chat_call():
     """Before any chat()/chat_stream() call, run_meta() falls back to _qwen_generation_meta(sample=True) --
     the substrate's default regime -- rather than an empty or fabricated dict."""
-    sub = object.__new__(cs.QwenSubstrate)
+    sub = object.__new__(QwenSubstrate)
     meta = sub.run_meta()
     assert meta["temperature"] == 0.7 and meta["top_p"] == 0.9
     assert meta["repetition_penalty"] == 1.3 and meta["no_repeat_ngram_size"] == 3
@@ -86,7 +87,7 @@ def test_qwen_substrate_run_meta_uses_the_honest_generation_meta_before_any_chat
 def test_qwen_substrate_run_meta_reflects_the_actual_last_call(monkeypatch):
     """run_meta() after a chat() call reports what THAT call actually used, not the module default --
     e.g. a caller who requested greedy (sample=False) sees temperature 0.0 reflected honestly."""
-    sub = object.__new__(cs.QwenSubstrate)
+    sub = object.__new__(QwenSubstrate)
     sub._last_generation_meta = cs._qwen_generation_meta(40, sample=False, stream=False)
     meta = sub.run_meta()
     assert meta["temperature"] == 0.0

@@ -40,12 +40,17 @@ def main():
     ok("EngineSubstrate is the product adapter", issubclass(cs.EngineSubstrate, cs.Substrate))
     ok("product gateway import does not load torch", "torch" not in sys.modules)
 
-    # Lab adapter class definitions remain importable without loading their optional dependencies.
-    ok("QwenSubstrate(Substrate)", issubclass(cs.QwenSubstrate, cs.Substrate))
-    ok("DreamSubstrate(Substrate)", issubclass(cs.DreamSubstrate, cs.Substrate))
-    ok("QwenSubstrate: chat + chat_stream + _gen + _handle/handle",
-       has_all(cs.QwenSubstrate, ("chat", "chat_stream", "_gen", "handle")))
-    ok("DreamSubstrate: _gen + handle", has_all(cs.DreamSubstrate, ("_gen", "handle")))
+    # Lab adapters now live in clozn/lab/substrates.py -- the product gateway must NOT expose them...
+    ok("product gateway does not expose lab substrates",
+       not hasattr(cs, "QwenSubstrate") and not hasattr(cs, "DreamSubstrate"))
+    # ...and importing them stays Torch-free (optional deps load lazily, only on instantiation).
+    from clozn.lab import substrates as lab_subs
+    ok("lab substrate import stays torch-free", "torch" not in sys.modules)
+    ok("QwenSubstrate(Substrate)", issubclass(lab_subs.QwenSubstrate, cs.Substrate))
+    ok("DreamSubstrate(Substrate)", issubclass(lab_subs.DreamSubstrate, cs.Substrate))
+    ok("QwenSubstrate: chat + chat_stream + _gen + handle",
+       has_all(lab_subs.QwenSubstrate, ("chat", "chat_stream", "_gen", "handle")))
+    ok("DreamSubstrate: _gen + handle", has_all(lab_subs.DreamSubstrate, ("_gen", "handle")))
 
     # --- steering: the tone dials (AR + diffusion) -------------------------------------------------
     import clozn.behavior.steering as steering

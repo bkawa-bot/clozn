@@ -62,7 +62,8 @@ def main(argv=None):
     ctx.ARGS = args
     ctx.SUBNAME = args.substrate
     print(f"clozn lab: loading {args.substrate} ...", flush=True)
-    ctx.SUB = ctx.QwenSubstrate() if args.substrate == "qwen" else ctx.DreamSubstrate()
+    from clozn.lab.substrates import QwenSubstrate, DreamSubstrate
+    ctx.SUB = QwenSubstrate() if args.substrate == "qwen" else DreamSubstrate()
     server = ThreadingHTTPServer((args.host, args.port), make_lab_handler())
     print(f"\n  Clozn lab -> http://{args.host}:{args.port}/ ({args.substrate})\n", flush=True)
     server.serve_forever()
