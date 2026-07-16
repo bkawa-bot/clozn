@@ -5,6 +5,25 @@ same OpenAI-compatible chunk shape, same run-logging on completion/error, behavi
 Reads the live substrate via `clozn.server.app` (not a captured import) so a substrate swap -- or a test's
 `monkeypatch.setattr(app, "SUB", ...)` -- is observed at call time, exactly as it was when this code lived
 directly in app.py.
+
+CLIENT DISCONNECT vs WORKER-DIES-MIDSTREAM (backlog #2): sse_chat() is the one place that both WRITES to
+the client (`handler.wfile`) and READS from the worker (via the substrate's chat_stream() generator) in the
+same loop, so it is the one place that can tell the two failure modes apart -- and they need genuinely
+different handling:
+  * CLIENT DISCONNECT (the browser tab closed, curl was Ctrl-C'd, ...): a write to `handler.wfile` raises
+    BrokenPipeError/ConnectionAbortedError/ConnectionResetError (all OSError on POSIX and Windows alike).
+    Nothing more can be delivered, so we stop pulling from the worker immediately -- gen.close() throws
+    GeneratorExit into chat_stream at its suspended `yield`, whose own `finally` (substrates.py) turns that
+    into an upstream resp.close(), aborting the worker's chunked send rather than draining a reply nobody
+    reads. This is logged as a routine, expected shutdown (a distinct `stream_failure` tag), not an error.
+  * WORKER-DIES-MIDSTREAM (the C++ worker crashes, resets the connection, or the read times out): the
+    failure comes from ITERATING chat_stream (reading the worker), not from writing to the client -- who is
+    presumably still there. HTTP status is already committed to 200 (SSE headers went out before the first
+    token), so the only channel left to say "this failed" is an in-band frame: emit `data: {"error": ...}`
+    honestly, then `data: [DONE]` so a well-behaved SSE consumer stops reading instead of blocking on a
+    connection that's about to close. Never a hang, never a silent empty 200.
+In both cases finish_reason is left unset (never "stop") -- a generation that did not finish normally must
+never claim it did; a missing signal reads as missing, per the project's honesty invariant.
 """
 import json
 import secrets
@@ -79,14 +98,42 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
     # finish_reason:"stop" chunk -- exactly the shape drift the honesty/compat contract rules out.
     # Left unchanged; non-streaming (the required deliverable) carries clozn_run_id both ways.
     t0 = time.time(); acc = []; memout = {}
+    sub = ctx.active_sub(handler)
+    gen = sub.chat_stream(messages, max_new, mem_out=memout, **lens_kw)
+    disconnect_error = None
+
+    def _write(delta, finish=None, extension=None):
+        """chunk(), but a write failure is captured as a CLIENT DISCONNECT (see the module docstring)
+        instead of propagating as a generic stream failure. Returns False (the caller should stop trying
+        to write/pull more) on a captured disconnect, True otherwise."""
+        nonlocal disconnect_error
+        try:
+            chunk(delta, finish=finish, extension=extension)
+            return True
+        except OSError as write_err:
+            disconnect_error = write_err
+            return False
+
     try:
-        chunk({"role": "assistant"})
-        for piece in ctx.active_sub(handler).chat_stream(messages, max_new, mem_out=memout, **lens_kw):
-            acc.append(piece); chunk({"content": piece})
-        fr = ctx.active_sub(handler).last_finish_reason() if hasattr(ctx.active_sub(handler), "last_finish_reason") else None
+        if _write({"role": "assistant"}):
+            for piece in gen:
+                acc.append(piece)
+                if not _write({"content": piece}):
+                    break
+        if disconnect_error is not None:
+            # CLIENT DISCONNECT: log the partial reply honestly and stop -- no further writes are
+            # attempted (the client is confirmed gone), and finish_reason stays unset (never "stop").
+            req_ctx = getattr(sub, "_request", None)
+            if req_ctx is not None and hasattr(req_ctx, "cancel"):
+                req_ctx.cancel()          # durable record on the context itself, belt to gen.close()'s suspenders
+            handler._log_run("openai_api", messages, "".join(acc), model, t0,
+                             error=f"client disconnected mid-stream: {disconnect_error}", mem_out=memout,
+                             extra_meta={"stream_failure": "client_disconnected"})
+            return
+        fr = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
         openai_fr = ctx._openai_finish_reason(fr)
         # log the run FIRST (before the finish chunk) so the receipt footer can carry its /r/<id> link.
-        trace = ctx.active_sub(handler).last_stream_trace() if hasattr(ctx.active_sub(handler), "last_stream_trace") else None
+        trace = sub.last_stream_trace() if hasattr(sub, "last_stream_trace") else None
         rid = handler._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace,
                                mem_out=memout, finish_reason=fr,
                                finish_reason_fallback=None if fr else openai_fr)
@@ -104,9 +151,21 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
         handler.wfile.write(b"data: [DONE]\n\n")
         handler.wfile.flush()
     except Exception as e:
-        handler._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e), mem_out=memout)
+        # WORKER-DIES-MIDSTREAM (or any other chat_stream failure): see the module docstring. Distinct
+        # from the client-disconnect branch above because this exception came from ITERATING `gen`
+        # (reading the worker), never from writing to `handler.wfile`.
+        handler._log_run("openai_api", messages, "".join(acc), model, t0, error=str(e), mem_out=memout,
+                         extra_meta={"stream_failure": "worker_disconnected"})
         try:
             handler.wfile.write(("data: " + json.dumps({"error": str(e)}) + "\n\n").encode("utf-8"))
+            handler.wfile.write(b"data: [DONE]\n\n")
             handler.wfile.flush()
         except Exception:
             pass
+    finally:
+        # ALWAYS release the worker connection on every exit path -- normal completion, a caught client
+        # disconnect, an uncaught worker failure, or anything raised by logging/the receipt footer above --
+        # rather than relying on CPython refcounting to eventually GC `gen` and trigger its GeneratorExit
+        # finally (substrates.py's chat_stream) at some later, unspecified time. close() on an
+        # already-exhausted/closed generator is a documented no-op, so this is always safe to call.
+        gen.close()
