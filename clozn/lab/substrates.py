@@ -13,13 +13,127 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 
 from clozn.server.config import REPO_ROOT, DEMO                        # noqa: F401
 from clozn.server import app as ctx                                    # shared prompt-memory + gen-meta helpers
 from clozn.server.substrates import Substrate                          # the shared studio-surface base
 
 
-class QwenSubstrate(Substrate):
+_RETRAIN_INIT_LOCK = threading.Lock()   # guards the double-checked lazy init of each instance's retrain state
+
+
+class _InternalizedRetrain:
+    """The internalized soft-prefix RETRAIN machinery, moved here VERBATIM out of clozn.server.app so the
+    PRODUCT module carries none of it. Mixed into QwenSubstrate/DreamSubstrate (before Substrate in the
+    MRO, so these OVERRIDE the base's trivial prompt-only versions).
+
+    Mutating a memory card in internalized mode retrains the soft-prefix via consolidate() -- ~4-5 min on
+    the 4-bit 7B -- so we must NOT block the HTTP handler: the card STATUS flip (fast) stays synchronous
+    and the RETRAIN runs on a daemon thread. Three PER-INSTANCE guards (created lazily so a bare
+    object.__new__(QwenSubstrate) in tests, which skips __init__, never crashes on attribute access):
+      _train_lock  -- held for the WHOLE consolidate(); this substrate's chat/generate paths acquire+
+                      release it (self._train_lock) so a reply can't race the shared model+gradients
+                      mid-retrain (they queue, they don't error).
+      _retrain     -- the in-flight signal the UI polls: {active, card_id, action, started_at, error}.
+      _retrain_meta -- guards reads/writes of the _retrain dict (a tiny critical section, distinct from
+                      the long _train_lock); we don't launch a 2nd retrain while one runs."""
+
+    def _ensure_retrain_state(self):
+        if "_train_lock_" not in self.__dict__:
+            with _RETRAIN_INIT_LOCK:
+                if "_train_lock_" not in self.__dict__:
+                    self.__dict__["_train_lock_"] = threading.RLock()
+                    self.__dict__["_retrain_meta_"] = threading.Lock()
+                    self.__dict__["_retrain_"] = {"active": False, "card_id": None, "action": None,
+                                                  "started_at": None, "error": None}
+
+    @property
+    def _train_lock(self):
+        self._ensure_retrain_state()
+        return self.__dict__["_train_lock_"]
+
+    @property
+    def _retrain_meta(self):
+        self._ensure_retrain_state()
+        return self.__dict__["_retrain_meta_"]
+
+    @property
+    def _retrain(self):
+        self._ensure_retrain_state()
+        return self.__dict__["_retrain_"]
+
+    def _retrain_status(self):
+        """A snapshot of the in-flight retrain signal (copy -- never hand out the live dict)."""
+        with self._retrain_meta:
+            return dict(self._retrain)
+
+    def _retrain_status_mode(self):
+        """The retrain signal the UI polls, MODE-aware: prompt mode never retrains, so it reports a
+        constant idle ({active: false, mode: "prompt"}); internalized reports the live flag."""
+        if ctx._memory_mode() == "prompt":
+            return {"active": False, "mode": "prompt"}
+        return dict(self._retrain_status(), mode="internalized")
+
+    def _retrain_in_flight(self):
+        with self._retrain_meta:
+            return bool(self._retrain["active"])
+
+    def _join_retrain(self, timeout=None):
+        """Block until no retrain is in flight (acquire+release _train_lock). Used by tests to await the
+        background consolidate deterministically, and available for a graceful shutdown. Returns True once
+        the lock was momentarily held with nothing active; False on timeout."""
+        if not self._train_lock.acquire(timeout=timeout if timeout is not None else -1):
+            return False
+        try:
+            return not self._retrain_in_flight()
+        finally:
+            self._train_lock.release()
+
+    def _start_retrain(self, m, action, card_id, force=False):
+        """Launch _mem_sync_rules(m) -- the SLOW consolidate() -- on a daemon thread and return immediately.
+
+        PROMPT MODE short-circuits the whole machinery: the cards ARE the memory there, so a mutation only
+        syncs m.rules (bookkeeping -- runlog + /state read it) and returns instantly. No consolidate, no
+        _train_lock, no thread, no retrain banner; the trained prefix is left completely untouched (it
+        stays internalized mode's artifact, preserved for a toggle back).
+
+        Internalized: returns {retraining: True} once the thread is running, or {retraining: False} if
+        there's nothing to do (the active set didn't move -- checked synchronously first, so a no-op
+        transition never spins a thread) or a retrain is already in flight (we refuse to stack them, like
+        _ensure_steer refuses a double compute). The worker holds _train_lock for the whole consolidate so
+        chats serialize behind it, and clears _retrain on finish (success OR error) so the UI's poll always
+        terminates. `force` skips the no-op pre-check AND forces the consolidate (the mode-switch catch-up:
+        rules are synced but the prefix is stale)."""
+        import clozn.memory.cards as memory_cards
+        if ctx._memory_mode() == "prompt":
+            r = ctx._mem_sync_rules(m, reconsolidate=False)          # instant: rules bookkeeping only
+            return {"retraining": False, "changed": r["changed"], "mode": "prompt"}
+        # cheap synchronous pre-check: would the active set actually change? if not, do NOT spawn a thread.
+        if not force and list(getattr(m, "rules", []) or []) == list(memory_cards.active_texts()):
+            return {"retraining": False, "changed": False}
+        with self._retrain_meta:
+            if self._retrain["active"]:                  # a retrain is already running -> don't stack a second
+                return {"retraining": True, "busy": True, "queued": False}
+            self._retrain.update(active=True, card_id=card_id, action=action,
+                                 started_at=time.time(), error=None)
+
+        def _work():
+            err = None
+            try:
+                with self._train_lock:                   # hold across consolidate() -> chats wait, never race
+                    ctx._mem_sync_rules(m, reconsolidate=True, force=force)
+            except Exception as e:                        # a failed retrain must still clear the flag
+                err = f"{type(e).__name__}: {e}"
+            finally:
+                with self._retrain_meta:
+                    self._retrain.update(active=False, error=err)
+
+        threading.Thread(target=_work, daemon=True).start()
+        return {"retraining": True, "action": action, "card_id": card_id}
+
+
+class QwenSubstrate(_InternalizedRetrain, Substrate):
     """One Qwen-7B + SAE behind the concept readout AND the memory + tone dials."""
     name = "qwen"
 
@@ -64,7 +178,7 @@ class QwenSubstrate(Substrate):
         if path == "/concepts":                 # read what fired inside (no generation) -> annotate a reply
             return self.brain.concepts_only(str(body.get("text", ""))[:500])
         if path == "/say":
-            with ctx._TRAIN_LOCK:                    # studio chat touches the shared model -> wait out a retrain
+            with self._train_lock:                   # studio chat touches the shared model -> wait out a retrain
                 # body["_trace_out"] / body["_mem_out"] (optional, server-side only): collectors the handler
                 # passes for the Run Inspector trace + the per-turn memory record; never echoed to the client.
                 if ctx._memory_mode() == "prompt":
@@ -74,7 +188,7 @@ class QwenSubstrate(Substrate):
                 return {"reply": self.memory.say(body["message"], body.get("max_new", 200),
                                                  trace_out=body.get("_trace_out"))}
         if path == "/consolidate":               # a manual retrain -> the same shared-model lock as card retrains
-            with ctx._TRAIN_LOCK:
+            with self._train_lock:
                 return self.memory.consolidate(body.get("rules"), body.get("steps", 120), body.get("lr", 0.012),
                                                body.get("n_probe", 8), body.get("max_norm", 14.0))
         if path == "/whatlearned":
@@ -82,12 +196,12 @@ class QwenSubstrate(Substrate):
                 return self._whatlearned_prompt()
             return {"report": self.memory.what_learned(), "mode": "internalized"}
         if path == "/check":                     # generates on the shared model -> wait out a retrain
-            with ctx._TRAIN_LOCK:
+            with self._train_lock:
                 if ctx._memory_mode() == "prompt":
                     return self._check_prompt(body["prompt"], body.get("max_new", 200))
                 return self.memory.check(body["prompt"], body.get("max_new", 200))
         if path == "/reset":
-            with ctx._TRAIN_LOCK:                     # mutates the prefix/model state -> don't race a retrain
+            with self._train_lock:                    # mutates the prefix/model state -> don't race a retrain
                 self.brain.reset(str(body.get("sid", "default")))
                 return self.memory.reset(body.get("keep_prefix", False))
         if path.startswith("/memory/"):
@@ -103,7 +217,7 @@ class QwenSubstrate(Substrate):
 
     def _say_prompt(self, message, max_new=200, trace_out=None, mem_out=None):
         """One /say turn in prompt mode: history grows exactly as SelfTeach.say, but the memory is the
-        compiled block (topic-gated on THIS user turn). Runs under the caller's ctx._TRAIN_LOCK; takes
+        compiled block (topic-gated on THIS user turn). Runs under the caller's self._train_lock; takes
         m.lock like say() so concurrent history appends can't interleave."""
         m = self.memory
         with m.lock:
@@ -167,12 +281,12 @@ class QwenSubstrate(Substrate):
         prefix in internalized mode, as the topic-gated system block in prompt mode) AND the active
         tone-steering sliders, both on the shared model. This is what the OpenAI-compatible endpoint
         serves -- normal chat on the surface, legible and tunable underneath. Serializes behind an
-        in-flight memory retrain (ctx._TRAIN_LOCK) so a reply can't race the shared model+gradients
+        in-flight memory retrain (self._train_lock) so a reply can't race the shared model+gradients
         mid-consolidate -- it waits, briefly, rather than corrupting.
         trace_out (optional list): filled with the per-token trace for the Run Inspector; reply unchanged.
         mem_out (optional dict): prompt mode fills {mode, applied, gate} -- what memory ACTUALLY rode
         this turn -- so the run log records per-turn application, not just the active set."""
-        with ctx._TRAIN_LOCK:                        # wait out any background retrain, then hold for this reply
+        with self._train_lock:                       # wait out any background retrain, then hold for this reply
             self._last_generation_meta = ctx._qwen_generation_meta(max_new, sample=sample, stream=False)
             self._last_finish_reason = None
             if self.steer.strength:             # persisted personality -> ensure vectors are ready (race-safe)
@@ -228,7 +342,7 @@ class QwenSubstrate(Substrate):
         import threading
         import torch
         from transformers import TextIteratorStreamer
-        ctx._TRAIN_LOCK.acquire()                    # serialize behind an in-flight retrain (released in finally)
+        self._train_lock.acquire()                   # serialize behind an in-flight retrain (released in finally)
         self._last_generation_meta = ctx._qwen_generation_meta(max_new, sample=True, stream=True)
         self._last_finish_reason = None
         if self.steer.strength:
@@ -301,13 +415,13 @@ class QwenSubstrate(Substrate):
                 except Exception:
                     self._last_stream_trace = []
             self.steer.disengage()
-            ctx._TRAIN_LOCK.release()                           # done streaming -> let a queued retrain proceed
+            self._train_lock.release()                          # done streaming -> let a queued retrain proceed
 
     def state(self):
         return self.memory.state()
 
 
-class DreamSubstrate(Substrate):
+class DreamSubstrate(_InternalizedRetrain, Substrate):
     """Dream-7B diffusion: the denoise window, plus the SAME trait-card memory and tone dials as Qwen."""
     name = "dream"
 
@@ -329,7 +443,7 @@ class DreamSubstrate(Substrate):
     def handle(self, path, body):
         if path == "/denoise":
             prompt = str(body.get("prompt", ""))[:300]
-            with ctx._TRAIN_LOCK:                              # wait out a background retrain (it moves dmem.prefix)
+            with self._train_lock:                             # wait out a background retrain (it moves dmem.prefix)
                 self.steer.engage()                        # active dials steer every denoising pass
                 try:
                     ad = self.adapter

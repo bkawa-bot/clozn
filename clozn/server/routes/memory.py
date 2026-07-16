@@ -50,7 +50,7 @@ def try_post(h, p, body):
                 active = memory_cards.active_texts()
                 trained = list(getattr(m, "_trained_rules", []) or [])
                 if set(active) != set(trained) and (active or getattr(m, "prefix", None) is not None):
-                    out["resync"] = ctx._start_retrain(m, "mode-switch", None, force=True)
+                    out["resync"] = ctx.active_sub(h)._start_retrain(m, "mode-switch", None, force=True)
             except Exception:
                 pass
         h._json(200, out)

@@ -39,10 +39,10 @@ class Substrate:
         if path == "/memory/cards":             # OBJECTS now (not bare strings) -- the review layer
             return {"cards": memory_cards.list_cards(), "has_prefix": m.prefix is not None,
                     "mode": ctx._memory_mode(),     # the UI adapts its copy / hides retrain chrome on this
-                    "retraining": ctx._retrain_status_mode()}   # fold the in-flight signal in (one reload sees it)
+                    "retraining": self._retrain_status_mode()}   # fold the in-flight signal in (one reload sees it)
 
         if path == "/memory/retrain-status":    # the poll target: is a background consolidate() running?
-            return ctx._retrain_status_mode()       # prompt mode: never ({active:false, mode:"prompt"})
+            return self._retrain_status_mode()      # prompt mode: never ({active:false, mode:"prompt"})
 
         if path == "/memory/add":               # propose a card as PENDING -> does NOT affect the prefix
             text = str(body.get("text", "")).strip()
@@ -67,7 +67,7 @@ class Substrate:
             if not ok:
                 return {"ok": False, "reason": "no such card"}
             # delete is synchronous+fast; the retrain (only if an ACTIVE card left the set) is backgrounded.
-            resync = ctx._start_retrain(m, "remove", cid) if was_active else {"retraining": False}
+            resync = self._start_retrain(m, "remove", cid) if was_active else {"retraining": False}
             return {"ok": True, "removed": cid, "resync": resync}
 
         if path in ("/memory/approve", "/memory/reject", "/memory/disable", "/memory/enable"):
@@ -82,7 +82,7 @@ class Substrate:
             if card is None:
                 return {"ok": False, "reason": "no such card"}
             if card.get("status") == "active":   # editing an active card's text retrains -> in the background
-                card = {**card, "resync": ctx._start_retrain(m, "edit", cid)}
+                card = {**card, "resync": self._start_retrain(m, "edit", cid)}
             return card
 
         if path == "/memory/strength":          # the memory dial. Internalized: scales how hard the prefix
@@ -126,7 +126,7 @@ class Substrate:
         """approve->active, reject->rejected, disable->disabled, enable->active. The STATUS flip (fast) is
         synchronous; the RETRAIN it may trigger (rebuild the prefix from active_texts) is backgrounded so
         the response returns immediately. The card keeps its FINAL status; a separate _RETRAIN flag carries
-        the in-flight signal. ctx._start_retrain no-ops when the active set didn't actually move (prefix safe).
+        the in-flight signal. self._start_retrain no-ops when the active set didn't actually move (prefix safe).
 
         PROVENANCE GATE: 'approve' is refused for a card that CLAIMS a run (source_run_id
         set) but carries no quoted_span to back that claim up -- memory_cards.is_provenance_claim_unbacked.
@@ -146,7 +146,7 @@ class Substrate:
         card = memory_cards.set_status(cid, target)
         if card is None:
             return {"ok": False, "reason": "no such card"}
-        resync = ctx._start_retrain(self._mem, action, cid)  # retrains on a thread iff the active set changed
+        resync = self._start_retrain(self._mem, action, cid)  # retrains on a thread iff the active set changed
         return {**card, "resync": resync}
 
     def _ensure_cards_migrated(self):
@@ -155,6 +155,32 @@ class Substrate:
             return
         ctx._mem_migrate(self._mem)
         self._cards_migrated = True
+
+    # ---- retrain dispatch: PRODUCT path (prompt mode -- never retrains) -----------------------------
+    # The internalized soft-prefix RETRAIN machinery (background consolidate + the in-flight banner) is a
+    # LAB thing now: it lives on clozn/lab/substrates.py's _InternalizedRetrain mixin, which QwenSubstrate/
+    # DreamSubstrate inherit and which OVERRIDES these four. The product (EngineSubstrate) carries only the
+    # trivial prompt-mode versions below -- the cards ARE the memory, so a mutation is instant bookkeeping,
+    # no thread, no _TRAIN_LOCK, no retrain banner. _memory/_card_status dispatch through self.<method>, so
+    # the same call site is instant here and a backgrounded consolidate on the lab substrates.
+    def _retrain_status_mode(self):
+        """The retrain signal the UI polls. Prompt mode never retrains -> a constant idle
+        ({active: false, mode: "prompt"}). Byte-identical to the old app-module helper's prompt branch."""
+        return {"active": False, "mode": "prompt"}
+
+    def _start_retrain(self, m, action, card_id, force=False):
+        """Prompt-mode card mutation: ONLY bookkeeping -- sync m.rules to the active-card texts (runlog +
+        /state read it), instantly. No consolidate, no thread, no _TRAIN_LOCK, no retrain banner; a trained
+        prefix (if one exists from a lab session) is left completely untouched. Byte-identical to the old
+        app-module _start_retrain's prompt short-circuit (which also ignored `force`)."""
+        r = ctx._mem_sync_rules(m, reconsolidate=False)      # instant: rules bookkeeping only
+        return {"retraining": False, "changed": r["changed"], "mode": "prompt"}
+
+    def _retrain_in_flight(self):
+        return False
+
+    def _join_retrain(self, timeout=None):
+        return True
 
     def _ensure_steer(self):
         """Compute the axis vectors once, race-safe (double-checked lock). Two dial calls racing on first

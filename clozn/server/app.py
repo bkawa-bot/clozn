@@ -481,7 +481,7 @@ def _profiles_switch(sub, p) -> dict:
     resync = {"retraining": False}
     m = getattr(sub, "_mem", None)
     if m is not None:
-        resync = _start_retrain(m, "profile-switch", None, force=True)
+        resync = sub._start_retrain(m, "profile-switch", None, force=True)
 
     # 3) DIALS: replace via profiles.apply_dials (clear() then set(); custom-dial recipes recompute if
     #    not already present) -- persist exactly like /steer/set and /steer/custom already do, so the
@@ -591,92 +591,17 @@ def _slots_box():
 # purpose: a noisy auto-writer would fill the store with junk the gate then has to sieve, so we only fire
 # on a clean, short, declarative fact of the personal-memory shape ("My dog's name is Biscuit"). Anything
 # ambiguous is left for the explicit "remember this" path. Pure + stdlib -> unit-testable with no model.
-# ------- async retrain: one background retrain at a time, chats serialize behind it -----------------
-# Mutating a memory card retrains the soft-prefix via consolidate() -- ~4-5 min on the 4-bit 7B. We must
-# NOT block the HTTP handler for that. So the card STATUS flip (fast) stays synchronous and the RETRAIN
-# runs on a daemon thread. Two module-level guards (a process singleton, like the model itself):
-#   _TRAIN_LOCK  -- held for the WHOLE consolidate(); the chat/generate paths acquire+release it so a
-#                   reply can't race the shared model+gradients mid-retrain (they queue, they don't error).
-#   _RETRAIN     -- the in-flight signal the UI polls: {active, card_id, action, started_at, error}.
-# _RETRAIN_META guards reads/writes of the _RETRAIN dict (a tiny critical section, distinct from the long
-# _TRAIN_LOCK). Mirrors the _ensure_steer double-checked-lock: we don't launch a 2nd retrain while one runs.
+# ------- shared-model serialization lock ------------------------------------------------------------
+# The internalized soft-prefix RETRAIN machinery (the in-flight banner + the background consolidate + the
+# start/join/status helpers) has MOVED OUT of this product module: it now lives per-instance on the lab
+# substrates' _InternalizedRetrain mixin (clozn/lab/substrates.py). The product never retrains -- prompt
+# mode short-circuits -- so nothing retrain-specific remains here.
+#
+# _TRAIN_LOCK stays: it is NOT retrain-only. It is the shared-model forward-serialization primitive that
+# other product-reachable code depends on -- the facts store's shared-model writes/reads
+# (clozn/server/facts_store.py) and the profile-switch facts compile (_profiles_switch above). Removing it
+# would break those; it is orthogonal to the retrain move.
 _TRAIN_LOCK = threading.RLock()
-_RETRAIN_META = threading.Lock()
-_RETRAIN = {"active": False, "card_id": None, "action": None, "started_at": None, "error": None}
-
-
-def _retrain_status():
-    """A snapshot of the in-flight retrain signal (copy -- never hand out the live dict)."""
-    with _RETRAIN_META:
-        return dict(_RETRAIN)
-
-
-def _retrain_status_mode():
-    """The retrain signal the UI polls, MODE-aware: prompt mode never retrains, so it reports a constant
-    idle ({active: false, mode: "prompt"} per the swap spec); internalized reports the live flag."""
-    if _memory_mode() == "prompt":
-        return {"active": False, "mode": "prompt"}
-    return dict(_retrain_status(), mode="internalized")
-
-
-def _retrain_in_flight():
-    with _RETRAIN_META:
-        return bool(_RETRAIN["active"])
-
-
-def _join_retrain(timeout=None):
-    """Block until no retrain is in flight (acquire+release _TRAIN_LOCK). Used by tests to await the
-    background consolidate deterministically, and available for a graceful shutdown. Returns True once
-    the lock was momentarily held with nothing active; False on timeout."""
-    if not _TRAIN_LOCK.acquire(timeout=timeout if timeout is not None else -1):
-        return False
-    try:
-        return not _retrain_in_flight()
-    finally:
-        _TRAIN_LOCK.release()
-
-
-def _start_retrain(m, action, card_id, force=False):
-    """Launch _mem_sync_rules(m) -- the SLOW consolidate() -- on a daemon thread and return immediately.
-
-    PROMPT MODE short-circuits the whole machinery: the cards ARE the memory there, so a mutation only
-    syncs m.rules (bookkeeping -- runlog + /state read it) and returns instantly. No consolidate, no
-    _TRAIN_LOCK, no thread, no retrain banner; the trained prefix is left completely untouched (it stays
-    internalized mode's artifact, preserved for a toggle back).
-
-    Internalized: returns {retraining: True} once the thread is running, or {retraining: False} if
-    there's nothing to do (the active set didn't move -- checked synchronously first, so a no-op
-    transition never spins a thread) or a retrain is already in flight (we refuse to stack them, like
-    _ensure_steer refuses a double compute). The worker holds _TRAIN_LOCK for the whole consolidate so
-    chats serialize behind it, and clears _RETRAIN on finish (success OR error) so the UI's poll always
-    terminates. `force` skips the no-op pre-check AND forces the consolidate (the mode-switch catch-up:
-    rules are synced but the prefix is stale)."""
-    import clozn.memory.cards as memory_cards
-    if _memory_mode() == "prompt":
-        r = _mem_sync_rules(m, reconsolidate=False)          # instant: rules bookkeeping only
-        return {"retraining": False, "changed": r["changed"], "mode": "prompt"}
-    # cheap synchronous pre-check: would the active set actually change? if not, do NOT spawn a thread.
-    if not force and list(getattr(m, "rules", []) or []) == list(memory_cards.active_texts()):
-        return {"retraining": False, "changed": False}
-    with _RETRAIN_META:
-        if _RETRAIN["active"]:                        # a retrain is already running -> don't stack a second
-            return {"retraining": True, "busy": True, "queued": False}
-        _RETRAIN.update(active=True, card_id=card_id, action=action,
-                        started_at=time.time(), error=None)
-
-    def _work():
-        err = None
-        try:
-            with _TRAIN_LOCK:                         # hold across consolidate() -> chats wait, never race
-                _mem_sync_rules(m, reconsolidate=True, force=force)
-        except Exception as e:                        # a failed retrain must still clear the flag
-            err = f"{type(e).__name__}: {e}"
-        finally:
-            with _RETRAIN_META:
-                _RETRAIN.update(active=False, error=err)
-
-    threading.Thread(target=_work, daemon=True).start()
-    return {"retraining": True, "action": action, "card_id": card_id}
 
 
 # ------- substrates: extracted to clozn/server/substrates.py; re-exported here (the seam) -----------
