@@ -17,6 +17,15 @@ if "clozn.server.app" not in sys.modules:
     os.environ.pop("CLOZN_ENGINE_PORT", None)
     os.environ["CLOZN_RUNTIME_KIND"] = "lab"
 
+# The lab -- and ONLY the lab -- needs the PyTorch research deps reachable: engine/lab so the Dream
+# substrate can `import cloze_lab`, plus the HF hub symlink workaround. These used to load at PRODUCT
+# import time (clozn/server/config.py); they moved here so a `clozn serve` process never pulls them in.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_ENGINE_LAB = os.path.join(_REPO_ROOT, "engine", "lab")
+if _ENGINE_LAB not in sys.path:
+    sys.path.insert(0, _ENGINE_LAB)
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+
 from clozn.server import app as ctx
 
 

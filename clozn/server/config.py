@@ -1,21 +1,22 @@
 """Server config -- path resolution + process-wide startup constants for clozn.server.app.
 
-Imported FIRST by app.py (before the engine client SDK) so REPO_ROOT/DEMO exist and engine/client +
-engine/lab are already on sys.path by the time app.py goes on to `from cloze_engine import ...`. The
-side effects here (sys.path mutation, the stdout encoding, the HF env default) are deliberately
-module-load-time, exactly as they were when this all lived at the top of clozn_server.py/app.py --
-moving them into their own module changes nothing about when they run, only where they're written.
+Imported FIRST by app.py so REPO_ROOT/DEMO exist and engine/client is on sys.path by the time app.py
+goes on to `from cloze_engine import ...`. These side effects are deliberately module-load-time.
+
+TORCH-FREE BY CONSTRUCTION: this runs on the PRODUCT import path, so it must not pull in anything only
+the lab needs. The `engine/lab` sys.path entry (for the Dream substrate's cloze_lab) and the HF hub
+symlink workaround used to live here; they moved to the `clozn lab` entry point (clozn/lab/app.py). A
+product `clozn serve` process needs neither, and keeping them off this path is part of what makes the
+product package physically unable to reach the Torch lab code.
 """
 import os
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
-os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))     # clozn/server/config.py -> repo root is two levels up
-sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "lab"))    # so the dream substrate can import cloze_lab
-sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "client"))  # the engine white-box SDK
+sys.path.insert(0, os.path.join(REPO_ROOT, "engine", "client"))  # the engine white-box SDK (product; torch-free)
 DEMO = os.path.abspath(os.path.expanduser(
     os.environ.get("CLOZN_STUDIO_DIR", os.path.join(REPO_ROOT, "studio"))
 ))
