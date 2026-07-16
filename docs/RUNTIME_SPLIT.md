@@ -5,6 +5,12 @@ giving each half one job. Grounded in a full recon of both the C++ engine (`engi
 the Python studio (`clozn/server/app.py` + imports) — file:line evidence throughout so this
 is a map, not a vibe.*
 
+> **Status (2026-07-16):** the product/lab split has **landed** on `main` — Phases 0–3 done, and the
+> physical product/lab separation done (Torch-free product, injectable substrate, lab owns its handler,
+> internalized retrain moved to lab). Remaining runtime hardening (request cancellation, worker-protocol
+> handshake, persistence migrations, batched decode) is tracked in **[BACKLOG.md](BACKLOG.md) §2**. This
+> file is the decision record; a full status refresh is itself a backlog item.
+
 ## The decision
 
 **The PRODUCT is the engine — forward-only, one runtime.** **The LAB is PyTorch — the research

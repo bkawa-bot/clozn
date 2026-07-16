@@ -1,6 +1,6 @@
 # Clozn Roadmap
 
-The consolidated map: what's done, the v1 cut, what's next.
+The consolidated map: the thesis, what's shipped, and where the open work lives.
 
 > **The thesis:** as hardware commoditizes capability, **control becomes the product** — trust,
 > steer, version, debug. Clozn's wedge is what a text-in/text-out runtime structurally can't do.
@@ -27,58 +27,25 @@ The consolidated map: what's done, the v1 cut, what's next.
 - **Outcome-grounded calibration** — `clozn eval`: Brier / ECE-vs-truth / risk–coverage on a
   labeled probe set, plus a selective-generation policy (answer / ask / abstain) that reports
   both sides of the trade. Served as the TRUTH tier beside the journal's acceptance-proxy curve.
+- **Product/lab split** — one Torch-free product gateway (`clozn serve`) + a private C++ worker;
+  PyTorch is lab-only, enforced by a `product-minimal` CI lane; lab owns its handler via an
+  injectable substrate with zero product-global mutation. Landed 2026-07-16.
 
-## 🎯 v1 — "causal receipts + J-lens readouts"
+## 🔭 What's next
 
-*The local runtime with causal receipts and J-lens readouts: see what your GGUF is disposed to
-say, per token, and prove what changed its answer.*
+The forward-looking backlog — every open item, reconciled against what actually shipped and
+source-tagged to its origin doc — now lives in a single tracker:
 
-- Turn on engine sampling for the serving path (currently gated).
-- Docs/claims refresh — every headline claim traced to a measurement.
-- "Does a 7B have a J-space?" — the workspace-existence probe; launch content either way.
+→ **[docs/BACKLOG.md](BACKLOG.md)**
 
-## 🔭 Post-v1 backlog
-
-### Performance — all reuse the `/score` keystone
-1. **Prefix/KV reuse** — top daily-feel ROI; also makes prove-all and branching interactive.
-2. **Fit planner** — range-request a GGUF header + a 30 s microbench → "runs ~22 tok/s at 32k"
-   *before* the download.
-3. **Quant-ladder receipts** — "did Q4 lobotomize your model?" measured on *your* runs
-   (`clozn quant-check`, already wired; needs a free GPU pass).
-4. **Trust as an API field** — per-claim confidence/support spans on the wire, so agents can
-   branch on trust (labeled-uncalibrated first).
-5. **Verify-then-escalate routing** — a big model *scores* the small model's answer (one
-   prefill, no generation); escalate only on a bad score.
-
-### AR × diffusion — the both-substrates advantage
-- First, the cheap decisive test: measure diffusion→AR draft-acceptance rates (`/score` already
-  does the verification). Good rates make "diffusion drafts, AR verifies" real; bad rates kill
-  it cheaply. Follow-ons: score-gated self-repair, substrate routing, span-level counterfactual
-  patches, a divergence atlas.
-
-### Introspection science — gated on the J-lens
-House rule: every experiment ships a null control, and negative results ship as honest labels.
-- **Introspection receipts** — score a model's self-report against its J-lens readouts; a
-  per-model "self-report reliability" score. High = a trust feature; low = the honest "trust
-  the receipts, not the story" label.
-- **J-anchored legible memory** — memory as a sparse bag of nameable lens directions, so "what
-  did you learn?" becomes a lookup rather than a self-report.
-- Injected-thought detection (free legible concept dials), workspace-occupancy metering, and
-  the rest of the introspection ladder.
-
-### Model portability
-- Per-model dial sweeps for the hero models (Qwen3-14B, Gemma-3-12B) — automated sweep + a
-  judge-curated pass.
-- **J-lens as the model-agnostic brain viz** — fit a lens per model (cheap), replacing the SAE
-  gate; Gemma also gets free public SAEs.
-
-### Inspector / UI
-- Final-prompt display in the inspector; a full-family `/runs/<id>/lineage` endpoint.
-- Persist concept spans; a studio lab mode.
+This section used to duplicate that list, but most of it had already shipped (prefix/KV reuse,
+fit planner, quant-ladder receipts, trust-as-an-API-field, verify-then-escalate, the introspection
+pack, the J-lens ladder). See **BACKLOG.md §0** for the full "already done" ledger and **§1–§4** for
+open work: refactor close-out · runtime → production beta · research frontier · product/UX polish.
 
 ---
 
-## Two keystones (why this ordering)
+## Two keystones (why the ordering that got us here)
 
 1. **`/score` is the performance keystone, not just a receipts primitive.** The same
    teacher-forced batch scoring is the spec-decode verifier, the routing judge, the

@@ -3,6 +3,11 @@
 **Thesis:** clozn is a GGUF runtime, so portability is **tiered, not all-or-nothing**. Most of the product
 is model-agnostic today (or one bounded fix away); only the SAE concept viz is genuinely model-gated.
 
+> **Status (2026-07-16):** Tier-0 (any-AR-GGUF, engine-side chat templating) has **shipped** — the
+> "chat template is the one real Tier-0 blocker" framing below is now resolved. The product/lab split has
+> landed. Current open model work (model registry, 2nd-architecture verification, qualification matrix)
+> is tracked in **[BACKLOG.md](BACKLOG.md) §2**; this file is the design reference, not the live tracker.
+
 | Tier | Features | Portability | Per-model cost |
 |---|---|---|---|
 | **0 — Universal** | chat, token trace / confidence timeline, prompt-mode memory (cards), receipts / rederive / forced-scoring, run inspector | **any autoregressive GGUF** llama.cpp loads | **$0** (once the template is engine-sourced) |
