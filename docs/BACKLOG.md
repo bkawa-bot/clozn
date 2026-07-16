@@ -18,6 +18,9 @@ notes/FRONTIER_BETS.md · **[UX]** = notes/CLOZN_UX.md · **[AMB]** = notes/AMBI
   handoff's **P1 physical split**: lab Torch code relocated to `clozn/lab/`, product provably torch-free
   (enforced by the `product-minimal` CI lane), lab owns its handler via an injectable substrate with zero
   product-global mutation, internalized retrain moved to a lab mixin.
+- **Live runtime validated (the handoff's P0)** — 2026-07-16: `clozn smoke` 24/24 + `--deep` 26/26 (forced
+  receipts + replay) against the real C++ worker + the pinned 0.5B GGUF. First end-to-end proof the actual
+  C++/GGUF stack works, not just model-free tests. Found + fixed a `clozn stop` registry-cleanup race.
 - Engine white-box runtime (`/harvest`, `/score`, steer taps, prompt-mode memory); **J-lens** live at
   `/jlens` + studio panel; causal receipts (prove-all leave-one-out, forced, graded leaning; early-stop);
   **`clozn eval`** outcome-grounded calibration; Tier-0 any-AR-GGUF; sampling (S5); tiny-test; branch/lineage.
@@ -41,9 +44,10 @@ These make the branch we just pushed trustworthy and the docs honest. All small.
 - [ ] **Stabilization pass** — true up the ~63 retrain-internals tests deliberately left red (they patch
   the moved `cs._RETRAIN*` / `_join_retrain`; repoint to the substrate). Files: `test_memory_mode`,
   `test_memory_wiring`, `test_async_retrain`, `test_profiles_server`. Greens the full `python` CI lane.
-- [ ] **Live `clozn smoke`** **[H:P0]** — build the pinned `cloze-server` + real GGUF (Qwen2.5-0.5B-Instruct,
-  already pinned in `real-runtime-smoke.yml`), run `clozn smoke MODEL` and `--deep`, fix mismatches. The
-  nightly workflow exists but has **never run green** — this is the outstanding P0 acceptance gate.
+- [x] **Live `clozn smoke`** **[H:P0]** — ✅ **DONE 2026-07-16**: ran against the real C++ worker + the pinned
+  qwen2.5-0.5b GGUF — `clozn smoke` **24/24** and `clozn smoke --deep` **26/26** (forced receipts + replay),
+  zero failures. Found + fixed one real bug (a `clozn stop` registry-cleanup race, `af53bbf`). Remaining
+  sub-item: get the nightly `real-runtime-smoke.yml` green in CI (build the pinned worker on the Linux runner).
 - [ ] **Docs/claims refresh** **[RM][SPLIT][MODEL]** — `MODEL_SUPPORT.md` + `RUNTIME_SPLIT.md` still list
   *shipped* things (Tier-0 chat templating, J-lens) as blockers. Trace every headline claim to a measurement.
 - [ ] **Security: neutralize the planted prompt-injection** **[SPLIT]** — `engine/.../llama.cpp/CLAUDE.md`
