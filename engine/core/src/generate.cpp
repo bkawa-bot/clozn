@@ -70,6 +70,8 @@ StepSelection commit_and_revise(const ForwardResult& fwd, const std::vector<int>
     SampleOpts opts;
     opts.temperature = sample.temperature;
     opts.rep_penalty = sample.rep_penalty;
+    opts.top_k = sample.top_k;
+    opts.top_p = sample.top_p;
     opts.board = &board;
     opts.mask_token = mask;
     opts.rng = &rng;

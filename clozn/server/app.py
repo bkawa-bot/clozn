@@ -123,11 +123,12 @@ def _resolve_sampling(want_sample):
     setting is even read -- so turning interactive sampling on/off can never make a receipt's forced-greedy
     regen non-deterministic. Only the caller's own request gates that.
 
-    HONESTY: only temperature/repeat_penalty/seed actually reach the engine's sampler (verified against
-    engine/core/serve/server_shared.hpp's sample_from + engine/core/src/sample.cpp: a full-vocabulary
-    temperature-scaled softmax draw + repetition penalty -- there is no nucleus (top_p) or top-k truncation
-    in this engine build). top_p/top_k are still resolved and recorded (self-describing settings a future
-    engine build could honor), just never sent as request-body keys the engine reads."""
+    HONESTY: the full regime -- temperature/repeat_penalty/top_k/top_p/seed -- reaches the engine's
+    sampler (engine/core/serve/server_shared.hpp's sample_from -> engine/core/src/sample.cpp: a
+    temperature-scaled softmax, repetition penalty, then top-k + top-p nucleus truncation before an
+    inverse-CDF draw). So a sampled reply lands on the same Ollama distribution the user knows. The
+    greedy path (temperature 0 / this returning None) is the argmax and ignores every one of them --
+    top_k/top_p included -- so receipts and forced-greedy replay stay bit-exact."""
     if not want_sample:
         return None
     import clozn.memory.mode as memory_mode

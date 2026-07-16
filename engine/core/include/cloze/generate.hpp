@@ -51,6 +51,8 @@ struct ReviseConfig {
 struct SampleConfig {
     double temperature = 0.0;
     double rep_penalty = 1.0;
+    int top_k = 0;         // 0 = off; > 0 keeps the k highest-prob tokens before the sampled draw
+    double top_p = 1.0;    // 1.0 = off; (0,1) = nucleus truncation. Both no-op on the greedy path.
     uint64_t seed = 0;
 };
 

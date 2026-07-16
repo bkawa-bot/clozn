@@ -24,6 +24,8 @@ namespace cloze {
 struct SampleOpts {
     double temperature = 0.0;       // 0 = greedy argmax; > 0 = draw from softmax(logits / T)
     double rep_penalty = 1.0;       // 1.0 = off; > 1 downweights tokens already on `board`
+    int    top_k = 0;               // 0 (or >= vocab) = off; > 0 keeps only the k highest-prob tokens
+    double top_p = 1.0;             // 1.0 = off; (0,1) keeps the smallest nucleus with cumulative prob >= top_p
     const std::vector<int>* board = nullptr;  // tokens already on the board (for rep_penalty); null = none
     int mask_token = -1;            // excluded from the penalty set
     std::mt19937_64* rng = nullptr; // required when temperature > 0 (deterministic given its seed)

@@ -769,13 +769,14 @@ def test_resolve_sampling_generates_a_fresh_seed_each_call(iso):
 
 
 def test_engine_complete_traced_sends_the_resolved_sampler_params(iso, fake_engine, monkeypatch):
-    """_engine_complete_traced forwards temperature/rep_penalty/seed from a _resolve_sampling() dict to
-    the engine's .complete() fallback (FakeEngine's .base is unroutable, so every call here exercises
-    that fallback) -- and does NOT forward top_p/top_k (this engine build doesn't parse them)."""
+    """_engine_complete_traced forwards the FULL resolved regime -- temperature/rep_penalty/seed AND the
+    Ollama nucleus top_k/top_p -- from a _resolve_sampling() dict to the engine's .complete() fallback
+    (FakeEngine's .base is unroutable, so every call here exercises that fallback). The fallback must
+    decode under the SAME regime the HTTP path recorded in the run's meta, so the nucleus rides along."""
     samp = {"on": True, "temperature": 0.8, "top_p": 0.9, "top_k": 40, "repeat_penalty": 1.1, "seed": 12345}
     cs._engine_complete_traced(fake_engine, "hello", 16, {}, sample=samp)
     params = fake_engine.calls[-1]["params"]
     assert params["temperature"] == 0.8
     assert params["rep_penalty"] == 1.1
     assert params["seed"] == 12345
-    assert "top_p" not in params and "top_k" not in params
+    assert params["top_k"] == 40 and params["top_p"] == 0.9

@@ -64,6 +64,8 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     SampleOpts sopts;
     sopts.temperature = sample.temperature;
     sopts.rep_penalty = sample.rep_penalty;
+    sopts.top_k = sample.top_k;
+    sopts.top_p = sample.top_p;
     sopts.mask_token = mcfg.mask_token_id;  // -1 on an AR model; harmless
     if (sample.rep_penalty != 1.0) sopts.board = &seq;
     if (sample.temperature > 0.0) sopts.rng = &rng;

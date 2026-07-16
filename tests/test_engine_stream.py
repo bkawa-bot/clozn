@@ -283,8 +283,9 @@ def test_chat_stream_request_body_mirrors_engine_complete_traced(iso, monkeypatc
 
 def test_chat_stream_samples_by_default(iso, monkeypatch, fake_urlopen):
     """chat_stream has no per-call `sample` arg -- it's always eligible, and the "sampling" setting
-    defaults ON (S5), so the request body carries the Ollama/llama.cpp canonical params + a real seed,
-    NOT top_p/top_k (this engine build doesn't parse them)."""
+    defaults ON (S5), so the request body carries the full Ollama/llama.cpp canonical params + a real
+    seed: temperature, rep_penalty, AND the top_k/top_p nucleus (the engine now enforces them, so a
+    sampled chat lands on the same distribution the user knows from Ollama)."""
     monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
     sub = _bare_engine_substrate(FakeEngine())
 
@@ -294,7 +295,7 @@ def test_chat_stream_samples_by_default(iso, monkeypatch, fake_urlopen):
     assert body["temperature"] == 0.8
     assert body["rep_penalty"] == 1.1
     assert isinstance(body["seed"], int) and body["seed"] != 0
-    assert "top_p" not in body and "top_k" not in body
+    assert body["top_k"] == 40 and body["top_p"] == 0.9
 
     meta = sub._last_generation_meta
     assert meta["sampler_mode"] == "sample"

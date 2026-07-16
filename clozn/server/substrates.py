@@ -631,12 +631,12 @@ class EngineSubstrate(Substrate):
         # F6 ANCHORED MEMORY (X7): active bags compose into ONE gated steer_vec at L21 and ride live chat.
         ctx._apply_anchored_memory(kw, mem_out, ctx._last_user(messages))
         body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_new)
-        if samp and samp.get("on"):     # S5: real sampling -- temperature/rep_penalty/seed from settings
+        if samp and samp.get("on"):     # S5: real sampling -- Ollama-style temperature/top_k/top_p/rep_penalty/seed
             body["temperature"] = float(samp["temperature"])
             body["rep_penalty"] = float(samp["repeat_penalty"])
+            body["top_k"] = int(samp["top_k"])
+            body["top_p"] = float(samp["top_p"])
             body["seed"] = int(samp["seed"])
-            # top_p/top_k are NOT sent -- this engine build's sampler has no nucleus/top-k truncation to
-            # receive them (see ctx._resolve_sampling's docstring); they still ride _last_generation_meta.
         else:
             body["temperature"] = 0.0; body["rep_penalty"] = 1.0; body["seed"] = 0
         body["stream"] = True
@@ -809,18 +809,22 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw, sample=None):
     diverged True/False is the engine's verdict, else (None, None). The reply on a diverged run is a
     BIT-EXACT PREFIX of the full generation (the engine only adds a stop check -- decode is unchanged).
 
-    `sample`: None (or a falsy dict) -- greedy, temperature=0/rep_penalty=1/seed=0, byte-identical to
-    pre-S5 behavior. A ctx._resolve_sampling() dict -- temperature/repeat_penalty/seed ride the request as
-    the engine's own SampleConfig keys (`temperature`, `rep_penalty`, `seed`); top_p/top_k are NOT sent
-    (the engine's sampler -- engine/core/src/sample.cpp -- has no nucleus/top-k truncation to receive
-    them)."""
+    `sample`: None (or a falsy dict) -- greedy, temperature=0/rep_penalty=1/seed=0/top_k=0/top_p=1,
+    byte-identical to pre-S5 behavior. A ctx._resolve_sampling() dict -- temperature/repeat_penalty/seed
+    plus the full Ollama nucleus (top_k/top_p) ride the request as the engine's own SampleConfig keys;
+    the engine's sampler (engine/core/src/sample.cpp) truncates to top-k then the top-p nucleus before
+    the draw, so a sampled chat lands on the same distribution the user knows from Ollama. Greedy
+    (temperature 0) ignores all of them -- the argmax path is untouched, receipts stay exact."""
     on = bool(sample and sample.get("on"))
     temperature = float(sample["temperature"]) if on else 0.0
     rep_penalty = float(sample["repeat_penalty"]) if on else 1.0
+    top_k = int(sample["top_k"]) if on else 0
+    top_p = float(sample["top_p"]) if on else 1.0
     seed = int(sample["seed"]) if on else 0
     import urllib.request
     body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_tokens)
     body["temperature"] = temperature; body["rep_penalty"] = rep_penalty; body["seed"] = seed
+    body["top_k"] = top_k; body["top_p"] = top_p
     body["stream"] = True
     try:
         req = urllib.request.Request(engine.base + "/v1/completions",
@@ -861,7 +865,7 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw, sample=None):
     # temperature/rep_penalty/seed as the streaming attempt above -- the fallback must never silently
     # decode under a DIFFERENT regime than the one recorded in the run's meta.
     r = engine.complete(prompt, max_tokens=max_tokens, temperature=temperature, rep_penalty=rep_penalty,
-                        seed=seed, **kw)
+                        top_k=top_k, top_p=top_p, seed=seed, **kw)
     ch = r.get("choices") if isinstance(r, dict) else None
     finish = ch[0].get("finish_reason") if (ch and isinstance(ch[0], dict)) else None
     divinfo = (r.get("diverged"), r.get("diverged_at")) if isinstance(r, dict) else (None, None)

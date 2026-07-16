@@ -96,6 +96,8 @@ inline SampleConfig sample_from(const json& body) {
     SampleConfig sample;
     sample.temperature = body.value("temperature", 0.0);
     sample.rep_penalty = body.value("rep_penalty", 1.0);
+    sample.top_k = body.value("top_k", 0);
+    sample.top_p = body.value("top_p", 1.0);
     sample.seed = body.value("seed", static_cast<uint64_t>(0));
     return sample;
 }

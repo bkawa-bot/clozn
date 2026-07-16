@@ -1,5 +1,6 @@
 #include "cloze/sample.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 #include <stdexcept>
@@ -50,19 +51,45 @@ std::vector<Candidate> sample_candidates(const ForwardResult& fwd,
         for (int t = 0; t < vocab; ++t) x[t] /= denom;  // x is now a probability vector
 
         int token;
+        double conf;
         if (greedy) {
             token = 0;
             double best = x[0];  // argmax; ties resolve to the lower id (== numpy.argmax)
             for (int t = 1; t < vocab; ++t)
                 if (x[t] > best) { best = x[t]; token = t; }
+            conf = x[token];
         } else {
-            std::uniform_real_distribution<double> u(0.0, 1.0);  // inverse-CDF draw
+            // Optional Ollama-style truncation on the softmax distribution: top-k, then top-p (nucleus),
+            // renormalize, then the inverse-CDF draw. Off by default (top_k<=0 and top_p>=1 keep the full
+            // distribution), and it touches ONLY this stochastic branch -- greedy above is bit-identical,
+            // so the receipts-critical goldens are unaffected. The draw stays seeded/deterministic.
+            const bool trunc = (opts.top_k > 0 && opts.top_k < vocab) || (opts.top_p > 0.0 && opts.top_p < 1.0);
+            std::vector<double> orig;   // true softmax probs, kept for the honest committed-token confidence
+            if (trunc) {
+                orig = x;
+                std::vector<int> idx(static_cast<size_t>(vocab));
+                for (int t = 0; t < vocab; ++t) idx[t] = t;
+                const int kk = (opts.top_k > 0 && opts.top_k < vocab) ? opts.top_k : vocab;
+                std::partial_sort(idx.begin(), idx.begin() + kk, idx.end(),
+                                  [&](int a, int b) { return x[a] > x[b] || (x[a] == x[b] && a < b); });
+                const double p = (opts.top_p > 0.0 && opts.top_p < 1.0) ? opts.top_p : 1.0;
+                int keep = kk;              // nucleus: smallest prefix of the top-kk whose cumsum >= p
+                double cum = 0.0;
+                for (int i = 0; i < kk; ++i) { cum += x[idx[i]]; if (cum >= p) { keep = i + 1; break; } }
+                std::vector<char> kept(static_cast<size_t>(vocab), 0);
+                for (int i = 0; i < keep; ++i) kept[idx[i]] = 1;
+                double denom2 = 0.0;
+                for (int t = 0; t < vocab; ++t) { if (!kept[t]) x[t] = 0.0; denom2 += x[t]; }
+                if (denom2 > 0.0) for (int t = 0; t < vocab; ++t) x[t] /= denom2;
+            }
+            std::uniform_real_distribution<double> u(0.0, 1.0);  // inverse-CDF draw over the (maybe) truncated x
             const double target = u(*opts.rng);
             double acc = 0.0;
             token = vocab - 1;  // fallback for fp rounding at the tail
             for (int t = 0; t < vocab; ++t) { acc += x[t]; if (target <= acc) { token = t; break; } }
+            conf = trunc ? orig[token] : x[token];  // the true softmax prob, not the renormalized one
         }
-        out.push_back(Candidate{positions[r], token, x[token]});
+        out.push_back(Candidate{positions[r], token, conf});
     }
     return out;
 }
