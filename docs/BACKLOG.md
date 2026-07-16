@@ -141,9 +141,13 @@ model (✅ decided: Qwen2.5-0.5B).
 - [ ] **AR×diffusion H2/H3/H5/H7** **[FB §3]** — all spec'd (`notes/ar_diffusion/specs/`), none run. H1 dead.
   Cheapest-decisive first: **H7 divergence atlas** → H3 substrate routing → H2 score-gated self-repair →
   H5 counterfactual-patch receipts (⚠ needs a `/v1/revise` ablated-context build spike first).
-- [ ] **Edit-instruction routes** **[EDIT]** — Route **D** "Rewrite (AR)" mode is buildable now, zero engine
-  work; Route **B** content-concept via `dir(c)` is a validated ~dozen-line engine unlock; Route **C**
-  free-text via LLaDA-8B-Instruct (engine has native LLaDA) is the research swing.
+- [ ] **Edit-instruction routes** **[EDIT]** — Route **D** "Rewrite (AR)" ✅ SHIPPED 2026-07-16 (3db1e2d +
+  7b686fc): `POST /engine/rewrite` — pins ride as keep-verbatim prompt constraints, pin fidelity MEASURED
+  post-hoc (per-pin kept:true/false, never assumed), every response carries the honest note "regenerates
+  the unpinned text — not a bidirectional resolve" on the wire; studio Edit drawer gained a RESOLVE/REWRITE
+  toggle. 27 tests, model-free-verified; ⏳ live engine round-trip + real-browser check pending GPU.
+  Still open: Route **B** content-concept via `dir(c)` (validated ~dozen-line engine unlock); Route **C**
+  free-text via LLaDA-8B-Instruct (engine has native LLaDA) — the research swing.
 - [ ] **Closed-loop disposition guardrails** **[FB §9.1]** — "the biggest unclaimed frontier": mid-gen lens
   polling → threshold → `dir(c)` counter-injection, on a banned-topic battery.
 - [ ] **Calibration next rungs** **[CALIBRATION_FINDINGS]** — bigger probe sets + CIs; a retrieval/clarify
