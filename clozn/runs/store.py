@@ -18,6 +18,7 @@ import uuid
 
 from clozn._io import atomic_write_json
 
+from . import migrations
 from .summaries import SUMMARY_FIELDS, _flags, _summ, _summary
 from .trace import (
     TRACE_KEYS,
@@ -41,7 +42,8 @@ from .trace import (
 
 RUNS_DIR = os.path.join(os.path.expanduser("~/.clozn"), "runs")
 KEEP = 1000
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = migrations.TARGET_VERSION      # kept as a re-export -- pre-migrations code read this bare
+                                                 # int; it now always mirrors the migration engine's target.
 _SAFE_RID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -54,42 +56,15 @@ def _blob_root() -> str:
 
 
 def _ensure() -> None:
+    """Bring RUNS_DIR + the DB schema up to date. Auto-migrate-on-open (BACKLOG §2): every store entry
+    point still calls this cheaply on every operation exactly as before, but the schema work itself now
+    goes entirely through clozn.runs.migrations -- real transactional, ordered, versioned steps -- instead
+    of the old ad-hoc `executescript` + upsert-a-stamp. `clozn migrate` (clozn/cli/commands/migrate.py)
+    drives the SAME engine explicitly, with reporting and a --dry-run preview."""
     os.makedirs(RUNS_DIR, exist_ok=True)
     os.makedirs(_blob_root(), exist_ok=True)
-    with closing(_connect()) as db, db:
-        db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS schema_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS runs (
-                id TEXT PRIMARY KEY,
-                created_ts REAL NOT NULL,
-                created_at TEXT NOT NULL,
-                source TEXT NOT NULL,
-                client TEXT NOT NULL,
-                model TEXT NOT NULL,
-                substrate TEXT NOT NULL,
-                parent_run_id TEXT,
-                finish_reason TEXT,
-                error TEXT,
-                prompt_summary TEXT NOT NULL,
-                response_summary TEXT NOT NULL,
-                duration_ms INTEGER NOT NULL,
-                payload_json TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS runs_created_idx ON runs(created_ts DESC, id DESC);
-            CREATE INDEX IF NOT EXISTS runs_source_idx ON runs(source, created_ts DESC);
-            CREATE INDEX IF NOT EXISTS runs_parent_idx ON runs(parent_run_id, created_ts ASC);
-            CREATE INDEX IF NOT EXISTS runs_model_idx ON runs(model, created_ts DESC);
-            """
-        )
-        db.execute(
-            "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (str(SCHEMA_VERSION),),
-        )
+    with closing(_connect()) as db:
+        migrations.migrate(db)
 
 
 def _connect() -> sqlite3.Connection:
