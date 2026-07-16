@@ -300,6 +300,7 @@ def test_switching_between_two_disjoint_personas_never_bleeds(iso, monkeypatch):
 def test_switch_in_internalized_mode_kicks_the_normal_background_retrain(iso, monkeypatch):
     """Off the "instant" contract on purpose: internalized mode still goes through the SAME async
     consolidate() path a card add/remove already uses -- not reimplemented, not skipped."""
+    monkeypatch.setenv("CLOZN_RUNTIME_KIND", "lab")
     assert memory_mode.set_mode("internalized")
     _mk_store().save(_friend_bundle())
     mem, steer = FakeMem(["stale"]), FakeSteer()

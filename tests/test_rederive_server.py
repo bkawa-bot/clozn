@@ -82,7 +82,7 @@ def test_rederive_needs_a_score_tokens_capable_substrate_503(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", None)
     rid = _seed_run()
     out = _post(f"/runs/{rid}/rederive")
-    assert out == {"error": "rederive needs the engine substrate (score_tokens)"}
+    assert out == {"error": "rederive requires worker token scoring"}
 
 
 def test_rederive_503_when_substrate_lacks_score_tokens(iso, monkeypatch):
@@ -92,7 +92,7 @@ def test_rederive_503_when_substrate_lacks_score_tokens(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", NoScore())
     rid = _seed_run()
     out = _post(f"/runs/{rid}/rederive")
-    assert "error" in out and "score_tokens" in out["error"]
+    assert "error" in out and "token scoring" in out["error"]
 
 
 def test_rederive_happy_path_over_http(iso):

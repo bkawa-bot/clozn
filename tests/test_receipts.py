@@ -226,10 +226,11 @@ def test_receipt_card_ablation_alone_removing_the_only_concise_source_has_effect
 
 # ------------------------------------------------------------- the honesty guard: an ablation that can't apply
 
-def test_receipt_flags_unapplied_card_ablation_in_internalized_mode_as_not_verified(iso):
+def test_receipt_flags_unapplied_card_ablation_in_internalized_mode_as_not_verified(iso, monkeypatch):
     """replay.py can't remove ONE card from a fused internalized prefix -- it records an honest "not
     applied" note and leaves the state untouched. A receipt built on top of that MUST NOT claim
     causal_verified: true (that would silently launder "we never tried" into "proven no effect")."""
+    monkeypatch.setenv("CLOZN_RUNTIME_KIND", "lab")
     memory_mode.set_mode("internalized")
     sub = FakeSub(mem=FakeMem(1.0), steer=FakeSteer({}), concise_card_ids=["card_a"])
     rec = receipts.receipt(RUN, {"card_id": "card_a"}, sub)

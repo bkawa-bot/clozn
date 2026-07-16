@@ -85,6 +85,7 @@ def store(tmp_path, monkeypatch):
     """Isolated run log + memory mode PINNED to internalized: this suite asserts the prefix-era replay
     semantics (whole-memory suppression; per-card ids an honest "not applied" note), which the mode swap
     keeps intact. Prompt-mode replay (REAL per-card ablation) is covered in test_memory_mode."""
+    monkeypatch.setenv("CLOZN_RUNTIME_KIND", "lab")   # internalized/soft-prefix memory is a LAB feature now
     monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))
     monkeypatch.setattr(memory_mode, "LEGACY_PREFIX_PATHS", [str(tmp_path / "no_such.pt")])
     assert memory_mode.set_mode("internalized")

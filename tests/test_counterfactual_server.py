@@ -117,7 +117,7 @@ def test_counterfactual_needs_the_substrate_503(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", None)
     rid = _seed_run()
     out = _post(f"/runs/{rid}/counterfactual", {"behavior_overrides": {"warm": 0.9}})
-    assert out == {"error": "counterfactual needs the qwen substrate"}
+    assert out == {"error": "counterfactual requires a ready product model worker"}
 
 
 def test_counterfactual_rejects_a_missing_behavior_overrides_with_400(iso):

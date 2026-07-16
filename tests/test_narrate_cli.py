@@ -237,7 +237,7 @@ def test_format_narrate_renders_a_genuine_503_shape(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", None)
     rid = _seed_run()
     out_json = _post(f"/runs/{rid}/narrate")
-    assert out_json == {"error": "narration needs the qwen substrate"}
+    assert out_json == {"error": "narration requires a ready product model worker"}
     out = clozn_cli.format_narrate(out_json)
     assert isinstance(out, str) and out
     assert "no receipt-backed narration" in out

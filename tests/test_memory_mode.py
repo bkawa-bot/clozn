@@ -103,7 +103,10 @@ def _gate(monkeypatch, value):
 @pytest.fixture()
 def iso(tmp_path, monkeypatch):
     """Isolate every store this suite touches (cards, runs, settings, the legacy-.pt migration probe)
-    and reset the retrain singletons. Mode starts UNSET -- each test picks its own via set_mode."""
+    and reset the retrain singletons. Mode starts UNSET -- each test picks its own via set_mode.
+    Runs under the LAB runtime kind: internalized is a lab-only mode, so set_mode('internalized') is
+    only permitted here (a product process refuses it -- see test_product_refuses_internalized_mode)."""
+    monkeypatch.setenv("CLOZN_RUNTIME_KIND", "lab")
     monkeypatch.setattr(memory_cards, "CARDS_PATH", str(tmp_path / "cards.json"))
     monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))
@@ -560,20 +563,18 @@ def _http(base, path, body=None):
 
 
 def test_mode_endpoint_round_trip(server):
+    """Product gateway: prompt is the ONLY selectable memory mechanism. GET lists just prompt; POST
+    prompt round-trips + persists; internalized soft-prefix memory is lab-only, so the product endpoint
+    refuses it with 410 (the lab-server variant of this toggle is covered by the catch-up tests below)."""
     code, out = _http(server, "/memory/mode")                # GET: fresh install -> prompt
-    assert code == 200 and out["mode"] == "prompt" and set(out["modes"]) == {"prompt", "internalized"}
-
-    code, out = _http(server, "/memory/mode", {"mode": "internalized"})
-    assert code == 200 and out["ok"] is True and out["mode"] == "internalized"
-    code, out = _http(server, "/memory/mode")
-    assert out["mode"] == "internalized"                     # persisted -> GET agrees
+    assert code == 200 and out["mode"] == "prompt" and set(out["modes"]) == {"prompt"}
 
     code, out = _http(server, "/memory/mode", {"mode": "prompt"})
-    assert code == 200 and out["ok"] is True
+    assert code == 200 and out["ok"] is True and out["mode"] == "prompt"
     assert memory_mode.get_mode() == "prompt"                # and it landed in the settings file
 
-    code, out = _http(server, "/memory/mode", {"mode": "telepathy"})
-    assert code == 400                                       # unknown modes are refused loudly
+    code, out = _http(server, "/memory/mode", {"mode": "internalized"})
+    assert code == 410 and "lab-only" in out["error"]        # soft-prefix memory is a lab-only mechanism
 
 
 def test_state_reports_the_memory_mode(server):
@@ -582,6 +583,9 @@ def test_state_reports_the_memory_mode(server):
 
 
 def test_toggle_to_internalized_kicks_the_catchup_retrain(server, monkeypatch):
+    # Internalized toggling is a LAB behavior now: a product server 410s it, a lab server allows it and
+    # runs the catch-up retrain. Pin the module runtime kind to lab so the /memory/mode route accepts it.
+    monkeypatch.setattr(cs, "RUNTIME_KIND", "lab")
     # cards were edited in prompt mode (no consolidate) -> the prefix is stale -> toggling back must
     # retrain in the background so chats don't serve a personality the cards no longer describe.
     memory_cards.create("likes tea", status="active")
@@ -596,6 +600,7 @@ def test_toggle_to_internalized_kicks_the_catchup_retrain(server, monkeypatch):
 
 
 def test_toggle_with_fresh_prefix_does_not_retrain(server, monkeypatch):
+    monkeypatch.setattr(cs, "RUNTIME_KIND", "lab")           # internalized toggle is lab-only (see above)
     memory_cards.create("likes tea", status="active")
     mem = FakeMem(["likes tea"])
     mem._trained_rules = ["likes tea"]                       # prefix already embodies the active set

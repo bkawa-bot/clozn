@@ -346,9 +346,10 @@ def test_leans_on_card_ablation_with_no_effect_is_a_verified_fail_not_a_skip(iso
     assert a["actual"]["has_effect"] is False
 
 
-def test_leans_on_internalized_mode_is_an_honest_skip_never_a_false_pass(iso):
+def test_leans_on_internalized_mode_is_an_honest_skip_never_a_false_pass(iso, monkeypatch):
     """replay.py can't ablate one card out of a fused internalized prefix -- causal_verified comes back
     False with an honest ablation_note. A leans_on assertion on top of that MUST skip, not pass or fail."""
+    monkeypatch.setenv("CLOZN_RUNTIME_KIND", "lab")
     memory_mode.set_mode("internalized")
     sub = FakeSub(mem=FakeMem(1.0), steer=FakeSteer({}), concise_card_ids=["card_a"])
     r = testkit.evaluate(CAUSAL_RUN, _test_spec({"check": "leans_on", "card": "card_a"}, run="run_causal1"), sub)

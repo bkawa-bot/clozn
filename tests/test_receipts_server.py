@@ -126,7 +126,7 @@ def test_receipt_needs_the_substrate_503(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", None)
     rid = _seed_run()
     out = _post(f"/runs/{rid}/receipt", {"influence": {"behavior_off": True}})
-    assert out == {"error": "receipt needs the qwen substrate"}
+    assert out == {"error": "receipt requires a ready product model worker"}
 
 
 def test_receipt_rejects_a_missing_influence_spec_with_400(iso):
@@ -177,7 +177,7 @@ def test_receipts_needs_the_substrate_503(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", None)
     rid = _seed_run()
     out = _post(f"/runs/{rid}/receipts", {})
-    assert out == {"error": "receipts need the qwen substrate"}
+    assert out == {"error": "receipts require a ready product model worker"}
 
 
 def test_receipts_prove_all_happy_path_over_http_finds_the_redundant_pair(iso, monkeypatch):
@@ -414,21 +414,21 @@ def test_swap_receipt_needs_the_engine_substrate_503_when_sub_is_none(iso, monke
     monkeypatch.setattr(cs, "SUB", None)
     rid = _seed_run()
     out = _post(f"/runs/{rid}/swap_receipt", {"to_concept": "ocean"})
-    assert out == {"error": "swap_receipt needs the engine substrate (.engine + .jlens)"}
+    assert out == {"error": "swap_receipt requires the product worker with J-lens enabled"}
 
 
 def test_swap_receipt_needs_the_engine_substrate_503_when_sub_has_no_engine(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", FakeSwapSubNoEngine())
     rid = _seed_run()
     out = _post(f"/runs/{rid}/swap_receipt", {"to_concept": "ocean"})
-    assert out == {"error": "swap_receipt needs the engine substrate (.engine + .jlens)"}
+    assert out == {"error": "swap_receipt requires the product worker with J-lens enabled"}
 
 
 def test_swap_receipt_needs_the_engine_substrate_503_when_sub_has_no_jlens(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", FakeSwapSubNoJlens(FakeSwapEngine()))
     rid = _seed_run()
     out = _post(f"/runs/{rid}/swap_receipt", {"to_concept": "ocean"})
-    assert out == {"error": "swap_receipt needs the engine substrate (.engine + .jlens)"}
+    assert out == {"error": "swap_receipt requires the product worker with J-lens enabled"}
 
 
 def test_swap_receipt_rejects_a_missing_to_concept_with_400(iso, monkeypatch):

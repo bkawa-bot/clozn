@@ -78,6 +78,7 @@ def iso(tmp_path, monkeypatch):
     """Isolate the card store + run log AND reset the module-level retrain singletons so tests don't leak
     an in-flight flag / a held lock into each other. Memory mode is PINNED to internalized: async retrain
     IS the internalized path (prompt mode short-circuits it entirely -- covered in test_memory_mode)."""
+    monkeypatch.setenv("CLOZN_RUNTIME_KIND", "lab")   # internalized/soft-prefix retrain is a LAB feature now
     monkeypatch.setattr(memory_cards, "CARDS_PATH", str(tmp_path / "cards.json"))
     monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))

@@ -147,14 +147,14 @@ def test_experiment_needs_the_qwen_substrate_503_for_chat_backed_types(iso, monk
     monkeypatch.setattr(cs, "SUB", None)
     rid = _seed_run()
     out = _post(f"/runs/{rid}/experiment", {"change": {"type": "reroll"}})
-    assert out == {"error": "experiment needs the qwen substrate"}
+    assert out == {"error": "experiment requires a ready product model worker"}
 
 
 def test_experiment_needs_the_engine_substrate_503_for_swap_concept(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", FakeSub())   # a chat-only substrate has no .engine/.jlens
     rid = _seed_run()
     out = _post(f"/runs/{rid}/experiment", {"change": {"type": "swap_concept", "to_concept": "ocean"}})
-    assert out == {"error": "experiment needs the engine substrate (.engine + .jlens)"}
+    assert out == {"error": "experiment requires the product worker with J-lens enabled"}
 
 
 def test_experiment_bad_required_field_is_a_clean_400(iso):

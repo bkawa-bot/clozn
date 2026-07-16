@@ -185,7 +185,7 @@ def test_chat_completions_needs_the_substrate_503_unchanged(iso, monkeypatch):
     raw = _post_raw("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]})
     header_block, _, payload = raw.partition(b"\r\n\r\n")
     assert b"X-Clozn-Run-Id" not in header_block
-    assert json.loads(payload.decode("utf-8")) == {"error": "chat needs the qwen substrate"}
+    assert json.loads(payload.decode("utf-8")) == {"error": {"message": "model worker unavailable", "type": "service_unavailable"}}
 
 
 def test_chat_completions_carries_clozn_run_id_that_resolves_to_the_logged_run(iso):
@@ -230,6 +230,7 @@ def test_prompt_mode_logs_the_exact_assembled_messages(iso, monkeypatch):
 
 
 def test_internalized_mode_does_not_fabricate_an_assembled_prompt(iso, monkeypatch):
+    monkeypatch.setenv("CLOZN_RUNTIME_KIND", "lab")
     memory_mode.set_mode("internalized")
     monkeypatch.setattr(cs, "SUB", InternalizedSub())
     out = _post("/v1/chat/completions", {"model": "clozn-qwen",

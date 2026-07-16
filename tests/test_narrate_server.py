@@ -102,7 +102,7 @@ def test_narrate_needs_the_substrate_503(iso, monkeypatch):
     monkeypatch.setattr(cs, "SUB", None)
     rid = _seed_run()
     out = _post(f"/runs/{rid}/narrate", {})
-    assert out == {"error": "narration needs the qwen substrate"}
+    assert out == {"error": "narration requires a ready product model worker"}
 
 
 def test_narrate_happy_path_over_http(iso):

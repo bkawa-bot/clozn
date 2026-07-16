@@ -437,7 +437,7 @@ def test_route_no_substrate_is_a_clean_503(route_iso, monkeypatch):
     rid = _seed_run()
     matched, (status, body) = _post(f"/runs/{rid}/span_receipt", {"find": INJ})
     assert matched is True
-    assert (status, body) == (503, {"error": "span_receipt needs the qwen substrate"})
+    assert (status, body) == (503, {"error": "span_receipt requires a ready product model worker"})
 
 
 def test_route_find_not_found_is_the_400_error_shape(route_iso):

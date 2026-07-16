@@ -71,6 +71,7 @@ def iso(tmp_path, monkeypatch):
     """Point the card store + run log at tmp files so tests never touch ~/.clozn, and PIN the memory
     mode to internalized -- this whole suite asserts the prefix path (consolidate-on-change), which is
     exactly what the mode swap keeps untouched. Prompt-mode behavior has its own suite."""
+    monkeypatch.setenv("CLOZN_RUNTIME_KIND", "lab")   # internalized/soft-prefix memory is a LAB feature now
     monkeypatch.setattr(memory_cards, "CARDS_PATH", str(tmp_path / "cards.json"))
     monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setattr(memory_mode, "SETTINGS_PATH", str(tmp_path / "settings.json"))

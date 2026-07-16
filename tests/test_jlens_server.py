@@ -224,7 +224,7 @@ def test_runs_jlens_degrades_when_substrate_has_no_jlens(iso, monkeypatch):
     head, out = _post(f"/runs/{rid}/jlens", {})
     assert "200" in head
     assert out == {"available": False, "run_id": rid,
-                   "reason": "the active substrate has no J-lens (needs the engine substrate)"}
+                   "reason": "the product model worker has no J-lens"}
 
 
 def test_runs_jlens_unknown_layer_surfaces_error_and_available_layers(iso, monkeypatch):

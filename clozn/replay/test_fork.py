@@ -376,7 +376,7 @@ def test_route_no_substrate_503(served, monkeypatch):
     monkeypatch.setattr(cs, "SUB", None)
     claimed, h = _post(f"/runs/{rid}/fork", {"position": 1, "token": " 2"})
     assert claimed is True and h.code == 503
-    assert "substrate" in h.body["error"]
+    assert "worker" in h.body["error"]
 
 
 def test_route_substrate_without_engine_503(served, monkeypatch):

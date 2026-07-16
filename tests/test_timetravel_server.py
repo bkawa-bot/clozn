@@ -240,7 +240,7 @@ def test_branch_no_substrate_503(iso, monkeypatch):
     rid = _seed_parent()
     monkeypatch.setattr(cs, "SUB", None)
     out = _post("/runs/" + rid + "/branch", {"turn": 0})
-    assert "error" in out and "substrate" in out["error"]
+    assert "error" in out and "worker" in out["error"]
 
 
 def test_branch_does_not_mutate_live_studio(iso):
