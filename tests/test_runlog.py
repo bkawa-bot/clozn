@@ -274,6 +274,40 @@ def test_no_spurious_flags(store):
     assert store.get_run(rid)["flags"] == []
 
 
+# ---- trace-blob integrity: a corrupt/missing blob is SURFACED, never a silent empty {} (BACKLOG §2) ----
+
+def test_corrupt_trace_blob_is_surfaced_not_silently_empty(store):
+    """A tampered trace blob must read back as corrupt, never as an empty {} -- a run may not present 'no
+    trace' when the truth is 'the causal evidence was altered'. The digest is verified on every read."""
+    import glob
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a",
+                       trace={"tokens": ["x", "y"], "confidence": [0.9, 0.12]})
+    good = store.get_run(rid)["trace"]
+    assert good and "unavailable" not in good          # a valid blob loads clean (verified against its digest)
+
+    blobs = glob.glob(os.path.join(runlog.RUNS_DIR, "blobs", "sha256", "**", "*.json"), recursive=True)
+    assert len(blobs) == 1
+    with open(blobs[0], "w", encoding="utf-8") as handle:
+        handle.write('{"tokens": ["TAMPERED"], "confidence": [0.01]}')   # valid JSON, wrong bytes -> mismatch
+
+    corrupt = store.get_run(rid)["trace"]
+    assert corrupt.get("unavailable") == "trace blob corrupt (digest mismatch)"
+    assert corrupt.get("sha256")                        # the affected blob's digest is reported
+    assert "TAMPERED" not in str(corrupt)               # tampered content is NOT served as the real trace
+
+
+def test_missing_trace_blob_is_surfaced_not_silently_empty(store):
+    """A dangling trace ref (its blob deleted/pruned out from under it) reads back as missing, not {}."""
+    import glob
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a",
+                       trace={"tokens": ["a"], "confidence": [0.95]})
+    blobs = glob.glob(os.path.join(runlog.RUNS_DIR, "blobs", "sha256", "**", "*.json"), recursive=True)
+    os.remove(blobs[0])
+    gone = store.get_run(rid)["trace"]
+    assert gone.get("unavailable") == "trace blob missing"
+    assert gone.get("sha256")
+
+
 def test_list_runs_newest_first(store):
     # ids embed a ms timestamp; pass increasing `started` so ordering is deterministic
     r1 = store.record(source="cli", messages=[{"role": "user", "content": "one"}], response="1",

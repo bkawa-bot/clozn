@@ -121,15 +121,29 @@ def _store_trace(trace: dict) -> dict:
 
 
 def _load_trace(ref) -> dict:
+    """Load a trace blob, VERIFYING its SHA-256 against the recorded digest. A missing, unreadable, or
+    corrupt (digest-mismatch) blob is SURFACED as {"unavailable": <reason>, "sha256": ...} rather than
+    silently returned as an empty {} -- a run must never present "no trace" when the truth is "the causal
+    evidence was lost or tampered with." An absent/invalid ref (the run genuinely carried no trace) still
+    returns {} (honestly no trace, not corruption)."""
     digest = str((ref or {}).get("sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         return {}
     try:
-        with open(_blob_path(digest), encoding="utf-8") as handle:
-            value = json.load(handle)
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        return {}
+        with open(_blob_path(digest), "rb") as handle:
+            raw = handle.read()
+    except FileNotFoundError:
+        return {"unavailable": "trace blob missing", "sha256": digest}
+    except Exception as exc:
+        return {"unavailable": f"trace blob unreadable: {type(exc).__name__}", "sha256": digest}
+    actual = hashlib.sha256(raw).hexdigest()
+    if actual != digest:
+        return {"unavailable": "trace blob corrupt (digest mismatch)", "sha256": digest, "actual_sha256": actual}
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        return {"unavailable": f"trace blob not valid JSON: {type(exc).__name__}", "sha256": digest}
+    return value if isinstance(value, dict) else {}
 
 
 def _pack(rec: dict) -> tuple[str, dict]:
