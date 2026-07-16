@@ -58,6 +58,8 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .led{width:7px;height:7px;border-radius:50%;background:var(--teal);box-shadow:0 0 8px var(--teal);flex:none}
 .led.blue{background:var(--blue);box-shadow:0 0 8px var(--blue)}
 .led.lilac{background:var(--lilac);box-shadow:0 0 8px var(--lilac)}
+/* hollow/inactive dot — a status pill reporting an absence (e.g. "NO CLOUD"): outline only, no glow */
+.led.off{background:transparent;border:1px solid var(--mist);box-shadow:none}
 .mod-h .cap{font-size:10px;color:var(--slate)}
 .mod-h .tail{margin-left:auto;font-size:8.5px;letter-spacing:.08em;color:var(--mist)}
 .tag{font-size:8px;letter-spacing:.12em;padding:1.5px 6px;border-radius:3px;white-space:nowrap}
@@ -81,9 +83,11 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .stat{display:flex;align-items:center;gap:7px;font-size:9.5px;letter-spacing:.14em;color:var(--slate)}
 .stat b{color:var(--navy);font-weight:600}
 .vsep{width:1px;height:14px;background:var(--edge-soft)}
-.windots{display:flex;align-items:center;gap:8px;color:var(--mist)}
-.windots span{width:10px;height:10px;border-radius:50%;border:1px solid var(--edge);
-  background:linear-gradient(180deg,#fff,#DCEAF2)}
+/* window-frame glyphs (− ▢ ×) — decorative only (heavn runs in a browser tab, not a window it
+   controls), but the refs render this cluster consistently, and matching it reads as "this is an
+   instrument panel" rather than "this is a web page". Was a row of blank traffic-light dots. */
+.winctl{display:flex;align-items:center;gap:10px;color:var(--mist);font-size:12px;line-height:1}
+.winctl span{display:inline-block;opacity:.8}
 
 .statusline{margin:0 0 12px;padding:7px 14px;font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
   display:flex;gap:9px;align-items:center;border-radius:11px}
@@ -102,8 +106,11 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
   text-align:left;padding:10px 15px;border-bottom:1px solid var(--edge-soft);border-left:2px solid transparent}
 .navrow .idx{font-size:9px;color:var(--mist)}
 .navrow .nled{width:7px;height:7px;border-radius:50%;background:rgba(90,130,155,.3)}
+.navrow .nm-wrap{display:flex;flex-direction:column;gap:1px;min-width:0;overflow:hidden}
 .navrow .nm{font-family:var(--disp);font-size:10.5px;font-weight:500;letter-spacing:.16em;
   text-transform:uppercase;color:var(--slate)}
+/* tiny lowercase subtitle under the nav label — deliberately NOT .cap: lowercase is the point */
+.navrow .sub{font-size:7.5px;letter-spacing:.03em;color:var(--mist);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .navrow .mark{font-size:10px;color:var(--teal);text-align:right}
 .navrow:hover{background:var(--iri-soft)}
 .navrow.on{width:auto;margin:3px 8px;border-radius:12px;border-left-color:transparent;border-bottom-color:transparent;
@@ -111,8 +118,13 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
   box-shadow:0 6px 18px rgba(150,155,210,.20), inset 0 1px 0 rgba(255,255,255,.78), 0 0 0 1px rgba(255,255,255,.6)}
 .navrow.on .nled{background:var(--teal);box-shadow:0 0 8px var(--teal)}
 .navrow.on .nm{color:var(--navy);font-weight:600}
+.navrow.on .sub{color:var(--slate)}
 .navfoot{padding:12px 15px;border-top:1px solid var(--edge-soft);font-size:9.5px;line-height:1.75;color:var(--mist)}
 .navfoot b{color:var(--slate)}
+/* ENGINE / CONTEXT / PRECISION / SESSION — each a labeled key/value pair, real data only (see app.mjs) */
+.navfoot .kv{margin-top:8px}
+.navfoot .kv .k{display:block;font-size:8px;letter-spacing:.18em;text-transform:uppercase;color:var(--mist)}
+.navfoot .kv .v{display:block;color:var(--slate);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .health{display:flex;align-items:center;gap:8px;margin-top:7px}
 .health .bar{flex:1;height:4px;border-radius:2px;background:rgba(90,130,155,.18);overflow:hidden}
 .health .bar i{display:block;height:100%;width:98%;background:linear-gradient(90deg,var(--blue),var(--teal))}
@@ -136,7 +148,11 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .crt .st i{width:6px;height:6px;border-radius:50%;background:var(--coral);box-shadow:0 0 7px var(--coral)}
 .crt .st.idle i{background:var(--teal);box-shadow:0 0 7px var(--teal);animation:none}
 .crt .sid{position:absolute;top:8px;right:12px;font-size:8.5px;letter-spacing:.12em;color:#8A94C4}
-.crt-text{position:relative;font-family:var(--crt);font-size:17px;line-height:1.4;letter-spacing:.02em;
+/* was --crt (VT323): the refs' console screen still glows, but sets its text in the same clean mono as
+   everywhere else in the ambient-runtime look — a chunky pixel face was the one thing that fought it.
+   --crt/VT323 stay defined and loaded (index.html's font link is unchanged) in case a future accent wants
+   the retro face back deliberately; the twilight glow/scanline treatment (untouched) carries the CRT motif. */
+.crt-text{position:relative;font-family:var(--mono);font-size:12.5px;line-height:1.6;letter-spacing:.01em;
   color:#BDF3E9;text-shadow:0 0 6px rgba(122,235,214,.55);word-break:break-word;min-height:40px}
 .crt-text .dim{color:#5A6490}
 .crt-text .cursor{color:var(--teal);animation:clzBlink 1s steps(1) infinite}

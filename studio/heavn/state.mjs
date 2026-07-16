@@ -17,6 +17,10 @@ export function createStore(initial){
 /* the app store */
 export const store = createStore({
   live: false,            // true when GET /runs succeeded
+  worker: null,           // /readyz's raw worker-health dict (n_ctx, architecture, ...) or null when
+                           // unreachable/offline — the nav-footer metadata block's only source for
+                           // fields it can't get off the loaded run record; never backfilled with
+                           // placeholder text (see app.mjs's NavFoot).
   runs: [],               // summaries (newest first)
   full: {},               // id -> full record cache
   currentId: null,

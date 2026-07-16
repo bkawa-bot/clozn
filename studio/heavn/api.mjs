@@ -29,6 +29,12 @@ async function postE(path, body, timeoutMs = 30000){
 const enc = encodeURIComponent;
 
 export const api = {
+  /* ── runtime status ── */
+  readyz: () => j("/readyz", null, 5000),        // -> {status,model,mode,worker:{n_ctx,architecture,...}}
+                                                  // or null (offline/not-ready) — the nav-footer metadata
+                                                  // block (app.mjs) reads worker.n_ctx for real, live
+                                                  // CONTEXT; never fabricated when this is unavailable.
+
   /* ── runs ── */
   listRuns: () => j("/runs", null, 8000),                              // -> {runs:[summaries]}
   getRun: id => j("/runs/" + enc(id), null, 8000),                     // -> full record (maybe {run:...})

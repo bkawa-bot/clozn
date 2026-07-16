@@ -12,36 +12,36 @@ import { AtlasModule } from "./modules/atlas.mjs";
 import { ModelsStub, SettingsStub } from "./modules/stubs.mjs";
 
 const MODULES = [
-  { id: "replay",   nm: "Replay",   view: ReplayModule },
-  { id: "patch",    nm: "Patch",    view: PatchModule },
-  { id: "experiment", nm: "Experiment", view: ExperimentModule },
-  { id: "edit",     nm: "Edit",     view: EditModule },
-  { id: "memory",   nm: "Memory",   view: MemoryModule },
-  { id: "scope",    nm: "Scope",    view: ScopeModule },
-  { id: "atlas",    nm: "Atlas",    view: AtlasModule },
-  { id: "models",   nm: "Models",   view: ModelsStub,   soon: true },
-  { id: "settings", nm: "Settings", view: SettingsStub, soon: true },
+  { id: "replay",   nm: "Replay",   sub: "runtime desk",    view: ReplayModule },
+  { id: "patch",    nm: "Patch",    sub: "interventions",   view: PatchModule },
+  { id: "experiment", nm: "Experiment", sub: "compare & prove", view: ExperimentModule },
+  { id: "edit",     nm: "Edit",     sub: "inline repair",   view: EditModule },
+  { id: "memory",   nm: "Memory",   sub: "local store",     view: MemoryModule },
+  { id: "scope",    nm: "Scope",    sub: "layer inspector", view: ScopeModule },
+  { id: "atlas",    nm: "Atlas",    sub: "concept map",     view: AtlasModule },
+  { id: "models",   nm: "Models",   sub: "local inventory", view: ModelsStub,   soon: true },
+  { id: "settings", nm: "Settings", sub: "runtime prefs",   view: SettingsStub, soon: true },
 ];
 
 function Topbar(){
-  const s = useStore(x => ({ live: x.live, rec: x.rec }));
-  const d = (s.rec && s.rec.meta && s.rec.meta.decode) || {};
+  const s = useStore(x => ({ rec: x.rec, route: x.route }));
   return html`<div class="topbar">
     <div style="display:flex;align-items:baseline;gap:11px">
       <span class="wordmark">CLOZN</span>
       <span class="sub">local glass-box ai runtime</span>
     </div>
+    <!-- honesty pills: all three are genuinely, structurally true of clozn (local-first, no cloud
+         calls, no telemetry) -- static by design, not a live connectivity readout (that's StatusLine,
+         just below). Never add a pill here that isn't unconditionally true. -->
     <div style="flex:1;display:flex;justify-content:center;align-items:center;gap:15px">
-      <span class="stat"><i class="led beats" style="width:6px;height:6px"></i>LOCAL</span>
-      <span class="vsep"></span>
-      <span class="stat">ENGINE <b>${s.live ? "connected" : "offline"}</b></span>
-      <span class="stat">MODEL <b>${(s.rec && s.rec.model) || "—"}</b></span>
-      ${d.quant && html`<span class="stat">· ${d.quant}</span>`}
+      <span class="stat"><i class="led beats" style="width:6px;height:6px"></i>LOCAL MODE</span>
+      <span class="stat"><i class="led off" style="width:6px;height:6px"></i>NO CLOUD</span>
+      <span class="stat"><i class="led" style="width:6px;height:6px"></i>NO TELEMETRY</span>
     </div>
     <div style="display:flex;align-items:center;gap:14px">
       <span class="stat mono" style="letter-spacing:.04em">
-        local://${useStore(x => x.route)}/${(s.rec && s.rec.id) || ""}</span>
-      <span class="windots"><span/><span/><span/></span>
+        local://${s.route}/${(s.rec && s.rec.id) || ""}</span>
+      <span class="winctl"><span>−</span><span>▢</span><span>×</span></span>
     </div>
   </div>`;
 }
@@ -56,8 +56,11 @@ function StatusLine(){
 }
 
 function NavRail(){
-  const s = useStore(x => ({ route: x.route, rec: x.rec, live: x.live }));
+  const s = useStore(x => ({ route: x.route, rec: x.rec, live: x.live, worker: x.worker }));
   const d = (s.rec && s.rec.meta && s.rec.meta.decode) || {};
+  // Every value below is either read straight off the loaded run record or off /readyz's live worker
+  // health (s.worker) -- never a placeholder. Absent data reads "—", it never gets a made-up stand-in.
+  const ctx = s.worker && s.worker.n_ctx != null ? Number(s.worker.n_ctx).toLocaleString() + " tok" : "—";
   return html`<div class="mod navmod">
     <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
     <div class="head"><span class="cap" style="font-size:9px;color:var(--mist)">system</span>
@@ -71,15 +74,17 @@ function NavRail(){
         }}>
         <span class="idx">${String(i+1).padStart(2,"0")}</span>
         <span class="nled"></span>
-        <span class="nm">${m.nm}</span>
+        <span class="nm-wrap"><span class="nm">${m.nm}</span><span class="sub">${m.sub}</span></span>
         <span class="mark">${s.route === m.id ? "◂" : ""}</span>
       </button>`)}
     <div class="navfoot">
-      <b>CLOZN v0.2</b><br/>
-      engine ${d.engine || "—"} · substrate ${(s.rec && s.rec.substrate) || "—"}<br/>
-      session ${(s.rec && s.rec.id) || "—"}
+      <b>CLOZN v0.2</b>
+      <div class="kv"><span class="k">engine</span><span class="v">${(s.rec && s.rec.model) || "—"}</span></div>
+      <div class="kv"><span class="k">context</span><span class="v">${ctx}</span></div>
+      <div class="kv"><span class="k">precision</span><span class="v">${d.quant || "—"}</span></div>
+      <div class="kv"><span class="k">session</span><span class="v">${(s.rec && s.rec.id) || "—"}</span></div>
       <div class="cap" style="font-size:8.5px;letter-spacing:.22em;color:var(--mist);margin-top:11px">system health</div>
-      <div class="health"><div class="bar"><i class="beats"></i></div><span>${s.live ? "98%" : "—"}</span></div>
+      <div class="health"><div class="bar"><i class="beats"></i></div><span>${s.live ? "live" : "—"}</span></div>
     </div>
   </div>`;
 }
@@ -94,12 +99,12 @@ function Footer(){
     <span class="cap" style="font-size:8.5px;color:var(--mist)">gradient flow</span>
     <span class="flowbar"></span>
     <span class="legend">
-      <span><i style="background:var(--teal)"></i>teal: calm focus, observation</span>
-      <span><i style="background:var(--lilac)"></i>lilac: branch, disposition</span>
-      <span><i style="background:var(--pink)"></i>pink: selection, branch glow</span>
+      <span><i style="background:var(--teal)"></i>seafoam: calm, focus, observation</span>
+      <span><i style="background:var(--pink)"></i>magenta: selection, branch glow</span>
       <span><i style="background:var(--coral)"></i>coral: repair, protect the signal</span>
     </span>
     <span class="credo">Clozn is a local runtime. It doesn't phone home.</span>
+    <span class="credo">Built for thinking out loud, not for performance.</span>
   </div>`;
 }
 
@@ -151,10 +156,16 @@ export async function boot(rootEl){
     store.set({ live: false, runs: [{ ...SAMPLE }], full: { [SAMPLE.id]: SAMPLE },
                 currentId: SAMPLE.id, rec: SAMPLE });
   }
+  if(store.get().live){
+    const rz = await api.readyz();                            // real CONTEXT (n_ctx) for the nav footer
+    store.set({ worker: (rz && rz.worker) || null });          // null (not a placeholder) when unavailable
+  }
   /* keep the journal fresh: light polling (new runs land while you work) */
   setInterval(async () => {
     if(!store.get().live) return;
     const l = await api.listRuns();
     if(l && Array.isArray(l.runs)) store.set({ runs: l.runs });
+    const rz = await api.readyz();
+    store.set({ worker: (rz && rz.worker) || null });
   }, 6000);
 }
