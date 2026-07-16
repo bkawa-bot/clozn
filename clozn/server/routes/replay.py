@@ -14,13 +14,13 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # replay regenerates through the product model
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):   # replay regenerates through the product model
             h._json(503, {"error": "replay requires a ready product model worker"})
             return True
         changes = body.get("changes_applied", body.get("changes")) or {}
         try:
             from clozn import replay
-            child = replay.replay(run, changes, ctx.SUB)
+            child = replay.replay(run, changes, ctx.active_sub(h))
         except Exception as e:
             h._json(500, {"error": f"replay failed: {type(e).__name__}: {e}"})
             return True
@@ -36,7 +36,7 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # both arms regenerate through the product model
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):   # both arms regenerate through the product model
             h._json(503, {"error": "counterfactual requires a ready product model worker"})
             return True
         overrides = body.get("behavior_overrides")
@@ -45,7 +45,7 @@ def try_post(h, p, body):
             return True
         import clozn.replay.counterfactual as counterfactual
         try:
-            out = counterfactual.counterfactual(run, overrides, ctx.SUB)
+            out = counterfactual.counterfactual(run, overrides, ctx.active_sub(h))
         except Exception as e:
             h._json(500, {"error": f"counterfactual failed: {type(e).__name__}: {e}"})
             return True

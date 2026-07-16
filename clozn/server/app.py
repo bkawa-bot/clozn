@@ -736,8 +736,47 @@ _POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes,
                _receipt_link_routes]
 
 
-def make_handler():
+def active_sub(h):
+    """The substrate for this request: the handler's injected substrate if it has one, else the module
+    global SUB (product default; what tests monkeypatch as cs.SUB). getattr-based so a plain/mock handler
+    with no injection resolves to the global -- routes never touch the raw global directly."""
+    inj = getattr(h, "_inj_sub", None)
+    return inj if inj is not None else SUB
+
+
+def active_subname(h):
+    inj = getattr(h, "_inj_subname", None)
+    return inj if inj is not None else SUBNAME
+
+
+def active_kind(h):
+    inj = getattr(h, "_inj_kind", None)
+    return inj if inj is not None else RUNTIME_KIND
+
+
+def make_handler(sub=None, subname=None, runtime_kind=None):
+    """Build the HTTP handler class. sub/subname/runtime_kind are INJECTABLE: when None they fall back to
+    this module's globals (SUB/SUBNAME/RUNTIME_KIND) -- what `clozn serve` sets and what tests monkeypatch
+    as cs.SUB -- so the product path and its tests are unchanged. `clozn lab` passes its own, so it owns
+    its handler + substrate WITHOUT reaching in to mutate this module's globals. Handler code reads
+    _sub()/_subname()/_kind(); route modules read h.sub / h.subname / h.runtime_kind (same source)."""
+    def _sub():
+        return sub if sub is not None else SUB
+
+    def _subname():
+        return subname if subname is not None else SUBNAME
+
+    def _kind():
+        return runtime_kind if runtime_kind is not None else RUNTIME_KIND
+
     class H(BaseHTTPRequestHandler):
+        # The injected substrate/name/kind for this handler (None on the product path, which uses the
+        # module globals). Route modules resolve them via ctx.active_sub(h)/active_subname(h)/active_kind(h),
+        # which getattr-fall-back to the globals when unset -- so a plain/mock handler with no injection
+        # still resolves to cs.SUB (what the product sets and tests monkeypatch). Handler-internal code
+        # uses the _sub()/_subname()/_kind() closures above (same source).
+        _inj_sub, _inj_subname, _inj_kind = sub, subname, runtime_kind
+
         def log_message(self, *a):
             pass
 
@@ -796,7 +835,7 @@ def make_handler():
             Fallback path: loaded Python Qwen activations -> SAE/probe concepts (`sae/probe`).
             No mock data is attached to real runs from here.
             """
-            if error or not response or not (SUB and getattr(SUB, "brain", None)):
+            if error or not response or not (_sub() and getattr(_sub(), "brain", None)):
                 return None
             text = str(response or _last_user(messages) or "").strip()[:300]
             if not text:
@@ -808,13 +847,13 @@ def make_handler():
                     return []
                 if ENGINE is not None:
                     try:
-                        data = SUB.brain.concepts_from_engine(text, ENGINE, 15)
+                        data = _sub().brain.concepts_from_engine(text, ENGINE, 15)
                         return workspace_lens.readouts_from_concepts(
                             rid, norm_trace, data, provider="engine_concepts", layer=data.get("layer"))
                     except Exception:
                         pass
                 try:
-                    data = SUB.brain.concepts_only(text)
+                    data = _sub().brain.concepts_only(text)
                     return workspace_lens.readouts_from_concepts(
                         rid, norm_trace, data, provider="sae/probe", layer=15)
                 except Exception:
@@ -832,7 +871,7 @@ def make_handler():
             surface", not an error the request should see."""
             try:
                 import clozn.runs.store as runlog
-                mem = getattr(SUB, "_mem", None) if SUB else None
+                mem = getattr(_sub(), "_mem", None) if _sub() else None
                 mo = mem_out or {}
                 mode = mo.get("mode") or _memory_mode()
                 if mode == "prompt":
@@ -922,12 +961,12 @@ def make_handler():
                     pass
                 # only meaningfully-nonzero dials (|v| >= 0.05); steer.active() drops exact-zeros but a
                 # slider nudged to a hair (e.g. 0.02) still slips through and would clutter the record.
-                dials = SUB.steer.active() if (SUB and hasattr(SUB, "steer")) else {}
+                dials = _sub().steer.active() if (_sub() and hasattr(_sub(), "steer")) else {}
                 dials = {k: v for k, v in dials.items() if abs(float(v)) >= 0.05}
                 meta = None
                 try:                                          # engine: {model_file, quant, mode, sampling}
-                    if SUB is not None and hasattr(SUB, "run_meta"):
-                        meta = SUB.run_meta() or None
+                    if _sub() is not None and hasattr(_sub(), "run_meta"):
+                        meta = _sub().run_meta() or None
                 except Exception:
                     meta = None
                 meta = dict(meta or {})
@@ -954,7 +993,7 @@ def make_handler():
                 # still renders a prompt even without a block. None -> consumers fall back to assembled_messages.
                 final_prompt = mo.get("final_prompt")
                 rid = runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
-                                    model=str(model), substrate=SUBNAME, messages=messages, response=response,
+                                    model=str(model), substrate=_subname(), messages=messages, response=response,
                                     memory=memd, behavior={"active_dials": dials}, started=started, error=error,
                                     trace=trace, finish_reason=finish_reason, meta=meta,
                                     assembled_messages=assembled_messages, final_prompt=final_prompt,
@@ -1060,10 +1099,10 @@ def make_handler():
             # (/memory/*, /steer/* -- Substrate._memory/_steer above, substrate-polymorphic domain
             # dispatch, not per-path HTTP routing, so it stays here rather than in a route module).
             try:
-                r = SUB.handle(p, body) if SUB else None
+                r = _sub().handle(p, body) if _sub() else None
                 if r is None:
-                    return self._json(409, {"error": f"'{p}' isn't served by the '{SUBNAME}' substrate",
-                                            "need": "dream" if p == "/denoise" else "qwen", "active": SUBNAME})
+                    return self._json(409, {"error": f"'{p}' isn't served by the '{_subname()}' substrate",
+                                            "need": "dream" if p == "/denoise" else "qwen", "active": _subname()})
                 self._json(200, r)
             except Exception as e:
                 self._json(500, {"error": f"{type(e).__name__}: {e}"})

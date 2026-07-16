@@ -27,11 +27,11 @@ def try_post(h, p, body):
         return True
     if p == "/engine/concepts":   # named SAE concepts remain a PyTorch lab visualization
         try:
-            if not (ctx.SUB and getattr(ctx.SUB, "brain", None)):
+            if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "brain", None)):
                 h._json(409, {"error": "named SAE concepts are available in `clozn lab qwen`; "
                                        "the product runtime exposes raw engine readouts"})
                 return True
-            h._json(200, ctx.SUB.brain.concepts_from_engine(
+            h._json(200, ctx.active_sub(h).brain.concepts_from_engine(
                 str(body.get("text", ""))[:300], ctx.ENGINE, int(body.get("layer", 15))))
         except Exception as e:
             h._json(502, {"error": f"engine-qwen: {e}"})

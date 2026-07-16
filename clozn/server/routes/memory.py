@@ -43,8 +43,8 @@ def try_post(h, p, body):
         # current prefix embodies (_trained_rules), kick the normal background retrain so chats
         # don't serve a personality the cards no longer describe. Cheap guards: nothing to do when
         # there's no live memory, or when cards and prefix are both empty.
-        if mode == "internalized" and ctx.SUB is not None and getattr(ctx.SUB, "_mem", None) is not None:
-            m = ctx.SUB._mem
+        if mode == "internalized" and ctx.active_sub(h) is not None and getattr(ctx.active_sub(h), "_mem", None) is not None:
+            m = ctx.active_sub(h)._mem
             try:
                 import clozn.memory.cards as memory_cards
                 active = memory_cards.active_texts()
@@ -64,14 +64,14 @@ def try_post(h, p, body):
             return True
         # only a substrate whose memory exposes propose_memory qualifies (QwenSubstrate). Dream's
         # memory has no such method -> the proposal is simply not offered there.
-        mem = getattr(ctx.SUB, "memory", None) if ctx.SUB else None
+        mem = getattr(ctx.active_sub(h), "memory", None) if ctx.active_sub(h) else None
         if mem is None or not hasattr(mem, "propose_memory"):
             h._json(200, {"ok": False, "reason": "proposal not available for this substrate"})
             return True
         import clozn.memory.cards as memory_cards
         # Neutralize tone steering during the extraction so the dials don't color the read -- snapshot
         # SUB.steer.strength, zero it, and RESTORE in a finally (mirror replay.py; never persist this).
-        steer = getattr(ctx.SUB, "steer", None)
+        steer = getattr(ctx.active_sub(h), "steer", None)
         saved_strength = dict(getattr(steer, "strength", {}) or {}) if steer is not None else None
         try:
             if steer is not None:

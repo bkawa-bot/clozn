@@ -35,10 +35,10 @@ def try_post(h, p, body):
         except (OSError, ValueError) as e:
             h._json(404, {"error": f"no such profile '{name}': {e}"})
             return True
-        if ctx.SUB is None:
+        if ctx.active_sub(h) is None:
             h._json(503, {"error": "no substrate loaded"})
             return True
-        h._json(200, {"ok": True, **ctx._profiles_switch(ctx.SUB, prof)})
+        h._json(200, {"ok": True, **ctx._profiles_switch(ctx.active_sub(h), prof)})
         return True
     if p == "/profiles/export":       # -> the bundle's own JSON (client downloads/saves it -- the portable artifact)
         from clozn.profiles import store as profiles

@@ -55,7 +55,7 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
     if lens:
         import inspect
         try:
-            params = inspect.signature(ctx.SUB.chat_stream).parameters
+            params = inspect.signature(ctx.active_sub(handler).chat_stream).parameters
         except Exception:
             params = {}
         if "lens" in params and "on_frame" in params:
@@ -81,12 +81,12 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
     t0 = time.time(); acc = []; memout = {}
     try:
         chunk({"role": "assistant"})
-        for piece in ctx.SUB.chat_stream(messages, max_new, mem_out=memout, **lens_kw):
+        for piece in ctx.active_sub(handler).chat_stream(messages, max_new, mem_out=memout, **lens_kw):
             acc.append(piece); chunk({"content": piece})
-        fr = ctx.SUB.last_finish_reason() if hasattr(ctx.SUB, "last_finish_reason") else None
+        fr = ctx.active_sub(handler).last_finish_reason() if hasattr(ctx.active_sub(handler), "last_finish_reason") else None
         openai_fr = ctx._openai_finish_reason(fr)
         # log the run FIRST (before the finish chunk) so the receipt footer can carry its /r/<id> link.
-        trace = ctx.SUB.last_stream_trace() if hasattr(ctx.SUB, "last_stream_trace") else None
+        trace = ctx.active_sub(handler).last_stream_trace() if hasattr(ctx.active_sub(handler), "last_stream_trace") else None
         rid = handler._log_run("openai_api", messages, "".join(acc), model, t0, trace=trace,
                                mem_out=memout, finish_reason=fr,
                                finish_reason_fallback=None if fr else openai_fr)

@@ -104,7 +104,7 @@ def try_post(h, p, body):
         try:
             mx = int(body.get("max_tokens", 220))
             kw = {}
-            mem = getattr(ctx.SUB, "memory", None) if ctx.SUB else None
+            mem = getattr(ctx.active_sub(h), "memory", None) if ctx.active_sub(h) else None
             # Product memory is always the legible card block. Soft-prefix training/application lives
             # only in the lab, so this route cannot import Torch or inject a stale .pt artifact.
             ms = float(getattr(mem, "memory_strength", 1.0)) if mem is not None else 1.0
@@ -117,7 +117,7 @@ def try_post(h, p, body):
             # modes render one). _log_run reads memout["final_prompt"] -> the run record's final_prompt.
             memout["final_prompt"] = prompt
             # TONE: live dial values if a substrate is up, else the saved values from disk
-            st = getattr(getattr(ctx.SUB, "steer", None), "strength", None) if ctx.SUB else None
+            st = getattr(getattr(ctx.active_sub(h), "steer", None), "strength", None) if ctx.active_sub(h) else None
             if not st:
                 st = ctx._disk_dials()
             if st and any(st.values()):
@@ -144,8 +144,8 @@ def try_post(h, p, body):
             h._json(502, {"error": f"engine-chat: {e}"})
         return True
     if p == "/say":   # studio chat (qwen memory model) -> capture it as a run
-        if not (ctx.SUB and getattr(ctx.SUB, "handle", None)):
-            h._json(409, {"error": f"'{p}' isn't served by the '{ctx.SUBNAME}' substrate"})
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "handle", None)):
+            h._json(409, {"error": f"'{p}' isn't served by the '{ctx.active_subname(h)}' substrate"})
             return True
         msg = str(body.get("message", ""))
         t0 = time.time()
@@ -158,15 +158,15 @@ def try_post(h, p, body):
         memout = {}
         body["_mem_out"] = memout
         try:
-            r = ctx.SUB.handle(p, body)
+            r = ctx.active_sub(h).handle(p, body)
         except Exception as e:
             h._log_run("studio_chat", [{"role": "user", "content": msg}], "",
                       "clozn-qwen", t0, error=str(e), mem_out=memout)
             h._json(500, {"error": f"{type(e).__name__}: {e}"})
             return True
         if r is None:
-            h._json(409, {"error": f"'{p}' isn't served by the '{ctx.SUBNAME}' substrate",
-                         "need": "qwen", "active": ctx.SUBNAME})
+            h._json(409, {"error": f"'{p}' isn't served by the '{ctx.active_subname(h)}' substrate",
+                         "need": "qwen", "active": ctx.active_subname(h)})
             return True
         # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}; a diffusion
         # substrate (or any path that filled nothing) yields [] -> a clean empty trace.
@@ -175,22 +175,22 @@ def try_post(h, p, body):
         h._json(200, r)
         return True
     if p == "/denoise":   # Dream diffusion window -> capture it as a run
-        if not (ctx.SUB and getattr(ctx.SUB, "handle", None)):
-            h._json(409, {"error": f"'{p}' isn't served by the '{ctx.SUBNAME}' substrate",
-                         "need": "dream", "active": ctx.SUBNAME})
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "handle", None)):
+            h._json(409, {"error": f"'{p}' isn't served by the '{ctx.active_subname(h)}' substrate",
+                         "need": "dream", "active": ctx.active_subname(h)})
             return True
         prompt = str(body.get("prompt", ""))
         t0 = time.time()
         try:
-            r = ctx.SUB.handle(p, body)
+            r = ctx.active_sub(h).handle(p, body)
         except Exception as e:
             h._log_run("denoise", [{"role": "user", "content": prompt}], "",
                       "clozn-dream", t0, error=str(e))
             h._json(500, {"error": f"{type(e).__name__}: {e}"})
             return True
         if r is None:
-            h._json(409, {"error": f"'{p}' isn't served by the '{ctx.SUBNAME}' substrate",
-                         "need": "dream", "active": ctx.SUBNAME})
+            h._json(409, {"error": f"'{p}' isn't served by the '{ctx.active_subname(h)}' substrate",
+                         "need": "dream", "active": ctx.active_subname(h)})
             return True
         h._log_run("denoise", [{"role": "user", "content": prompt}],
                   str(r.get("final_text", "")), "clozn-dream", t0)

@@ -63,12 +63,12 @@ def try_post(h, p, body):
             return True
         # regen/both regenerate both arms through the product model; forced-only never generates
         # (S3: teacher-forced /score on the worker) -- no chat needed.
-        if mode in ("regen", "both") and not (ctx.SUB and getattr(ctx.SUB, "chat", None)):
+        if mode in ("regen", "both") and not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):
             h._json(503, {"error": "receipts require a ready product model worker"})
             return True
         from clozn import receipts
         try:
-            h._json(200, receipts.prove_all(run, ctx.SUB, mode=mode))
+            h._json(200, receipts.prove_all(run, ctx.active_sub(h), mode=mode))
         except Exception as e:
             h._json(500, {"error": f"receipts failed: {type(e).__name__}: {e}"})
         return True
@@ -83,7 +83,7 @@ def try_post(h, p, body):
         if mode not in ("regen", "forced", "both"):
             h._json(400, {"error": "mode must be one of regen|forced|both"})
             return True
-        if mode in ("regen", "both") and not (ctx.SUB and getattr(ctx.SUB, "chat", None)):
+        if mode in ("regen", "both") and not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):
             h._json(503, {"error": "receipt requires a ready product model worker"})
             return True
         influence = body.get("influence")
@@ -93,7 +93,7 @@ def try_post(h, p, body):
             return True
         from clozn import receipts
         try:
-            out = receipts.receipt(run, influence, ctx.SUB, mode=mode)
+            out = receipts.receipt(run, influence, ctx.active_sub(h), mode=mode)
         except Exception as e:
             h._json(500, {"error": f"receipt failed: {type(e).__name__}: {e}"})
             return True
@@ -110,7 +110,7 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "engine", None) and getattr(ctx.SUB, "jlens", None)):
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "engine", None) and getattr(ctx.active_sub(h), "jlens", None)):
             h._json(503, {"error": "swap_receipt requires the product worker with J-lens enabled"})
             return True
         to_concept = str(body.get("to_concept", "")).strip()
@@ -119,7 +119,7 @@ def try_post(h, p, body):
             return True
         from clozn.receipts.swap_receipt import swap_receipt
         try:
-            out = swap_receipt(run, body.get("from_hint"), to_concept, ctx.SUB)
+            out = swap_receipt(run, body.get("from_hint"), to_concept, ctx.active_sub(h))
         except Exception as e:
             h._json(500, {"error": f"swap_receipt failed: {type(e).__name__}: {e}"})
             return True
@@ -132,12 +132,12 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "score_tokens", None)):
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "score_tokens", None)):
             h._json(503, {"error": "rederive requires worker token scoring"})
             return True
         import clozn.receipts.rederive as rederive
         try:
-            out = rederive.rederive(run, ctx.SUB)
+            out = rederive.rederive(run, ctx.active_sub(h))
         except Exception as e:
             h._json(500, {"error": f"rederive failed: {type(e).__name__}: {e}"})
             return True
@@ -155,11 +155,11 @@ def try_post(h, p, body):
         layer = body.get("layer")
         topk = int(body.get("topk", 5) or 5)
         want_protocol = bool(body.get("protocol", False))
-        if not (ctx.SUB and getattr(ctx.SUB, "jlens", None)):
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "jlens", None)):
             h._json(200, {"available": False, "run_id": None,
                          "reason": "the product model worker has no J-lens"})
             return True
-        res = ctx.SUB.jlens(text, layer=layer, topk=topk)
+        res = ctx.active_sub(h).jlens(text, layer=layer, topk=topk)
         h._json(200, ctx._jlens_envelope(res, run_id=None, text_source="input", want_protocol=want_protocol))
         return True
     if p.startswith("/runs/") and p.endswith("/jlens"):   # J3: the Run Inspector J-lens feed for a run
@@ -169,7 +169,7 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "jlens", None)):
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "jlens", None)):
             h._json(200, {"available": False, "run_id": rid,
                          "reason": "the product model worker has no J-lens"})
             return True
@@ -181,7 +181,7 @@ def try_post(h, p, body):
         layer = body.get("layer")
         topk = int(body.get("topk", 5) or 5)
         want_protocol = bool(body.get("protocol", False))
-        res = ctx.SUB.jlens(text, layer=layer, topk=topk)
+        res = ctx.active_sub(h).jlens(text, layer=layer, topk=topk)
         h._json(200, ctx._jlens_envelope(res, run_id=rid, text_source=text_source, want_protocol=want_protocol))
         return True
     if p.startswith("/runs/") and p.endswith("/narrate"):   # M4: accountable-self narration + confabulation-diff
@@ -191,7 +191,7 @@ def try_post(h, p, body):
         if run is None:
             h._json(404, {"error": "run not found"})
             return True
-        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):   # constrained + unconstrained both generate
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):   # constrained + unconstrained both generate
             h._json(503, {"error": "narration requires a ready product model worker"})
             return True
         import clozn.receipts.narrate as narrate
@@ -206,7 +206,7 @@ def try_post(h, p, body):
             # returns the receipt-constrained narration + confabulation flags; the raw unconstrained
             # "why" is NEVER a field in the result (narrate.py's structural trap guard). narrate()'s
             # own `note` states which matcher ran, so the response is self-describing about its honesty.
-            out = narrate.narrate(run, ctx.SUB, support_matcher=matcher)
+            out = narrate.narrate(run, ctx.active_sub(h), support_matcher=matcher)
         except Exception as e:
             h._json(500, {"error": f"narrate failed: {type(e).__name__}: {e}"})
             return True
@@ -230,7 +230,7 @@ def try_post(h, p, body):
             h._json(400, {"error": f"unknown change.type: {ctype!r} (know: "
                          f"{sorted(clozn_experiment.REGISTRY)})"})
             return True
-        if not clozn_experiment.substrate_ok(ctype, ctx.SUB):
+        if not clozn_experiment.substrate_ok(ctype, ctx.active_sub(h)):
             needs = clozn_experiment.REGISTRY[ctype]["substrate"]
             msg = ("experiment requires a ready product model worker" if needs == "chat" else
                    "experiment requires the product worker with J-lens enabled")
@@ -238,7 +238,7 @@ def try_post(h, p, body):
             return True
         method = body.get("method")
         try:
-            out = clozn_experiment.run_experiment(run, change, method, ctx.SUB)
+            out = clozn_experiment.run_experiment(run, change, method, ctx.active_sub(h))
         except ValueError as e:
             h._json(400, {"error": str(e)})
             return True

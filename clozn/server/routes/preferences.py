@@ -28,13 +28,13 @@ def try_post(h, p, body):
             h._json(400, {"error": "unknown proposal id, or action not in {approve,dismiss}"})
             return True
         applied = None
-        if pr["status"] == "approved" and ctx.SUB is not None and getattr(ctx.SUB, "steer", None) is not None:
+        if pr["status"] == "approved" and ctx.active_sub(h) is not None and getattr(ctx.active_sub(h), "steer", None) is not None:
             try:                       # persist the dial exactly like the F2 save-fix does (steer.set
-                ctx.SUB.steer.set(pr["dial"], float(pr["suggested_value"]))   # caps per-axis)
-                if hasattr(ctx.SUB.steer, "save_state") and getattr(ctx.SUB, "_pers_steer", None):
-                    ctx.SUB.steer.save_state(ctx.SUB._pers_steer)
+                ctx.active_sub(h).steer.set(pr["dial"], float(pr["suggested_value"]))   # caps per-axis)
+                if hasattr(ctx.active_sub(h).steer, "save_state") and getattr(ctx.active_sub(h), "_pers_steer", None):
+                    ctx.active_sub(h).steer.save_state(ctx.active_sub(h)._pers_steer)
                 applied = {"dial": pr["dial"],
-                           "value": float(ctx.SUB.steer.strength.get(pr["dial"], pr["suggested_value"]))}
+                           "value": float(ctx.active_sub(h).steer.strength.get(pr["dial"], pr["suggested_value"]))}
             except Exception as e:
                 applied = {"error": f"{type(e).__name__}: {e}"}
         h._json(200, {"ok": True, "proposal": pr, "applied": applied})

@@ -23,7 +23,7 @@ def try_post(h, p, body):
             h._json(404, {"error": "run not found"})
             return True
         # A fork teacher-forces a raw prompt prefix through the private worker seam.
-        if not (ctx.SUB and getattr(ctx.SUB, "engine", None)):
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "engine", None)):
             h._json(503, {"error": "fork requires a ready product model worker"})
             return True
         if "position" not in body:
@@ -36,7 +36,7 @@ def try_post(h, p, body):
             return True
         import clozn.replay.fork as fork_mod
         try:
-            child = fork_mod.fork(run, ctx.SUB, position,
+            child = fork_mod.fork(run, ctx.active_sub(h), position,
                                   token=body.get("token"), token_id=body.get("token_id"))
         except ValueError as e:                          # validation: out-of-range / no trace / bad token
             h._json(400, {"error": str(e)})

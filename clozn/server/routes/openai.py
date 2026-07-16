@@ -29,7 +29,7 @@ def try_post(h, p, body):
         return True
     if p != "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied
         return False
-    if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):
+    if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):
         h._json(503, {"error": {"message": "model worker unavailable", "type": "service_unavailable"}})
         return True
     from clozn.server.generation_gateway import model_id
@@ -61,7 +61,7 @@ def try_post(h, p, body):
     # receipt footers as context (it would imitate/steer on them). No-op when no footer ever rode.
     from clozn.runs.receipt_footer import strip_footers
     msgs = strip_footers(msgs)
-    if body.get("stream") and getattr(ctx.SUB, "chat_stream", None):
+    if body.get("stream") and getattr(ctx.active_sub(h), "chat_stream", None):
         from clozn.server import sse
         from clozn.server.routes.receipt_link import receipt_enabled
         # F1 live lens: clozn_lens {layer?, topk?, every?} (or true) is a clozn extension -- absent for
@@ -74,15 +74,15 @@ def try_post(h, p, body):
     trace_steps = []                            # HF non-stream: capture a per-token trace (B3)
     memout = {}                                 # prompt mode: what memory actually rode this turn
     chat_kw = {"trace_out": trace_steps, "mem_out": memout}
-    if isinstance(ctx.SUB, ctx.EngineSubstrate):
+    if isinstance(ctx.active_sub(h), ctx.EngineSubstrate):
         chat_kw["apply_anchored"] = True
     try:
-        reply = ctx.SUB.chat(msgs, mx, temperature > 0, **chat_kw)
+        reply = ctx.active_sub(h).chat(msgs, mx, temperature > 0, **chat_kw)
     except Exception as exc:
         h._log_run("openai_api", msgs, "", selected_model, t0, error=str(exc), mem_out=memout)
         _api_error(h, 502, str(exc), kind="upstream_error")
         return True
-    fr = ctx.SUB.last_finish_reason() if hasattr(ctx.SUB, "last_finish_reason") else None
+    fr = ctx.active_sub(h).last_finish_reason() if hasattr(ctx.active_sub(h), "last_finish_reason") else None
     openai_fr = ctx._openai_finish_reason(fr)
     # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}.
     rid = h._log_run("openai_api", msgs, reply, selected_model, t0,

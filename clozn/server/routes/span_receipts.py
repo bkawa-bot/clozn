@@ -19,12 +19,12 @@ def try_post(h, p, body):
             return True
         # Both regen arms use the product model (the same gate /receipt applies for regen/both); the
         # forced arm degrades honestly INSIDE the receipt when score_tokens is absent.
-        if not (ctx.SUB and getattr(ctx.SUB, "chat", None)):
+        if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):
             h._json(503, {"error": "span_receipt requires a ready product model worker"})
             return True
         from clozn.receipts.span_receipt import SpanSpecError, span_receipt
         try:
-            out = span_receipt(run, body, ctx.SUB)
+            out = span_receipt(run, body, ctx.active_sub(h))
         except SpanSpecError as e:
             h._json(400, {"error": str(e)})
             return True

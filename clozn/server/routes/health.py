@@ -8,7 +8,7 @@ def try_get(h, p):
         h._json(200, {"status": "ok", "service": "clozn"})
         return True
     if p == "/readyz":
-        if ctx.SUB is None or ctx.ENGINE is None:
+        if ctx.active_sub(h) is None or ctx.ENGINE is None:
             h._json(503, {"status": "not_ready", "service": "clozn", "reason": "model worker unavailable"})
             return True
         try:
@@ -34,8 +34,8 @@ def try_get(h, p):
             h._json(502, {"error": f"engine unreachable: {e}"})
         return True
     if p == "/state":
-        h._json(200, {"substrate": ctx.SUBNAME, "memory_mode": ctx._memory_mode(),
-                      **(ctx.SUB.state() if ctx.SUB else {})})
+        h._json(200, {"substrate": ctx.active_subname(h), "memory_mode": ctx._memory_mode(),
+                      **(ctx.active_sub(h).state() if ctx.active_sub(h) else {})})
         return True
     if p == "/capture/tier":
         from clozn.runs import capture_mode
