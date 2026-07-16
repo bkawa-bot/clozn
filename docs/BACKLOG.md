@@ -76,9 +76,20 @@ The "make it a product people can actually run" track. Ordered per the handoff's
   manifest, steering snapshot, trace, finish reason, cancellation) instead of shared process globals; this
   removes the reason every POST is globally serialized. Propagate client disconnect → cancel the worker;
   define worker-dies-midstream behavior. *(Stage 2's injectable substrate is groundwork for this.)*
-- [ ] **Persistence: migratable + trustworthy** **[H:P1]** — replace `_ensure()` schema stamping with real
-  transactional migrations + `clozn migrate`/doctor; verify trace-blob digests on read; GC unreferenced
-  blobs; stop silently swallowing evidence-write failures.
+- [x] **Persistence: migratable + trustworthy** **[H:P1]** — DONE (46b03a1 migrations engine + 0c5cade
+  evidence-write honesty + e6898e2 blob GC + fb01a32 `clozn migrate` CLI). `clozn/runs/migrations.py`:
+  versioned, ordered, transactional migration steps (each its own BEGIN IMMEDIATE/COMMIT/ROLLBACK -- a
+  mid-migration failure rolls back cleanly, DB stays usable at the prior version) replace `_ensure()`'s ad
+  hoc executescript-stamping; the ledger reuses `schema_meta` so a fresh migrated DB's schema stays
+  byte-identical to the old `_ensure()`'s (proven by schema-dump diff), and a legacy `_ensure()`-built DB
+  upgrades in place losslessly. `clozn migrate [--dry-run] [--gc] [--json]`: reports current/target
+  version + applies pending migrations, or (`--gc`) garbage-collects blob files no run row references
+  (dry-run by default, path-containment-checked, TOCTOU-safe). Trace-blob digests verified on read
+  (already done, commit 6409535). `_store_trace`'s write failure (used to propagate through `record()`'s
+  blanket except and silently drop the WHOLE run) is now caught, logged, and marked -- the run row still
+  lands with an honest "evidence-missing" flag/meta instead of vanishing or reading as "no trace ever
+  existed". 42 new tests (migrations, GC, CLI, evidence-write); full suite 1631 passed/11 skipped (skips
+  all pre-existing model-gated).
 - [ ] **Client compatibility matrix** **[H:P2]** — publish an endpoint/field support matrix; unsupported
   fields → OpenAI-shaped 4xx or documented-ignored (no silent pretend). Integration tests with the real
   OpenAI client. **Owner decision: Ollama drop-in?** (recommended: thin `/api/chat|generate|tags|version`).
