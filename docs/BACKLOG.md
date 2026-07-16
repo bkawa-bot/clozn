@@ -59,9 +59,11 @@ These make the branch we just pushed trustworthy and the docs honest. All small.
 
 The "make it a product people can actually run" track. Ordered per the handoff's recommended sequence.
 
-- [ ] **Engine sampling on the serving path** **[RM][SPLIT P3][H]** — top-p/k is unwired (engine is
-  greedy/temp/rep-penalty only). The single most-repeated open item across three docs. **Owner decision:
-  default on or off?** (Receipts/replay stay forced-greedy regardless.)
+- [x] **Engine sampling on the serving path** **[RM][SPLIT P3][H]** — DONE (4839fa8). top_k/top_p now
+  wired end to end: SampleOpts/SampleConfig → sample_from → sample.cpp truncates to top-k then the top-p
+  nucleus before the seeded draw. Default ON with Ollama's canonical temp 0.8/top_k 40/top_p 0.9/rep 1.1
+  (owner: default on, "feels like the same model they know from Ollama"). Greedy argmax path byte-identical
+  → receipts/replay stay forced-greedy regardless. Verified: top_k=1==greedy, seed reproduces, sampled≠greedy.
 - [ ] **Worker protocol handshake** **[H:P1]** — `protocol/SPEC.md` is prose, not a contract. Add
   `protocol_version` + capabilities to `/health` + `/readyz`; supervisor refuses an incompatible major;
   request-id + monotonic event seq on native streams; golden fixtures shared by C++/Python/Studio.
