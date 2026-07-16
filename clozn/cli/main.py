@@ -58,6 +58,7 @@ from clozn.cli.commands.test import cmd_test                                    
 from clozn.cli.commands.quant_check import cmd_quant_check, add_subparser as _add_quant_check  # noqa: E402,F401
 from clozn.cli.commands.eval import cmd_eval, add_subparser as _add_eval                       # noqa: E402,F401
 from clozn.cli.commands.migrate import cmd_migrate_runs                                        # noqa: E402
+from clozn.cli.commands.migrate import add_subparser as _add_migrate                            # noqa: E402
 from clozn.cli.commands.lab import cmd_lab                                                      # noqa: E402
 from clozn.cli.commands.smoke import cmd_smoke                                                  # noqa: E402
 
@@ -134,6 +135,7 @@ def build_parser():
     pmig = sub.add_parser("migrate-runs", help="one-shot import of the old run_*.json journal into SQLite")
     pmig.add_argument("path", nargs="?", default=None, help="legacy JSON directory (default ~/.clozn/runs)")
     pmig.set_defaults(fn=cmd_migrate_runs)
+    _add_migrate(sub)      # `clozn migrate` -- run-store schema migrations + `--gc` blob GC (BACKLOG §2)
     pt = sub.add_parser("trace", help="inspect the last run journal entry's confidence timeline")
     pt.add_argument("--list", action="store_true", help="list recent run journal entries instead of showing the last")
     pt.set_defaults(fn=cmd_trace)
