@@ -66,3 +66,35 @@ jobs:
         # Path fixed: the kernel moved from kernels/ to engine/kernels/ (reorg stage 5) and its test
         # file was later renamed test_reference.py -> test_confidence_select_reference.py.
         run: pytest engine/kernels/confidence_select/test_confidence_select_reference.py -q
+
+  product-minimal:
+    name: product gateway — Torch-free boundary (no torch installed)
+    runs-on: ubuntu-latest
+    # The product/lab split's enforcement lane. `clozn serve` must import + serve with NO PyTorch --
+    # inference is the C++ worker on a GGUF; torch/transformers are lab-only. This job installs the
+    # product-minimal deps ONLY (numpy + the path-based engine/client SDK; NO torch, NO transformers,
+    # NO engine/lab[dev]), so a stray top-level `import torch` reachable from clozn.server.app fails the
+    # build here instead of silently riding along in the full `python` lane above (which installs torch).
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install product-minimal deps (numpy only; deliberately NO torch/transformers/lab)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy==2.4.6"
+      - name: Product import is Torch-free (the boundary)
+        run: |
+          python - <<'PY'
+          import sys
+          import clozn.server.app
+          assert 'torch' not in sys.modules, 'torch leaked into the product import'
+          assert 'transformers' not in sys.modules, 'transformers leaked into the product import'
+          assert all('engine/lab' not in p for p in sys.path), 'engine/lab is on the product sys.path'
+          print('product import: torch-free, transformers-free, no engine/lab on path')
+          PY
+      - name: Model-free product acceptance gate (runs with no torch installed)
+        # Validated locally with torch/transformers import-blocked: 36/36 pass. test_studio is
+        # intentionally excluded -- it touches the HF SteeringControl and is not a torch-free test.
+        run: python -m unittest -v tests.test_runtime_architecture tests.test_product_smoke
