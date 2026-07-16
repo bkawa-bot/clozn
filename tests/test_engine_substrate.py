@@ -780,3 +780,84 @@ def test_engine_complete_traced_sends_the_resolved_sampler_params(iso, fake_engi
     assert params["rep_penalty"] == 1.1
     assert params["seed"] == 12345
     assert params["top_k"] == 40 and params["top_p"] == 0.9
+
+
+# ==================================================================================== RequestContext (backlog #2: request isolation)
+# chat()'s piecemeal self._last_generation_meta/_last_finish_reason/_last_diverged/_last_diverged_at
+# writes were consolidated onto ONE clozn.server.request_context.RequestContext, published as
+# self._request in a single assignment (see substrates.py's EngineSubstrate._new_request). These tests
+# cover the consolidation itself -- the ALIASES' existing behavior is already exhaustively covered by
+# every test above (they all read sub._last_generation_meta / run_meta() / last_finish_reason() and never
+# noticed the change), so this section only tests what's NEW: the context object's identity/lifecycle.
+
+def test_request_context_fields_are_none_shaped_before_any_chat_call(iso, fake_engine):
+    sub = cs.EngineSubstrate()
+    assert getattr(sub, "_request", None) is None
+    assert sub._last_generation_meta is None
+    assert sub._last_finish_reason is None
+    assert sub._last_diverged is None
+    assert sub._last_diverged_at is None
+    assert sub._last_stream_trace == []
+
+
+def test_chat_publishes_a_fresh_request_context_each_call(iso, fake_engine, monkeypatch):
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    sub = cs.EngineSubstrate()
+
+    sub.chat([{"role": "user", "content": "hi"}])
+    first = sub._request
+    sub.chat([{"role": "user", "content": "hi again"}])
+    second = sub._request
+
+    assert first is not None and second is not None
+    assert first is not second                      # a brand-new object every call, never mutated in place
+    assert first.request_id != second.request_id     # a fresh id each call (new_request_id())
+    # the piecemeal aliases are VIEWS onto the CURRENT context -- identity, not a copy
+    assert sub._last_generation_meta is second.generation_meta
+    assert sub._last_finish_reason == second.finish_reason
+
+
+def test_request_context_carries_sampling_steering_and_trace(iso, fake_engine, monkeypatch):
+    """The context's fields are actually POPULATED, not just plumbing -- sampling (the resolved regime),
+    steering_snapshot (a COPY of the dial strengths this call used), and trace (the per-token steps)."""
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    steer = FakeSteer(strength={"warm": 0.6}, vec=[0.1, 0.2], layer=14)
+    sub = cs.EngineSubstrate()
+    sub.steer = steer
+    fake_engine.text = "hello there"
+
+    sub.chat([{"role": "user", "content": "hi"}], sample=False)
+
+    req = sub._request
+    assert req.sampling is None                      # sample=False -> greedy -> _resolve_sampling -> None
+    assert req.steering_snapshot == {"warm": 0.6}
+    assert req.steering_snapshot is not steer.strength   # a COPY -- a later live mutation must not retro-edit it
+    assert req.finish_reason is None or isinstance(req.finish_reason, str)
+    assert isinstance(req.trace, list)
+
+
+def test_last_generation_meta_never_shows_a_stale_mix_across_calls(iso, fake_engine, monkeypatch):
+    """A sampled call followed by a forced-greedy call: the alias must show ONLY the second call's
+    complete, self-consistent meta -- never e.g. a leftover sampled seed next to a greedy temperature."""
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    memory_mode.set_setting("sampling", True)
+    sub = cs.EngineSubstrate()
+
+    sub.chat([{"role": "user", "content": "hi"}], sample=True)
+    assert sub._last_generation_meta["sampler_mode"] == "sample"
+
+    sub.chat([{"role": "user", "content": "hi"}], sample=False)
+    meta = sub._last_generation_meta
+    assert meta["sampler_mode"] == "greedy"
+    assert meta["temperature"] == 0.0
+    assert "seed" not in meta or meta.get("seed") == 0   # no sampled-call seed bled into the greedy meta
+
+
+def test_the_piecemeal_aliases_are_read_only(iso, fake_engine):
+    """Hardening: the only legitimate writers are chat()/chat_stream() (through self._request); a stray
+    direct assignment must fail loudly instead of silently reintroducing the old piecemeal-write pattern."""
+    sub = cs.EngineSubstrate()
+    with pytest.raises(AttributeError):
+        sub._last_generation_meta = {"sampler_mode": "sample"}
+    with pytest.raises(AttributeError):
+        sub._last_finish_reason = "stop"
