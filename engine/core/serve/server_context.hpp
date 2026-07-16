@@ -8,7 +8,8 @@
 // ctx.pool / ctx.jlens / ... (each register fn re-binds local aliases so the moved body stays verbatim).
 #pragma once
 
-#include "server_shared.hpp"   // GgmlModel, ContextPool, ConceptProbes, SaeServe, JlensServe, json
+#include "server_shared.hpp"            // GgmlModel, ContextPool, ConceptProbes, SaeServe, JlensServe, json
+#include "chat_template_renderer.hpp"   // isolated full-GGUF Jinja renderer
 
 namespace httplib { class Server; }  // fwd-decl: the header needn't pull in the single-header httplib
 
@@ -23,6 +24,7 @@ struct ServerContext {
     ConceptProbes& steer_probes;     // WRITE: mid-depth tap (steering control vector)
     SaeServe& sae_serve;
     JlensServe& jlens;
+    ChatTemplateRenderer& chat_templates;
     int n_ctx;
     int mask_token;
     bool ar_mode;

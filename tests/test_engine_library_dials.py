@@ -66,6 +66,9 @@ class _FakeEC:
         self.complete_calls = []
         self.intervene_calls = []
 
+    def health(self):
+        return {"status": "ok", "n_layer": 24, "n_embd": self.N_EMBD}
+
     def harvest(self, text, layer=None):
         self.harvest_calls.append(text)
         seed = int(hashlib.md5(text.encode("utf-8")).hexdigest()[:8], 16)
@@ -148,6 +151,7 @@ def test_compute_derives_vecs_for_library_dials_too(tmp_path):
     assert abs(float(np.linalg.norm(vec)) - 1.0) < 1e-5  # unit direction
     assert "eli5" in info["axes"]
     assert es.ready is True
+    assert es.layer == 12                         # derived from this loaded model, never Qwen's hardcoded 14
 
 
 def test_compute_skips_a_custom_name_already_in_vecs(tmp_path):

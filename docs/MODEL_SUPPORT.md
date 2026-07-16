@@ -114,3 +114,46 @@ After that: Tier 1 per model = a sweep (+ LLM-judge curation); Tier 2 = wire Gem
 Sources: Qwen3.6 (unsloth/Qwen3.6-27B-GGUF; github.com/QwenLM/Qwen3.6) · Gemma 4 (blog.google) ·
 Gemma Scope 2 (lesswrong "Announcing Gemma Scope 2"; deepmind.google/models/gemma/gemma-scope) ·
 Best local LLM Jul 2026 (app.stationx.net) · Best 16 GB VRAM LLMs (localllm.in).
+
+---
+
+## Wave 1 qualification roster (2026-07-14)
+
+The qualification gate is now explicit. Core support does not require a J-lens
+or a pretrained dial bundle; ordinary chat, OpenAI/native streaming,
+prompt-card memory, runs, traces, scoring, and raw forward intervention must
+work before optional artifacts are considered.
+
+| Family | Exact training checkpoint | Qualification GGUF | Why this size |
+|---|---|---|---|
+| Qwen 2.5 | `Qwen/Qwen2.5-7B-Instruct` | `Qwen2.5-7B-Instruct-Q4_K_M.gguf` | Existing fitted lens; the 7B checkpoint is the family's strongest adoption target |
+| Llama | `meta-llama/Llama-3.1-8B-Instruct` | `Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf` | The practical local size in the very widely used Llama 3.1 family |
+| Qwen 3.5 | `Qwen/Qwen3.5-9B` | `Qwen3.5-9B-Q4_K_M.gguf` | Default Ollama size; narrowly more downloaded than 4B |
+| Gemma 4 | `google/gemma-4-E4B-it` | `gemma-4-E4B-it-Q4_K_M.gguf` | Default Ollama tag and a practical 5.34 GB official GGUF |
+| Ministral 3 | `mistralai/Ministral-3-3B-Instruct-2512` | `Ministral-3-3B-Instruct-2512-Q4_K_M.gguf` | The 3B checkpoint materially leads 8B in checkpoint and GGUF downloads |
+
+The evidence ladder is: discovered (valid header/template), core-qualified
+(real basic and deep smoke), white-box-qualified (tap/write/score), calibrated
+(model-scoped dial ranges), then lens-qualified (semantic and quant-transfer
+tests). “Supports a model” means the achieved level, not that all optional
+artifacts exist.
+
+Sources reviewed for the roster: [Ollama's popular model library](https://ollama.com/library?sort=popular),
+[LM Studio models](https://lmstudio.ai/models), the
+[Qwen 3.5 tags](https://ollama.com/library/qwen3.5),
+[Gemma 4 tags](https://ollama.com/library/gemma4), and the model cards for
+[Gemma 4 E4B GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) and
+[Ministral 3 3B GGUF](https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF).
+
+LLaDA remains a separate diffusion/research qualification lane. Its
+architecture cannot inherit the autoregressive gate merely because a GGUF
+converter can produce a file.
+
+### Artifact rule
+
+Every product artifact uses `clozn.artifacts.contracts` contract version 1.
+Its manifest records the source checkpoint, architecture,
+hidden/layer/vocabulary dimensions, tokenizer digest, exact qualified GGUF
+SHA-256 values, and a digest and byte count for every payload. Lab fitting may
+use BF16/NF4, but a product quant is accepted only after its exact GGUF digest
+has passed transfer tests.

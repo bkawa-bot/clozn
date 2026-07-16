@@ -420,6 +420,29 @@ def sample_prompts(n: int, seed: int = 0) -> tuple[list[str], str]:
     return list(NEUTRAL_PROMPTS[:n]), "neutral-fallback"
 
 
+def load_prompts_file(path: str) -> tuple[list[str], str]:
+    """(prompts, source) for an explicit --prompts-file: a CURATED, model-independent bank, used verbatim
+    and in full (n_prompts does NOT cap it -- the whole point of a hand-picked set is that every prompt
+    earns its place). This is the reusable knob: the SAME file, swept against any --model, makes two
+    models' calibrations comparable because they were measured on the identical prompt distribution (a
+    runlog sample is per-machine and drifts; a file is fixed). Accepts a bare JSON list of strings, or a
+    {"prompts": [...]} object (extra keys like "description" ignored), or -- if the file isn't JSON -- one
+    non-empty, non-`#`-comment prompt per line. Source is tagged file:<basename> so it's self-documenting
+    in the saved report's prompt_source."""
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    try:
+        obj = json.loads(raw)
+        items = obj.get("prompts", []) if isinstance(obj, dict) else obj
+    except json.JSONDecodeError:
+        items = [ln.strip() for ln in raw.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    prompts = [str(p).strip() for p in items if isinstance(p, (str, int, float)) and str(p).strip()]
+    if not prompts:
+        raise SystemExit(f"--prompts-file {path!r} yielded no usable prompts "
+                         "(expected a JSON list of strings, a {'prompts':[...]} object, or one per line)")
+    return prompts, f"file:{os.path.basename(path)}"
+
+
 # =========================================================================== the backbone + dial machinery
 class SingleTurnSteer(SteeringControl):
     """SteeringControl, but every contrast prompt used to COMPUTE a direction is folded into a single USER
@@ -770,7 +793,8 @@ def calibrate_dial(rig, sc, name: str, prompts: list[str], fracs: list[float], s
 # ================================================================================================= run
 def run(model_name: str, dials: list[str] | None = None, n_prompts: int = 6,
         out_path: str = "research/runs/dial_autocalibrate.json", four_bit_override: str = "auto",
-        smoke: bool = False, seed: int = 0, layer: int | None = None, max_new: int = 100) -> dict:
+        smoke: bool = False, seed: int = 0, layer: int | None = None, max_new: int = 100,
+        prompts_file: str | None = None) -> dict:
     torch.manual_seed(seed)
     dial_names = list(dials) if dials else list(DEFAULT_DIALS)
     if smoke:
@@ -778,7 +802,13 @@ def run(model_name: str, dials: list[str] | None = None, n_prompts: int = 6,
     n_eff = 2 if smoke else n_prompts      # --smoke always uses 2 prompts
     fracs = _SWEEP_FRACS_SMOKE if smoke else _SWEEP_FRACS
 
-    prompts, prompt_source = sample_prompts(n_eff, seed=seed)
+    # A curated --prompts-file wins over the runlog sample (and ignores n_prompts): a fixed, model-
+    # independent bank is what makes two models' calibrations comparable. --smoke still overrides to keep
+    # the wiring-check cheap regardless of how big the file is.
+    if prompts_file and not smoke:
+        prompts, prompt_source = load_prompts_file(prompts_file)
+    else:
+        prompts, prompt_source = sample_prompts(n_eff, seed=seed)
     print(f"[prompts] {len(prompts)} prompt(s) from {prompt_source}", flush=True)
 
     rig = Rig(model_name, four_bit_override)
@@ -1122,6 +1152,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="(--report only) where to write the curated, winners-only library JSON")
     ap.add_argument("--n-prompts", type=int, default=6,
                     help="recent runlog user turns to sample (else NEUTRAL_PROMPTS)")
+    ap.add_argument("--prompts-file", default=None, metavar="PROMPTS.json",
+                    help="curated, model-independent prompt bank (JSON list of strings, {'prompts':[...]} "
+                         "object, or one-per-line text) used verbatim and in FULL instead of the runlog "
+                         "sample -- the reusable knob: sweep the SAME file against any --model to get "
+                         "comparable calibrations. Ignores --n-prompts; overridden by --smoke.")
     ap.add_argument("--out", default=None,
                     help="output path (default: dial_library_sweep.json for --library, else "
                          "dial_autocalibrate.json -- see _default_out_path)")
@@ -1147,4 +1182,4 @@ if __name__ == "__main__":
         run(args.model, dials=args.dials, n_prompts=args.n_prompts,
             out_path=args.out or _default_out_path(args.library),
             four_bit_override=args.four_bit, smoke=args.smoke, seed=args.seed, layer=args.layer,
-            max_new=args.max_new)
+            max_new=args.max_new, prompts_file=args.prompts_file)

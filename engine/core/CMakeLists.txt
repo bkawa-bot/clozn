@@ -162,7 +162,14 @@ endif()
 #   cmake --build build-ggml --target test_ggml_forward
 #   ./build-ggml/.../test_ggml_forward  <model.gguf>   (convert via llama.cpp/convert_hf_to_gguf.py)
 option(CLOZE_BUILD_GGML "Build the ggml L0 adapter + forward test (builds llama.cpp)" OFF)
+option(CLOZE_BUILD_SERVE "Build the HTTP serving layer (requires CLOZE_BUILD_GGML)" OFF)
 if(CLOZE_BUILD_GGML)
+    # The managed worker applies the GGUF's full Jinja chat template. llama.cpp keeps that
+    # implementation in llama-common rather than the core llama target, so make the common
+    # library part of server builds (but keep it out of backend-only/test builds).
+    if(CLOZE_BUILD_SERVE)
+        set(LLAMA_BUILD_COMMON ON CACHE BOOL "llama: build common utils library" FORCE)
+    endif()
     add_subdirectory(third_party/llama.cpp)
 
     # GgmlAdapter: the ONE place a model backend lives (DESIGN invariant 1). It links
@@ -243,7 +250,6 @@ endif()
 # An HTTP server over the runtime: /v1/completions (+ SSE streaming of the §5.1 events) and
 # /v1/infill, using the cpp-httplib + nlohmann/json that llama.cpp already vendors (no new deps).
 #   cmake -S core -B build -G Ninja -DCLOZE_BUILD_GGML=ON -DCLOZE_BUILD_SERVE=ON
-option(CLOZE_BUILD_SERVE "Build the HTTP serving layer (requires CLOZE_BUILD_GGML)" OFF)
 if(CLOZE_BUILD_SERVE AND CLOZE_BUILD_GGML)
     set(_vendor ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/vendor)
     # cpp-httplib is the split build: compile its httplib.cpp here for the out-of-line definitions
@@ -252,12 +258,13 @@ if(CLOZE_BUILD_SERVE AND CLOZE_BUILD_GGML)
     # through ServerContext (serve/server_context.hpp) + the shared helpers/structs (serve/server_shared.hpp).
     add_executable(cloze-server
         serve/server_main.cpp
+        serve/chat_template_renderer.cpp
         serve/routes_jlens.cpp
         serve/routes_whitebox.cpp
         serve/routes_state.cpp
         ${_vendor}/cpp-httplib/httplib.cpp)
     target_include_directories(cloze-server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/serve ${_vendor}/cpp-httplib ${_vendor})
-    target_link_libraries(cloze-server PRIVATE cloze_ggml)
+    target_link_libraries(cloze-server PRIVATE cloze_ggml llama-common)
     if(CLOZE_BUILD_SAE)
         # --sae <dir>: the on-device SAE feature readout rides the server (cloze/sae.hpp is a
         # CUDA-free pimpl header, so this stays a plain-CXX target; cloze_sae brings cudart).

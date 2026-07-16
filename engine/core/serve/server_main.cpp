@@ -3,7 +3,7 @@
 // directly (the native streaming protocol the events were designed for). Uses the single-header
 // cpp-httplib + nlohmann/json that llama.cpp already vendors — no new dependencies.
 //
-//   cloze-server <model.gguf> [--port N] [--host H] [--gpu-layers N] [--mask-token ID] [--eos ID] [--ctx N]
+//   cloze-server <model.gguf> [--port N] [--host H] [--gpu-layers N] [--diffusion --mask-token ID]
 //
 // Endpoints:
 //   GET  /health           -> {"status":"ok","model":...}
@@ -61,8 +61,8 @@ using namespace cloze;
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <model.gguf> [--port N] [--host H] [--gpu-layers N] "
-                             "[--mask-token ID] [--eos ID] [--ctx N] [--workers N] "
-                             "[--sae <dir>] [--sae-k N] [--jlens <dir>]\n", argv[0]);
+                             "[--ar | --diffusion] [--mask-token ID] [--eos ID] [--ctx N] [--workers N] "
+                             "[--sae <dir>] [--sae-k N] [--jlens <dir>] [--model-sha256 HEX]\n", argv[0]);
         return 1;
     }
     const std::string model_path = argv[1];
@@ -70,29 +70,33 @@ int main(int argc, char** argv) {
     std::string host = "127.0.0.1";
     std::string sae_dir;  // --sae: exported SAE weight dir (tools/export_sae_weights.py); off by default
     int sae_k = 16;
-    std::string jlens_dir;  // --jlens: J-lens sidecar dir; else CLOZN_JLENS_DIR; else ~/.clozn/jlens (off if empty)
+    std::string jlens_dir;  // --jlens: already validated/model-scoped by the product supervisor
+    std::string model_sha256;
+    bool force_ar = false;
+    bool force_diffusion = false;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() { return (i + 1 < argc) ? argv[++i] : ""; };
         if (a == "--port") port = std::atoi(next());
         else if (a == "--host") host = next();
         else if (a == "--gpu-layers") gpu_layers = std::atoi(next());
-        else if (a == "--mask-token") mask_token = std::atoi(next());
+        else if (a == "--mask-token") { mask_token = std::atoi(next()); force_diffusion = true; }
         else if (a == "--eos") eos = std::atoi(next());
         else if (a == "--ctx") n_ctx = std::atoi(next());
         else if (a == "--workers") workers = std::atoi(next());
         else if (a == "--sae") sae_dir = next();
         else if (a == "--sae-k") sae_k = std::atoi(next());
         else if (a == "--jlens") jlens_dir = next();
+        else if (a == "--model-sha256") model_sha256 = next();
+        else if (a == "--ar") force_ar = true;
+        else if (a == "--diffusion") force_diffusion = true;
+    }
+    if (force_ar && force_diffusion) {
+        std::fprintf(stderr, "--ar and --diffusion are mutually exclusive\n");
+        return 1;
     }
     if (workers < 1) workers = 1;
     if (sae_k < 1) sae_k = 1;
-    if (jlens_dir.empty()) {                     // --jlens > $CLOZN_JLENS_DIR > ~/.clozn/jlens (the sidecar home)
-        if (const char* e = std::getenv("CLOZN_JLENS_DIR")) jlens_dir = e;
-        else if (const char* h = std::getenv("USERPROFILE")) jlens_dir = std::string(h) + "/.clozn/jlens";
-        else if (const char* h2 = std::getenv("HOME")) jlens_dir = std::string(h2) + "/.clozn/jlens";
-    }
-
     llama_log_set(quiet_log, nullptr);
     // One copy of the weights, N contexts over it — concurrent requests, one model in (V)RAM.
     auto model = std::make_shared<GgmlModel>(model_path, mask_token, eos, gpu_layers);
@@ -121,15 +125,10 @@ int main(int argc, char** argv) {
 #endif
     }
 
-    // Mode follows the MODEL: a diffusion dLLM (LLaDA/Dream) carries a mask token in its GGUF; a
-    // standard autoregressive LLM (Llama/Qwen/Mistral/...) does not. AR mode serves /v1/completions
-    // via the causal generate_ar loop (the same white-box reads + steering, different generation
-    // paradigm); the diffusion-only endpoints (infill/revise/board) return 400. The interpretability
-    // is model-agnostic — only the decode differs. `--ar` forces it for an AR model converted with a
-    // stray mask id.
-    bool force_ar = false;
-    for (int i = 2; i < argc; ++i) if (std::string(argv[i]) == "--ar") force_ar = true;
-    const bool ar_mode = force_ar || llama_vocab_mask(model->vocab()) < 0;
+    // Mode is explicit. A mask token is not proof of diffusion: ordinary AR checkpoints can carry
+    // mask/tool/multimodal control tokens (Gemma 4 does). Product launches mark the bounded known
+    // diffusion roster with --diffusion; every other GGUF safely defaults to causal AR.
+    const bool ar_mode = force_ar || !force_diffusion;
 
     // White-box Tier 2: build concept probes once, in the model's own activation space (a temp
     // context with the tap on; ~a few CPU forwards). Passed to generate when a request asks for
@@ -197,16 +196,46 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Parse the model's embedded Jinja template once. The old llama_chat_apply_template path only
+    // recognizes a fixed family list and rejects newer valid GGUFs such as Gemma 4. llama-common's
+    // renderer executes the actual checked-in tokenizer.chat_template and also owns BOS/EOS policy.
+    std::unique_ptr<ChatTemplateRenderer> chat_templates;
+    try {
+        chat_templates = std::make_unique<ChatTemplateRenderer>(model->handle());
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cloze-server] embedded chat template is invalid: %s\n", e.what());
+        return 2;
+    }
+
     // Phase 12.4: the shared state the relocated route families read (instead of [&]-capturing
     // main locals). Reference members alias these locals; the model rides as a shared_ptr.
-    ServerContext ctx{model, pool, concept_probes, steer_probes, sae_serve, jlens,
+    ServerContext ctx{model, pool, concept_probes, steer_probes, sae_serve, jlens, *chat_templates,
                        n_ctx, mask_token, ar_mode, gpu_layers, model_path};
 
     httplib::Server svr;
 
+    int model_n_embd = 0;
+    int model_n_layer = 0;
+    std::string model_architecture;
+    {
+        ContextPool::Lease lease = pool.acquire();
+        model_n_embd = (*lease).n_embd();
+        model_n_layer = (*lease).n_layer();
+    }
+    {
+        char value[128]{};
+        if (llama_model_meta_val_str(model->handle(), "general.architecture", value, sizeof(value)) >= 0)
+            model_architecture = value;
+    }
+
     svr.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
         json h{{"status", "ok"}, {"model", model_path},
                {"mode", ar_mode ? "autoregressive" : "diffusion"},
+               {"architecture", model_architecture},
+               {"model_sha256", model_sha256},
+               {"n_embd", model_n_embd},
+               {"n_layer", model_n_layer},
+               {"vocab_size", model->config().vocab_size},
                {"n_ctx", n_ctx},                              // configured context window (repro metadata)
                {"gpu_layers", gpu_layers},                    // layers offloaded to the GPU (0 => CPU-resident)
                {"device", gpu_layers > 0 ? "cuda" : "cpu"}};  // CUDA build; device follows the offload setting

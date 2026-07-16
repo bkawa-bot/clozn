@@ -12,7 +12,7 @@ from . import axes
 class EngineSteer:
     """Tone dials on the native engine using harvested residual directions."""
 
-    def __init__(self, engine_client, layer=14):
+    def __init__(self, engine_client, layer=None):
         self.ec = engine_client
         self.layer = layer
         self.vecs = {}
@@ -20,6 +20,24 @@ class EngineSteer:
         self.strength = {}
         self.base, self.resid_norm = 1.0, 0.0
         self.ready = False
+
+    def _resolve_layer(self):
+        """Choose a model-relative midpoint when no calibrated layer was supplied.
+
+        Older code silently inherited Qwen2.5-7B's layer 14 for every unknown
+        GGUF.  The worker now exposes its actual layer count, so an unqualified
+        model starts from its own midpoint.  Wave-specific calibration may still
+        replace this value with an empirically validated layer.
+        """
+        if self.layer is not None:
+            return int(self.layer)
+        try:
+            health = self.ec.health()
+            n_layer = int(health.get("n_layer") or 0)
+        except Exception:
+            n_layer = 0
+        self.layer = max(1, n_layer // 2) if n_layer else 0
+        return self.layer
 
     def load_library(self, path):
         """Load shipped dial metadata into self.custom without harvesting directions eagerly."""
@@ -40,6 +58,7 @@ class EngineSteer:
 
     def compute(self, seeds=None) -> dict:
         seeds = axes.SEED_PROMPTS if seeds is None else seeds
+        self._resolve_layer()
         # First-use signal: harvesting every base + library dial direction is ~30-40s of sequential
         # engine round-trips and is otherwise SILENT, so a first dial-touching turn reads as a hang
         # (a known usage-test papercut). stderr + ASCII-only (Windows cp1252).
@@ -81,6 +100,7 @@ class EngineSteer:
     def add_custom(self, name, pos, neg, mx=0.5, seeds=None) -> dict:
         """Register a user-defined engine dial using the same diff-of-means recipe."""
         seeds = axes.SEED_PROMPTS if seeds is None else seeds
+        self._resolve_layer()
         name = name.strip()[:24]
         pos_v = np.mean(
             [self.ec.harvest(pos + "\n\n" + s, layer=self.layer).activations.mean(0) for s in seeds],

@@ -184,7 +184,8 @@ class Substrate:
             return {"ready": True, **self._steer_info}
         if path == "/steer/set":
             self.steer.set(str(body["name"]), float(body.get("value", 0.0)))
-            self.steer.save_state(self._pers_steer)
+            if self._pers_steer:
+                self.steer.save_state(self._pers_steer)
             return {"active": self.steer.active()}
         if path == "/steer/check":              # A/B one dial: baseline vs steered (subclass _gen)
             prompt = str(body.get("prompt", ""))[:300]
@@ -213,7 +214,8 @@ class Substrate:
             if hasattr(self.steer, "remove_custom"):
                 self.steer.remove_custom(str(body.get("name", "")))
                 self.steer.save_custom(ctx._pers(f"studio_custom_{self.name}.json"))
-                self.steer.save_state(self._pers_steer)
+                if self._pers_steer:
+                    self.steer.save_state(self._pers_steer)
             return {"custom": list(getattr(self.steer, "custom", {}))}
         if path == "/steer/concept/set":         # Tier-1 #1: any-concept dial (dir(c)) -- ZERO calibration
             import clozn.behavior.steering.concept_dir as concept_dir
@@ -655,7 +657,7 @@ class EngineSubstrate(Substrate):
                 pass
         self._mem = _EngineMemory()
         self.memory = self._mem                 # the studio reads SUB.memory in a few places
-        self._pers_steer = ctx._pers("studio_personality.json")
+        self._pers_steer = None
         self._steer_ready = False
         self._steer_info = {}
         self._steer_lock = threading.Lock()
@@ -667,6 +669,7 @@ class EngineSubstrate(Substrate):
         # too, so the run record is correct even when the engine comes up after the substrate.
         self.model_family = None
         self.model_id = None
+        h = {}
         try:
             h = self.engine.health() if (self.engine and hasattr(self.engine, "health")) else {}
             self.model_family, _info = _engine_model_info((h or {}).get("model", ""))
@@ -675,11 +678,16 @@ class EngineSubstrate(Substrate):
                 self.steer.layer = _info["steer_layer"]
         except Exception:
             pass
-        if self.steer is not None:              # restore persisted dial values (shared personality.json)
-            try:
-                self.steer.load_state(self._pers_steer)
-            except Exception:
-                pass
+        self.model_sha256 = str((h or {}).get("model_sha256") or "") or None
+        if self.model_sha256:
+            self._pers_steer = ctx._pers(os.path.join(
+                "models", self.model_sha256, "studio_personality.json"))
+        if self.steer is not None:              # restore values only from this exact GGUF's state file
+            if self._pers_steer:
+                try:
+                    self.steer.load_state(self._pers_steer)
+                except Exception:
+                    pass
 
     def _gen(self, prompt):                     # one-shot generate for the /steer/check A/B (base _steer)
         if self.steer is not None:
@@ -1052,8 +1060,13 @@ def _quant_from_name(name):
 _ENGINE_MODELS = {
     "qwen2.5-7b":   {"model_id": "Qwen/Qwen2.5-7B-Instruct",         "steer_layer": 14},  # 28L -> mid 14 (unchanged)
     "qwen2.5-0.5b": {"model_id": "Qwen/Qwen2.5-0.5B-Instruct",       "steer_layer": 12},  # 24L -> mid 12
+    "qwen3.5-9b":   {"model_id": "Qwen/Qwen3.5-9B",                  "steer_layer": None},
+    "llama-3.1-8b": {"model_id": "meta-llama/Llama-3.1-8B-Instruct", "steer_layer": None},
     "llama-3.2-1b": {"model_id": "meta-llama/Llama-3.2-1B-Instruct", "steer_layer": 8},   # 16L -> mid 8
     "llama-3.2-3b": {"model_id": "meta-llama/Llama-3.2-3B-Instruct", "steer_layer": 14},  # 28L -> mid 14
+    "gemma4-e4b":   {"model_id": "google/gemma-4-E4B-it",            "steer_layer": None},
+    "ministral3-3b": {"model_id": "mistralai/Ministral-3-3B-Instruct-2512",
+                        "steer_layer": None},
 }
 _ENGINE_MODEL_DEFAULT = {"model_id": None, "steer_layer": None}  # unknown GGUF: nothing pinned; engine picks
 
@@ -1070,6 +1083,11 @@ def _model_family_from_name(name):
     m = re.search(r"llama[._-]?(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)b", s)
     if m:
         return f"llama-{m.group(1)}-{m.group(2)}b"
+    if re.search(r"gemma[._-]?4[._-]?e4b", s):
+        return "gemma4-e4b"
+    m = re.search(r"ministral[._-]?3[._-]?(\d+(?:\.\d+)?)b", s)
+    if m:
+        return f"ministral3-{m.group(1)}b"
     return None
 
 

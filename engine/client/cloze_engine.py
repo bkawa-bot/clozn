@@ -159,7 +159,7 @@ class EngineClient:
     # -- endpoints -----------------------------------------------------------
 
     def health(self) -> dict:
-        """GET /health -> {status, model, mode}. `mode` is 'diffusion' or 'autoregressive'."""
+        """GET /health -> runtime/model capabilities including n_layer/n_embd/vocab_size."""
         return self._get("/health")
 
     def harvest(self, text: str, layer: Optional[int] = None) -> Harvest:

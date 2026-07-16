@@ -102,13 +102,17 @@ def _launch_args(exe: str, model: str, port: int, flags: dict, gpu: bool) -> lis
     if gpu:
         args += ["--gpu-layers", "99"]
     if "mask" in flags:
-        args += ["--mask-token", str(flags["mask"])]
+        args += ["--diffusion", "--mask-token", str(flags["mask"])]
     if "eos" in flags:
         args += ["--eos", str(flags["eos"])]
     if "sae" in flags:                        # passthrough only: dims must match, server refuses politely
         args += ["--sae", flags["sae"]]
         if "sae_k" in flags:
             args += ["--sae-k", str(flags["sae_k"])]
+    if flags.get("jlens"):
+        args += ["--jlens", str(flags["jlens"])]
+    if flags.get("_model_sha256"):
+        args += ["--model-sha256", str(flags["_model_sha256"])]
     return args
 
 
@@ -139,7 +143,25 @@ def spawn_engine(model: str, port: int, flags: dict, *, prefer_gpu=True, logf=No
     """Start an engine on `port`, wait until /health is ok. Returns (proc, health, is_gpu)."""
     from clozn.cli import main as ctx
     exe, dll_dirs, gpu = find_engine(prefer_gpu)
-    args = _launch_args(exe, model, port, flags, gpu)
+    launch_flags = dict(flags)
+    if os.path.isfile(model):
+        from clozn.artifacts.contracts import (ArtifactContractError, find_compatible_artifact,
+                                               gguf_identity)
+        identity = gguf_identity(model)
+        launch_flags["_model_sha256"] = identity["sha256"]
+        try:
+            artifact_root = os.environ.get("CLOZN_ARTIFACTS_DIR") or os.path.join(ctx.HOME, "artifacts")
+            jlens_dir = find_compatible_artifact(
+                "jlens", identity, artifact_root,
+                explicit_dir=os.environ.get("CLOZN_JLENS_DIR") or launch_flags.get("jlens"),
+            )
+        except ArtifactContractError as error:
+            raise ctx.CloznError(f"J-lens artifact refused: {error}") from None
+        if jlens_dir:
+            launch_flags["jlens"] = jlens_dir
+        else:
+            launch_flags.pop("jlens", None)
+    args = _launch_args(exe, model, port, launch_flags, gpu)
     proc = subprocess.Popen(args, env=_env_with_dlls(dll_dirs, gpu),
                             stdout=logf or subprocess.DEVNULL, stderr=subprocess.STDOUT)
     started = time.monotonic()

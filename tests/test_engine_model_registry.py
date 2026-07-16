@@ -33,6 +33,15 @@ def test_model_family_from_name_llama():
     assert cs._model_family_from_name("Llama-3.2-1B-Instruct-Q4_K_M.gguf") == "llama-3.2-1b"
     assert cs._model_family_from_name(
         r"C:\Users\x\.clozn\models\Llama-3.2-3B-Instruct-Q4_K_M.gguf") == "llama-3.2-3b"
+    assert cs._model_family_from_name(
+        "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf") == "llama-3.1-8b"
+
+
+def test_model_family_from_name_wave_one_models():
+    assert cs._model_family_from_name("Qwen3.5-9B-Q4_K_M.gguf") == "qwen3.5-9b"
+    assert cs._model_family_from_name("gemma-4-E4B-it-Q4_K_M.gguf") == "gemma4-e4b"
+    assert cs._model_family_from_name(
+        "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf") == "ministral3-3b"
 
 
 def test_model_family_from_name_unknown_is_none():
@@ -46,6 +55,10 @@ def test_engine_model_info_known_family():
     assert fam == "llama-3.2-1b"
     assert info["model_id"] == "meta-llama/Llama-3.2-1B-Instruct"
     assert info["steer_layer"] == 8
+
+    fam, info = cs._engine_model_info("/models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf")
+    assert fam == "llama-3.1-8b"
+    assert info == {"model_id": "meta-llama/Llama-3.1-8B-Instruct", "steer_layer": None}
 
 
 def test_engine_model_info_unknown_returns_default():

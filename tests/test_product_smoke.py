@@ -5,6 +5,7 @@ from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import struct
 import sqlite3
 import subprocess
 import sys
@@ -370,7 +371,10 @@ class ProductSmokeTests(unittest.TestCase):
             handle.write("<!doctype html><title>Clozn</title>")
         model = os.path.join(self.temp.name, "fake.gguf")
         with open(model, "wb") as handle:
-            handle.write(b"not-a-real-gguf")
+            # A header-valid, tensor-free GGUF fixture. Product startup now derives an exact
+            # identity before launching the worker, so an arbitrary file with a .gguf suffix is
+            # correctly refused even when this test substitutes a fake worker.
+            handle.write(b"GGUF" + struct.pack("<IQQ", 3, 0, 0))
         home = os.path.join(self.temp.name, "managed-home")
         os.makedirs(home, exist_ok=True)
 

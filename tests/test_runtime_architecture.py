@@ -123,6 +123,15 @@ def raw_gateway_request(method: str, *, path="/jlens", body=b"", headers=None):
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_worker_mode_is_explicit_not_inferred_from_vocabulary_tokens(self):
+        ar = engine_process._launch_args("worker", "gemma.gguf", 9000, {"chat": True}, False)
+        diffusion = engine_process._launch_args(
+            "worker", "llada.gguf", 9000, {"chat": True, "mask": 126336}, False
+        )
+        self.assertNotIn("--diffusion", ar)
+        self.assertIn("--diffusion", diffusion)
+        self.assertIn("--mask-token", diffusion)
+
     def test_force_cpu_refuses_a_gpu_only_build(self):
         with tempfile.TemporaryDirectory(prefix="clozn-engine-select-") as root:
             gpu_root = os.path.join(root, "build-gpu")

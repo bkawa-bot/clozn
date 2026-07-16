@@ -330,9 +330,18 @@ def _engine_tmpl(engine, messages):
     return engine.apply_template(messages)
 
 
+def _model_scoped_path(name):
+    """Per-exact-GGUF product state path, with a legacy fallback for lab/tests."""
+    sub = globals().get("SUB")
+    digest = getattr(sub, "model_sha256", None) if sub is not None else None
+    if digest:
+        return _pers(os.path.join("models", str(digest), name))
+    return _pers(name)
+
+
 def _disk_dials():
-    """The saved tone-dial values (personality.json IS the strength dict) -- no HF model needed."""
-    path = _pers("studio_personality.json")
+    """Saved tone-dial values for the active exact GGUF."""
+    path = _model_scoped_path("studio_personality.json")
     if not os.path.isfile(path):
         return {}
     try:
@@ -354,7 +363,7 @@ def _dial_calibration():
     flat {dial_name: {...}} file, or one shaped like the raw research JSON ({"dials": {dial_name: {...}}},
     with "range_valid" instead of "works") -- whichever shape the curated file ends up in, this keeps
     working. A per-entry parse problem drops just that one dial (skipped, not crashed on)."""
-    path = _pers("dial_calibration.json")
+    path = _model_scoped_path("dial_calibration.json")
     if not os.path.isfile(path):
         return {}
     try:
@@ -484,7 +493,8 @@ def _profiles_switch(sub, p) -> dict:
         dials = profiles.apply_dials(p, steer)
         try:
             if hasattr(steer, "save_state"):
-                steer.save_state(_pers("studio_personality.json"))
+                steer.save_state(getattr(sub, "_pers_steer", None) or
+                                 _model_scoped_path("studio_personality.json"))
             if dials["customs_added"] and hasattr(steer, "save_custom"):
                 steer.save_custom(_pers(f"studio_custom_{getattr(sub, 'name', SUBNAME)}.json"))
         except Exception:
