@@ -106,8 +106,11 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
   text-align:left;padding:10px 15px;border-bottom:1px solid var(--edge-soft);border-left:2px solid transparent}
 .navrow .idx{font-size:9px;color:var(--mist)}
 .navrow .nled{width:7px;height:7px;border-radius:50%;background:rgba(90,130,155,.3)}
+.navrow .nm-wrap{display:flex;flex-direction:column;gap:1px;min-width:0;overflow:hidden}
 .navrow .nm{font-family:var(--disp);font-size:10.5px;font-weight:500;letter-spacing:.16em;
   text-transform:uppercase;color:var(--slate)}
+/* tiny lowercase subtitle under the nav label — deliberately NOT .cap: lowercase is the point */
+.navrow .sub{font-size:7.5px;letter-spacing:.03em;color:var(--mist);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .navrow .mark{font-size:10px;color:var(--teal);text-align:right}
 .navrow:hover{background:var(--iri-soft)}
 .navrow.on{width:auto;margin:3px 8px;border-radius:12px;border-left-color:transparent;border-bottom-color:transparent;
@@ -115,6 +118,7 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
   box-shadow:0 6px 18px rgba(150,155,210,.20), inset 0 1px 0 rgba(255,255,255,.78), 0 0 0 1px rgba(255,255,255,.6)}
 .navrow.on .nled{background:var(--teal);box-shadow:0 0 8px var(--teal)}
 .navrow.on .nm{color:var(--navy);font-weight:600}
+.navrow.on .sub{color:var(--slate)}
 .navfoot{padding:12px 15px;border-top:1px solid var(--edge-soft);font-size:9.5px;line-height:1.75;color:var(--mist)}
 .navfoot b{color:var(--slate)}
 /* ENGINE / CONTEXT / PRECISION / SESSION — each a labeled key/value pair, real data only (see app.mjs) */
@@ -144,7 +148,11 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .crt .st i{width:6px;height:6px;border-radius:50%;background:var(--coral);box-shadow:0 0 7px var(--coral)}
 .crt .st.idle i{background:var(--teal);box-shadow:0 0 7px var(--teal);animation:none}
 .crt .sid{position:absolute;top:8px;right:12px;font-size:8.5px;letter-spacing:.12em;color:#8A94C4}
-.crt-text{position:relative;font-family:var(--crt);font-size:17px;line-height:1.4;letter-spacing:.02em;
+/* was --crt (VT323): the refs' console screen still glows, but sets its text in the same clean mono as
+   everywhere else in the ambient-runtime look — a chunky pixel face was the one thing that fought it.
+   --crt/VT323 stay defined and loaded (index.html's font link is unchanged) in case a future accent wants
+   the retro face back deliberately; the twilight glow/scanline treatment (untouched) carries the CRT motif. */
+.crt-text{position:relative;font-family:var(--mono);font-size:12.5px;line-height:1.6;letter-spacing:.01em;
   color:#BDF3E9;text-shadow:0 0 6px rgba(122,235,214,.55);word-break:break-word;min-height:40px}
 .crt-text .dim{color:#5A6490}
 .crt-text .cursor{color:var(--teal);animation:clzBlink 1s steps(1) infinite}

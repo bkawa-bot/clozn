@@ -12,15 +12,15 @@ import { AtlasModule } from "./modules/atlas.mjs";
 import { ModelsStub, SettingsStub } from "./modules/stubs.mjs";
 
 const MODULES = [
-  { id: "replay",   nm: "Replay",   view: ReplayModule },
-  { id: "patch",    nm: "Patch",    view: PatchModule },
-  { id: "experiment", nm: "Experiment", view: ExperimentModule },
-  { id: "edit",     nm: "Edit",     view: EditModule },
-  { id: "memory",   nm: "Memory",   view: MemoryModule },
-  { id: "scope",    nm: "Scope",    view: ScopeModule },
-  { id: "atlas",    nm: "Atlas",    view: AtlasModule },
-  { id: "models",   nm: "Models",   view: ModelsStub,   soon: true },
-  { id: "settings", nm: "Settings", view: SettingsStub, soon: true },
+  { id: "replay",   nm: "Replay",   sub: "runtime desk",    view: ReplayModule },
+  { id: "patch",    nm: "Patch",    sub: "interventions",   view: PatchModule },
+  { id: "experiment", nm: "Experiment", sub: "compare & prove", view: ExperimentModule },
+  { id: "edit",     nm: "Edit",     sub: "inline repair",   view: EditModule },
+  { id: "memory",   nm: "Memory",   sub: "local store",     view: MemoryModule },
+  { id: "scope",    nm: "Scope",    sub: "layer inspector", view: ScopeModule },
+  { id: "atlas",    nm: "Atlas",    sub: "concept map",     view: AtlasModule },
+  { id: "models",   nm: "Models",   sub: "local inventory", view: ModelsStub,   soon: true },
+  { id: "settings", nm: "Settings", sub: "runtime prefs",   view: SettingsStub, soon: true },
 ];
 
 function Topbar(){
@@ -74,7 +74,7 @@ function NavRail(){
         }}>
         <span class="idx">${String(i+1).padStart(2,"0")}</span>
         <span class="nled"></span>
-        <span class="nm">${m.nm}</span>
+        <span class="nm-wrap"><span class="nm">${m.nm}</span><span class="sub">${m.sub}</span></span>
         <span class="mark">${s.route === m.id ? "◂" : ""}</span>
       </button>`)}
     <div class="navfoot">
@@ -99,12 +99,12 @@ function Footer(){
     <span class="cap" style="font-size:8.5px;color:var(--mist)">gradient flow</span>
     <span class="flowbar"></span>
     <span class="legend">
-      <span><i style="background:var(--teal)"></i>teal: calm focus, observation</span>
-      <span><i style="background:var(--lilac)"></i>lilac: branch, disposition</span>
-      <span><i style="background:var(--pink)"></i>pink: selection, branch glow</span>
+      <span><i style="background:var(--teal)"></i>seafoam: calm, focus, observation</span>
+      <span><i style="background:var(--pink)"></i>magenta: selection, branch glow</span>
       <span><i style="background:var(--coral)"></i>coral: repair, protect the signal</span>
     </span>
     <span class="credo">Clozn is a local runtime. It doesn't phone home.</span>
+    <span class="credo">Built for thinking out loud, not for performance.</span>
   </div>`;
 }
 
