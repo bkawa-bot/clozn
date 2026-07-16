@@ -117,8 +117,8 @@ def _qwen_generation_meta(max_new=None, sample=True, stream=None):
 # REPRODUCE_AND_PROVE_PLAN S5: settings-exposed interactive-chat sampling (Ollama/llama.cpp's canonical
 # defaults -- model-agnostic, since clozn serves any GGUF). "sampling" is the master on/off; OFF (or a
 # caller that explicitly asked for greedy, e.g. every receipt/replay/forced-scoring call) always decodes
-# temperature 0, byte-identical to pre-S5 behavior. top_p/top_k ride here as REQUESTED settings, but see
-# _resolve_sampling's docstring: this engine build does not enforce them.
+# temperature 0, byte-identical to pre-S5 behavior. The FULL regime (top_k/top_p included) is enforced by
+# the engine's sampler -- see _resolve_sampling's HONESTY paragraph.
 _SAMPLING_DEFAULTS = {
     "sampling": True,
     "sample_temperature": 0.8,

@@ -79,10 +79,17 @@ The "make it a product people can actually run" track. Ordered per the handoff's
   Golden fixture `protocol/fixtures/handshake.json` guards C++ header, Python constant, and the /health
   capability keys via `tests/test_protocol_handshake.py`. Verified live + product smoke 24/24. *Follow-up:
   wire Studio to read the same fixture (it can today; not yet consumed) + seq-gap detection on consumers.*
-- [ ] **Request isolation + cancellation** **[H:P1][SPLIT P4]** — per-request context (id, sampling, memory
-  manifest, steering snapshot, trace, finish reason, cancellation) instead of shared process globals; this
-  removes the reason every POST is globally serialized. Propagate client disconnect → cancel the worker;
-  define worker-dies-midstream behavior. *(Stage 2's injectable substrate is groundwork for this.)*
+- [x] **Request isolation + cancellation** **[H:P1][SPLIT P4]** — DONE 2026-07-16 (73ab294 + caae941 +
+  c603b49). `clozn/server/request_context.py`: one per-call `RequestContext` (request id, sampling, memory
+  manifest, steering snapshot, trace, finish reason, threading.Event cancellation) atomically published as
+  `sub._request` — the old five piecemeal `_last_*` writes (torn-read hazard) are now read-only property
+  views. POST_GATE waits are cancellable (`client_gone` socket probe → frees the queue slot, HTTP 499) and
+  serialization is scoped: two audited-safe POSTs exempted; the rest stay serialized because steer/memory
+  state is STILL shared (documented in app.py). sse.py distinguishes client-disconnect (cancel + stop
+  writing) from worker-dies-midstream (honest error frame + [DONE], finish_reason never "stop");
+  `gen.close()` unconditional. Verified: 22 new tests, suite 1653/0, live smoke 24/24 + --deep 26/26.
+  *Follow-ups: engine-side cooperative cancel (C++); non-streaming chat() has no mid-flight cancel; true
+  concurrent generation needs steer/memory de-globalized; correlate `req_` ids with the worker's `req`.*
 - [x] **Persistence: migratable + trustworthy** **[H:P1]** — DONE (46b03a1 migrations engine + 0c5cade
   evidence-write honesty + e6898e2 blob GC + fb01a32 `clozn migrate` CLI). `clozn/runs/migrations.py`:
   versioned, ordered, transactional migration steps (each its own BEGIN IMMEDIATE/COMMIT/ROLLBACK -- a
