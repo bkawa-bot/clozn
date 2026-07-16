@@ -15,6 +15,7 @@ import threading
 import unittest
 from unittest import mock
 
+from clozn import protocol
 from clozn.cli.commands import smoke
 from clozn.runs import store
 from clozn.server import app as gateway_app
@@ -319,6 +320,8 @@ class ProductSmokeTests(unittest.TestCase):
                 def do_GET(self):
                     if self.path == "/health":
                         self.send_json(200, {"status": "ok", "model": args.model,
+                                             "protocol_version": "__PROTOCOL_VERSION__",
+                                             "capabilities": {"streaming": True, "sampling": True},
                                              "mode": "autoregressive", "n_ctx": 2048})
                     else:
                         self.send_json(404, {"error": self.path})
@@ -356,6 +359,9 @@ class ProductSmokeTests(unittest.TestCase):
 
             Server((args.host, args.port), Handler).serve_forever()
         ''').lstrip()
+        # The fake worker must speak the CURRENT handshake or the supervisor refuses it (as a real stale
+        # binary would) -- inject the live version so this fixture can never drift from clozn.protocol.
+        worker_source = worker_source.replace("__PROTOCOL_VERSION__", protocol.PROTOCOL_VERSION)
         source_path = worker_script if os.name == "nt" else worker_path
         with open(source_path, "w", encoding="utf-8") as handle:
             handle.write(worker_source)

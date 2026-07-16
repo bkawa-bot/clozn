@@ -1,0 +1,72 @@
+"""Golden-fixture guard for the worker<->supervisor handshake.
+
+The protocol version + capability vocabulary live in THREE places by necessity (a C++ worker, a Python
+supervisor, and a shared JSON contract Studio can read). This test is the single tripwire that fails the
+moment any of the three drifts -- so the handshake can never silently disagree across the language gap.
+"""
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from clozn import protocol
+
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURE = ROOT / "protocol" / "fixtures" / "handshake.json"
+CPP_HEADER = ROOT / "engine" / "core" / "serve" / "server_shared.hpp"
+CPP_HEALTH = ROOT / "engine" / "core" / "serve" / "server_main.cpp"
+
+
+@pytest.fixture(scope="module")
+def fixture():
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_python_constant_matches_fixture(fixture):
+    assert protocol.PROTOCOL_VERSION == fixture["protocol_version"]
+    assert set(protocol.SUPPORTED_MAJORS) == set(fixture["supported_majors"])
+
+
+def test_cpp_header_version_matches_fixture(fixture):
+    """The C++ worker pins the SAME version string -- extracted straight from the header source so a
+    rebuild is never needed for this guard to catch a drift."""
+    src = CPP_HEADER.read_text(encoding="utf-8")
+    m = re.search(r'PROTOCOL_VERSION\s*=\s*"([^"]+)"', src)
+    assert m, "PROTOCOL_VERSION constant not found in server_shared.hpp"
+    assert m.group(1) == fixture["protocol_version"]
+
+
+def test_cpp_health_capability_keys_match_fixture(fixture):
+    """The /health `capabilities` object advertises EXACTLY the fixture's capability set -- extracted from
+    the `json capabilities{ ... };` literal so C++ can't add or drop a flag without updating the contract."""
+    src = CPP_HEALTH.read_text(encoding="utf-8")
+    block = re.search(r"json capabilities\{(.*?)\};", src, re.DOTALL)
+    assert block, "capabilities literal not found in the /health handler"
+    keys = set(re.findall(r'\{"(\w+)",', block.group(1)))
+    assert keys == set(fixture["capabilities"])
+
+
+def test_supervisor_accepts_same_major():
+    ok, reason = protocol.check_worker_protocol(protocol.PROTOCOL_VERSION)
+    assert ok and reason == ""
+    # A newer MINOR on the same major is still compatible (additive).
+    major = protocol.parse_major(protocol.PROTOCOL_VERSION)
+    ok2, _ = protocol.check_worker_protocol(f"{major}.99")
+    assert ok2
+
+
+def test_supervisor_refuses_incompatible_or_missing():
+    for bad in (None, "", "0.9", "2.0", "999.0", "not-a-version", 1.0, {"v": 1}):
+        ok, reason = protocol.check_worker_protocol(bad)
+        assert not ok, f"expected refusal for {bad!r}"
+        assert reason, "a refusal must carry an actionable reason"
+
+
+def test_parse_major():
+    assert protocol.parse_major("1.0") == 1
+    assert protocol.parse_major("12.34") == 12
+    assert protocol.parse_major("3") == 3
+    # only strings with a numeric MAJOR slot parse; everything else is None
+    for bad in (None, "", "x.0", "v1.0", "  .0", 5, 1.0, [], {"v": 1}):
+        assert protocol.parse_major(bad) is None

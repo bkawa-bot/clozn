@@ -50,6 +50,12 @@ namespace cloze {
 
 using json = nlohmann::json;
 
+// The worker <-> supervisor wire-contract version (see protocol/SPEC.md + clozn/protocol.py). A MAJOR
+// bump is breaking -- the Python supervisor refuses a worker whose major it doesn't support; a MINOR
+// bump is additive. Pinned identically in clozn/protocol.py and protocol/fixtures/handshake.json; the
+// golden-fixture test (tests/test_protocol_handshake.py) fails the moment the three drift.
+inline constexpr const char* PROTOCOL_VERSION = "1.0";
+
 inline std::atomic<uint64_t> g_req_counter{0};
 inline std::string make_id(const char* prefix) {
     return std::string(prefix) + std::to_string(g_req_counter.fetch_add(1));

@@ -20,7 +20,10 @@ def try_get(h, p):
             h._json(503, {"status": "not_ready", "service": "clozn", "worker": worker})
             return True
         queue = ctx.POST_GATE.snapshot() if getattr(ctx, "POST_GATE", None) else None
+        from clozn import protocol
         h._json(200, {"status": "ok", "service": "clozn", "active": "engine",
+                      "protocol_version": protocol.PROTOCOL_VERSION,   # gateway <-> worker wire contract
+                      "capabilities": worker.get("capabilities", {}),  # the live worker's negotiated flags
                       "model": worker.get("model"), "mode": worker.get("mode"), "worker": worker,
                       "queue": queue})
         return True

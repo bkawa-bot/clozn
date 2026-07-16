@@ -171,6 +171,14 @@ def spawn_engine(model: str, port: int, flags: dict, *, prefer_gpu=True, logf=No
                 raise ctx.CloznError(f"engine exited (code {proc.returncode}). {_log_tail(logf)}")
             h = _health(port)
             if h and h.get("status") == "ok":
+                # Handshake: refuse a worker whose protocol MAJOR this supervisor can't drive, rather than
+                # proxy a stream it may no longer parse. The usual cause is a stale cloze-server binary that
+                # predates the handshake -- the message says to rebuild. (A compatible worker proceeds.)
+                from clozn.protocol import check_worker_protocol
+                ok, reason = check_worker_protocol(h.get("protocol_version"))
+                if not ok:
+                    _terminate_process(proc)
+                    raise ctx.CloznError(f"engine protocol handshake failed: {reason}")
                 return proc, h, gpu
             time.sleep(0.3)
         raise ctx.CloznError(f"engine did not become healthy within {boot_timeout}s. {_log_tail(logf)}")

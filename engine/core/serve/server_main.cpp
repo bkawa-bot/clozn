@@ -229,7 +229,28 @@ int main(int argc, char** argv) {
     }
 
     svr.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
-        json h{{"status", "ok"}, {"model", model_path},
+        // capabilities: the stable feature flags a client/supervisor negotiates on. Model-shape fields
+        // (n_embd/n_layer/...) stay top-level as repro metadata; the sae/jlens detail blocks below carry
+        // dimensions, while capabilities carries only the booleans. Keep the KEYS in lockstep with
+        // protocol/fixtures/handshake.json (the golden-fixture test guards this).
+        bool sae_on = false;
+#ifdef CLOZE_SAE
+        sae_on = sae_serve.on;
+#endif
+        json capabilities{
+            {"streaming", true},          // SSE event stream on stream:true
+            {"state_stream", true},       // protocol:true reshapes frames to StateStep
+            {"sampling", true},           // temperature/top_k/top_p/rep_penalty/seed
+            {"steering", true},           // steer:{concept,coef,layer} control vector
+            {"infill", !ar_mode},         // /v1/infill (fill-in-the-middle) -- diffusion only
+            {"revise", !ar_mode},         // /v1/revise -- diffusion only
+            {"sae", sae_on},              // on-device SAE feature readout (--sae build)
+            {"jlens", jlens.on},          // live Jacobian-lens "disposed to say" readout
+        };
+        json h{{"status", "ok"},
+               {"protocol_version", PROTOCOL_VERSION},        // worker <-> supervisor wire contract
+               {"capabilities", capabilities},
+               {"model", model_path},
                {"mode", ar_mode ? "autoregressive" : "diffusion"},
                {"architecture", model_architecture},
                {"model_sha256", model_sha256},
