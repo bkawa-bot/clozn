@@ -124,6 +124,29 @@ inline std::string dump_json(const json& j) {
     return j.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
+// Per-request SSE frame envelope. Every JSON frame on a native stream is stamped with the request id
+// (`req`, the same cmpl-/infill-/revise- id the final frame carries) and a monotonic per-request
+// sequence number (`seq`, from 0) -- so a consumer can correlate a frame to its request and detect a
+// dropped or reordered frame. `[DONE]` and any non-object frame (a hand-serialized error, say) pass
+// through untouched: the envelope never drops a frame it can't stamp. Frames route through ONE counter
+// per request, so the per-step frames and the trailing final frame share one contiguous sequence.
+struct StreamEnvelope {
+    std::string req;
+    std::function<void(const std::string&)> write;
+    uint64_t seq = 0;
+    void frame(json f) {                       // stamp a json frame, then write it
+        f["req"] = req;
+        f["seq"] = seq++;
+        write("data: " + dump_json(f) + "\n\n");
+    }
+    void frame_str(const std::string& dumped) {  // a pre-serialized frame (sse_data): parse, stamp, write
+        json f = json::parse(dumped, nullptr, /*allow_exceptions=*/false);
+        if (f.is_discarded() || !f.is_object()) { write("data: " + dumped + "\n\n"); return; }
+        frame(std::move(f));
+    }
+    void done() { write("data: [DONE]\n\n"); }
+};
+
 inline std::string sse_data(const Event& e, const GgmlModel& model, const std::vector<int>& prompt_ids,
                      const std::vector<int>& suffix_ids) {
     if (const auto* gs = std::get_if<GenStarted>(&e)) {
@@ -268,8 +291,8 @@ inline json tensor_json_f32(const std::vector<float>& values, std::vector<int> s
 class StateStepBuilder {
 public:
     StateStepBuilder(const GgmlModel& model, const char* substrate, bool state_full,
-                     std::function<void(const std::string&)> write)
-        : model_(model), substrate_(substrate), state_full_(state_full), write_(std::move(write)) {}
+                     std::function<void(json)> emit)
+        : model_(model), substrate_(substrate), state_full_(state_full), emit_(std::move(emit)) {}
 
     void on_event(const Event& e) {
         if (const auto* gs = std::get_if<GenStarted>(&e)) {
@@ -402,7 +425,7 @@ private:
                    {"readouts", json::array()}, {"meta", meta}};
         write_frame(frame);
     }
-    void write_frame(const json& frame) { write_("data: " + dump_json(frame) + "\n\n"); }
+    void write_frame(json frame) { emit_(std::move(frame)); }  // envelope stamps req/seq, then writes
 
     // Emit the accumulated pass as one StateStep, then reset for the next pass.
     void flush() {
@@ -429,7 +452,7 @@ private:
     const GgmlModel& model_;
     const char* substrate_;
     bool state_full_;
-    std::function<void(const std::string&)> write_;
+    std::function<void(json)> emit_;
 
     // run-scoped
     int block_ = 0;

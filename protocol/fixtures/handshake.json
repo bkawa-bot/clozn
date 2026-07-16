@@ -18,5 +18,9 @@
     "revise",
     "sae",
     "jlens"
+  ],
+  "stream_frame_envelope": [
+    "req",
+    "seq"
   ]
 }

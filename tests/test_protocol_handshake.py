@@ -37,6 +37,16 @@ def test_cpp_header_version_matches_fixture(fixture):
     assert m.group(1) == fixture["protocol_version"]
 
 
+def test_stream_envelope_declared(fixture):
+    """Every native-stream JSON frame is stamped with these keys (req = request id, seq = monotonic
+    per-request counter). The engine stamps them via StreamEnvelope; a live stream is checked end to end
+    by the product smoke -- here we pin the contract so a consumer knows the two keys to expect."""
+    assert fixture["stream_frame_envelope"] == ["req", "seq"]
+    src = CPP_HEALTH.read_text(encoding="utf-8")
+    # the envelope is wired into the streaming blocks (guards against the frames silently going raw again)
+    assert "StreamEnvelope env{id, write}" in src
+
+
 def test_cpp_health_capability_keys_match_fixture(fixture):
     """The /health `capabilities` object advertises EXACTLY the fixture's capability set -- extracted from
     the `json capabilities{ ... };` literal so C++ can't add or drop a flag without updating the contract."""

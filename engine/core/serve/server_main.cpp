@@ -478,11 +478,13 @@ int main(int argc, char** argv) {
                  &jlens, lens_on, lens_layer, lens_topk, lens_every]
                 (size_t, httplib::DataSink& sink) {
                     auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    StreamEnvelope env{id, write};        // stamps req + monotonic seq on every frame
                     try {                                 // a generator throw here would otherwise escape into
                                                           // httplib's worker thread -> abort(); catch it below.
                     if (protocol) {
                         // State-stream protocol: fold the §5.1 events into StateStep frames.
-                        StateStepBuilder builder(*model, substrate, state_full, write);
+                        StateStepBuilder builder(*model, substrate, state_full,
+                                                 [&](json f) { env.frame(std::move(f)); });
                         auto on_event = [&](const Event& e) { builder.on_event(e); };
                         GenerateResult r = run(on_event);
                         builder.finish();
@@ -492,8 +494,8 @@ int main(int argc, char** argv) {
                                             {"text", r.text}, {"finish_reason", finish_reason(r.reason)},
                                             {"board", r.board},
                                             {"layout", board_layout_json(*model, r.board, mask_token)}};
-                        write("data: " + dump_json(final_frame) + "\n\n");
-                        write("data: [DONE]\n\n");
+                        env.frame(final_frame);
+                        env.done();
                         sink.done();
                         return true;
                     }
@@ -525,17 +527,16 @@ int main(int argc, char** argv) {
                                         json fr = {{"type", "jlens_live"}, {"t", sa->t},
                                                    {"layer", lens_layer}, {"positions", sa->positions},
                                                    {"readouts", rd}};
-                                        write("data: " + dump_json(fr) + "\n\n");
+                                        env.frame(std::move(fr));
                                     } else if (!lens_err_sent) {
                                         lens_err_sent = true;
-                                        write("data: " + dump_json(json{{"type", "jlens_live"},
-                                                                        {"error", lerr}}) + "\n\n");
+                                        env.frame(json{{"type", "jlens_live"}, {"error", lerr}});
                                     }
                                 }
                                 return;
                             }
                         }
-                        write("data: " + sse_data(e, *model, prompt_ids, suffix_ids) + "\n\n");
+                        env.frame_str(sse_data(e, *model, prompt_ids, suffix_ids));
                     };
                     GenerateResult r = run(on_event);
                     // A final OpenAI-style frame carrying the assembled text, then [DONE].
@@ -546,21 +547,20 @@ int main(int argc, char** argv) {
                         final_frame["diverged"] = r.diverged;
                         final_frame["diverged_at"] = r.diverged_at;
                     }
-                    write("data: " + dump_json(final_frame) + "\n\n");
-                    write("data: [DONE]\n\n");
+                    env.frame(final_frame);
+                    env.done();
                     sink.done();
                     return true;
                     } catch (const std::exception& e) {
                         // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
                         // and close the stream gracefully -- run() already restored the pooled context.
-                        json err = {{"error", std::string("generation failed: ") + e.what()}};
-                        write("data: " + err.dump() + "\n\n");
-                        write("data: [DONE]\n\n");
+                        env.frame(json{{"error", std::string("generation failed: ") + e.what()}});
+                        env.done();
                         sink.done();
                         return true;
                     } catch (...) {
-                        write("data: {\"error\":\"generation failed\"}\n\n");
-                        write("data: [DONE]\n\n");
+                        env.frame(json{{"error", "generation failed"}});
+                        env.done();
                         sink.done();
                         return true;
                     }
@@ -697,30 +697,30 @@ int main(int argc, char** argv) {
                 "text/event-stream",
                 [run, id, model, board, mask_token](size_t, httplib::DataSink& sink) {
                     auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    StreamEnvelope env{id, write};        // stamps req + monotonic seq on every frame
                     try {                                 // a generator throw here would otherwise escape into
                                                           // httplib's worker thread -> abort(); catch it below.
                     auto on_event = [&](const Event& e) {
-                        write("data: " + sse_data_revise(e, *model, board, mask_token) + "\n\n");
+                        env.frame_str(sse_data_revise(e, *model, board, mask_token));
                     };
                     GenerateResult r = run(on_event);
                     json final_frame = {{"id", id}, {"object", "revise"},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
                                                      {"finish_reason", finish_reason(r.reason)}}})}};
-                    write("data: " + dump_json(final_frame) + "\n\n");
-                    write("data: [DONE]\n\n");
+                    env.frame(final_frame);
+                    env.done();
                     sink.done();
                     return true;
                     } catch (const std::exception& e) {
                         // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
                         // and close the stream gracefully, mirroring /v1/completions' streaming guard.
-                        json err = {{"error", std::string("generation failed: ") + e.what()}};
-                        write("data: " + err.dump() + "\n\n");
-                        write("data: [DONE]\n\n");
+                        env.frame(json{{"error", std::string("generation failed: ") + e.what()}});
+                        env.done();
                         sink.done();
                         return true;
                     } catch (...) {
-                        write("data: {\"error\":\"generation failed\"}\n\n");
-                        write("data: [DONE]\n\n");
+                        env.frame(json{{"error", "generation failed"}});
+                        env.done();
                         sink.done();
                         return true;
                     }
@@ -827,31 +827,31 @@ int main(int argc, char** argv) {
                 "text/event-stream",
                 [run, id, model, board, mask_token](size_t, httplib::DataSink& sink) {
                     auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    StreamEnvelope env{id, write};        // stamps req + monotonic seq on every frame
                     try {                                 // a generator throw here would otherwise escape into
                                                           // httplib's worker thread -> abort(); catch it below.
                     auto on_event = [&](const Event& e) {
-                        write("data: " + sse_data_revise(e, *model, board, mask_token) + "\n\n");
+                        env.frame_str(sse_data_revise(e, *model, board, mask_token));
                     };
                     GenerateResult r = run(on_event);
                     json final_frame = {{"id", id}, {"object", "board"}, {"board", r.board},
                                         {"layout", board_layout_json(*model, r.board, mask_token)},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
                                                      {"finish_reason", finish_reason(r.reason)}}})}};
-                    write("data: " + dump_json(final_frame) + "\n\n");
-                    write("data: [DONE]\n\n");
+                    env.frame(final_frame);
+                    env.done();
                     sink.done();
                     return true;
                     } catch (const std::exception& e) {
                         // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
                         // and close the stream gracefully, mirroring /v1/completions' streaming guard.
-                        json err = {{"error", std::string("generation failed: ") + e.what()}};
-                        write("data: " + err.dump() + "\n\n");
-                        write("data: [DONE]\n\n");
+                        env.frame(json{{"error", std::string("generation failed: ") + e.what()}});
+                        env.done();
                         sink.done();
                         return true;
                     } catch (...) {
-                        write("data: {\"error\":\"generation failed\"}\n\n");
-                        write("data: [DONE]\n\n");
+                        env.frame(json{{"error", "generation failed"}});
+                        env.done();
                         sink.done();
                         return true;
                     }
