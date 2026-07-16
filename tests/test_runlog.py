@@ -308,6 +308,123 @@ def test_missing_trace_blob_is_surfaced_not_silently_empty(store):
     assert gone.get("sha256")
 
 
+# -------------------------------------------------------- evidence-write failures (BACKLOG §2, honesty)
+# The old `_store_trace` let `atomic_write_json` raise straight up through `_pack`/`_put`/`record`'s
+# blanket `except Exception: return None` -- a disk hiccup while writing the TRACE blob silently discarded
+# the ENTIRE run (prompt, response, everything), with nothing but a bare None to show for it. The fix:
+# `_store_trace` catches its own write failure, logs a warning, and hands it back via the trace_ref so
+# `_pack` can mark the run "evidence missing" -- the row still lands (see BACKLOG §2 in store.py).
+
+def test_trace_write_failure_still_persists_the_run_row(store, monkeypatch):
+    """A trace blob write failure must NOT sink the whole run -- the row (prompt, response, model, ...)
+    still lands; only the trace itself is honestly marked as lost."""
+    def _broken_write(path, obj, **kwargs):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(store, "atomic_write_json", _broken_write)
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hello",
+                       trace={"tokens": ["a"], "confidence": [0.9]})
+    assert rid is not None                                # the run itself was NOT discarded
+
+    monkeypatch.undo()                                     # reads must work normally again
+    rec = store.get_run(rid)
+    assert rec is not None
+    assert rec["response"] == "hello"                       # everything else survived intact
+
+
+def test_trace_write_failure_reads_back_as_evidence_missing_not_empty(store, monkeypatch):
+    """The honesty invariant: a run whose trace failed to persist must read as {"unavailable": ...}, the
+    SAME shape _load_trace already uses for a corrupt/missing blob (BACKLOG §2, commit 6409535) -- never a
+    plain {} that would look identical to "this run genuinely carried no trace"."""
+    def _broken_write(path, obj, **kwargs):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(store, "atomic_write_json", _broken_write)
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hello",
+                       trace={"tokens": ["a"], "confidence": [0.9]})
+    monkeypatch.undo()
+
+    rec = store.get_run(rid)
+    trace = rec["trace"]
+    assert trace.get("unavailable", "").startswith("trace evidence write failed")
+    assert trace.get("sha256")                              # still correlatable to a digest
+    assert "TAMPERED" not in str(trace) and "a" not in trace.get("tokens", [])  # no fabricated content
+
+
+def test_trace_write_failure_sets_evidence_missing_flag_and_meta_marker(store, monkeypatch):
+    """Both surfaces the honesty invariant promises: the cheap `flags` list (what the Runs page filters
+    on) and `meta` (the detailed record) must each independently carry the failure."""
+    def _broken_write(path, obj, **kwargs):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(store, "atomic_write_json", _broken_write)
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hello",
+                       trace={"tokens": ["a"], "confidence": [0.9]})
+    monkeypatch.undo()
+
+    rec = store.get_run(rid)
+    assert "evidence-missing" in rec["flags"]
+    assert "evidence_write_failed" in rec["meta"]
+    assert "simulated disk full" in rec["meta"]["evidence_write_failed"]
+
+
+def test_trace_write_failure_flag_visible_in_list_runs_summary(store, monkeypatch):
+    """The flag must reach the summary view too (list_runs), not just get_run's full record -- that's the
+    surface the Runs page actually filters on."""
+    def _broken_write(path, obj, **kwargs):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(store, "atomic_write_json", _broken_write)
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hello",
+                       trace={"tokens": ["a"], "confidence": [0.9]})
+    monkeypatch.undo()
+
+    rows = {r["id"]: r for r in store.list_runs()}
+    assert "evidence-missing" in rows[rid]["flags"]
+
+
+def test_trace_write_failure_is_logged(store, monkeypatch, caplog):
+    """At minimum a logged warning (BACKLOG §2's explicit requirement) -- not just a silent marker."""
+    import logging
+
+    def _broken_write(path, obj, **kwargs):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(store, "atomic_write_json", _broken_write)
+    with caplog.at_level(logging.WARNING, logger="clozn.runs.store"):
+        store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hello",
+                     trace={"tokens": ["a"], "confidence": [0.9]})
+    assert any("trace blob write failed" in r.message for r in caplog.records)
+
+
+def test_trace_write_success_never_gets_evidence_missing_flag(store):
+    """Negative control: a normal, successful write must NOT carry the marker -- guards against the flag
+    logic firing unconditionally."""
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hello",
+                       trace={"tokens": ["a"], "confidence": [0.9]})
+    rec = store.get_run(rid)
+    assert "evidence-missing" not in rec["flags"]
+    assert "evidence_write_failed" not in rec["meta"]
+    assert "unavailable" not in rec["trace"]
+
+
+def test_trace_write_failure_does_not_orphan_a_half_written_blob_file(store, monkeypatch):
+    """atomic_write_json itself already guarantees no partial file is ever left at the real path on
+    failure (see clozn/_io.py) -- confirm that guarantee holds through this call path too: no blob file
+    should exist at the digest's path after a simulated failure."""
+    def _broken_write(path, obj, **kwargs):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(store, "atomic_write_json", _broken_write)
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hello",
+                       trace={"tokens": ["a"], "confidence": [0.9]})
+    monkeypatch.undo()
+
+    rec = store.get_run(rid)
+    digest = rec["trace"]["sha256"]
+    assert not os.path.isfile(store._blob_path(digest))
+
+
 def test_list_runs_newest_first(store):
     # ids embed a ms timestamp; pass increasing `started` so ordering is deterministic
     r1 = store.record(source="cli", messages=[{"role": "user", "content": "one"}], response="1",

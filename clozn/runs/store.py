@@ -10,6 +10,7 @@ from contextlib import closing
 import glob
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -45,6 +46,7 @@ KEEP = 1000
 SCHEMA_VERSION = migrations.TARGET_VERSION      # kept as a re-export -- pre-migrations code read this bare
                                                  # int; it now always mirrors the migration engine's target.
 _SAFE_RID = re.compile(r"^[A-Za-z0-9_-]+$")
+_log = logging.getLogger(__name__)
 
 
 def _db_path() -> str:
@@ -87,12 +89,25 @@ def _blob_path(digest: str) -> str:
 
 
 def _store_trace(trace: dict) -> dict:
+    """Write the trace blob if it isn't already on disk (content-addressed dedup), returning its
+    trace_ref. BACKLOG §2 (evidence-write failures): the old code let an `atomic_write_json` failure
+    (disk full, permission error, ...) propagate all the way up through `_pack`/`_put`/`record`'s blanket
+    `except Exception: return None` -- one write hiccup silently discarded the ENTIRE run (prompt,
+    response, everything), with nothing but a bare None to show for it. We now catch the write failure
+    HERE, log it, and hand it back via the ref itself (`write_failed`) so `_pack` can mark the run row
+    "evidence missing" and still persist everything else -- degrading honestly instead of vanishing."""
     encoded = json.dumps(trace, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
     path = _blob_path(digest)
+    ref = {"sha256": digest, "media_type": "application/json", "bytes": len(encoded)}
     if not os.path.isfile(path):
-        atomic_write_json(path, trace, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return {"sha256": digest, "media_type": "application/json", "bytes": len(encoded)}
+        try:
+            atomic_write_json(path, trace, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except Exception as exc:
+            _log.warning("trace blob write failed (digest=%s, bytes=%d): %s: %s",
+                         digest, len(encoded), type(exc).__name__, exc)
+            ref["write_failed"] = f"{type(exc).__name__}: {exc}"
+    return ref
 
 
 def _load_trace(ref) -> dict:
@@ -101,7 +116,14 @@ def _load_trace(ref) -> dict:
     silently returned as an empty {} -- a run must never present "no trace" when the truth is "the causal
     evidence was lost or tampered with." An absent/invalid ref (the run genuinely carried no trace) still
     returns {} (honestly no trace, not corruption)."""
-    digest = str((ref or {}).get("sha256") or "")
+    ref = ref or {}
+    digest = str(ref.get("sha256") or "")
+    write_failed = ref.get("write_failed")
+    if write_failed:
+        # The write itself failed back in _store_trace (see that docstring) -- there is nothing useful to
+        # try opening; we already know the verdict and must report exactly that, not a possibly-different
+        # one derived from whatever partial/absent file happens to sit at this digest's path right now.
+        return {"unavailable": f"trace evidence write failed: {write_failed}", "sha256": digest or None}
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         return {}
     try:
@@ -126,7 +148,18 @@ def _pack(rec: dict) -> tuple[str, dict]:
     # orphaned trace artifact merely because trace serialization happened first.
     json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
     payload = dict(rec)
-    payload["trace_ref"] = _store_trace(payload.pop("trace", {}) or {})
+    trace_ref = _store_trace(payload.pop("trace", {}) or {})
+    if trace_ref.get("write_failed"):
+        # BACKLOG §2 honesty invariant: the run row still lands (losing the WHOLE run over a trace-write
+        # hiccup would be strictly worse), but it must never read back as "no trace" -- a plain {} would
+        # look identical to a run that genuinely carried none. Every surface that reads a run (Runs list
+        # via `flags`, run detail via `meta`, a future `clozn doctor`) gets the same honest marker, applied
+        # here once rather than re-derived per call site.
+        payload["flags"] = sorted(set(payload.get("flags") or []) | {"evidence-missing"})
+        meta = dict(payload.get("meta") or {})
+        meta["evidence_write_failed"] = trace_ref["write_failed"]
+        payload["meta"] = meta
+    payload["trace_ref"] = trace_ref
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return serialized, payload
 
