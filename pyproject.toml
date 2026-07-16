@@ -1,0 +1,41 @@
+[build-system]
+# setuptools over hatchling: the repo root is a monorepo (clozn/ sits next to engine/, studio/, protocol/,
+# tests/, docs/, scripts/ -- none of which are Python packages clozn should ship), and setuptools'
+# `package_dir` remapping (see setup.py) is what lets non-package asset trees outside clozn/ (studio/,
+# protocol/) ride into the wheel as clozn subpackages without moving or symlinking anything on disk.
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clozn"
+# Single source of truth: clozn/__init__.__version__. `clozn version` prints this exact string.
+dynamic = ["version"]
+description = "A local-first, glass-box runtime for the models you run yourself -- view, steer, and prove."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Brigitte Kawaguchi" }]
+# Deliberately stdlib-only: the product CLI/gateway supervisor (this package) never imports Torch or
+# transformers -- that's the whole point of the product/lab split (see docs/RUNTIME_SPLIT.md and the
+# `product-minimal` CI lane, which asserts `clozn.server.app` imports with NO torch installed). Anything
+# an optional command needs beyond the stdlib (numpy for GGUF header parsing, etc.) is imported lazily
+# inside that command's function body, not declared as a hard install-time dependency here.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/brigittekawaguchi/clozn"
+
+[project.scripts]
+# Matches `python -m clozn` (clozn/__main__.py) and clozn.cmd/clozn.sh exactly -- one entry point, three
+# ways to reach it (console script, `-m`, or the repo-root launcher scripts for a source checkout).
+clozn = "clozn.cli.main:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "clozn.__version__" }
+
+# Package discovery + the studio/protocol asset remap live in setup.py, not here: `[tool.setuptools.
+# packages.find]` only discovers packages by walking real directory structure under `where`, so it cannot
+# produce a "clozn.studio" package out of a `studio/` directory it never looks inside (studio/ isn't
+# under clozn/, and has no __init__.py -- it's not Python code). That needs setup.py's `find_packages()` +
+# two explicit entries. See setup.py's module docstring for the full reasoning.

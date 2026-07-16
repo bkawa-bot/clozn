@@ -22,11 +22,17 @@ jobs:
     name: pinned worker + real GGUF (Linux CPU)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      MODEL_PATH: ${{ runner.temp }}/clozn-models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
     steps:
       - uses: actions/checkout@v4
+
+      # The `runner` context is only in scope inside jobs.<job_id>.steps.* (run/env/with/if/...),
+      # NOT in a job-level `env:` block -- GitHub's Actions schema validator rejects a workflow that
+      # references it there at PARSE time, before any job is created, which is exactly the "failed
+      # run with zero jobs" signature this step exists to fix. Route MODEL_PATH through $GITHUB_ENV
+      # instead so every later step in this job still sees it as a plain env var.
+      - name: Resolve the model cache path
+        run: echo "MODEL_PATH=${{ runner.temp }}/clozn-models/${{ env.MODEL_FILE }}" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
