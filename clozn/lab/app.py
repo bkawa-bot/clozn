@@ -29,17 +29,21 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 from clozn.server import app as ctx
 
 
-def make_lab_handler():
-    base = ctx.make_handler()
+def make_lab_handler(sub=None, subname=None):
+    # Lab builds its OWN handler by INJECTING its substrate/name/kind -- it never reaches into
+    # clozn.server.app to mutate SUB/SUBNAME/ARGS/RUNTIME_KIND. Routes + active_subname(self) read the
+    # injected values via the getattr fallback, so the product module's globals stay untouched.
+    base = ctx.make_handler(sub=sub, subname=subname, runtime_kind="lab")
 
     class LabHandler(base):
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path in ("/healthz", "/readyz"):
-                self._json(200, {"status": "ok", "service": "clozn-lab", "active": ctx.SUBNAME})
+                self._json(200, {"status": "ok", "service": "clozn-lab", "active": ctx.active_subname(self)})
                 return
             if path == "/substrate":
-                self._json(200, {"active": ctx.SUBNAME, "available": [ctx.SUBNAME], "service": "clozn-lab"})
+                nm = ctx.active_subname(self)
+                self._json(200, {"active": nm, "available": [nm], "service": "clozn-lab"})
                 return
             if path.startswith("/v1/") or path.startswith("/api/clozn/"):
                 self._json(404, {"error": "the lab workbench does not expose a product generation API"})
@@ -66,14 +70,12 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=8090)
     args = parser.parse_args(argv)
 
-    os.environ["CLOZN_RUNTIME_KIND"] = "lab"
-    ctx.RUNTIME_KIND = "lab"
-    ctx.ARGS = args
-    ctx.SUBNAME = args.substrate
+    os.environ["CLOZN_RUNTIME_KIND"] = "lab"   # process env (memory_mode.set_mode reads it); NOT a product
+    #                                            module global -- the substrate/kind are injected below.
     print(f"clozn lab: loading {args.substrate} ...", flush=True)
     from clozn.lab.substrates import QwenSubstrate, DreamSubstrate
-    ctx.SUB = QwenSubstrate() if args.substrate == "qwen" else DreamSubstrate()
-    server = ThreadingHTTPServer((args.host, args.port), make_lab_handler())
+    sub = QwenSubstrate() if args.substrate == "qwen" else DreamSubstrate()
+    server = ThreadingHTTPServer((args.host, args.port), make_lab_handler(sub, args.substrate))
     print(f"\n  Clozn lab -> http://{args.host}:{args.port}/ ({args.substrate})\n", flush=True)
     server.serve_forever()
 
