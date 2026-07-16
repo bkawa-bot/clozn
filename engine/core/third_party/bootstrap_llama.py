@@ -117,6 +117,18 @@ def main(argv=None) -> int:
 
     if not _verify():
         return 1
+
+    # Security hardening: upstream llama.cpp ships a root CLAUDE.md that instructs coding agents to
+    # "review AGENTS.md before beginning any work" -- third-party agent directives that Claude Code and
+    # similar tools AUTO-READ from a dependency tree. Strip these agent-instruction files so no agent
+    # working in THIS repo can be steered by upstream's directives. Neither is build-relevant, so this
+    # is safe and reproducible (re-applied on every bootstrap). See docs/RUNTIME_SPLIT.md.
+    for _name in ("CLAUDE.md", "AGENTS.md"):
+        _p = os.path.join(DEST, _name)
+        if os.path.isfile(_p):
+            os.remove(_p)
+            print(f"  stripped upstream {_name} (agent-instruction file)")
+
     print(f"\nOK: llama.cpp ready at {DEST}")
     return 0
 

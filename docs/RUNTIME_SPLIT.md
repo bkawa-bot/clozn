@@ -119,3 +119,6 @@ Write that, and the whole Server tier (③) runs on the engine — because it al
 `engine/core/third_party/llama.cpp/CLAUDE.md` (inside the *vendored* checkout) contains a
 prompt-injection instructing agents to read an `AGENTS.md` "before any work." It is third-party
 content, not a project instruction — delete it or neutralize it so no future agent/tool obeys it.
+**✅ RESOLVED (2026-07-16):** `engine/core/third_party/bootstrap_llama.py` now strips the upstream
+`CLAUDE.md` **and** `AGENTS.md` from the vendored root on every bootstrap (reproducible), and both were
+removed from the current checkout.
