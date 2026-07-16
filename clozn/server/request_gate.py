@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 
 
 def _positive_int(name: str, default: int) -> int:
@@ -44,21 +45,45 @@ class RequestGate:
             wait_timeout=_positive_float("CLOZN_QUEUE_TIMEOUT", 600.0),
         )
 
-    def acquire(self) -> str | None:
-        """Return ``None`` on admission, otherwise ``full`` or ``timeout``."""
+    def acquire(self, cancel_check=None, poll_interval: float = 0.2) -> str | None:
+        """Admit one request, or explain why not. Returns ``None`` on admission, else one of ``"full"`` |
+        ``"timeout"`` | ``"cancelled"``.
+
+        `cancel_check`, when given, is polled every `poll_interval` seconds while this request is QUEUED
+        waiting for its turn (never while merely checking the bounded `_slots` semaphore just below, which
+        is already non-blocking) -- a callable returning True means the caller's own liveness signal (in
+        production: "has the requesting client's TCP connection already closed", see http_policy.
+        client_gone) says to abandon the wait rather than occupy a queue slot for the full `wait_timeout`
+        (600s by default) after nobody is left to serve. `cancel_check=None` preserves the exact original
+        single blocking wait -- every existing caller/test that has no liveness probe to offer keeps the
+        pre-cancellation behavior byte-for-byte (one `Lock.acquire(timeout=...)` call, not a poll loop)."""
         if not self._slots.acquire(blocking=False):
             return "full"
         with self._state_lock:
             self._waiting += 1
         acquired = False
+        cancelled = False
         try:
-            acquired = self._turn.acquire(timeout=self.wait_timeout)
+            if cancel_check is None:
+                acquired = self._turn.acquire(timeout=self.wait_timeout)
+            else:
+                deadline = time.monotonic() + self.wait_timeout
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    acquired = self._turn.acquire(timeout=min(poll_interval, remaining))
+                    if acquired:
+                        break
+                    if cancel_check():
+                        cancelled = True
+                        break
         finally:
             with self._state_lock:
                 self._waiting -= 1
         if not acquired:
             self._slots.release()
-            return "timeout"
+            return "cancelled" if cancelled else "timeout"
         with self._state_lock:
             self._active = 1
         return None

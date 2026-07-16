@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -15,6 +16,7 @@ from clozn.memory import mode as memory_mode
 from clozn.runs import store
 from clozn.server import app
 from clozn.server import generation_gateway
+from clozn.server import http_policy
 from clozn.server import sse
 from clozn.server.request_gate import RequestGate
 from clozn.server.routes import health
@@ -461,6 +463,74 @@ class GatewayHTTPPolicyTests(unittest.TestCase):
         self.assertEqual(json.loads(payload)["status"], "ok")
 
 
+class PostGateScopeTests(unittest.TestCase):
+    """backlog #2: POST_GATE stays serialized for anything substrate-shaped, but app._GATE_EXEMPT_POSTS
+    carves out the two paths audited to touch neither generation state nor steer/memory (see the module
+    comment above POST_GATE in app.py) -- and the gate's "cancelled" outcome (a client that vanished while
+    queued, see RequestGateTests above) must surface as a distinct, documented status."""
+
+    def test_capture_tier_bypasses_the_gate_entirely(self):
+        calls = []
+        original = app.POST_GATE.acquire
+        app.POST_GATE.acquire = lambda *a, **kw: calls.append(1) or original()
+        old_settings = memory_mode.SETTINGS_PATH
+        temp = tempfile.TemporaryDirectory(prefix="clozn-capture-tier-")
+        try:
+            memory_mode.SETTINGS_PATH = os.path.join(temp.name, "studio_settings.json")
+            head, payload, _ = raw_gateway_request("POST", path="/capture/tier", body=b'{"tier": "deep"}')
+        finally:
+            app.POST_GATE.acquire = original
+            memory_mode.SETTINGS_PATH = old_settings
+            temp.cleanup()
+        self.assertIn(" 200 ", head)
+        self.assertEqual(json.loads(payload.decode("utf-8")), {"ok": True, "tier": "deep"})
+        self.assertEqual(calls, [])                 # the gate was never even asked
+
+    def test_substrate_post_bypasses_the_gate_entirely(self):
+        calls = []
+        original = app.POST_GATE.acquire
+        app.POST_GATE.acquire = lambda *a, **kw: calls.append(1) or original()
+        try:
+            head, _, _ = raw_gateway_request("POST", path="/substrate", body=b'{}')
+        finally:
+            app.POST_GATE.acquire = original
+        self.assertIn(" 410 ", head)                 # health.py's fixed response, reached either way
+        self.assertEqual(calls, [])
+
+    def test_a_non_exempt_post_still_goes_through_the_gate(self):
+        calls = []
+        original = app.POST_GATE.acquire
+        app.POST_GATE.acquire = lambda *a, **kw: calls.append(1) or original(*a, **kw)
+        try:
+            raw_gateway_request("POST", path="/jlens", body=b'{}')
+        finally:
+            app.POST_GATE.acquire = original
+        self.assertEqual(calls, [1])
+
+    def test_a_client_gone_while_queued_surfaces_as_499_not_a_generic_503(self):
+        original = app.POST_GATE.acquire
+        app.POST_GATE.acquire = lambda *a, **kw: "cancelled"
+        try:
+            head, payload, _ = raw_gateway_request("POST", path="/jlens", body=b'{}')
+        finally:
+            app.POST_GATE.acquire = original
+        self.assertIn(" 499 ", head)
+        body = json.loads(payload.decode("utf-8"))
+        self.assertEqual(body["error"]["message"], "client disconnected while queued")
+
+    def test_full_and_timeout_keep_their_existing_status_codes(self):
+        original = app.POST_GATE.acquire
+        for outcome, expected_status in (("full", 429), ("timeout", 503)):
+            def _fake_acquire(*a, _outcome=outcome, **kw):
+                return _outcome
+            app.POST_GATE.acquire = _fake_acquire
+            try:
+                head, _, _ = raw_gateway_request("POST", path="/jlens", body=b'{}')
+            finally:
+                app.POST_GATE.acquire = original
+            self.assertIn(f" {expected_status} ", head)
+
+
 class RequestGateTests(unittest.TestCase):
     def test_gate_serializes_and_bounds_admitted_requests(self):
         gate = RequestGate(capacity=2, wait_timeout=1)
@@ -492,6 +562,91 @@ class RequestGateTests(unittest.TestCase):
         gate.release()
         self.assertIsNone(gate.acquire())
         gate.release()
+
+    def test_gate_cancel_check_frees_a_queued_slot_before_the_timeout(self):
+        """backlog #2: a cancel_check that fires (in production: the client's TCP connection already
+        closed -- see http_policy.client_gone) must free a queued slot well before wait_timeout, not
+        occupy it for the full bound. Poll fast so this stays quick without weakening the mechanism."""
+        gate = RequestGate(capacity=2, wait_timeout=5)
+        self.assertIsNone(gate.acquire())          # holds the only turn -- the next acquire() must queue
+        calls = []
+
+        def cancel_after_a_few_polls():
+            calls.append(1)
+            return len(calls) >= 3
+
+        started = time.monotonic()
+        result = gate.acquire(cancel_check=cancel_after_a_few_polls, poll_interval=0.02)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result, "cancelled")
+        self.assertLess(elapsed, 2.0)               # nowhere near the 5s wait_timeout
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertEqual(gate.snapshot()["waiting"], 0)
+        self.assertEqual(gate.snapshot()["active"], 1)   # the FIRST caller is still legitimately running
+        gate.release()
+        self.assertIsNone(gate.acquire())           # the slot cancellation freed is usable again
+        gate.release()
+
+    def test_gate_cancel_check_does_not_preempt_a_turn_that_becomes_available(self):
+        """A cancel_check that never fires must not block a legitimate admission once the turn is free --
+        cancellation is a bound on the WAIT, never a way to skip an otherwise-successful admission."""
+        gate = RequestGate(capacity=2, wait_timeout=5)
+        self.assertIsNone(gate.acquire())
+        result = []
+
+        def wait_for_turn():
+            result.append(gate.acquire(cancel_check=lambda: False, poll_interval=0.02))
+
+        thread = threading.Thread(target=wait_for_turn)
+        thread.start()
+        deadline = time.monotonic() + 1
+        while gate.snapshot()["waiting"] != 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(gate.snapshot()["waiting"], 1)
+        gate.release()                               # frees the turn for the queued acquire()
+        thread.join(timeout=1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result, [None])             # admitted normally, never "cancelled"
+        gate.release()
+
+
+class ClientGoneProbeTests(unittest.TestCase):
+    """http_policy.client_gone: the disconnect probe RequestGate's cancel_check uses in production. A real
+    socket pair (works on Windows too -- socket.socketpair() is emulated over a loopback TCP connection
+    there since Python 3.5) proves the select()+MSG_PEEK mechanism against an actual closed connection,
+    not just a mocked one."""
+
+    def test_connected_socket_reads_as_not_gone(self):
+        import socket
+        a, b = socket.socketpair()
+        try:
+            handler = types.SimpleNamespace(connection=a)
+            self.assertFalse(http_policy.client_gone(handler))
+        finally:
+            a.close(); b.close()
+
+    def test_closed_peer_reads_as_gone(self):
+        import socket
+        a, b = socket.socketpair()
+        try:
+            b.close()                                  # the peer hangs up
+            handler = types.SimpleNamespace(connection=a)
+            deadline = time.monotonic() + 1
+            gone = False
+            while time.monotonic() < deadline:
+                gone = http_policy.client_gone(handler)
+                if gone:
+                    break
+                time.sleep(0.01)
+            self.assertTrue(gone)
+        finally:
+            a.close()
+
+    def test_a_handler_with_no_connection_attribute_reads_as_connected(self):
+        """Every no-socket unit test (object.__new__(H) + io.BytesIO()) has no `.connection` at all -- the
+        probe must fail closed toward "still connected" rather than raising or wrongly cancelling."""
+        self.assertFalse(http_policy.client_gone(types.SimpleNamespace()))
+        self.assertFalse(http_policy.client_gone(object()))
 
 
 class SQLiteRunStoreTests(unittest.TestCase):

@@ -20,6 +20,7 @@ import threading
 
 from clozn.server.config import REPO_ROOT, DEMO                        # noqa: F401
 from clozn.server import app as ctx   # the seam: live server state + patchable helpers (see docstring)
+from clozn.server.request_context import RequestContext   # backlog #2: per-request isolation (see EngineSubstrate)
 
 class Substrate:
     """Shared studio surface for any substrate: the /memory/* trait cards and the /steer/* tone dials, on
@@ -387,6 +388,49 @@ class EngineSubstrate(Substrate):
         from clozn.behavior.steering.engine_adapter import EngineSteer
         return EngineSteer._text(self.engine.complete(prompt, max_tokens=90))
 
+    # ---- per-request context: request isolation (backlog #2) ------------------------------------------
+    # chat()/chat_stream() each start with self._new_request(), then write everything the call learns
+    # about ITSELF onto that one object (see request_context.RequestContext's docstring for why). The
+    # properties below are the back-compat SEAM: every existing reader of sub._last_generation_meta /
+    # _last_finish_reason / _last_diverged / _last_diverged_at / _last_stream_trace keeps working
+    # unchanged, unaware that the piecemeal attributes became views onto self._request. Deliberately
+    # EngineSubstrate-only (not on the shared Substrate base): QwenSubstrate/DreamSubstrate (clozn/lab/
+    # substrates.py) still WRITE these same names as plain instance attributes -- putting a property with
+    # no setter on the shared base would break that assignment with `AttributeError: can't set attribute`
+    # the moment a lab substrate's chat() ran. Read-only on purpose: the only legitimate writers are
+    # chat()/chat_stream() below, and they now write through `self._request` instead.
+    def _new_request(self) -> RequestContext:
+        """Start this call's own RequestContext and publish it as 'the current one' in a single attribute
+        assignment. Must be the FIRST thing chat()/chat_stream() do, mirroring exactly where the old code
+        used to reset self._last_generation_meta/_last_diverged/_last_diverged_at at call start."""
+        self._request = RequestContext()
+        return self._request
+
+    @property
+    def _last_generation_meta(self):
+        req = getattr(self, "_request", None)
+        return req.generation_meta if req is not None else None
+
+    @property
+    def _last_finish_reason(self):
+        req = getattr(self, "_request", None)
+        return req.finish_reason if req is not None else None
+
+    @property
+    def _last_diverged(self):
+        req = getattr(self, "_request", None)
+        return req.diverged if req is not None else None
+
+    @property
+    def _last_diverged_at(self):
+        req = getattr(self, "_request", None)
+        return req.diverged_at if req is not None else None
+
+    @property
+    def _last_stream_trace(self):
+        req = getattr(self, "_request", None)
+        return req.trace if req is not None else []
+
     def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None,
              reference_tokens=None, apply_anchored=False):
         """One stateless chat completion on the engine with memory (prompt-mode card block) + tone dials
@@ -407,13 +451,19 @@ class EngineSubstrate(Substrate):
         EARLY-STOPS this generation at the first token that differs from the reference (prove-all ablated
         arms) -- so the reply is a bit-exact PREFIX of what full generation would produce, plus a divergence
         verdict stashed for last_divergence(). This is a pure termination check -- decode/sampling (greedy
-        or not) are otherwise untouched, so a diverged reply is still a bit-exact prefix either way."""
+        or not) are otherwise untouched, so a diverged reply is still a bit-exact prefix either way.
+
+        REQUEST ISOLATION (backlog #2): this call's own RequestContext (self._new_request()) replaces the
+        old piecemeal self._last_generation_meta/_last_diverged/_last_diverged_at instance writes -- see
+        request_context.RequestContext's docstring. _last_generation_meta/_last_diverged/_last_diverged_at
+        stay readable exactly as before (now read-only views onto self._request); nothing about this
+        call's CONTROL FLOW or the reply it returns changed."""
         # `apply_anchored` is explicit so live OpenAI chat can use X7 anchored memory, while receipts/replay
         # keep the pre-existing deterministic baseline unless they intentionally opt in.
+        req = self._new_request()
         samp = ctx._resolve_sampling(sample)
-        self._last_generation_meta = ctx._engine_generation_meta(max_new, stream=False, sample=samp)
-        self._last_diverged = None
-        self._last_diverged_at = None
+        req.sampling = samp
+        req.generation_meta = ctx._engine_generation_meta(max_new, stream=False, sample=samp)
         # MEMORY: the active cards as a topic-gated system block (omitted off-topic / when strength 0).
         block, applied, gate = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
         assembled = ctx._inject_block(messages, block)
@@ -426,6 +476,7 @@ class EngineSubstrate(Substrate):
         # TONE: dials from self.steer.strength (replay toggles this in place), falling back to disk.
         kw = {}
         st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or ctx._disk_dials()
+        req.steering_snapshot = dict(st) if st else {}      # what THIS call used, decoupled from the live dict
         if self.steer is not None and st and any(st.values()):
             sv = self.steer.steer_vector(st)
             if sv:
@@ -436,14 +487,17 @@ class EngineSubstrate(Substrate):
             kw["reference_tokens"] = [int(t) for t in reference_tokens if t is not None]
         reply_raw, steps, finish, divinfo = ctx._engine_complete_traced(self.engine, prompt, max_new, kw,
                                                                     sample=samp)
-        self._last_finish_reason = finish                   # stash for last_finish_reason() (the log path)
-        self._last_diverged, self._last_diverged_at = divinfo  # stash for last_divergence()
+        req.finish_reason = finish                          # stash for last_finish_reason() (the log path)
+        req.diverged, req.diverged_at = divinfo             # stash for last_divergence()
         if comp is not None:                                 # LOOP GUARD: only when anchored memory was
             reply_raw, steps, finish = ctx._anchored_loop_guard(  # ACTUALLY injected this turn (comp is not
                 self.engine, prompt, max_new, kw, samp, comp, reply_raw, steps, finish, mem_out)
-            self._last_finish_reason = finish                # None) -- see ctx._anchored_loop_guard's docstring
+            req.finish_reason = finish                      # None) -- see ctx._anchored_loop_guard's docstring
         if trace_out is not None:
             trace_out.extend(steps)
+        req.trace = list(steps)
+        if mem_out is not None:
+            req.memory_manifest = dict(mem_out)
         return reply_raw.strip()
 
     def last_divergence(self):
@@ -607,12 +661,23 @@ class EngineSubstrate(Substrate):
         ever drives this method (only the live SSE studio chat does), so it is always ELIGIBLE to sample;
         ctx._resolve_sampling(True) alone decides, against the persisted "sampling" setting (default ON --
         temperature/top_p/top_k/repeat_penalty/a fresh seed) exactly like chat()'s sample=True path. The
-        setting off degrades to greedy, byte-identical to pre-S5 behavior."""
+        setting off degrades to greedy, byte-identical to pre-S5 behavior.
+
+        REQUEST ISOLATION + CANCELLATION (backlog #2): this call's own RequestContext (self._new_request())
+        replaces the old piecemeal self._last_generation_meta/_last_stream_trace/_last_finish_reason
+        instance writes (see request_context.RequestContext's docstring); the piecemeal names stay readable
+        exactly as before. The context also carries a cancellation Event: sse.py's caller sets it (via
+        self._request.cancel()) the instant it detects the CLIENT is gone (a failed write to the far end),
+        and the read loop below checks it between worker frames as a second, belt-and-suspenders stop
+        alongside the GeneratorExit an explicit `gen.close()` throws at the `yield` below -- either one
+        aborts the worker's chunked send promptly instead of draining a reply nobody will read."""
         import urllib.error
         import urllib.request
         import clozn.runs.store as runlog
+        req = self._new_request()
         samp = ctx._resolve_sampling(True)
-        self._last_generation_meta = ctx._engine_generation_meta(max_new, stream=True, sample=samp)
+        req.sampling = samp
+        req.generation_meta = ctx._engine_generation_meta(max_new, stream=True, sample=samp)
         # MEMORY + TONE: built EXACTLY as chat() builds them.
         block, applied, gate = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
         assembled = ctx._inject_block(messages, block)
@@ -623,6 +688,7 @@ class EngineSubstrate(Substrate):
                            prompt_block=block, assembled_messages=assembled, final_prompt=prompt)
         kw = {}
         st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or ctx._disk_dials()
+        req.steering_snapshot = dict(st) if st else {}      # what THIS call used, decoupled from the live dict
         if self.steer is not None and st and any(st.values()):
             sv = self.steer.steer_vector(st)
             if sv:
@@ -642,13 +708,12 @@ class EngineSubstrate(Substrate):
         body["stream"] = True
         if lens is not None:                # F1 live lens: opt-in passthrough (engine validates layer etc.)
             body["lens"] = lens if isinstance(lens, dict) else True
-        req = urllib.request.Request(self.engine.base + "/v1/completions",
-                                     data=json.dumps(body).encode("utf-8"),
-                                     headers={"Content-Type": "application/json"})
-        self._last_stream_trace = []        # reset; reassembled in `finally` below (empty on any hiccup)
+        wreq = urllib.request.Request(self.engine.base + "/v1/completions",
+                                      data=json.dumps(body).encode("utf-8"),
+                                      headers={"Content-Type": "application/json"})
         frames = []
         try:
-            resp = urllib.request.urlopen(req, timeout=getattr(self.engine, "timeout", 600))
+            resp = urllib.request.urlopen(wreq, timeout=getattr(self.engine, "timeout", 600))
         except urllib.error.HTTPError as he:
             # surface the engine's own error text (e.g. a bad lens layer's 400) instead of a bare code
             try:
@@ -658,6 +723,8 @@ class EngineSubstrate(Substrate):
             raise RuntimeError(f"engine: {detail}")
         try:
             for raw in resp:
+                if req.is_cancelled():          # CANCELLATION: the caller already gave up on this request
+                    break                        # (client gone) -- stop pulling from the worker between frames
                 line = raw.decode("utf-8", "replace").strip()
                 if not line.startswith("data:"):
                     continue
@@ -692,13 +759,13 @@ class EngineSubstrate(Substrate):
             except Exception:
                 pass
             try:
-                self._last_stream_trace = runlog.accumulate_ar_events(frames)
+                req.trace = runlog.accumulate_ar_events(frames)
             except Exception:
-                self._last_stream_trace = []
+                req.trace = []
             try:
-                self._last_finish_reason = runlog.finish_reason_from_frames(frames)
+                req.finish_reason = runlog.finish_reason_from_frames(frames)
             except Exception:
-                self._last_finish_reason = None
+                req.finish_reason = None
             # LOOP GUARD, streaming twin: the engine sets the anchored
             # steer at generation-START (body["steer_vec"] above) and every piece is yielded to the
             # caller live over SSE -- by the time this `finally` runs, the client has ALREADY received
@@ -710,7 +777,7 @@ class EngineSubstrate(Substrate):
             if mem_out is not None and mem_out.get("anchored"):
                 try:
                     from clozn.memory import anchored as _anchored_lg
-                    pieces = [str(s.get("piece", "")) for s in (self._last_stream_trace or [])]
+                    pieces = [str(s.get("piece", "")) for s in (req.trace or [])]
                     if _anchored_lg.detect_loop(pieces):
                         mem_out["anchored_loop_guard"] = {
                             "fired": True, "action": "flagged-only", "resolved": False,
@@ -718,6 +785,8 @@ class EngineSubstrate(Substrate):
                                      "fact, no mid-stream retry is possible on this path")}
                 except Exception:
                     pass
+            if mem_out is not None:
+                req.memory_manifest = dict(mem_out)
 
     def handle(self, path, body):
         r = self._memory(path, body)

@@ -255,6 +255,41 @@ def test_chat_stream_closes_the_connection_on_early_generator_close(iso, monkeyp
     assert fake_urlopen[-1]["resp"].closed is True
 
 
+# ==================================================================================== cancellation (backlog #2): RequestContext.cancel()
+# sse.py calls sub._request.cancel() the instant it detects the CLIENT is gone (a failed write), then
+# gen.close() for an immediate stop. This is the belt-and-suspenders half: the read loop ALSO checks
+# is_cancelled() between worker frames, so a caller that (for whatever reason) keeps pulling from the
+# generator after marking it cancelled -- rather than closing it outright -- still gets a prompt stop
+# instead of draining the rest of a reply nobody wants.
+
+def test_chat_stream_stops_pulling_from_the_worker_once_cancelled(iso, monkeypatch, fake_urlopen):
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    sub = _bare_engine_substrate(FakeEngine())
+
+    gen = sub.chat_stream([{"role": "user", "content": "capital of France?"}])
+    first = next(gen)                     # the context now exists (chat_stream's top-of-body ran)
+    assert first == " Par"
+    sub._request.cancel()
+
+    remaining = list(gen)                 # keep pulling -- the cancellation flag, not a close(), must stop it
+
+    assert remaining == []                # "is." never arrives -- the loop broke on the NEXT frame boundary
+    assert sub._request.is_cancelled() is True
+    assert fake_urlopen[-1]["resp"].closed is True   # the worker connection was still released via `finally`
+
+
+def test_chat_stream_cancellation_flag_is_false_by_default(iso, monkeypatch, fake_urlopen):
+    """A normal, uncancelled stream's context reports is_cancelled() False throughout -- cancellation is
+    opt-in, never a side effect of ordinary completion."""
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    sub = _bare_engine_substrate(FakeEngine())
+
+    pieces = list(sub.chat_stream([{"role": "user", "content": "hi"}]))
+
+    assert pieces == [" Par", "is", "."]
+    assert sub._request.is_cancelled() is False
+
+
 # ==================================================================================== the request mirrors _engine_complete_traced
 
 def test_chat_stream_request_body_mirrors_engine_complete_traced(iso, monkeypatch, fake_urlopen):

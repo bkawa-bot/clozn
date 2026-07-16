@@ -30,13 +30,30 @@ sys.modules.setdefault("clozn.server.app", sys.modules[__name__])
 
 from clozn.server.config import HERE, REPO_ROOT, DEMO, CLOZN_DIR   # noqa: E402 (side effects: sys.path/env/stdout)
 from clozn.server.http_policy import (                            # noqa: E402
-    DEFAULT_ALLOW_HEADERS, max_request_bytes, origin_allowed, request_origin, send_cors_headers,
+    DEFAULT_ALLOW_HEADERS, client_gone, max_request_bytes, origin_allowed, request_origin, send_cors_headers,
 )
 from clozn.server.request_gate import RequestGate                 # noqa: E402
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
 
 POST_GATE = RequestGate.from_env()
+
+# POST_GATE (request_gate.py) exists because EngineSubstrate keeps generation metadata, tone-dial
+# strengths, and prompt-mode memory cards on ONE shared object -- concurrent POST dispatch could let two
+# requests corrupt each other's evidence (see request_gate.py's module docstring). Backlog #2 ("request
+# isolation + cancellation") moved the generation-metadata piece onto a per-call RequestContext (see
+# clozn/server/request_context.py + EngineSubstrate.chat/chat_stream in substrates.py), which narrows --
+# but does NOT eliminate -- the reason the gate exists: self.steer.strength and the memory-card store are
+# STILL live, shared, mutable state that a concurrent /steer/* or /memory/* write could tear out from under
+# an in-flight generation read. So the gate stays broad by default; this is a DELIBERATELY SMALL allowlist
+# of the only two POST paths audited to touch NEITHER the substrate's generation state NOR steer/memory:
+#   /capture/tier -- a bare settings-file flag (clozn.runs.capture_mode), unrelated to SUB entirely.
+#   /substrate    -- POST always 410s (routes/health.py); it never reaches the substrate at all.
+# Every other POST -- every /memory/* and /steer/* mutation, plus every generation endpoint -- still reads
+# or writes that shared state and stays fully serialized. The risk of a wrong "this is safe" call here is a
+# corrupted run record or a torn dial read, so the bar is "audited to touch nothing substrate-shaped", not
+# a coarse heuristic like "looks read-only".
+_GATE_EXEMPT_POSTS = frozenset({"/capture/tier", "/substrate"})
 
 try:
     from cloze_engine import EngineClient, EngineError
@@ -788,10 +805,16 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
             return provider
 
         def _log_run(self, source, messages, response, model, started, error=None, trace=None,
-                     mem_out=None, finish_reason=None, finish_reason_fallback=None):
+                     mem_out=None, finish_reason=None, finish_reason_fallback=None, extra_meta=None):
             """Persist this interaction as an inspectable run (never let logging break the request).
             mem_out (prompt mode): the {applied, gate, strength?} record the generation path filled --
             what memory ACTUALLY rode this turn (the topic gate may have omitted the block).
+            extra_meta (optional): additional {key: value} pairs folded into the run's `meta` block on top
+            of the substrate/build-commit/capture-tier fields this method already assembles -- e.g. sse.py
+            tags a failed stream with {"stream_failure": "client_disconnected" | "worker_disconnected"} so
+            the Runs page (and anyone reading the record later) can tell those two failure modes apart
+            instead of both just showing an opaque `error` string. None-valued entries are dropped (same
+            "don't record a guess" rule _without_unknowns applies elsewhere).
             Returns the new run's id (str) on success, else None -- any failure along the way is swallowed,
             never raised. The M5 any-client bridge surfaces this id to the caller; None means "nothing to
             surface", not an error the request should see."""
@@ -896,6 +919,8 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                 except Exception:
                     meta = None
                 meta = dict(meta or {})
+                if extra_meta:
+                    meta.update({k: v for k, v in extra_meta.items() if v is not None})
                 git = _git_commit()
                 if git:
                     meta.setdefault("build_git_commit", git)
@@ -1004,11 +1029,23 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                 self._json(400, {"error": "JSON body must be an object"})
                 return
             p = self.path.split("?")[0].rstrip("/") or "/"
-            rejected = POST_GATE.acquire()
+            if p in _GATE_EXEMPT_POSTS:
+                # See _GATE_EXEMPT_POSTS' module-level comment: these two paths are audited to touch
+                # nothing the gate protects, so they run uncontended -- notably, they never sit in the
+                # bounded queue behind a slow generation request either.
+                self._dispatch_post(p, body)
+                return
+            rejected = POST_GATE.acquire(cancel_check=lambda: client_gone(self))
             if rejected:
-                status = 429 if rejected == "full" else 503
-                message = ("request queue is full" if rejected == "full" else
-                           "request timed out while waiting for the model")
+                # "cancelled": client_gone(self) fired while this request was queued -- the requester is
+                # confirmed gone, so this response is best-effort only (mirrors "full"/"timeout": nothing
+                # here relies on it actually being delivered). 499 (nginx's convention for "client closed
+                # the request") -- there is no standard status for this, but it is the least-ambiguous
+                # existing one for observability (access logs, metrics) even if nobody reads the body.
+                status = {"full": 429, "timeout": 503, "cancelled": 499}[rejected]
+                message = {"full": "request queue is full",
+                           "timeout": "request timed out while waiting for the model",
+                           "cancelled": "client disconnected while queued"}[rejected]
                 self._json(status, {"error": {"message": message, "type": "server_busy"}},
                            extra_headers={"Retry-After": "1"})
                 return
