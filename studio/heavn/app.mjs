@@ -56,8 +56,11 @@ function StatusLine(){
 }
 
 function NavRail(){
-  const s = useStore(x => ({ route: x.route, rec: x.rec, live: x.live }));
+  const s = useStore(x => ({ route: x.route, rec: x.rec, live: x.live, worker: x.worker }));
   const d = (s.rec && s.rec.meta && s.rec.meta.decode) || {};
+  // Every value below is either read straight off the loaded run record or off /readyz's live worker
+  // health (s.worker) -- never a placeholder. Absent data reads "—", it never gets a made-up stand-in.
+  const ctx = s.worker && s.worker.n_ctx != null ? Number(s.worker.n_ctx).toLocaleString() + " tok" : "—";
   return html`<div class="mod navmod">
     <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
     <div class="head"><span class="cap" style="font-size:9px;color:var(--mist)">system</span>
@@ -75,11 +78,13 @@ function NavRail(){
         <span class="mark">${s.route === m.id ? "◂" : ""}</span>
       </button>`)}
     <div class="navfoot">
-      <b>CLOZN v0.2</b><br/>
-      engine ${d.engine || "—"} · substrate ${(s.rec && s.rec.substrate) || "—"}<br/>
-      session ${(s.rec && s.rec.id) || "—"}
+      <b>CLOZN v0.2</b>
+      <div class="kv"><span class="k">engine</span><span class="v">${(s.rec && s.rec.model) || "—"}</span></div>
+      <div class="kv"><span class="k">context</span><span class="v">${ctx}</span></div>
+      <div class="kv"><span class="k">precision</span><span class="v">${d.quant || "—"}</span></div>
+      <div class="kv"><span class="k">session</span><span class="v">${(s.rec && s.rec.id) || "—"}</span></div>
       <div class="cap" style="font-size:8.5px;letter-spacing:.22em;color:var(--mist);margin-top:11px">system health</div>
-      <div class="health"><div class="bar"><i class="beats"></i></div><span>${s.live ? "98%" : "—"}</span></div>
+      <div class="health"><div class="bar"><i class="beats"></i></div><span>${s.live ? "live" : "—"}</span></div>
     </div>
   </div>`;
 }
@@ -151,10 +156,16 @@ export async function boot(rootEl){
     store.set({ live: false, runs: [{ ...SAMPLE }], full: { [SAMPLE.id]: SAMPLE },
                 currentId: SAMPLE.id, rec: SAMPLE });
   }
+  if(store.get().live){
+    const rz = await api.readyz();                            // real CONTEXT (n_ctx) for the nav footer
+    store.set({ worker: (rz && rz.worker) || null });          // null (not a placeholder) when unavailable
+  }
   /* keep the journal fresh: light polling (new runs land while you work) */
   setInterval(async () => {
     if(!store.get().live) return;
     const l = await api.listRuns();
     if(l && Array.isArray(l.runs)) store.set({ runs: l.runs });
+    const rz = await api.readyz();
+    store.set({ worker: (rz && rz.worker) || null });
   }, 6000);
 }

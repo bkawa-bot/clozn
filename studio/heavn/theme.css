@@ -113,6 +113,10 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .navrow.on .nm{color:var(--navy);font-weight:600}
 .navfoot{padding:12px 15px;border-top:1px solid var(--edge-soft);font-size:9.5px;line-height:1.75;color:var(--mist)}
 .navfoot b{color:var(--slate)}
+/* ENGINE / CONTEXT / PRECISION / SESSION — each a labeled key/value pair, real data only (see app.mjs) */
+.navfoot .kv{margin-top:8px}
+.navfoot .kv .k{display:block;font-size:8px;letter-spacing:.18em;text-transform:uppercase;color:var(--mist)}
+.navfoot .kv .v{display:block;color:var(--slate);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .health{display:flex;align-items:center;gap:8px;margin-top:7px}
 .health .bar{flex:1;height:4px;border-radius:2px;background:rgba(90,130,155,.18);overflow:hidden}
 .health .bar i{display:block;height:100%;width:98%;background:linear-gradient(90deg,var(--blue),var(--teal))}
