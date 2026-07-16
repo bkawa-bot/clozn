@@ -1,10 +1,13 @@
 name: CI
 
-# Monorepo CPU lanes (Roadmap 0.8). Two independent gates, all CPU:
+# Monorepo CPU lanes (Roadmap 0.8). Independent gates, all CPU:
 #   cpp     — the backend-free engine (scheduler + runtime), built with gcc + ctest.
 #   python  — the real product suite (`tests/` + `clozn/`, 1678+ tests) as the primary gate,
 #             plus the lab goldens (real tiny checkpoint) and the kernel's CPU reference.
 #             GPU-only / GGML tests are out of scope here (no GPU runner).
+#   packaging — clean-room install proof: build the wheel with the root pyproject.toml, install it into a
+#             brand-new venv, and prove `import clozn` / `clozn version` / `clozn doctor` all work outside
+#             this checkout (no repo-path hacks). See scripts/release/clean_room_install_test.py.
 # The seam (engine/ never links a model backend) is what makes the cpp lane fast and dependency-free.
 #
 # NOTE: `inspector/` is post-reorg vestigial -- it has zero tracked files at HEAD (its live code
@@ -98,3 +101,24 @@ jobs:
         # Validated locally with torch/transformers import-blocked: 36/36 pass. test_studio is
         # intentionally excluded -- it touches the HF SteeringControl and is not a torch-free test.
         run: python -m unittest -v tests.test_runtime_architecture tests.test_product_smoke
+
+  packaging:
+    name: packaging — clean-room install (wheel, console entry point, doctor)
+    runs-on: ubuntu-latest
+    # Separate from `python` above on purpose: this proves the RELEASE ARTIFACT works, not the repo
+    # checkout. `python -m pytest`/`unittest` import clozn off the repo tree; this instead builds the
+    # wheel via pyproject.toml/setup.py, installs it into a throwaway venv, and runs from a scratch cwd
+    # outside the checkout -- the only way to actually catch "works here, breaks for a pip user" bugs
+    # (e.g. the studio-asset packaged-mode fallback this lane originally caught locally: a namespace-
+    # package MultiplexedPath silently breaking `clozn doctor`'s asset lookup).
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+      - name: Clean-room install test
+        run: python scripts/release/clean_room_install_test.py
