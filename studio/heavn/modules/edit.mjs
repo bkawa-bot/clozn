@@ -1,12 +1,23 @@
-/* heavnOS · EDIT — the Glass Edit (pin & resolve). W5.
-   The impossible-elsewhere op: re-mask selected spans and re-solve them under FULL bidirectional
-   attention — the resolve follows your pins and context; it does NOT take instructions (there is
-   no instruction channel in the engine; the honest constraint is displayed).
-   Engine op: POST /v1/revise {text, spans:[{start,end}] BYTE offsets, steps, grow, ...} — exists
-   ONLY on the C++ engine (contracts §20 confirms no studio passthrough today) and ONLY in
-   diffusion mode (400 on autoregressive). Transport here: try a studio passthrough
-   (POST /engine/revise) first in case the backend adds one; else direct fetch to the engine URL
-   (configurable, persisted); every failure reported plainly (CORS/AR-mode/down). */
+/* heavnOS · EDIT — the Glass Edit (pin & resolve), now with a second edit mode. W5 + Route D.
+   TWO HONEST EDIT MODES (notes/EDIT_INSTRUCTIONS_DESIGN.md) — the user picks the property they need:
+     RESOLVE (diffusion): re-mask selected spans and re-solve them under FULL bidirectional attention —
+       the resolve follows your pins and context; it does NOT take instructions (there is no instruction
+       channel in a base diffusion model; the honest constraint is displayed). No free text, but genuine
+       backward propagation.
+     REWRITE (AR): type a free-text instruction; pins become "keep these phrases verbatim" constraints;
+       the AR substrate REGENERATES the unpinned text following the instruction. This is regeneration,
+       not a bidirectional resolve — no backward propagation, and pin survival is MEASURED afterward
+       (checked verbatim against the actual output), never assumed or guaranteed.
+   Engine ops:
+     RESOLVE — POST /v1/revise {text, spans:[{start,end}] BYTE offsets, steps, grow, ...} — exists ONLY
+       on the C++ engine (contracts §20 confirms no studio passthrough today) and ONLY in diffusion mode
+       (400 on autoregressive). Transport: try a studio passthrough (POST /engine/revise) first in case
+       the backend adds one; else direct fetch to the engine URL (configurable, persisted); every failure
+       reported plainly (CORS/AR-mode/down).
+     REWRITE — POST /engine/rewrite {text, pins:[{start,end}] CHAR offsets, instruction, max_tokens} — a
+       real studio passthrough (clozn/server/routes/rewrite.py), same-origin, no CORS dance needed: it's
+       a constrained AR chat call through the existing EngineSubstrate.chat plumbing, zero engine (C++)
+       changes. Response includes per-pin {kept} fidelity and the binding honest `note`. */
 import { html, useState, useEffect, useRef } from "../vendor/preact-standalone.mjs";
 import { useStore, toast } from "../state.mjs";
 import { api } from "../api.mjs";
@@ -69,15 +80,30 @@ async function callRevise(body){
   }
 }
 
+/* REWRITE (Route D): a real studio passthrough exists (unlike revise) -- same-origin, no CORS handling
+   needed. Failures reported plainly, same honesty rule as callRevise. */
+async function callRewrite(body){
+  try{
+    const r = await fetch("/engine/rewrite", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => null);
+    return r.ok ? { res: j, err: null } : { res: null, err: (j && j.error) || `HTTP ${r.status}` };
+  }catch(e){
+    return { res: null, err: "unreachable (" + String(e).slice(0, 80) + ")" };
+  }
+}
+
 /* ── the module ──────────────────────────────────────────────────────── */
 export function EditModule(){
   const rec = useStore(x => x.rec);
   const live = useStore(x => x.live);
   const [text, setText] = useState("");
   const [seeded, setSeeded] = useState(null);            // which run seeded the canvas
-  const [pins, setPins] = useState([]);                   // [charA, charB] — glass-locked
-  const [solves, setSolves] = useState([]);               // [charA, charB] — to re-solve
+  const [pins, setPins] = useState([]);                   // [charA, charB] — glass-locked (both modes)
+  const [solves, setSolves] = useState([]);               // [charA, charB] — to re-solve (Resolve only)
   const [mode, setMode] = useState(null);                 // engine mode from /engine/health
+  const [editMode, setEditMode] = useState("resolve");    // "resolve" (diffusion) | "rewrite" (AR)
+  const [instruction, setInstruction] = useState("");     // Rewrite's free-text instruction
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [steps, setSteps] = useState(16);
@@ -98,7 +124,9 @@ export function EditModule(){
     }
   }, [rec && rec.id]);
 
-  const armed = mode === "diffusion";
+  /* Resolve needs a diffusion GGUF (the bidirectional re-mask); Rewrite needs an autoregressive one
+     (the constrained AR chat call) -- the two modes are gated on OPPOSITE engine modes, honestly. */
+  const armed = editMode === "resolve" ? mode === "diffusion" : mode === "autoregressive";
   const grab = () => {
     const o = canvasRef.current && selOffsets(canvasRef.current);
     if(!o) toast("select some text on the canvas first");
@@ -136,16 +164,35 @@ export function EditModule(){
                    steps: +steps || 16, grow: +grow || 0 };
     const out = await callRevise(body);
     setBusy(false);
-    if(!out.res){ setResult({ ok: false, via: out.via, err: out.err || "no response" }); return; }
+    if(!out.res){ setResult({ mode: "resolve", ok: false, via: out.via, err: out.err || "no response" }); return; }
     const newText = out.res.choices && out.res.choices[0] && out.res.choices[0].text;
-    setResult({ ok: true, via: out.via, before: text, after: newText ?? "(no text in response)",
+    setResult({ mode: "resolve", ok: true, via: out.via, before: text, after: newText ?? "(no text in response)",
                 finish: out.res.choices && out.res.choices[0] && out.res.choices[0].finish_reason,
                 usage: out.res.usage || null });
   };
 
-  /* render the canvas as segments (pins frosted, solves tinted) */
+  /* REWRITE (Route D): pins ride as CHAR offsets directly (no byte conversion -- this endpoint is
+     Python, not the C++ engine) alongside the free-text instruction. Fidelity is whatever the server
+     measured, rendered as-is -- this UI never re-derives or second-guesses the {kept} verdicts. */
+  const doRewrite = async () => {
+    if(!armed) return toast("rewrite needs an autoregressive GGUF on the engine — current mode: " + mode);
+    if(!instruction.trim()) return toast("type an instruction first");
+    setBusy(true); setResult(null);
+    const body = { text, instruction, pins: pins.map(([a,b]) => ({ start: a, end: b })) };
+    const out = await callRewrite(body);
+    setBusy(false);
+    if(!out.res){ setResult({ mode: "rewrite", ok: false, err: out.err || "no response" }); return; }
+    setResult({ mode: "rewrite", ok: true, before: text, after: out.res.text,
+                pins: out.res.pins || [], allPinsKept: !!out.res.all_pins_kept,
+                note: out.res.note, finish: out.res.finish_reason, runId: out.res.run_id });
+  };
+
+  /* render the canvas as segments (pins frosted, solves tinted -- solves only mean something in Resolve
+     mode; Rewrite regenerates everything unpinned, so a leftover solve-mark from switching modes would
+     be a misleading tint there, and is deliberately not rendered). */
   const segments = (() => {
-    const marks = [...pins.map(p => ({ s: p, kind: "pin" })), ...solves.map(s => ({ s, kind: "solve" }))]
+    const marks = [...pins.map(p => ({ s: p, kind: "pin" })),
+                   ...(editMode === "resolve" ? solves.map(s => ({ s, kind: "solve" })) : [])]
       .sort((x,y) => x.s[0] - y.s[0]);
     const out = []; let at = 0;
     for(const m of marks){
@@ -160,21 +207,35 @@ export function EditModule(){
   return html`<div class="col">
     <div class="mod">
       <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
-      <div class="mod-h"><span class="led blue"></span><span class="cap">the glass edit — pin ${"&"} resolve</span>
+      <div class="mod-h"><span class="led blue"></span><span class="cap">the glass edit — pin ${"&"} ${editMode === "resolve" ? "resolve" : "rewrite"}</span>
         <span class="tail">${mode == null ? "checking engine…" : "engine mode: " + mode}</span>
         <span class=${"tag " + (armed ? "cap-t" : "smp-t")}>${armed ? "ARMED" : "STAGING"}</span></div>
 
-      <div class="cfg" style="margin:6px 13px 0">
+      <div class="transport" style="border-bottom:none;background:none;padding:4px 13px 0">
+        <span class="lbl" style="font-size:7.5px">edit mode</span>
+        <button class=${"spd" + (editMode === "resolve" ? " busy" : "")}
+          onClick=${() => { setEditMode("resolve"); setResult(null); }}>RESOLVE (diffusion)</button>
+        <button class=${"spd" + (editMode === "rewrite" ? " busy" : "")}
+          onClick=${() => { setEditMode("rewrite"); setResult(null); }}>REWRITE (AR)</button>
+      </div>
+
+      ${editMode === "resolve" ? html`<div class="cfg" style="margin:6px 13px 0">
         <span style="font-size:9.5px">the resolve follows your pins and surrounding context —
           <b>it does not take instructions</b>. Pin what must stay; mark what should re-solve;
           edit an anchor and let the change propagate — in both directions.</span>
-      </div>
+      </div>` : html`<div class="cfg" style="margin:6px 13px 0">
+        <span style="font-size:9.5px"><b>rewrite regenerates the unpinned text — it does not
+          bidirectionally resolve</b> (no backward propagation, unlike Resolve). Pin what must survive
+          verbatim, type an instruction, and the AR model regenerates the rest. Pin survival is
+          <b>checked against the actual output</b>, never assumed — a broken pin is reported, not hidden.</span>
+      </div>`}
 
       ${!armed && mode != null && html`<div class="cfg" style="margin:6px 13px 0;border-left-color:var(--lilac)">
         <span style="font-size:9.5px">${
           mode === "offline" ? "server offline — the canvas below still works as staging"
           : mode === "down" ? "engine unreachable — staging only until it's up"
-          : mode === "autoregressive" ? "the engine has an AR model loaded; pin-resolve needs a DIFFUSION GGUF (Dream/LLaDA) — everything below stages until then"
+          : editMode === "resolve" && mode === "autoregressive" ? "the engine has an AR model loaded; pin-resolve needs a DIFFUSION GGUF (Dream/LLaDA) — everything below stages until then"
+          : editMode === "rewrite" && mode === "diffusion" ? "the engine has a diffusion model loaded; rewrite needs an AUTOREGRESSIVE GGUF — everything below stages until then (switch to RESOLVE to use this model)"
           : "engine mode unknown — staging only"}</span></div>`}
 
       <div style="padding:10px 13px 4px">
@@ -192,19 +253,30 @@ export function EditModule(){
 
       <div class="transport" style="border-bottom:none;background:none;padding-top:6px">
         <button class="spd" onClick=${addPin}>◈ PIN selection</button>
-        <button class="spd" onClick=${addSolve} style="color:#1B7F74;border-color:rgba(95,200,188,.7)">◌ RESOLVE selection</button>
-        <button class="spd" onClick=${editAnchor}>✎ EDIT anchor</button>
+        ${editMode === "resolve" && html`<span style="display:contents">
+          <button class="spd" onClick=${addSolve} style="color:#1B7F74;border-color:rgba(95,200,188,.7)">◌ RESOLVE selection</button>
+          <button class="spd" onClick=${editAnchor}>✎ EDIT anchor</button>
+        </span>`}
         <button class="spd" onClick=${clearMarks}>clear marks</button>
         <span style="flex:1"></span>
-        <span class="lbl" style="font-size:7.5px">steps</span>
-        <input type="number" min="4" max="64" value=${steps} onInput=${e => setSteps(e.target.value)}
-          style="width:46px;font-family:var(--mono);font-size:10px;border:1px solid var(--edge);border-radius:6px;padding:3px 6px;background:#fff"/>
-        <span class="lbl" style="font-size:7.5px">grow</span>
-        <input type="number" min="0" max="8" value=${grow} onInput=${e => setGrow(e.target.value)}
-          style="width:40px;font-family:var(--mono);font-size:10px;border:1px solid var(--edge);border-radius:6px;padding:3px 6px;background:#fff"/>
-        <button class=${"spd" + (busy ? " busy" : "")} onClick=${doResolve}
-          style="color:${armed ? "#1B7F74" : "var(--mist)"};border-color:${armed ? "rgba(95,200,188,.8)" : "var(--edge)"};font-weight:600;letter-spacing:.18em">
-          ${busy ? "RESOLVING…" : "RESOLVE"}</button>
+        ${editMode === "resolve" ? html`<span style="display:contents">
+          <span class="lbl" style="font-size:7.5px">steps</span>
+          <input type="number" min="4" max="64" value=${steps} onInput=${e => setSteps(e.target.value)}
+            style="width:46px;font-family:var(--mono);font-size:10px;border:1px solid var(--edge);border-radius:6px;padding:3px 6px;background:#fff"/>
+          <span class="lbl" style="font-size:7.5px">grow</span>
+          <input type="number" min="0" max="8" value=${grow} onInput=${e => setGrow(e.target.value)}
+            style="width:40px;font-family:var(--mono);font-size:10px;border:1px solid var(--edge);border-radius:6px;padding:3px 6px;background:#fff"/>
+          <button class=${"spd" + (busy ? " busy" : "")} onClick=${doResolve}
+            style="color:${armed ? "#1B7F74" : "var(--mist)"};border-color:${armed ? "rgba(95,200,188,.8)" : "var(--edge)"};font-weight:600;letter-spacing:.18em">
+            ${busy ? "RESOLVING…" : "RESOLVE"}</button>
+        </span>` : html`<span style="display:contents">
+          <input type="text" placeholder="instruction — e.g. 'make it more formal'" value=${instruction}
+            onInput=${e => setInstruction(e.target.value)}
+            style="flex:2;min-width:180px;font-family:var(--mono);font-size:10px;border:1px solid var(--edge-soft);border-radius:7px;padding:5px 9px;background:rgba(255,255,255,.6)"/>
+          <button class=${"spd" + (busy ? " busy" : "")} onClick=${doRewrite}
+            style="color:${armed ? "#1B7F74" : "var(--mist)"};border-color:${armed ? "rgba(95,200,188,.8)" : "var(--edge)"};font-weight:600;letter-spacing:.18em">
+            ${busy ? "REWRITING…" : "REWRITE"}</button>
+        </span>`}
       </div>
 
       <div style="padding:0 13px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -220,7 +292,7 @@ export function EditModule(){
       </div>
     </div>
 
-    ${result && html`<div class="mod">
+    ${result && result.mode === "resolve" && html`<div class="mod">
       <div class="mod-h"><span class=${"led " + (result.ok ? "" : "lilac")}></span>
         <span class="cap">resolve — ${result.ok ? "returned" : "failed"}</span>
         <span class="tail">via ${result.via}</span>
@@ -234,6 +306,32 @@ export function EditModule(){
             <div class="none" style="grid-column:1/-1;font-size:8.5px">
               only the marked spans were re-opened; pins and unmarked text were held by the engine's
               pin invariant. A score-delta receipt for resolves lands when /score gains a passthrough.</div>
+          </div>`
+        : html`<div style="padding:4px 14px 12px" class="none">${result.err}</div>`}
+    </div>`}
+
+    ${result && result.mode === "rewrite" && html`<div class="mod">
+      <div class="mod-h"><span class=${"led " + (result.ok ? "" : "lilac")}></span>
+        <span class="cap">rewrite — ${result.ok ? "returned" : "failed"}</span>
+        ${result.ok && result.finish && html`<span class="tag der-t">finish · ${result.finish}</span>`}
+        ${result.ok && html`<span class=${"tag " + (result.allPinsKept ? "cap-t" : "der-t")}>${
+          result.allPinsKept ? "all pins kept" : "a pin broke"}</span>`}</div>
+      ${result.ok
+        ? html`<div style="padding:4px 14px 12px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div><div class="lbl" style="padding:4px 0">before</div>
+              <div class="leader-body" style="border:1px solid var(--edge-soft);border-radius:8px;max-height:220px">${result.before}</div></div>
+            <div><div class="lbl" style="padding:4px 0">after — ${result.note}</div>
+              <div class="leader-body" style="border:1px solid ${result.allPinsKept ? "rgba(95,200,188,.5)" : "var(--lilac)"};border-radius:8px;max-height:220px;background:${result.allPinsKept ? "rgba(95,200,188,.06)" : "rgba(200,150,200,.06)"}">${result.after}</div></div>
+            ${result.pins.length > 0 && html`<div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+              <span class="lbl" style="font-size:7.5px">pin fidelity — measured, not assumed</span>
+              ${result.pins.map(pn => html`<span class=${"tag " + (pn.kept ? "cap-t" : "der-t")}
+                title=${pn.kept ? "survived verbatim" : "did NOT survive verbatim in the output"}>
+                ${pn.kept ? "✓" : "✗"} "${pn.text.length > 24 ? pn.text.slice(0, 24) + "…" : pn.text}"</span>`)}
+            </div>`}
+            <div class="none" style="grid-column:1/-1;font-size:8.5px">
+              ${result.note} — pins are prompt-level constraints the model was ASKED to honor, not an
+              engine-enforced invariant; the fidelity tags above are a post-hoc verbatim check on the
+              actual output, not a guarantee made in advance.</div>
           </div>`
         : html`<div style="padding:4px 14px 12px" class="none">${result.err}</div>`}
     </div>`}
