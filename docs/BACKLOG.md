@@ -64,9 +64,14 @@ The "make it a product people can actually run" track. Ordered per the handoff's
   nucleus before the seeded draw. Default ON with Ollama's canonical temp 0.8/top_k 40/top_p 0.9/rep 1.1
   (owner: default on, "feels like the same model they know from Ollama"). Greedy argmax path byte-identical
   → receipts/replay stay forced-greedy regardless. Verified: top_k=1==greedy, seed reproduces, sampled≠greedy.
-- [ ] **Worker protocol handshake** **[H:P1]** — `protocol/SPEC.md` is prose, not a contract. Add
-  `protocol_version` + capabilities to `/health` + `/readyz`; supervisor refuses an incompatible major;
-  request-id + monotonic event seq on native streams; golden fixtures shared by C++/Python/Studio.
+- [x] **Worker protocol handshake** **[H:P1]** — DONE (b7433c9 handshake + 0205dfd stream envelope).
+  `protocol_version` "1.0" + a `capabilities` object on engine `/health` + gateway `/readyz`; the
+  supervisor (`spawn_engine`) refuses an incompatible/missing major (terminates + raises, message says to
+  rebuild) instead of driving a worker blind. Every native SSE frame is stamped with `req` (request id) +
+  a monotonic per-request `seq` (StreamEnvelope; completions/infill/revise/board, legacy + protocol:true).
+  Golden fixture `protocol/fixtures/handshake.json` guards C++ header, Python constant, and the /health
+  capability keys via `tests/test_protocol_handshake.py`. Verified live + product smoke 24/24. *Follow-up:
+  wire Studio to read the same fixture (it can today; not yet consumed) + seq-gap detection on consumers.*
 - [ ] **Request isolation + cancellation** **[H:P1][SPLIT P4]** — per-request context (id, sampling, memory
   manifest, steering snapshot, trace, finish reason, cancellation) instead of shared process globals; this
   removes the reason every POST is globally serialized. Propagate client disconnect → cancel the worker;
