@@ -60,6 +60,8 @@ from clozn.cli.commands.eval import cmd_eval, add_subparser as _add_eval        
 from clozn.cli.commands.migrate import cmd_migrate_runs                                        # noqa: E402
 from clozn.cli.commands.lab import cmd_lab                                                      # noqa: E402
 from clozn.cli.commands.smoke import cmd_smoke                                                  # noqa: E402
+from clozn.cli.commands.version import cmd_version                                              # noqa: E402
+from clozn.cli.commands.doctor import cmd_doctor                                                # noqa: E402
 
 
 def build_parser():
@@ -171,6 +173,12 @@ def build_parser():
     pte.set_defaults(fn=cmd_test)
     _add_quant_check(sub)   # `clozn quant-check <A> <B>` — quant-ladder receipts (Tier-1)
     _add_eval(sub)          # `clozn eval` — outcome-grounded calibration (Brier/ECE/risk-coverage)
+    sub.add_parser("version", help="print the installed clozn version (+ git commit if available)"
+                   ).set_defaults(fn=cmd_version)
+    pdoc = sub.add_parser("doctor", help="diagnose this install: engine binary, models, studio assets, "
+                          "registry, protocol version -- exits nonzero only on a genuinely broken install")
+    pdoc.add_argument("--json", action="store_true", help="print a machine-readable report")
+    pdoc.set_defaults(fn=cmd_doctor)
     return p
 
 
