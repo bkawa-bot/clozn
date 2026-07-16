@@ -24,24 +24,24 @@ const MODULES = [
 ];
 
 function Topbar(){
-  const s = useStore(x => ({ live: x.live, rec: x.rec }));
-  const d = (s.rec && s.rec.meta && s.rec.meta.decode) || {};
+  const s = useStore(x => ({ rec: x.rec, route: x.route }));
   return html`<div class="topbar">
     <div style="display:flex;align-items:baseline;gap:11px">
       <span class="wordmark">CLOZN</span>
       <span class="sub">local glass-box ai runtime</span>
     </div>
+    <!-- honesty pills: all three are genuinely, structurally true of clozn (local-first, no cloud
+         calls, no telemetry) -- static by design, not a live connectivity readout (that's StatusLine,
+         just below). Never add a pill here that isn't unconditionally true. -->
     <div style="flex:1;display:flex;justify-content:center;align-items:center;gap:15px">
-      <span class="stat"><i class="led beats" style="width:6px;height:6px"></i>LOCAL</span>
-      <span class="vsep"></span>
-      <span class="stat">ENGINE <b>${s.live ? "connected" : "offline"}</b></span>
-      <span class="stat">MODEL <b>${(s.rec && s.rec.model) || "—"}</b></span>
-      ${d.quant && html`<span class="stat">· ${d.quant}</span>`}
+      <span class="stat"><i class="led beats" style="width:6px;height:6px"></i>LOCAL MODE</span>
+      <span class="stat"><i class="led off" style="width:6px;height:6px"></i>NO CLOUD</span>
+      <span class="stat"><i class="led" style="width:6px;height:6px"></i>NO TELEMETRY</span>
     </div>
     <div style="display:flex;align-items:center;gap:14px">
       <span class="stat mono" style="letter-spacing:.04em">
-        local://${useStore(x => x.route)}/${(s.rec && s.rec.id) || ""}</span>
-      <span class="windots"><span/><span/><span/></span>
+        local://${s.route}/${(s.rec && s.rec.id) || ""}</span>
+      <span class="winctl"><span>−</span><span>▢</span><span>×</span></span>
     </div>
   </div>`;
 }

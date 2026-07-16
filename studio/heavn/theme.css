@@ -58,6 +58,8 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .led{width:7px;height:7px;border-radius:50%;background:var(--teal);box-shadow:0 0 8px var(--teal);flex:none}
 .led.blue{background:var(--blue);box-shadow:0 0 8px var(--blue)}
 .led.lilac{background:var(--lilac);box-shadow:0 0 8px var(--lilac)}
+/* hollow/inactive dot — a status pill reporting an absence (e.g. "NO CLOUD"): outline only, no glow */
+.led.off{background:transparent;border:1px solid var(--mist);box-shadow:none}
 .mod-h .cap{font-size:10px;color:var(--slate)}
 .mod-h .tail{margin-left:auto;font-size:8.5px;letter-spacing:.08em;color:var(--mist)}
 .tag{font-size:8px;letter-spacing:.12em;padding:1.5px 6px;border-radius:3px;white-space:nowrap}
@@ -81,9 +83,11 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .stat{display:flex;align-items:center;gap:7px;font-size:9.5px;letter-spacing:.14em;color:var(--slate)}
 .stat b{color:var(--navy);font-weight:600}
 .vsep{width:1px;height:14px;background:var(--edge-soft)}
-.windots{display:flex;align-items:center;gap:8px;color:var(--mist)}
-.windots span{width:10px;height:10px;border-radius:50%;border:1px solid var(--edge);
-  background:linear-gradient(180deg,#fff,#DCEAF2)}
+/* window-frame glyphs (− ▢ ×) — decorative only (heavn runs in a browser tab, not a window it
+   controls), but the refs render this cluster consistently, and matching it reads as "this is an
+   instrument panel" rather than "this is a web page". Was a row of blank traffic-light dots. */
+.winctl{display:flex;align-items:center;gap:10px;color:var(--mist);font-size:12px;line-height:1}
+.winctl span{display:inline-block;opacity:.8}
 
 .statusline{margin:0 0 12px;padding:7px 14px;font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
   display:flex;gap:9px;align-items:center;border-radius:11px}
