@@ -48,6 +48,12 @@ These make the branch we just pushed trustworthy and the docs honest. All small.
   qwen2.5-0.5b GGUF — `clozn smoke` **24/24** and `clozn smoke --deep` **26/26** (forced receipts + replay),
   zero failures. Found + fixed one real bug (a `clozn stop` registry-cleanup race, `af53bbf`). Remaining
   sub-item: get the nightly `real-runtime-smoke.yml` green in CI (build the pinned worker on the Linux runner).
+  🔧 **2026-07-16**: fixed the workflow's "failed run, zero jobs" parse failure -- root cause was a
+  job-level `env:` block referencing the `runner` context, which GitHub's schema only allows inside
+  `jobs.<job_id>.steps.*` (not `jobs.<job_id>.env`); rejected at parse time before any job is created.
+  Moved `MODEL_PATH` to a `$GITHUB_ENV`-writing step instead. Verified locally (`yaml.safe_load` + manual
+  schema review); **still needs a live `workflow_dispatch` run to confirm the CPU build + smoke steps
+  themselves pass** -- that part was never reachable before this fix.
 - [ ] **Docs/claims refresh** **[RM][SPLIT][MODEL]** — `MODEL_SUPPORT.md` + `RUNTIME_SPLIT.md` still list
   *shipped* things (Tier-0 chat templating, J-lens) as blockers. Trace every headline claim to a measurement.
 - [ ] **Security: neutralize the planted prompt-injection** **[SPLIT]** — `engine/.../llama.cpp/CLAUDE.md`
@@ -82,9 +88,22 @@ The "make it a product people can actually run" track. Ordered per the handoff's
 - [ ] **Client compatibility matrix** **[H:P2]** — publish an endpoint/field support matrix; unsupported
   fields → OpenAI-shaped 4xx or documented-ignored (no silent pretend). Integration tests with the real
   OpenAI client. **Owner decision: Ollama drop-in?** (recommended: thin `/api/chat|generate|tags|version`).
-- [ ] **CI lanes + release artifact** **[H:P2]** — root `pyproject.toml` + version + console entry point;
-  `pip install` into a clean env yields a working `clozn` with no repo-path hacks; `clozn version` +
-  `clozn doctor`; package Studio/protocol/worker assets. *(product-minimal CI lane already done.)*
+- [x] **CI lanes + release artifact** **[H:P2]** — ✅ **DONE 2026-07-16**: root `pyproject.toml` (setuptools)
+  + `setup.py` (the studio/protocol `package_dir` remap `find()` can't express) + single-source version
+  (`clozn.__version__`) + `clozn = clozn.cli.main:main` console entry point. `clozn version` (+ git commit
+  when in a checkout) and `clozn doctor` (engine binary / models / studio assets / registry staleness /
+  protocol version / python version -- warns, never fails, on a merely-missing engine) both land in
+  `clozn/cli/commands/`. Studio + `protocol/` ship inside the wheel as `clozn.studio` /
+  `clozn.protocol_fixtures`, with `clozn/server/config.py`'s `DEMO` gaining a third packaged-mode fallback
+  (env var → repo layout → `importlib.resources`) -- caught and fixed a real bug this way (a namespace-
+  package `MultiplexedPath` silently broke the packaged asset lookup; fixed by giving `studio/`/`protocol/`
+  a marker `__init__.py`). `scripts/release/clean_room_install_test.py` builds the wheel, installs into a
+  throwaway venv, and proves `import clozn` / `python -m clozn version` / `python -m clozn doctor` / the
+  `clozn` console script all work from a scratch cwd outside the repo -- wired as CI's new `packaging` job.
+  Engine build provenance (llama.cpp pin from `bootstrap_llama.py`) surfaces via `doctor` when a binary is
+  found; no build-flags/commit record is embedded in the binary itself yet (proposed, not built: see the
+  session report for a concrete `server_main.cpp`/CMakeLists.txt sketch). *(product-minimal CI lane
+  already done.)*
 - [ ] **Lab artifact contracts + model qualification** **[H:P2]** — 🔄 **IN PROGRESS in a concurrent
   session** (`clozn/artifacts/contracts.py`, `docs/qualification/`, model registry). One manifest format
   (J-lens / dials / SAE), validated before load; qualify a hero model per architecture. Related **[MODEL]**:
