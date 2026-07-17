@@ -50,8 +50,8 @@ from clozn.cli.commands.models import format_throughput                         
 from clozn.cli.commands.run import cmd_run                                                    # noqa: E402
 from clozn.cli.commands.serve import cmd_serve, cmd_ps, cmd_stop                              # noqa: E402
 from clozn.cli.commands.studio import cmd_studio                                              # noqa: E402
-from clozn.cli.commands.explain import (cmd_explain, cmd_trace, cmd_branch, format_explain,    # noqa: E402
-                                        format_narrate, _fetch_explain, _fetch_narrate,
+from clozn.cli.commands.explain import (cmd_explain, cmd_inspect, cmd_trace, cmd_branch,       # noqa: E402
+                                        format_explain, format_narrate, _fetch_explain, _fetch_narrate,
                                         _last_run_id, _verified_tag)
 from clozn.cli.commands.preferences import cmd_preferences, format_preferences                # noqa: E402
 from clozn.cli.commands.test import cmd_test                                                  # noqa: E402
@@ -156,6 +156,13 @@ def build_parser():
                     "it overclaims. Opt-in -- unlike the rest of `explain`, this GENERATES (two model calls; "
                     "needs a running Clozn gateway)")
     pe.set_defaults(fn=cmd_explain)
+    pi = sub.add_parser("inspect", help="inspect a returned clozn_run_id (local journal first; no generation)")
+    pi.add_argument("run_id", nargs="?", default=None, help="clozn_run_id from an API response/header")
+    pi.add_argument("--last", action="store_true", help="inspect the most recent organic run")
+    pi.add_argument("--port", type=int, default=0,
+                    help="gateway fallback when the id is not in the local journal (default 8080)")
+    pi.add_argument("--json", action="store_true", help="print the exact explanation object as JSON")
+    pi.set_defaults(fn=cmd_inspect)
     ppref = sub.add_parser("preferences", help="review learned-preference suggestions the model proposes "
                            "from your quick-repairs (needs a running Clozn gateway)")
     ppref.add_argument("--approve", metavar="ID", default=None, help="approve a proposal by id (persists the dial)")

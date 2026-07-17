@@ -1,6 +1,6 @@
 """commands.explain -- the run-inspection family: `clozn trace` (the last run's confidence timeline),
-`clozn branch` (re-run from an uncertain point on the road not taken), and `clozn explain` (+ its opt-in
-`--why` accountable-self narration). All three read an already-recorded run rather than generating new
+`clozn inspect <run_id>` (local-journal-first, zero-generation explanation), `clozn branch` (re-run from
+an uncertain point), and `clozn explain` (+ its opt-in `--why` accountable-self narration). These read a recorded run rather than generating new
 text by default -- `explain` is DISPLAY ONLY unless `--why` is given, and `branch` is the one command here
 that does generate (a continuation past the forked token).
 
@@ -288,6 +288,45 @@ def _fetch_explain(port: int, run_id: str) -> dict:
         )
     except Exception as e:
         raise ctx.CloznError(f"explain failed: {e}")
+
+
+def _local_explain(run_id: str) -> dict | None:
+    """Assemble M1 directly from the authoritative local SQLite journal.
+
+    This is the default ``clozn inspect`` path: no HTTP server, model, or GPU is needed. ``None`` means the
+    id is not in this journal (the caller may then fall back to a gateway); store/assembly failures are
+    actionable errors rather than being mistaken for a missing id.
+    """
+    from clozn.cli import main as ctx
+    try:
+        import clozn.runs.store as runlog
+        run = runlog.get_run(run_id)
+        if not run:
+            return None
+        from clozn.receipts import explain as explain_receipt
+        return explain_receipt.explain(run)
+    except Exception as exc:
+        raise ctx.CloznError(f"could not inspect the local run journal: {exc}")
+
+
+def cmd_inspect(args):
+    """Inspect a returned run id without generating or requiring a running model.
+
+    Prefer the local journal so a gateway can be stopped after a client call and the receipt remains
+    inspectable. If the id is not local, fall back to ``--port`` (8080 by default), which covers a caller
+    attached to another local Clozn gateway. ``--json`` emits the exact assembled object for scripting.
+    """
+    from clozn.cli import main as ctx
+    rid = _last_run_id() if args.last else args.run_id
+    if not rid:
+        raise ctx.CloznError("give the clozn_run_id returned by the API, or pass --last")
+    obj = _local_explain(rid)
+    if obj is None:
+        obj = _fetch_explain(args.port or 8080, rid)
+    if args.json:
+        print(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(format_explain(obj))
 
 
 # --------------------------------------------------------------------- narrate (M4 display; narrate.py assembles)

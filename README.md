@@ -65,11 +65,15 @@ unskippable provenance caption), the branch lineage tree, and the exact rendered
 
 ```bash
 clozn trace                               # last runlog entry: confidence timeline + almost-said tokens
+clozn inspect <clozn_run_id>              # explain any API reply from the local journal; no model needed
 clozn branch                              # re-run from the most uncertain token on the alternative
 clozn test cases.json                     # run-level assertions over the receipt/replay seams
 ```
 
-`clozn trace` reads the same SQLite journal that Studio's Runs page and Run Inspector use. Queryable run
+`clozn trace` and `clozn inspect` read the same SQLite journal that heavn uses. OpenAI responses expose
+the exact id as `clozn_run_id` and `X-Clozn-Run-Id`; `inspect` assembles confidence, active influences,
+and captured concepts locally, falling back to a running gateway only when the id is not in this journal.
+Queryable run
 metadata lives in `~/.clozn/runs/runs.sqlite3`; large traces are immutable, content-addressed blobs under
 `~/.clozn/runs/blobs/sha256`. To import an old beta JSON journal once, run `clozn migrate-runs`.
 `clozn test` runs user-authored checks against a stored run: static ones (`contains` / `finish_reason` /

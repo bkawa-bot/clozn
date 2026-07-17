@@ -196,8 +196,10 @@ model (✅ decided: Qwen2.5-0.5B).
   report and a server-scored, past-only failure resemblance. The selected run and timestamped-later runs are excluded;
   warnings require ≥5 earlier organic runs in each proxy class + score ≥0.65, while smaller samples are
   shown as weak evidence and cannot alert. Every surface says behavioral proxy, not correctness.
-- [ ] **EXPLAIN "Explain this answer" — remaining surface** **[EXPLAIN M5]** — M1-M4 + the heavn Replay
-  panel shipped; the any-client bridge (`clozn inspect` off a returned run_id) remains.
+- [x] **EXPLAIN "Explain this answer" — any-client surface** **[EXPLAIN M5]** — `clozn inspect <run_id>`
+  now assembles the zero-generation explanation directly from the local SQLite journal (`--last` and
+  exact `--json` included), falling back to a specified gateway only for non-local ids. This consumes the
+  existing `clozn_run_id` / `X-Clozn-Run-Id` bridge; `clozn explain --why` remains the explicit generative path.
 - [ ] Calibrated-trust upgrade to the footer/alerts (F2) **[AMB]**; Route-B "revise steer_vec" engine unlock
   for content edits **[EDIT]**; the CLOZN_UX §11 design-agent mock pack (D1-D5) if pursuing the visual polish.
 

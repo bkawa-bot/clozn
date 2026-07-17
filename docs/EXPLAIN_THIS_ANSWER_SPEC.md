@@ -72,16 +72,18 @@ Compose a natural-language *why*, and guard it:
 Done: on a run where the model confabulates an influence, the diff catches it (a gated `-m model` test
 seeding a known divergence). This is `self_audit_*`'s finding as a permanent feature.
 
-### M5 — the surfaces (the "not in the studio" path) — Sonnet/Opus, ~1–2 days
-- **TUI**: extend `clozn_cli.py` (`trace`/`branch` already render a terminal timeline). Add
-  `clozn explain <run>` and an inline hotkey during `clozn run` chat that pops the inspect for the last
+### M5 — the surfaces (the "not in the studio" path) — shipped
+- **TUI**: `clozn explain <run>` renders the endpoint and `clozn inspect <run>` now prefers direct local-
+  journal assembly (so a stopped gateway/model is fine), with `--last` and exact `--json` output. The inline
+  hotkey during `clozn run` chat remains optional polish; the terminal-native view already carries the
   reply — confidence sparkline, influence list with quotes, "prove"/"what-if" prompts. Terminal-native.
 - **the bridge for any client**: the `/v1/chat/completions` response already lands in `runlog`; return
   the `run_id` (response field or header) so a companion `clozn inspect` / side panel shows the
   explanation for the reply the user just got in *their* client. Chat anywhere, inspect on demand.
 - **web**: add an "Explain" summary tab to the Run Inspector that pre-assembles M1 + the M4 narration, so
   a non-power-user gets the story without clicking each receipt (the studio already has the raw pieces).
-Done: a user chatting through a normal OpenAI client can inspect any reply from a companion surface.
+Done: a user chatting through a normal OpenAI client gets `clozn_run_id` + `X-Clozn-Run-Id` and can run
+`clozn inspect <id>` without generation or a live model; non-local ids fall back to the chosen gateway.
 
 ## Cost model (why it's feasible on a normal chat)
 M1 free (read the log). M2 O(influences-that-fired), lazy (only on drill-in), batched. M3 one greedy

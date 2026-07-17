@@ -1,6 +1,6 @@
 """test_bridge_server -- the M5 any-client run_id bridge (EXPLAIN_THIS_ANSWER_SPEC.md): a user chatting
 through ANY OpenAI-compatible client gets the clozn run_id back with their reply, so a companion
-`clozn explain <run_id>` can inspect that exact reply -- without that client needing to know clozn exists.
+`clozn inspect <run_id>` can inspect that exact reply -- without that client needing to know clozn exists.
 
 Unlike M2-M4 (receipts.py / counterfactual.py / narrate.py, each unit-tested standalone with the server test
 only proving thin wiring on top), M5 has no separate module: the whole feature IS the wiring -- `_log_run`

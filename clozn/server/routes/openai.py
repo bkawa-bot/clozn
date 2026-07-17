@@ -83,7 +83,7 @@ def try_post(h, p, body):
            "choices": [{"index": 0, "finish_reason": openai_fr,
                         "message": {"role": "assistant", "content": reply}}]}
     # M5 any-client run_id bridge (EXPLAIN_THIS_ANSWER_SPEC.md): surface the id two ways so a
-    # companion `clozn explain <run_id>` can inspect THIS reply from any OpenAI-compatible client
+    # companion `clozn inspect <run_id>` can inspect THIS reply from any OpenAI-compatible client
     # -- an additive top-level field (spec-compliant clients ignore unknown fields) and a response
     # header (for clients that only expose headers). Clean omission when logging failed (rid is
     # None) -- never emit a literal "null"/"None".
