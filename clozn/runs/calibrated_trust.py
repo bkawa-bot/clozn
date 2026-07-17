@@ -22,11 +22,16 @@ from .actuary import Calibration, CalibrationBin
 # reported (it is what the journal honestly holds), but marked so the UI can render it as weak evidence
 # rather than a settled rate.
 SMALL_N = 20
+TRUTH_SMALL_N = 50
 
 # The one sentence that must ride every trust_spans response -- verbatim, so the proxy language reaches
 # the wire and the UI, not just this docstring.
 NOTE = ("trusted_rate is the fraction of the user's own past runs at this confidence that were kept "
         "(accepted) — a proxy for reliability, NOT a fact-check. Small bins are weak evidence.")
+
+TRUTH_NOTE = ("truth_correctness_estimate applies a scalar temperature fitted on labeled probes for the "
+              "same model and score aggregate. It estimates correctness on that eval distribution; it "
+              "does NOT verify this claim. Fewer than 50 labeled probes is weak evidence and must not alert.")
 
 
 def _bin_for(c: float, bins: list[CalibrationBin]) -> CalibrationBin | None:
@@ -99,3 +104,64 @@ def attach(spans: list[dict], calibration: Calibration) -> list[dict]:
     return [{**s, "trusted_rate_estimate": e["trusted_rate_estimate"],
              "bin_n": e["bin_n"], "small_n": e["small_n"]}
             for s, e in zip(spans, mapped)]
+
+
+def attach_truth(spans: list[dict], saved: dict | None, run_model: str | None) -> tuple[list[dict], dict]:
+    """Attach outcome-calibrated estimates from a saved ``clozn eval --save`` report.
+
+    Application is intentionally strict: the saved model must exactly match the run model, the saved
+    score aggregate must be ``min`` or ``mean`` (mapped to the span field of the same name), and the report
+    must carry an available scalar-temperature fit. Any mismatch returns copied, untouched spans plus an
+    explicit unavailable reason. Even a valid small-n fit is reported but flagged; the UI may show it as
+    weak evidence but must not use it for an alert.
+    """
+    spans = [dict(s) for s in (spans or []) if isinstance(s, dict)]
+
+    def unavailable(reason: str) -> tuple[list[dict], dict]:
+        return spans, {"available": False, "reason": reason, "note": TRUTH_NOTE}
+
+    if not isinstance(saved, dict):
+        return unavailable("no outcome-grounded calibration saved — run `clozn eval --save`")
+    saved_model = str(saved.get("model") or "").strip()
+    actual_model = str(run_model or "").strip()
+    if not saved_model or not actual_model:
+        return unavailable("saved calibration or run is missing model provenance")
+    if saved_model != actual_model:
+        return unavailable(f"calibration model {saved_model!r} does not match run model {actual_model!r}")
+    aggregate = str(saved.get("score") or "").strip()
+    if aggregate not in ("min", "mean"):
+        return unavailable("saved calibration is missing a supported score aggregate (min or mean)")
+    temp = ((saved.get("report") or {}).get("temperature_scaling") or {})
+    if not isinstance(temp, dict) or not temp.get("available"):
+        return unavailable("saved truth report has no fitted temperature — rerun `clozn eval --save`")
+    from clozn.eval.calibration import temperature_scale
+    temperature = temp.get("temperature")
+    if temperature_scale(0.5, temperature) is None:
+        return unavailable("saved truth report carries an invalid fitted temperature")
+    try:
+        n = max(0, int(temp.get("n") or saved.get("n") or 0))
+    except (TypeError, ValueError):
+        return unavailable("saved truth report carries an invalid labeled-probe count")
+    field = "min_conf" if aggregate == "min" else "mean_conf"
+    out = []
+    for span in spans:
+        raw = span.get(field)
+        estimate = temperature_scale(raw, temperature)
+        source_score = (raw if isinstance(raw, (int, float)) and not isinstance(raw, bool)
+                        and math.isfinite(float(raw)) else None)
+        out.append({**span,
+                    "truth_correctness_estimate": (round(estimate, 4) if estimate is not None else None),
+                    "truth_source_score": source_score,
+                    "truth_score_aggregate": aggregate,
+                    "truth_n": n,
+                    "truth_small_n": n < TRUTH_SMALL_N})
+    return out, {
+        "available": True,
+        "model": saved_model,
+        "set": saved.get("set"),
+        "score_aggregate": aggregate,
+        "temperature": temperature,
+        "n": n,
+        "small_n": n < TRUTH_SMALL_N,
+        "note": TRUTH_NOTE,
+    }

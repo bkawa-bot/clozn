@@ -188,8 +188,13 @@ model (✅ decided: Qwen2.5-0.5B).
   entry still defaults to Replay.
 - [ ] **Ambient channel-3 endgame** **[AMB]** — inline confidence-shading right inside Cursor / the ChatGPT
   web UI (needs text↔trace alignment via `X-Clozn-Run-Id`). Highest effort.
-- [ ] **Trust in the UI: fold in the SUPPORT channel** **[FB §1.1][FABLE]** — trust spans are
-  confidence-only today; add receipts/NLI support + real calibration (temperature-scaling), not just raw probs.
+- [x] **Trust in the UI: fold in the SUPPORT channel** **[FB §1.1][FABLE]** — Replay now separates three
+  channels: acceptance proxy, outcome-grounded scalar-temperature calibration, and an explicit opt-in NLI
+  entailment check against stored causal receipts when present (otherwise a plainly labeled active manifest).
+  Truth estimates require exact model/score provenance and ≥50 labeled probes before they can drive shading;
+  support never masquerades as external evidence or a
+  fact-check, and an unavailable NLI model never falls back under the same label. The any-client
+  `clozn_trust` extension remains raw/uncalibrated and says so; this completion is the Studio trust surface.
 - [x] **Two-tier memory surfacing** **[FABLE][STUDIO]** — heavn Memory now presents the anchored α lookup
   as the inspectable product carrier beside the opaque, lab-only soft prefix, while explicitly keeping
   prompt cards separate. Each anchored bag can run its existing baseline/anchored/equal-magnitude-null
@@ -202,8 +207,10 @@ model (✅ decided: Qwen2.5-0.5B).
   now assembles the zero-generation explanation directly from the local SQLite journal (`--last` and
   exact `--json` included), falling back to a specified gateway only for non-local ids. This consumes the
   existing `clozn_run_id` / `X-Clozn-Run-Id` bridge; `clozn explain --why` remains the explicit generative path.
-- [ ] Calibrated-trust upgrade to the footer/alerts (F2) **[AMB]**; Route-B "revise steer_vec" engine unlock
-  for content edits **[EDIT]**; the CLOZN_UX §11 design-agent mock pack (D1-D5) if pursuing the visual polish.
+- [x] Calibrated-trust upgrade to the Replay footer/shading (F2) **[AMB]** — exact-model scalar-temperature
+  fit, probe-count gate, and separate acceptance/support channels; no truth fit means no correctness estimate.
+- [ ] Route-B "revise steer_vec" engine unlock for content edits **[EDIT]**.
+- [ ] The CLOZN_UX §11 design-agent mock pack (D1-D5), if pursuing the visual polish.
 
 ---
 

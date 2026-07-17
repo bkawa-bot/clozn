@@ -233,6 +233,13 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .crt-text .cursor{color:var(--teal);animation:clzBlink 1s steps(1) infinite}
 .crt-foot{display:flex;align-items:center;gap:14px;padding:7px 14px 9px;font-size:9px;color:var(--slate)}
 .crt-foot b{color:#1B7F74}
+.trust-channels{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:0 13px 11px}
+.trust-channels section{display:flex;align-items:center;align-content:flex-start;gap:5px;flex-wrap:wrap;
+  border:1px solid var(--edge-soft);border-radius:7px;padding:7px 8px;background:rgba(255,255,255,.35);min-width:0}
+.trust-channels section>b{font-family:var(--disp);font-size:8px;letter-spacing:.08em;text-transform:uppercase;color:var(--navy)}
+.trust-channels section>span:not(.tag){font-size:7.5px;color:var(--mist)}
+.trust-channels small{flex-basis:100%;font-size:7px;line-height:1.45;color:var(--mist)}
+.trust-channels .spd{font-size:7.5px;padding:3px 7px;margin-left:auto}
 
 .chatbar{display:flex;gap:8px;align-items:center;padding:0 12px 10px}
 .chatbar input[type=text]{flex:1;min-width:0;font-family:var(--mono);font-size:10.5px;color:var(--navy);
@@ -664,6 +671,7 @@ details[open].leader summary::before{content:"▾"}
   .fact-form .spd{justify-self:start}
   .runtime-observe-controls,.runtime-distributions{grid-template-columns:1fr}
   .runtime-observe-controls .spd{justify-self:start}
+  .trust-channels{grid-template-columns:1fr}
   .memory-controls-body{grid-template-columns:1fr}
   .memory-carrier-map{grid-template-columns:1fr}
   .anchored-proof-metrics,.anchored-proof-arms{grid-template-columns:1fr}

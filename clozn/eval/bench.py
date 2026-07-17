@@ -74,6 +74,12 @@ def _print(out: dict, which: str, score: str, target_error: float = 0.05) -> Non
         tag = "OK  " if r["correct"] else "MISS"
         print(f"  {r['score']:.2f} {tag}  {r['reply'][:22]:22} (gold {r['gold'][:18]})  {r['q'][:44]}")
     print(f"\n  base_error={rep['base_error']}  brier={rep['brier']}  ece={rep['ece']}  aurc={rep['aurc']}")
+    temp = rep.get("temperature_scaling") or {}
+    if temp.get("available"):
+        print(f"  temperature T={temp['temperature']:.3f}  nll {temp['nll_before']:.3f} -> {temp['nll_after']:.3f}"
+              f"  ece {temp['ece_before']:.3f} -> {temp['ece_after']:.3f}")
+    else:
+        print(f"  temperature unavailable: {temp.get('reason', 'no fitted transform')}")
     for cov in (50, 70, 90):
         s = rep["selective"][cov]
         red = s["error_reduction_vs_full"]

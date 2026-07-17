@@ -141,6 +141,42 @@ def test_attach_handles_empty_and_conf_less_spans():
     assert out[0]["trusted_rate_estimate"] is None and out[0]["small_n"] is True
 
 
+# ---- outcome-grounded temperature mapping ---------------------------------
+
+def _saved_truth(model="m1", score="min", n=80, temperature=2.0):
+    return {"model": model, "set": "arith", "score": score, "n": n,
+            "report": {"temperature_scaling": {"available": True, "temperature": temperature, "n": n}}}
+
+
+def test_attach_truth_uses_matching_score_aggregate_and_keeps_proxy_fields():
+    spans = [{"text": "claim", "min_conf": 0.9, "mean_conf": 0.95,
+              "trusted_rate_estimate": 0.7, "bin_n": 30, "small_n": False}]
+    out, meta = ct.attach_truth(spans, _saved_truth(score="min"), "m1")
+    assert meta["available"] is True and meta["score_aggregate"] == "min"
+    assert out[0]["truth_correctness_estimate"] < 0.9             # T=2 softens the 0.9 score
+    assert out[0]["truth_source_score"] == 0.9
+    assert out[0]["trusted_rate_estimate"] == 0.7                 # proxy remains a separate channel
+    assert out[0]["truth_small_n"] is False
+
+
+def test_attach_truth_reports_small_n_but_does_not_hide_the_estimate():
+    out, meta = ct.attach_truth([{"min_conf": 0.8}], _saved_truth(n=12), "m1")
+    assert meta["available"] is True and meta["small_n"] is True
+    assert out[0]["truth_correctness_estimate"] is not None and out[0]["truth_small_n"] is True
+
+
+def test_attach_truth_refuses_model_mismatch_old_report_and_bad_provenance():
+    span = [{"min_conf": 0.9}]
+    for saved, reason in [
+        (_saved_truth(model="other"), "does not match"),
+        ({"model": "m1", "score": "min", "report": {}}, "no fitted temperature"),
+        (_saved_truth(score="median"), "score aggregate"),
+    ]:
+        out, meta = ct.attach_truth(span, saved, "m1")
+        assert meta["available"] is False and reason in meta["reason"]
+        assert "truth_correctness_estimate" not in out[0]
+
+
 # ---- the note ----------------------------------------------------------------
 
 def test_note_text_is_the_required_proxy_language():

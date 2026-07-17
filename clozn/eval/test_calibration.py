@@ -24,6 +24,30 @@ def test_ece_flags_overconfidence():
     assert cal.ece(pairs)["ece"] > 0.4
 
 
+def test_temperature_scaling_softens_an_overconfident_mixed_set():
+    pairs = [(0.99, True), (0.99, False)] * 10
+    fit = cal.fit_temperature(pairs)
+    assert fit["available"] is True and fit["method"] == "scalar-temperature"
+    assert fit["temperature"] > 1.0
+    assert fit["nll_after"] < fit["nll_before"]
+    assert fit["brier_after"] < fit["brier_before"]
+    assert cal.temperature_scale(0.99, fit["temperature"]) < 0.99
+
+
+def test_temperature_scaling_is_monotone_and_handles_boundaries():
+    values = [cal.temperature_scale(x, 2.0) for x in (0.0, 0.2, 0.5, 0.8, 1.0)]
+    assert values == sorted(values)
+    assert values[0] > 0 and values[-1] < 1 and values[2] == 0.5
+    assert cal.temperature_scale(-0.1, 1.0) is None
+    assert cal.temperature_scale(0.5, 0.0) is None
+
+
+def test_temperature_fit_refuses_unidentifiable_outcomes():
+    assert cal.fit_temperature([])["available"] is False
+    out = cal.fit_temperature([(0.9, True), (0.8, True)])
+    assert out["available"] is False and "both correct and incorrect" in out["reason"]
+
+
 def test_ungradeable_and_malformed_pairs_are_dropped():
     pairs = [(0.9, True), (0.8, None), ("x", True), (1.5, False), (0.5, False)]
     assert cal.brier(pairs) is not None
@@ -50,6 +74,7 @@ def test_aurc_lower_for_better_ranking():
 def test_report_bundle_shape_and_empty():
     r = cal.report([(0.9, True), (0.8, True), (0.3, False), (0.2, False)])
     assert r["available"] is True and r["n"] == 4
+    assert r["temperature_scaling"]["available"] is True
     assert set(r["selective"].keys()) == {50, 70, 90}
     assert r["base_error"] == 0.5
     assert cal.report([])["available"] is False

@@ -56,7 +56,8 @@ export const api = {
   proposeMemory: id => post("/runs/" + enc(id) + "/propose-memory", {}, 60000),
 
   /* ── inspector features ── */
-  trustSpans: id => post("/runs/" + enc(id) + "/trust_spans", {}, 60000),      // F2: journal-calibrated
+  trustSpans: (id, support = false) => post("/runs/" + enc(id) + "/trust_spans",
+    support ? { support: true } : {}, support ? 300000 : 60000),               // F2: proxy+truth; NLI explicit
   journalActuary: () => j("/journal/actuary", null, 60000),                    // acceptance-proxy report
   runActuary: id => postE("/runs/" + enc(id) + "/actuary", {}, 60000),        // past-only failure resemblance
   fork: (id, position, token) => post("/runs/" + enc(id) + "/fork",

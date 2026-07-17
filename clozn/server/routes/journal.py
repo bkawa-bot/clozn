@@ -1,6 +1,12 @@
 """The actuarial journal over HTTP: the full ActuaryReport (GET /journal/actuary), a past-only failure
 assessment for one run (POST /runs/<id>/actuary), the OUTCOME-grounded calibration report (GET
-/journal/calibration), and calibrated trust spans (POST /runs/<id>/trust_spans) -- all model-free.
+/journal/calibration), and calibrated trust spans (POST /runs/<id>/trust_spans).
+
+The default trust-spans read is model-free. Passing ``{"support": true}`` explicitly opts into the
+independent local NLI cross-encoder: it checks each span against stored causal-receipt premises when present,
+or a plainly labeled active-influence manifest otherwise, and may load that optional model. It never
+generates with the audited model, and an unavailable NLI checkpoint stays labeled unavailable rather than
+falling back to lexical overlap under the same name.
 
 Two calibration tiers sit side by side, each labelled: /journal/actuary is the PROXY curve (acceptance,
 always available, computed on-demand); /journal/calibration is the TRUTH curve (correctness on a labeled
@@ -85,7 +91,7 @@ def try_post(h, p, body):
         out["run_id"] = rid
         h._json(200, out)
         return True
-    if p.startswith("/runs/") and p.endswith("/trust_spans"):   # confidence spans + the journal's acceptance curve
+    if p.startswith("/runs/") and p.endswith("/trust_spans"):   # confidence + proxy + truth; support is opt-in
         rid = p[len("/runs/"):-len("/trust_spans")]
         import clozn.runs.store as runlog
         run = runlog.get_run(rid)
@@ -95,20 +101,58 @@ def try_post(h, p, body):
         from clozn.runs import calibrated_trust, confidence_spans
         report, age = _report()
         cal = report.calibration
-        if not calibrated_trust.has_curve(cal):
-            # 200, not an error: an unscored journal is a clean, expected state. available:false beats
-            # mapping through a curve that does not exist.
-            h._json(200, {"available": False, "run_id": rid,
-                          "reason": "the journal has no scored organic runs yet -- there is no "
-                                    "acceptance curve to map this run's confidence through, and this "
-                                    "endpoint will not invent one"})
-            return True
         sp = confidence_spans.spans(run)                        # REUSE the existing segmentation, unchanged
-        h._json(200, {"available": True, "run_id": rid,
-                      "spans": calibrated_trust.attach(sp, cal),
-                      "summary": confidence_spans.summarize(sp),
-                      "n_scored": cal.n_scored,                 # how many journal runs the whole curve rests on
-                      "computed_ago_s": round(age, 1),
-                      "note": calibrated_trust.NOTE})
+        proxy_available = calibrated_trust.has_curve(cal)
+        mapped = calibrated_trust.attach(sp, cal) if proxy_available else [dict(x) for x in sp]
+        proxy = ({"available": True, "n_scored": cal.n_scored, "computed_ago_s": round(age, 1),
+                  "note": calibrated_trust.NOTE} if proxy_available else
+                 {"available": False,
+                  "reason": "the journal has no scored organic runs — no acceptance curve was invented",
+                  "note": calibrated_trust.NOTE})
+
+        from clozn.eval import store as eval_store
+        mapped, truth = calibrated_trust.attach_truth(mapped, eval_store.load(), run.get("model"))
+
+        support = {"requested": False, "available": False,
+                   "reason": "not computed — pass support:true to run the optional independent NLI check",
+                   "note": ("support is separate from confidence and correctness calibration; it asks whether "
+                            "an active recorded influence entails a span")}
+        if body.get("support") is True:
+            from clozn.receipts import explain, semantic_matcher
+            from clozn.runs import span_support
+            manifest = explain.explain(run)                     # pure journal reshape; no generation
+            stored = run.get("receipts")
+            if isinstance(stored, list):
+                stored = {"receipts": stored}
+            if not isinstance(stored, dict) and isinstance(run.get("receipt"), dict):
+                stored = {"receipts": [run["receipt"]]}
+            if isinstance(stored, dict):
+                # A stored prove-all result lets support use only receipt-verified, load-bearing premises.
+                # causal_explanation receives the precomputed object, so it cannot generate here.
+                from clozn.receipts import self_report_reliability
+                explanation = self_report_reliability.causal_explanation(
+                    run, None, manifest=manifest, prove=stored)
+                evidence_tier = "causal_receipts"
+                evidence_note = ("NLI premises are restricted to influences whose stored leave-one-out "
+                                 "receipt has_effect=true on this run")
+            else:
+                explanation = manifest
+                evidence_tier = "active_manifest"
+                evidence_note = ("no stored causal receipt was available; NLI premises are active recorded "
+                                 "influences, which proves presence, not causal effect")
+            mapped, support = span_support.attach(mapped, explanation,
+                                                  semantic_matcher.nli_support_matcher)
+            support["evidence_tier"] = evidence_tier
+            support["evidence_note"] = evidence_note
+
+        any_calibration = proxy_available or truth.get("available") is True
+        out = {"available": any_calibration, "run_id": rid, "spans": mapped,
+               "summary": confidence_spans.summarize(sp), "proxy": proxy, "truth": truth,
+               "support": support, "n_scored": (cal.n_scored if proxy_available else 0),
+               "computed_ago_s": round(age, 1), "note": calibrated_trust.NOTE}
+        if not any_calibration:
+            out["reason"] = ("neither an acceptance-proxy curve nor a matching outcome-grounded "
+                             "temperature fit is available; raw spans are returned without a trust estimate")
+        h._json(200, out)
         return True
     return False

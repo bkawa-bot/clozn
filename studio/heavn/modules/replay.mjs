@@ -60,6 +60,7 @@ function Monitor({ rec }){
   const chatPrompt = useStore(x => x.chatPrompt);
   const liveLens = useStore(x => x.liveLens);
   const trust = useStore(x => rec ? x.trust[rec.id] : null);
+  const [supportBusy, setSupportBusy] = useState(false);
   const steps = rec ? normSteps(rec) : [];
   const done = P >= steps.length;
   const trunc = rec && rec.finish_reason === "length";
@@ -75,7 +76,7 @@ function Monitor({ rec }){
     (async () => {
       const r = await api.trustSpans(rec.id);
       if(dead) return;
-      store.set(st => ({ trust: { ...st.trust, [rec.id]: (r && r.available) ? r : null } }));
+      store.set(st => ({ trust: { ...st.trust, [rec.id]: r || null } }));
     })();
     return () => { dead = true; };
   }, [rec && rec.id]);
@@ -83,20 +84,45 @@ function Monitor({ rec }){
   const spanOf = i => trust && (trust.spans || []).find(sp => i >= sp.start && i < sp.end);
   const shadedUpto = () => steps.slice(0, P).map((s, i) => {
     const sp = spanOf(i);
-    if(!sp || sp.trusted_rate_estimate == null) return html`<span key=${i}>${s.piece}</span>`;
-    const tr = sp.trusted_rate_estimate;
-    const amber = tr < .55, faint = .55 + .45 * Math.min(1, Math.max(0, tr));
+    if(!sp) return html`<span key=${i}>${s.piece}</span>`;
+    const truthReady = sp.truth_correctness_estimate != null && trust.truth && !trust.truth.small_n;
+    const proxyReady = sp.trusted_rate_estimate != null;
+    const tr = truthReady ? sp.truth_correctness_estimate : proxyReady ? sp.trusted_rate_estimate : null;
+    const support = sp.support || {};
+    if(tr == null && !support.available) return html`<span key=${i}>${s.piece}</span>`;
+    const amber = tr != null && tr < .55;
+    const faint = tr == null ? 1 : .55 + .45 * Math.min(1, Math.max(0, tr));
+    const evidence = truthReady
+      ? `temperature-scaled correctness estimate ${Math.round(tr*100)}% from ${trust.truth.n} labeled probes (${trust.truth.score_aggregate}-confidence); estimate on that eval distribution, not a fact-check`
+      : proxyReady
+      ? `kept ${Math.round(tr*100)}% of the time at this confidence in your journal (${sp.bin_n} runs${sp.small_n ? ", small bin — weak evidence" : ""}); acceptance proxy, not a fact-check`
+      : "no confidence calibration available";
+    const supportPremise = trust.support && trust.support.evidence_tier === "causal_receipts"
+      ? "stored causal receipt" : "active recorded influence";
+    const supportTitle = support.available
+      ? ` · support: ${supportPremise} ${support.entailed ? "entailed" : "did not entail"} this span (NLI ${support.score ?? "—"}); not external evidence`
+      : (trust.support && trust.support.requested ? " · support check unavailable" : "");
     return html`<span key=${i}
       style=${"opacity:" + faint.toFixed(2)
-        + (amber ? ";border-bottom:1px dotted rgba(255,196,120,.75);cursor:pointer" : "")}
-      title=${"kept " + Math.round(tr*100) + "% of the time at this confidence in your journal ("
-        + sp.bin_n + " runs" + (sp.small_n ? ", small bin — weak evidence" : "") + ") · proxy, not a fact-check"}
-      onClick=${amber ? (() => store.set({ verbResult: { verb: "trust", ok: true,
-        msg: `“${(sp.text || "").slice(0, 48)}” — conf ${(+sp.mean_conf).toFixed(2)}, kept `
-           + `${Math.round(tr*100)}% of the time in your own journal (${sp.bin_n} runs`
-           + `${sp.small_n ? ", small bin" : ""}). Acceptance proxy, not a fact-check — press PROVE `
-           + `for causal receipts.` } })) : null}>${s.piece}</span>`;
+        + (amber ? ";border-bottom:1px dotted rgba(255,196,120,.75)" : "")
+        + (support.available ? ";box-shadow:inset 0 -2px " + (support.entailed ? "rgba(95,200,188,.9)" : "rgba(174,139,191,.85)") : "")
+        + ((amber || support.available) ? ";cursor:pointer" : "")}
+      title=${evidence + supportTitle}
+      onClick=${(amber || support.available) ? (() => store.set({ verbResult: { verb: "trust", ok: true,
+        msg: `“${(sp.text || "").slice(0, 48)}” — ${evidence}${supportTitle}.` } })) : null}>${s.piece}</span>`;
   });
+
+  const checkSupport = async () => {
+    if(!rec || rec._sample || !store.get().live || supportBusy) return;
+    setSupportBusy(true);
+    const r = await api.trustSpans(rec.id, true);
+    setSupportBusy(false);
+    if(!r){ toast("support check did not answer"); return; }
+    store.set(st => ({ trust: { ...st.trust, [rec.id]: r } }));
+  };
+  const proxyMeta = trust && trust.proxy;
+  const truthMeta = trust && trust.truth;
+  const supportMeta = trust && trust.support;
 
   return html`<div class="mod">
     <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
@@ -133,10 +159,35 @@ function Monitor({ rec }){
           ${rec._sample ? html`<span style="color:var(--mist)">sample reel</span>`
                         : html`<span>recorded on this machine</span>`}
           ${trunc && html`<span class="tag fail-t">TRUNCATED</span>`}
-          ${trust && html`<span style="color:var(--mist)">shading = your journal's acceptance rate at
-            this confidence — proxy, not a fact-check</span>`}`
-        : html`<span>nothing recorded yet</span>`}
+          ${trust && html`<span style="color:var(--mist)">shading source is disclosed below</span>`}
+        ` : html`<span>nothing recorded yet</span>`}
     </div>
+    ${rec && !rec._sample && html`<div class="trust-channels" data-testid="trust-channels">
+      <section><b>confidence</b>
+        ${truthMeta && truthMeta.available && !truthMeta.small_n
+          ? html`<span class="tag cap-t">TRUTH-CAL</span><span>T ${(+truthMeta.temperature).toFixed(2)} · n ${truthMeta.n}</span>
+              <small>labeled-probe estimate for this model; not a fact-check of this span.</small>`
+          : html`<span class="tag smp-t">RAW / PROXY</span><span>${truthMeta && truthMeta.small_n ? "truth fit small n " + truthMeta.n : "no matching temperature fit"}</span>
+              <small>raw confidence does not equal correctness.</small>`}
+      </section>
+      <section><b>acceptance</b><span class=${"tag " + (proxyMeta && proxyMeta.available ? "der-t" : "smp-t")}>
+          ${proxyMeta && proxyMeta.available ? "PROXY" : "UNAVAILABLE"}</span>
+        <span>${proxyMeta && proxyMeta.available ? proxyMeta.n_scored + " journal runs" : "no scored organic curve"}</span>
+        <small>how often similar-confidence runs were kept; not correctness.</small></section>
+      <section><b>support</b><span class=${"tag " + (supportMeta && supportMeta.available ? "cap-t" : "smp-t")}>
+          ${supportMeta && supportMeta.requested
+            ? (supportMeta.available ? supportMeta.n_entailed + "/" + supportMeta.n_spans + " ENTAILED" : "UNAVAILABLE")
+            : "NOT CHECKED"}</span>
+        <button class=${"spd" + (supportBusy ? " busy" : "")} data-testid="check-support"
+          disabled=${supportBusy} onClick=${checkSupport}>${supportBusy ? "CHECKING…" : "CHECK SUPPORT"}</button>
+        <small>optional local NLI (~440 MB; may use an accelerator), no generation.
+          ${!supportMeta || !supportMeta.requested
+            ? "Not run yet; the evidence tier will be disclosed after checking."
+            : supportMeta.evidence_tier === "causal_receipts"
+            ? "Uses stored causal receipts only."
+            : "No stored causal receipt: uses the active-influence manifest (presence, not causality)."}
+          Never external evidence.</small></section>
+    </div>`}
   </div>`;
 }
 
