@@ -26,6 +26,8 @@ export const store = createStore({
   currentId: null,
   rec: null,              // the current full record
   route: "replay",        // active module
+  readRequest: null,       // /r/<id> permalink target; kept visible when the record is missing
+  readError: null,         // honest deep-link load failure (never substitute a different run)
   toast: null,            // { msg, t }
   P: 0,                   // playhead (token index, 0..n)
   playing: false,

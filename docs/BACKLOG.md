@@ -182,8 +182,10 @@ model (✅ decided: Qwen2.5-0.5B).
   delete) → heavn Patch. ✅ CUT: the remaining legacy `pages/*.js` bundle + `engine.html`; heavn is the only
   product frontend, while `denoise.html` remains an explicitly lab-served Dream page.
 
-- [ ] **Document-first "Read view"** **[AMB]** — make it the default `/r/<id>` landing ("read it, zoom into
-  the sketchy spans"). The docs call this *"the answer to why use clozn instead of just calling the model."*
+- [x] **Document-first "Read view"** **[AMB]** — `/r/<id>` now lands on the recorded answer first, with
+  raw-confidence shading, contiguous sketchy-span zoom + captured alternatives, and explicit
+  commitment-not-correctness copy. Missing permalinks never substitute a different run; ordinary Studio
+  entry still defaults to Replay.
 - [ ] **Ambient channel-3 endgame** **[AMB]** — inline confidence-shading right inside Cursor / the ChatGPT
   web UI (needs text↔trace alignment via `X-Clozn-Run-Id`). Highest effort.
 - [ ] **Trust in the UI: fold in the SUPPORT channel** **[FB §1.1][FABLE]** — trust spans are

@@ -3,6 +3,7 @@ import { html, render } from "./vendor/preact-standalone.mjs";
 import { store, useStore, toast, SAMPLE } from "./state.mjs";
 import { api } from "./api.mjs";
 import { ReplayModule } from "./modules/replay.mjs";
+import { ReadModule } from "./modules/read.mjs";
 import { MemoryModule } from "./modules/memory.mjs";
 import { PatchModule } from "./modules/patch.mjs";
 import { ExperimentModule } from "./modules/experiment.mjs";
@@ -13,6 +14,7 @@ import { SettingsModule } from "./modules/settings.mjs";
 import { ModelsStub } from "./modules/stubs.mjs";
 
 const MODULES = [
+  { id: "read",     nm: "Read",     sub: "answer first",     view: ReadModule },
   { id: "replay",   nm: "Replay",   sub: "runtime desk",    view: ReplayModule },
   { id: "patch",    nm: "Patch",    sub: "interventions",   view: PatchModule },
   { id: "experiment", nm: "Experiment", sub: "compare & prove", view: ExperimentModule },
@@ -128,7 +130,7 @@ function App(){
 /* full-record loader with cache; unwraps {run:...} envelopes defensively */
 export async function loadRun(id){
   const fresh = { P: 0, receipts: null, leaning: null, leaningInfluence: null,
-                  verbResult: null, jlProvenance: null, jlReason: null };
+                  verbResult: null, jlProvenance: null, jlReason: null, readError: null };
   const s = store.get();
   if(s.full[id]){ store.set({ currentId: id, rec: s.full[id], ...fresh }); return s.full[id]; }
   const rec = s.live ? await api.getRun(id) : null;   // contracts §2: the bare record, no envelope
@@ -140,16 +142,19 @@ export async function loadRun(id){
 }
 
 export async function boot(rootEl){
+  const deep = new URLSearchParams(location.search).get("run");
+  if(deep) store.set({ route: "read", readRequest: deep });
   render(html`<${App}/>`, rootEl);
   const list = await api.listRuns();
   /* ambient delivery (channel 1): a receipt-footer link is /r/<id> -> /heavn/index.html?run=<id>.
-     Deep-link straight to that run so the shoulder-tap in the user's own client lands on the run. */
-  const deep = new URLSearchParams(location.search).get("run");
+     Deep-link straight to that run's document-first Read view. A missing permalink must never silently
+     substitute the newest unrelated run. */
   if(list && Array.isArray(list.runs)){
     store.set({ live: true, runs: list.runs });
     if(deep){
       const r = await loadRun(deep);                         // fetches directly; not limited to page 1
-      if(!r && list.runs.length) await loadRun(list.runs[0].id);
+      if(!r) store.set({ currentId: null, rec: null,
+        readError: `Run "${deep}" was not found in this local journal.` });
     } else if(list.runs.length){
       await loadRun(list.runs[0].id);
     }

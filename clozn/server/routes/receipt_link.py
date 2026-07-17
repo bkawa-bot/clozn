@@ -1,7 +1,7 @@
 """Ambient delivery, channel 1 (AMBIENT_DELIVERY.md):
 
   * GET  /r/<id>        -- the per-run permalink. Redirects a receipt-footer link straight into the
-                          studio, deep-linked to that run (the app reads ?run=<id> on boot). This is the
+                          document-first Read view for that run (the app reads ?run=<id> on boot). This is the
                           "and keep the option of opening the studio yourself" half of the design.
   * GET  /receipt/mode  -- is the in-band footer on? (server-wide default)
   * POST /receipt/mode  -- turn it on/off, persisted. A client that can't add a body field just points

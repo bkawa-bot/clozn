@@ -2,8 +2,8 @@
 
 A compact, honest one-line glass-box summary + a per-run permalink, appended to an OpenAI reply so the
 receipt reaches the user INSIDE whatever client they already point at clozn (Cursor, Open WebUI, a
-script, a terminal) -- no need to open the studio. The link (`/r/<id>`) opens the studio deep-linked to
-exactly that run when they want to look closer; the footer is the shoulder-tap that tells them whether
+script, a terminal) -- no need to open the studio. The link (`/r/<id>`) opens the document-first Read view
+for exactly that run when they want to look closer; the footer is the shoulder-tap that tells them whether
 it's worth it.
 
 OFF by default so a plain OpenAI proxy stays byte-identical -- turned on per-request (`clozn_receipt:
