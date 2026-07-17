@@ -1273,10 +1273,15 @@ const QUICK_REPAIRS = [
   { key: "agreeable", label: "Too agreeable", axis: "candid", title: "Move toward candid" },
   { key: "cold", label: "Too cold", axis: "warm", title: "Move toward warm" },
 ];
-const QUICK_AXIS_MAX = { concise: 1.5, concrete: 0.5, candid: 0.45, warm: 1.5 };
-const quickValue = (rec, preset) => {
+/* per-axis caps come from the server (/steer/axes' own "max", clozn/behavior/steering/axes.py's AXES) --
+   never a hand-maintained duplicate here, which would silently go stale the day a cap is re-tuned.
+   1.5 mirrors only /steer/axes' OWN documented default for an axis with no explicit "max", used purely
+   as the pre-fetch placeholder (see QuickRepair's axisMax state below), not a second source of truth. */
+const QUICK_AXIS_FALLBACK_MAX = 1.5;
+const quickValue = (rec, preset, axisMax) => {
   const current = +((((rec || {}).behavior || {}).active_dials || {})[preset.axis] || 0);
-  return Math.min(QUICK_AXIS_MAX[preset.axis] ?? 1.5, current + 0.5);
+  const cap = (axisMax && axisMax[preset.axis] != null) ? axisMax[preset.axis] : QUICK_AXIS_FALLBACK_MAX;
+  return Math.min(cap, current + 0.5);
 };
 
 function QuickRepair({ rec }){
@@ -1285,14 +1290,26 @@ function QuickRepair({ rec }){
   const [picked, setPicked] = useState(null);
   const [result, setResult] = useState(null);
   const [message, setMessage] = useState(null);
+  const [axisMax, setAxisMax] = useState(null);   // {name: max}, read from /steer/axes -- never hardcoded
   const request = useRef(0);
   useEffect(() => {
     request.current += 1; setBusy(""); setSaving(false); setPicked(null); setResult(null); setMessage(null);
   }, [rec.id]);
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      const r = await api.steerAxes();
+      if(dead || !r || !Array.isArray(r.axes)) return;
+      const m = {};
+      r.axes.forEach(a => { if(a && a.name) m[a.name] = a.max != null ? +a.max : QUICK_AXIS_FALLBACK_MAX; });
+      setAxisMax(m);
+    })();
+    return () => { dead = true; };
+  }, []);
 
   const run = async preset => {
     if(guardSample(rec) || busy) return;
-    const target = quickValue(rec, preset), nonce = ++request.current;
+    const target = quickValue(rec, preset, axisMax), nonce = ++request.current;
     setBusy(preset.key); setPicked({ ...preset, target }); setResult(null); setMessage(null);
     /* Preference capture is best-effort and must never delay the actual comparison. It changes no dial. */
     api.feedbackRecord({ run_id: rec.id, kind: "quick_repair", dial: preset.axis,
@@ -1305,15 +1322,31 @@ function QuickRepair({ rec }){
     setResult(r);
   };
 
+  /* The server's own recorded outcome for `preset.axis` -- read back from counterfactual()'s
+     `applied_dials` (clozn/replay/counterfactual.py), never the client's pre-clamp guess. `picked.target`
+     is only ever shown as "asked for"; anything a user might act on or trust as "what happened" must
+     come from here. Returns null (not a guess) when an older/mocked response lacks the field, so the
+     caller can fall back to `picked.target` explicitly rather than silently pretend it's confirmed. */
+  const appliedValue = (res, preset) => {
+    const v = res && res.applied_dials ? res.applied_dials[preset.axis] : null;
+    return v != null ? +v : null;
+  };
+
   const save = async () => {
     if(!picked || !result || saving) return;
     const nonce = ++request.current;
+    const applied = appliedValue(result, picked);
+    const value = applied != null ? applied : picked.target;   // save what was actually tested, not the guess
     setSaving(true);
-    setMessage({ kind: "info", text: `Saving ${picked.axis} ${picked.target.toFixed(2)} as the live default...` });
-    const r = await api.steerSet(picked.axis, picked.target);
+    setMessage({ kind: "info", text: `Saving ${picked.axis} ${value.toFixed(2)} as the live default...` });
+    const r = await api.steerSet(picked.axis, value);
     if(nonce !== request.current) return;
     setSaving(false);
-    setMessage(r ? { kind: "ok", text: `Saved ${picked.axis} ${picked.target.toFixed(2)} as the default.` }
+    /* /steer/set's own response ({active: steer.active()} -- clozn/server/substrates.py) is the most
+       authoritative readback of all: what the live substrate actually holds right now. Prefer it over
+       `value` when present. */
+    const confirmed = (r && r.active && r.active[picked.axis] != null) ? +r.active[picked.axis] : null;
+    setMessage(r ? { kind: "ok", text: `Saved ${picked.axis} ${(confirmed != null ? confirmed : value).toFixed(2)} as the default.` }
                  : { kind: "error", text: "The comparison remains recorded, but the default was not saved." });
   };
 
@@ -1321,6 +1354,7 @@ function QuickRepair({ rec }){
   const coherence = (result && result.coherence) || {};
   const saveable = !!(result && result.causal_verified === true && result.has_effect === true && !coherence.degenerate);
   const delta = (result && result.delta) || {};
+  const appliedNow = (result && picked) ? appliedValue(result, picked) : null;
   return html`<div class="mod" data-testid="quick-repair">
     <div class="mod-h"><span class="led" style="background:var(--coral);box-shadow:0 0 8px var(--coral)"></span>
       <span class="cap">quick repair</span><span class="tail">${busy ? "running 2 greedy arms..." : "one complaint · one dial"}</span></div>
@@ -1329,7 +1363,7 @@ function QuickRepair({ rec }){
         then compares two matched greedy generations. Nothing becomes a default unless you explicitly save it.</div>
       <div class="quick-repair-presets">
         ${QUICK_REPAIRS.map(p => {
-          const cur = +(dials[p.axis] || 0), target = quickValue(rec, p), capped = target <= cur;
+          const cur = +(dials[p.axis] || 0), target = quickValue(rec, p, axisMax), capped = target <= cur;
           return html`<button class="quick-repair-btn" data-repair=${p.key}
             title=${capped ? `${p.axis} is already at its safe cap` : `${p.title}: ${cur.toFixed(2)} -> ${target.toFixed(2)}`}
             disabled=${!!busy || saving || !!rec._sample || capped} onClick=${() => run(p)}>
@@ -1347,7 +1381,10 @@ function QuickRepair({ rec }){
         </div>
         <div class="quick-repair-compare">
           <div><b>matched greedy baseline · live dials</b><p>${result.baseline_reply ?? "-"}</p></div>
-          <div><b>repair candidate · ${picked.axis} ${picked.target.toFixed(2)}</b><p>${result.counterfactual_reply ?? "-"}</p></div>
+          <div><b>repair candidate · ${picked.axis} ${(appliedNow != null ? appliedNow : picked.target).toFixed(2)}</b>
+            <span class="quick-repair-note" style="display:block;margin:2px 0 0">asked for ${picked.target.toFixed(2)}${
+              appliedNow != null ? " · the server has final say on the axis cap" : " · unconfirmed (older response shape)"}</span>
+            <p>${result.counterfactual_reply ?? "-"}</p></div>
         </div>
         <div class="quick-repair-delta">changed ${delta.changed != null ? delta.changed + "%" : "-"}
           · words ${Array.isArray(delta.words) ? delta.words.join(" -> ") : "-"}

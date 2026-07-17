@@ -145,6 +145,21 @@ def _unapplied_overrides_note(cf_child: dict, behavior_overrides: dict) -> str |
             "'no effect'").format(", ".join(sorted(missed)))
 
 
+def _applied_dials(cf_child: dict, behavior_overrides: dict) -> dict:
+    """The REAL, post-clamp value replay.py actually recorded for each requested axis -- read back from
+    cf_child["behavior"]["active_dials"], never echoed from the request. This is the number a client MUST
+    display instead of its own pre-clamp guess: the server has final say on every axis's cap, and only
+    this dict reflects that (a hand-maintained client-side copy of the caps will silently go stale the
+    day axes.py's own `max` values are re-tuned).
+
+    Same "absent == 0.0" convention as _unapplied_overrides_note (steer.active() filters falsy entries,
+    so a dial legitimately zeroed and a dial the substrate never recognized read back identically -- an
+    inherited honest gap, not a new one)."""
+    active = ((cf_child or {}).get("behavior") or {}).get("active_dials")
+    active = active if isinstance(active, dict) else {}
+    return {str(name): float(active.get(str(name), 0.0) or 0.0) for name in (behavior_overrides or {})}
+
+
 # ===================================================================================================== API
 def counterfactual(run: dict, behavior_overrides: dict, sub) -> dict | None:
     """The honest what-if for one dial-value proposal against `run`, generated on the live substrate
@@ -159,12 +174,18 @@ def counterfactual(run: dict, behavior_overrides: dict, sub) -> dict | None:
     an invalid run, or a substrate/chat that couldn't generate (mirrors receipts.receipt's own "never
     raises into the caller" contract).
 
-    Returns {overrides_applied, baseline_reply, counterfactual_reply, delta, has_effect, causal_verified,
-    coherence, note, cost_note}, plus `override_note` when an override could not be verified as applied.
-    `causal_verified` is True whenever the override measurably took hold (per replay.py's own recorded
-    dial state) -- independent of whether the result is still coherent; check `coherence` separately for
-    that (law #6): a derailed-but-genuinely-applied override is causal_verified: true, coherence:
-    degenerate, NOT "no effect"."""
+    Returns {overrides_applied, applied_dials, baseline_reply, counterfactual_reply, delta, has_effect,
+    causal_verified, coherence, note, cost_note}, plus `override_note` when an override could not be
+    verified as applied. `causal_verified` is True whenever the override measurably took hold (per
+    replay.py's own recorded dial state) -- independent of whether the result is still coherent; check
+    `coherence` separately for that (law #6): a derailed-but-genuinely-applied override is
+    causal_verified: true, coherence: degenerate, NOT "no effect".
+
+    `overrides_applied` is just an echo of the REQUEST (dict(behavior_overrides)) -- a client must never
+    display it as the outcome. `applied_dials` is the honest counterpart: the REAL, post-clamp value(s)
+    replay.py actually recorded on cf_child (e.g. candid caps at 0.45, concrete at 0.5 -- see
+    clozn/behavior/steering/axes.py's AXES) -- read back, never guessed. A caller that wants to show the
+    user "what did the server actually do" must read `applied_dials`, not `overrides_applied`."""
     try:
         if not run or not isinstance(run, dict):
             return None
@@ -182,6 +203,7 @@ def counterfactual(run: dict, behavior_overrides: dict, sub) -> dict | None:
         unapplied = _unapplied_overrides_note(cf_child, behavior_overrides)
         out = {
             "overrides_applied": dict(behavior_overrides),
+            "applied_dials": _applied_dials(cf_child, behavior_overrides),
             "baseline_reply": baseline_reply,
             "counterfactual_reply": cf_reply,
             "delta": receipts.receipt_metrics(baseline_reply, cf_reply),
