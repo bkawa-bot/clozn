@@ -1,6 +1,6 @@
 # Clozn — Consolidated Backlog
 
-**The single source of truth for open work.** Last reconciled 2026-07-16 against the shipped code, the
+**The single source of truth for open work.** Last reconciled 2026-07-17 against the shipped code, the
 task history, and the scattered planning docs (`docs/ROADMAP.md`, `notes/*`, `CLOZN_REFACTOR_HANDOFF.md`).
 Those docs are **stale** — most of what they list as "planned" already shipped. This file separates
 *done* from *open* so we stop re-reading a to-do list of finished work.
@@ -112,6 +112,11 @@ The "make it a product people can actually run" track. Ordered per the handoff's
   with OpenAI-shaped 400s and strips only documented neutral values. Explicit sampling fields now reach
   both streaming and non-streaming engine calls, `max_completion_tokens` is supported, fake zero usage was
   removed, and the CPU CI lane drives the real `openai` Python client against a model-free live gateway.
+- [x] **Offline calibration sweep batching + resume** — ✅ **DONE 2026-07-17** (`4cf1d93`): dial sweeps
+  now batch generation and activation-alignment work behind a tunable `--batch-size`, share the unsteered
+  baseline across dials, checkpoint every completed dial, and safely `--resume` only compatible runs.
+  This improves the next calibration job without touching the occupied GPU now; it is separate from the
+  still-open multi-request serving scheduler below.
 - [ ] **Owner decision: Ollama drop-in?** **[H:P2]** — recommended thin
   `/api/chat|generate|tags|version`; intentionally not inferred from OpenAI compatibility work.
 - [x] **CI lanes + release artifact** **[H:P2]** — ✅ **DONE 2026-07-16**: root `pyproject.toml` (setuptools)
@@ -135,7 +140,7 @@ The "make it a product people can actually run" track. Ordered per the handoff's
   (J-lens / dials / SAE), validated before load; qualify a hero model per architecture. Related **[MODEL]**:
   parameterize the ~73 hardcoded Qwen literals into a registry; **verify white-box taps on a 2nd
   architecture** (Gemma/Llama) — the honest "any GGUF" check; LLM-judge for push-button Tier-1 dial sweeps.
-- [ ] Batched multi-sequence decode; auth/TLS if remote binding is ever added **[SPLIT P4]**.
+- [ ] Batched multi-sequence **serving** decode; auth/TLS if remote binding is ever added **[SPLIT P4]**.
 
 **Owner decisions still open** **[H]**: Ollama compat · network exposure (loopback vs remote+auth) ·
 release order (Linux-CPU-first recommended) · worker distribution (prebuilt vs build-local) · reference
@@ -157,8 +162,10 @@ model (✅ decided: Qwen2.5-0.5B).
   free-text via LLaDA-8B-Instruct (engine has native LLaDA) — the research swing.
 - [ ] **Closed-loop disposition guardrails** **[FB §9.1]** — "the biggest unclaimed frontier": mid-gen lens
   polling → threshold → `dir(c)` counter-injection, on a banned-topic battery.
-- [ ] **Calibration next rungs** **[CALIBRATION_FINDINGS]** — bigger probe sets + CIs; a retrieval/clarify
-  action wired to the policy's `ask` band; render the truth-tier curve in studio.
+- [ ] **Calibration next rungs** **[CALIBRATION_FINDINGS]** — ✅ exact-model scalar-temperature fitting,
+  provenance/probe-count gates, and the separate Replay truth channel shipped (`6af7cc0`). Still open:
+  bigger probe sets + CIs; a retrieval/clarify action wired to the policy's `ask` band; render the full
+  truth-tier curve in Studio.
 - [ ] Assembled-but-unconnected bets **[FB §9.3-9.9]** — model's-own-CI, legible-basis microscope (OMP),
   branch-on-doubt, paraphrase-brittleness receipts, cross-model disposition transfer (pilot).
 - [ ] J-lens post-v1 (J5) — Dream/denoise lens, chat-vs-web-text lens, stream top-k during generation.
