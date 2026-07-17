@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -301,6 +302,33 @@ def test_directional_effect_empty_is_zero(monkeypatch):
     assert dac.directional_effect(None, "d", None, None) == 0.0
 
 
+class _FakeAlignmentTokenizer:
+    pad_token_id = 0
+
+    def __call__(self, texts, return_tensors="pt", padding=False):
+        rows = [list(range(1, len(text) + 1)) for text in texts]
+        width = max(len(row) for row in rows)
+        ids = [[0] * (width - len(row)) + row for row in rows]
+        mask = [[0] * (width - len(row)) + [1] * len(row) for row in rows]
+        return {"input_ids": torch.tensor(ids), "attention_mask": torch.tensor(mask)}
+
+
+class _FakeAlignmentModel:
+    def __call__(self, input_ids, attention_mask, output_hidden_states):
+        hidden = torch.stack((input_ids.float(), torch.zeros_like(input_ids).float()), dim=-1)
+        return SimpleNamespace(hidden_states=[None, hidden])
+
+
+def test_directional_alignments_batches_and_masks_padding(monkeypatch):
+    monkeypatch.setattr(dac, "DEV", "cpu")
+    sc = SimpleNamespace(
+        tok=_FakeAlignmentTokenizer(), model=_FakeAlignmentModel(), layer=0,
+        vecs={"d": torch.tensor([1.0, 0.0])},
+    )
+    # "a" -> mean([1])=1; "abc" -> mean([1,2,3])=2. Left-padding zeros must not dilute "a".
+    assert dac.directional_alignments(sc, ["a", "", "abc"], "d", batch_size=3) == [1.0, 0.0, 2.0]
+
+
 # ================================================================================================
 # _compute_calibration -- the pure derail_point / dead_below / usable_max logic (the module's core).
 #
@@ -559,6 +587,50 @@ def test_compute_dials_custom_only_still_calibrates_base_without_narrowing_axes(
 # directional_effect, which calls the bare module-level directional_alignment) -- no test in this file ever
 # constructs a real sc.model/sc.tok.
 # ================================================================================================
+class _FakeBatchTokenizer:
+    eos_token_id = 2
+    pad_token_id = 2
+    padding_side = "left"
+
+    def apply_chat_template(self, messages, add_generation_prompt=True, tokenize=False):
+        return messages[0]["content"]
+
+    def __call__(self, texts, padding=True, return_tensors="pt", add_special_tokens=False):
+        rows = [list(range(10, 10 + len(text))) for text in texts]
+        width = max(len(row) for row in rows)
+        ids = [[self.pad_token_id] * (width - len(row)) + row for row in rows]
+        mask = [[0] * (width - len(row)) + [1] * len(row) for row in rows]
+        return {"input_ids": torch.tensor(ids), "attention_mask": torch.tensor(mask)}
+
+    def batch_decode(self, rows, skip_special_tokens=True):
+        return [" ".join(str(int(token)) for token in row) for row in rows]
+
+
+class _FakeBatchModel:
+    def __init__(self):
+        self.batch_sizes = []
+        self.attention_masks = []
+
+    def generate(self, input_ids, attention_mask, **kwargs):
+        self.batch_sizes.append(input_ids.shape[0])
+        self.attention_masks.append(attention_mask.clone())
+        suffix = torch.tensor([[90 + i, 100 + i] for i in range(input_ids.shape[0])])
+        return torch.cat((input_ids, suffix), dim=1)
+
+
+def test_generate_prompts_uses_ordered_batches_and_attention_masks(monkeypatch):
+    monkeypatch.setattr(dac, "DEV", "cpu")
+    rig = object.__new__(dac.Rig)
+    rig.tok = _FakeBatchTokenizer()
+    rig.model = _FakeBatchModel()
+
+    replies = dac._generate_prompts(rig, ["a", "bbb", "cc"], max_new=2, batch_size=2)
+
+    assert replies == ["90 100", "91 101", "90 100"]
+    assert rig.model.batch_sizes == [2, 1]
+    assert rig.model.attention_masks[0].tolist() == [[0, 0, 1], [1, 1, 1]]
+
+
 class _FakeSCForSweep:
     """Stands in for SteeringControl in calibrate_dial: .vecs holds one REAL small CPU tensor per dial
     (make_shuffle_unit_vector needs actual tensor ops); .strength/.clear/.engage/.disengage behave like the
@@ -664,6 +736,39 @@ def test_calibrate_dial_end_to_end_with_fake_generator(monkeypatch):
     assert s0["frac"] == 0.0
     assert s0["prompt"] == prompts[0]
     assert s0["baseline_reply"] == s0["steered_reply"]      # dose 0 -- identical by construction
+
+
+class _FakeBatchRigForSweep(_FakeRigForSweep):
+    def __init__(self, sc, dial_name):
+        super().__init__(sc, dial_name)
+        self.batch_calls = []
+
+    def gen_batch(self, prompts, max_new=100):
+        self.batch_calls.append(list(prompts))
+        return [self.gen(prompt, max_new=max_new) for prompt in prompts]
+
+
+def test_calibrate_dial_batches_generation_and_caches_baseline_alignment(monkeypatch):
+    alignment_calls = []
+
+    def fake_alignments(sc, texts, dial, batch_size=1):
+        alignment_calls.append(list(texts))
+        return [_align_by_steer_marker(sc, text, dial) for text in texts]
+
+    monkeypatch.setattr(dac, "directional_alignments", fake_alignments)
+    sc = _FakeSCForSweep("testdial", axis_max=1.0)
+    rig = _FakeBatchRigForSweep(sc, "testdial")
+    prompts = ["one", "two", "three"]
+
+    dac.calibrate_dial(
+        rig, sc, "testdial", prompts, [0.0, 0.5, 1.0], seed=0, max_new=20, batch_size=2,
+    )
+
+    assert all(1 <= len(batch) <= 2 for batch in rig.batch_calls)
+    assert any(len(batch) == 2 for batch in rig.batch_calls)
+    # Once for the baseline, then real + shuffled once for each of the two nonzero doses. The old path
+    # re-scored the baseline separately inside every directional_effect call.
+    assert len(alignment_calls) == 5
 
 
 def test_calibrate_dial_shuffle_vector_stays_fixed_across_the_sweep(monkeypatch):
@@ -783,6 +888,8 @@ def test_arg_parser_defaults():
     assert a.four_bit == "auto"
     assert a.layer is None
     assert a.max_new == 100
+    assert a.batch_size == 8
+    assert a.resume is False
     assert a.seed == 0
     assert a.smoke is False
 
@@ -797,6 +904,15 @@ def test_arg_parser_smoke_and_dials_override():
 def test_arg_parser_four_bit_choices():
     a = dac.build_arg_parser().parse_args(["--four-bit", "yes"])
     assert a.four_bit == "yes"
+
+
+def test_arg_parser_batch_and_resume_flags():
+    a = dac.build_arg_parser().parse_args(["--batch-size", "4", "--resume"])
+    assert a.batch_size == 4
+    assert a.resume is True
+
+    with pytest.raises(SystemExit):
+        dac.build_arg_parser().parse_args(["--batch-size", "0"])
 
 
 def test_arg_parser_library_and_report_flags():
@@ -819,6 +935,44 @@ def test_default_out_path_plain_sweep():
 
 def test_default_out_path_library_sweep():
     assert dac._default_out_path("research/dial_library_candidates.json") == "research/runs/dial_library_sweep.json"
+
+
+def _resume_fixture():
+    row = {key: None for key in dac._RESUME_COMPAT_KEYS}
+    row.update({
+        "run_kind": "dials", "model": "TestModel", "four_bit": True, "seed": 0, "smoke": False,
+        "n_prompts": 2, "prompt_source": "fixture", "prompts": ["a", "b"], "max_new": 20,
+        "batch_size": 4, "steer_layer": 3, "sweep_fracs": [0.0, 1.0],
+        "dial_order": ["warm", "candid"], "dials": {},
+    })
+    return row
+
+
+def test_resume_checkpoint_loads_completed_dials_and_elapsed_time(tmp_path):
+    path = str(tmp_path / "checkpoint.json")
+    checkpoint = _resume_fixture()
+    checkpoint["dials"] = {"warm": {"dial": "warm", "curve": []}}
+    checkpoint["elapsed_wall_clock_sec"] = 42.5
+    checkpoint["resume_count"] = 1
+    dac._save(path, checkpoint)
+
+    resumed, elapsed = dac._resume_from_checkpoint(path, _resume_fixture())
+
+    assert list(resumed["dials"]) == ["warm"]
+    assert resumed["dials"]["warm"]["dial"] == "warm"
+    assert resumed["resume_count"] == 2
+    assert elapsed == 42.5
+
+
+def test_resume_checkpoint_rejects_result_affecting_mismatch(tmp_path):
+    path = str(tmp_path / "checkpoint.json")
+    checkpoint = _resume_fixture()
+    dac._save(path, checkpoint)
+    requested = _resume_fixture()
+    requested["batch_size"] = 8
+
+    with pytest.raises(SystemExit, match="batch_size"):
+        dac._resume_from_checkpoint(path, requested)
 
 
 # ================================================================================================

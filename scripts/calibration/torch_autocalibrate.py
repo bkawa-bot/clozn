@@ -130,10 +130,12 @@ arms must be attributable to the dose/direction change, not to sampling dice.
 
 Cost: O(n_dials x n_doses x n_prompts x ~2) greedy generations (~2 = one real-direction decode + one
 shuffled-direction decode per prompt per nonzero dose; dose 0 needs only 1, shared as everyone's baseline),
-PLUS one cheap forward pass (no generation, output_hidden_states only) per reply for directional_alignment
--- negligible next to a 100-token generation (order a single decode STEP's worth of compute each). Default
-config (12 dials x 7 doses x 6 prompts) is a few hundred short greedy decodes -- --smoke (1-2 dials, 3
-doses, 2 prompts) proves the wiring in a handful of decodes first, and is NOT a finding.
+PLUS one cheap forward pass (no generation, output_hidden_states only) per reply for directional_alignment.
+Generation and alignment are chunked by --batch-size (default 8), and the unsteered baseline replies are
+generated once and shared across all dials in the sweep. Lower --batch-size after an OOM; raise it when
+VRAM headroom remains. Every completed dial is checkpointed, and --resume continues a compatible --out
+without recomputing those dials. Default config (12 dials x 7 doses x 6 prompts) is a few hundred short
+greedy decodes -- --smoke (1-2 dials, 3 doses, 2 prompts) proves the wiring cheaply and is NOT a finding.
 
 --exemplars MODE -- A/B the DIRECTION RECIPE, not just the dose (motivated by a real, measured failure: on
 Qwen3.5-9B, every dial under the instruction recipe below came back near-zero effect except `poetic`, while
@@ -163,27 +165,29 @@ per-dial in the saved report's dial_source/caa_pairs_used/caa_pairs_skipped fiel
 
 Run (CUDA venv):
     PY=C:/Users/brigi/src/cloze/.venv/Scripts/python.exe
-    $PY research/dial_autocalibrate.py --model Qwen/Qwen2.5-7B-Instruct --out research/runs/dial_autocalibrate.json
+    $PY scripts/calibration/torch_autocalibrate.py --model Qwen/Qwen2.5-7B-Instruct --batch-size 8 --out research/runs/dial_autocalibrate.json
 Smoke first (prove the wiring cheaply -- NOT a finding):
-    $PY research/dial_autocalibrate.py --smoke --out research/runs/dial_autocalibrate_smoke.json
+    $PY scripts/calibration/torch_autocalibrate.py --smoke --out research/runs/dial_autocalibrate_smoke.json
 A subset of dials:
-    $PY research/dial_autocalibrate.py --dials warm candid concrete --n-prompts 10
+    $PY scripts/calibration/torch_autocalibrate.py --dials warm candid concrete --n-prompts 10
+Resume an interrupted compatible checkpoint (same model/prompts/dials/settings, including batch size):
+    $PY scripts/calibration/torch_autocalibrate.py --batch-size 8 --resume --out research/runs/dial_autocalibrate.json
 
 --library MODE: sweep an entire CANDIDATE LIBRARY (research/dial_library_candidates.json's ~70-dial,
 15-category {"dials":[{name,category,pos,neg,predict}]} format) instead of steering.AXES/--dials -- every
 entry registered as a custom dial (register_library_dials) and swept through the IDENTICAL calibrate_dial
 path as everything else in this file. Checkpoint-saved after EVERY dial (see run_library's docstring), so a
-kill/OOM partway through this much bigger run keeps every dial finished so far:
-    $PY research/dial_autocalibrate.py --library research/dial_library_candidates.json --out research/runs/dial_library_sweep.json
+kill/OOM partway through this much bigger run keeps every dial finished so far and --resume can continue it:
+    $PY scripts/calibration/torch_autocalibrate.py --library research/dial_library_candidates.json --out research/runs/dial_library_sweep.json
 --report MODE: pure analysis, NO model/GPU (still imports torch/transformers at module level like every mode
 here, but loads no model and touches no CUDA) -- reads a completed --library sweep JSON and prints the
 per-category summary, the surface-vs-cognitive hypothesis verdict, and the curated shippable list, and writes
 that curated list to --curated-out (default research/runs/dial_library_curated.json):
-    $PY research/dial_autocalibrate.py --report research/runs/dial_library_sweep.json
+    $PY scripts/calibration/torch_autocalibrate.py --report research/runs/dial_library_sweep.json
 """
 from __future__ import annotations
 
-import argparse, gc, json, os, sys, time
+import argparse, gc, hashlib, json, os, sys, time
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -206,6 +210,46 @@ DEV = "cuda" if torch.cuda.is_available() else "cpu"
 def _mean(xs) -> float:
     xs = list(xs)
     return sum(xs) / len(xs) if xs else 0.0
+
+
+def _positive_int(value: str) -> int:
+    """argparse type for knobs where zero would otherwise create a silent no-op/infinite loop."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return parsed
+
+
+def _chunks(items, size: int):
+    """Yield stable, order-preserving list chunks. `size` is validated at both CLI and API boundaries."""
+    if size < 1:
+        raise ValueError("batch_size must be >= 1")
+    items = list(items)
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
+def _ensure_padding_token(tok) -> None:
+    """Decoder-only batch generation needs a real pad id; Llama-family tokenizers often omit one."""
+    if getattr(tok, "pad_token_id", None) is not None:
+        return
+    if getattr(tok, "eos_token", None) is not None:
+        tok.pad_token = tok.eos_token
+    elif getattr(tok, "unk_token", None) is not None:
+        tok.pad_token = tok.unk_token
+    else:
+        raise RuntimeError("tokenizer has no pad/eos/unk token; cannot batch safely")
+
+
+def _file_sha256(path: str | None) -> str | None:
+    """Fingerprint result-shaping input files so resume cannot mix changed direction recipes."""
+    if not path:
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def degenerate_rate(texts: list[str]) -> float:
@@ -286,7 +330,9 @@ def directional_alignment(sc, reply_text: str, dial: str) -> float:
     scaled against anything of its own; callers always compare it against the SAME prompt's own
     baseline-reply alignment (directional_effect = align(steered) - align(baseline)), never read as an
     absolute in isolation."""
-    ids = sc.tok(reply_text or "", return_tensors="pt").input_ids.to(DEV)
+    if not reply_text:
+        return 0.0
+    ids = sc.tok(reply_text, return_tensors="pt").input_ids.to(DEV)
     if ids.shape[1] == 0:
         return 0.0
     hs = sc.model(ids, output_hidden_states=True).hidden_states[sc.layer + 1]
@@ -294,7 +340,50 @@ def directional_alignment(sc, reply_text: str, dial: str) -> float:
     return _project_onto_unit(pooled, sc.vecs[dial])
 
 
-def directional_effect(sc, dial: str, baseline_texts: list[str], steered_texts: list[str]) -> float:
+@torch.no_grad()
+def directional_alignments(sc, reply_texts: list[str], dial: str, batch_size: int = 1) -> list[float]:
+    """Batch-aware form of directional_alignment, preserving input order and masking padding from pools.
+
+    batch_size=1 deliberately calls the scalar primitive so existing callers/tests that replace
+    directional_alignment keep working. Real calibration runs pass their --batch-size here and amortize
+    tokenization/model-forward overhead across multiple replies. Empty replies retain the scalar API's
+    documented 0.0 result without feeding synthetic padding/BOS content through the model.
+    """
+    texts = list(reply_texts or [])
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    if batch_size == 1:
+        return [directional_alignment(sc, text, dial) for text in texts]
+
+    scores = [0.0] * len(texts)
+    nonempty = [(i, text) for i, text in enumerate(texts) if text]
+    if not nonempty:
+        return scores
+
+    _ensure_padding_token(sc.tok)
+    unit = sc.vecs[dial].float()
+    unit = unit / (unit.norm() + 1e-8)
+    for rows in _chunks(nonempty, batch_size):
+        indices = [i for i, _ in rows]
+        batch_texts = [text for _, text in rows]
+        enc = sc.tok(batch_texts, return_tensors="pt", padding=True)
+        ids = enc["input_ids"].to(DEV)
+        mask = enc.get("attention_mask")
+        mask = (mask.to(DEV) if mask is not None else torch.ones_like(ids)).bool()
+        hs = sc.model(input_ids=ids, attention_mask=mask, output_hidden_states=True).hidden_states[
+            sc.layer + 1
+        ].float()
+        weights = mask.unsqueeze(-1).to(hs.dtype)
+        pooled = (hs * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
+        values = torch.matmul(pooled, unit.to(pooled.device)).detach().cpu().tolist()
+        for index, value in zip(indices, values):
+            scores[index] = float(value)
+        del ids, mask, hs, weights, pooled
+    return scores
+
+
+def directional_effect(sc, dial: str, baseline_texts: list[str], steered_texts: list[str], *,
+                       batch_size: int = 1, baseline_alignments: list[float] | None = None) -> float:
     """THE new effect measure (replaces the old word-Jaccard change_magnitude as what usable_max/dead_below
     are actually gated on -- see the module docstring's THE EFFECT MEASURE section): mean over the prompt
     sample of [directional_alignment(steered) - directional_alignment(baseline)], each alignment a
@@ -314,14 +403,17 @@ def directional_effect(sc, dial: str, baseline_texts: list[str], steered_texts: 
     oversight: see the module docstring's THE SHUFFLED NULL section for why the null's replies are
     projected onto the SAME real dial axis rather than onto the random direction's own axis.
 
-    Zero-cost note: each call independently re-encodes baseline_texts (no cross-call cache) -- a handful of
-    redundant single-forward-pass encodes per dial across a full sweep, negligible next to the ~2 full
-    100-new-token GENERATIONS this module already spends per prompt per nonzero dose; traded for keeping
-    this a single, simple, directly-testable function (no cache-invalidation surface of its own)."""
+    baseline_alignments is an optional per-dial cache populated once by calibrate_dial. Direct callers can
+    omit it and retain the original self-contained behavior. Both baseline and steered scoring honor
+    batch_size, with batch_size=1 preserving the original scalar execution path."""
     if not baseline_texts or not steered_texts or len(baseline_texts) != len(steered_texts):
         return 0.0
-    vals = [directional_alignment(sc, s, dial) - directional_alignment(sc, b, dial)
-            for b, s in zip(baseline_texts, steered_texts)]
+    baseline_scores = (list(baseline_alignments) if baseline_alignments is not None
+                       else directional_alignments(sc, baseline_texts, dial, batch_size=batch_size))
+    if len(baseline_scores) != len(baseline_texts):
+        return 0.0
+    steered_scores = directional_alignments(sc, steered_texts, dial, batch_size=batch_size)
+    vals = [steered - baseline for baseline, steered in zip(baseline_scores, steered_scores)]
     return round(_mean(vals), 4)
 
 
@@ -508,27 +600,62 @@ class Rig:
                                                               device_map={"": 0}).eval()
         else:
             self.model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16).to(DEV).eval()
+        _ensure_padding_token(self.tok)
+        # Decoder-only generation must left-pad: the final input position for every row must be a real
+        # prompt token, not padding, because generate() selects next-token logits from that position.
+        self.tok.padding_side = "left"
 
     @torch.no_grad()
-    def gen(self, user: str, max_new: int = 100, sample: bool = False, temperature: float = 0.9) -> str:
-        """Single USER-turn only -- never a system role, matching SingleTurnSteer's own recipe uniformly.
-        repetition_penalty/no_repeat_ngram_size tame steering-induced loops (steer_vs_prompt.py's/
-        parliament.py's Rig.gen do the same)."""
-        enc = self.tok.apply_chat_template([{"role": "user", "content": user}],
-                                           add_generation_prompt=True, return_tensors="pt")
-        ids = (enc if isinstance(enc, torch.Tensor) else enc["input_ids"]).to(DEV)  # 5.x returns a BatchEncoding
+    def gen_batch(self, users: list[str], max_new: int = 100, sample: bool = False,
+                  temperature: float = 0.9) -> list[str]:
+        """Generate one ordered batch of single-USER turns with padding masked correctly.
+
+        Chat templates are rendered to text first, then tokenized together with add_special_tokens=False;
+        this works across Transformers versions whose apply_chat_template return type differs and follows
+        HF's rule not to duplicate special tokens already emitted by the template.
+        """
+        users = list(users)
+        if not users:
+            return []
+        rendered = [self.tok.apply_chat_template([{"role": "user", "content": user}],
+                                                 add_generation_prompt=True, tokenize=False)
+                    for user in users]
+        enc = self.tok(rendered, padding=True, return_tensors="pt", add_special_tokens=False)
+        ids = enc["input_ids"].to(DEV)
+        attention_mask = enc.get("attention_mask")
+        attention_mask = (attention_mask.to(DEV) if attention_mask is not None else torch.ones_like(ids))
         kw = dict(max_new_tokens=max_new, repetition_penalty=1.3, no_repeat_ngram_size=3,
-                  pad_token_id=self.tok.eos_token_id or 0)
+                  pad_token_id=(self.tok.pad_token_id if self.tok.pad_token_id is not None else 0))
         if sample:
             kw.update(do_sample=True, temperature=temperature, top_p=0.95)
         else:
             kw.update(do_sample=False)
-        out = self.model.generate(ids, **kw)
-        return self.tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+        out = self.model.generate(input_ids=ids, attention_mask=attention_mask, **kw)
+        replies = self.tok.batch_decode(out[:, ids.shape[1]:], skip_special_tokens=True)
+        return [reply.strip() for reply in replies]
+
+    @torch.no_grad()
+    def gen(self, user: str, max_new: int = 100, sample: bool = False, temperature: float = 0.9) -> str:
+        """Scalar compatibility wrapper over gen_batch."""
+        return self.gen_batch([user], max_new=max_new, sample=sample, temperature=temperature)[0]
 
     def free(self):
         self.model = None
         self.tok = None
+
+
+def _generate_prompts(rig, prompts: list[str], max_new: int, batch_size: int) -> list[str]:
+    """Generate prompts in stable chunks, falling back to scalar fake/legacy rigs used by pure tests."""
+    replies: list[str] = []
+    for batch in _chunks(prompts, batch_size):
+        if hasattr(rig, "gen_batch"):
+            rows = rig.gen_batch(batch, max_new=max_new)
+        else:
+            rows = [rig.gen(prompt, max_new=max_new) for prompt in batch]
+        if len(rows) != len(batch):
+            raise RuntimeError(f"generation returned {len(rows)} replies for a batch of {len(batch)} prompts")
+        replies.extend(rows)
+    return replies
 
 
 # ---- custom dial defs: parliament.py's skeptical/plain, copied verbatim (not imported -- this codebase's
@@ -903,7 +1030,8 @@ def _compute_calibration(curve: list[dict]) -> dict:
 
 
 def calibrate_dial(rig, sc, name: str, prompts: list[str], fracs: list[float], seed: int,
-                    max_new: int = 100) -> dict:
+                   max_new: int = 100, batch_size: int = 1,
+                   baseline_texts: list[str] | None = None) -> dict:
     """The heart of this module: sweep dial `name` over `fracs` (each a fraction of axis_max_of(sc, name))
     on `prompts`, against a matched-norm SHUFFLED-direction null at the IDENTICAL magnitude, at every dose.
 
@@ -915,10 +1043,11 @@ def calibrate_dial(rig, sc, name: str, prompts: list[str], fracs: list[float], s
     The shuffled null needs the identical bypass for the identical reason (parliament.py's own null already
     does this, for the same reason, at its narrower fracs<=1.0 sweep).
 
-    At frac=0.0: ONE greedy decode per prompt with no dial engaged is both "the real arm" and "the shuffled
-    arm" (steering off is steering off, whichever vector isn't there) -- these become `baseline_texts`,
-    reused as the fixed reference point for BOTH directional_effect and effect_vs_baseline at EVERY other
-    dose (never a moving target).
+    At frac=0.0: the caller's shared unsteered baseline (or ONE greedy decode per prompt when called
+    standalone) is both "the real arm" and "the shuffled arm" -- steering off is steering off, whichever
+    vector isn't there. These `baseline_texts` are the fixed reference point for BOTH directional_effect
+    and effect_vs_baseline at EVERY other dose (never a moving target). Their directional alignments are
+    computed once per dial and cached across all real/shuffled dose comparisons.
 
     At each nonzero frac: real-direction decodes, then (after a full clear/disengage) shuffled-direction
     decodes, both at the SAME |strength| -- so directional_effect, effect_vs_baseline, and degenerate_rate
@@ -945,7 +1074,12 @@ def calibrate_dial(rig, sc, name: str, prompts: list[str], fracs: list[float], s
     axis_max = axis_max_of(sc, name)
     shuffle_vec = make_shuffle_unit_vector(sc.vecs[name], _dial_seed(seed, name))
 
-    baseline_texts = None
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    if baseline_texts is not None and len(baseline_texts) != len(prompts):
+        raise ValueError("baseline_texts must match prompts length")
+    baseline_texts = list(baseline_texts) if baseline_texts is not None else None
+    baseline_scores: list[float] | None = None
     curve: list[dict] = []
     sample_replies: list[dict] = []
     for frac in fracs:
@@ -953,30 +1087,44 @@ def calibrate_dial(rig, sc, name: str, prompts: list[str], fracs: list[float], s
         sc.disengage()
         sc.clear()
         if frac == 0.0:
-            real_texts = [rig.gen(p, max_new=max_new) for p in prompts]
-            baseline_texts = real_texts
+            if baseline_texts is None:
+                baseline_texts = _generate_prompts(rig, prompts, max_new=max_new, batch_size=batch_size)
+            real_texts = baseline_texts
             shuf_texts = real_texts        # steering off either way at frac=0 -- identical by construction
+            baseline_scores = directional_alignments(sc, baseline_texts, name, batch_size=batch_size)
+            real_effect = 0.0
+            shuffled_effect = 0.0
         else:
             sc.strength[name] = strength   # direct write -- bypasses .set()'s clamp to axis_max (see above)
             sc.engage()
-            real_texts = [rig.gen(p, max_new=max_new) for p in prompts]
+            real_texts = _generate_prompts(rig, prompts, max_new=max_new, batch_size=batch_size)
             sc.disengage()
             sc.clear()
 
             sc.vecs["_shuf_tmp"] = shuffle_vec
             sc.strength["_shuf_tmp"] = strength    # the null must land at EXACTLY the real dial's magnitude
             sc.engage()
-            shuf_texts = [rig.gen(p, max_new=max_new) for p in prompts]
+            shuf_texts = _generate_prompts(rig, prompts, max_new=max_new, batch_size=batch_size)
             sc.disengage()
             sc.clear()
             del sc.vecs["_shuf_tmp"]
+
+            # baseline_scores is computed once at dose zero and reused for both arms at every later dose.
+            real_effect = directional_effect(
+                sc, name, baseline_texts, real_texts,
+                batch_size=batch_size, baseline_alignments=baseline_scores,
+            )
+            shuffled_effect = directional_effect(
+                sc, name, baseline_texts, shuf_texts,
+                batch_size=batch_size, baseline_alignments=baseline_scores,
+            )
 
         curve.append({
             "frac": frac, "strength": strength,
             "real_degenerate_rate": degenerate_rate(real_texts),
             "shuffled_degenerate_rate": degenerate_rate(shuf_texts),
-            "effect": directional_effect(sc, name, baseline_texts, real_texts),
-            "shuffled_effect": directional_effect(sc, name, baseline_texts, shuf_texts),
+            "effect": real_effect,
+            "shuffled_effect": shuffled_effect,
             "change_magnitude": effect_vs_baseline(baseline_texts, real_texts),
         })
         sample_replies.append({
@@ -989,23 +1137,94 @@ def calibrate_dial(rig, sc, name: str, prompts: list[str], fracs: list[float], s
     return {"dial": name, "axis_max": axis_max, "curve": curve, "sample_replies": sample_replies, **calib}
 
 
+_RESUME_COMPAT_KEYS = (
+    "run_kind", "model", "four_bit", "seed", "smoke", "n_prompts", "prompt_source", "prompts",
+    "n_prompts_requested", "prompts_file_path", "max_prompts", "max_new", "batch_size", "steer_layer",
+    "sweep_fracs", "dial_order", "exemplars_path", "exemplars_sha256", "dial_source", "caa_pairs_used",
+    "caa_pairs_skipped", "library_path", "dial_meta",
+)
+
+
+def _read_resume_checkpoint(out_path: str) -> dict:
+    if not os.path.isfile(out_path):
+        raise SystemExit(f"--resume requested but checkpoint does not exist: {out_path}")
+    try:
+        with open(out_path, encoding="utf-8") as f:
+            checkpoint = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"cannot resume unreadable checkpoint {out_path}: {exc}") from exc
+    if not isinstance(checkpoint, dict):
+        raise SystemExit(f"cannot resume checkpoint {out_path}: root must be a JSON object")
+    return checkpoint
+
+
+def _resume_prompts(checkpoint: dict, out_path: str) -> tuple[list[str], str]:
+    """Use the checkpoint's literal prompt sample; a changing runlog must not mutate a resumed experiment."""
+    prompts = checkpoint.get("prompts")
+    source = checkpoint.get("prompt_source")
+    if not isinstance(prompts, list) or not all(isinstance(prompt, str) for prompt in prompts):
+        raise SystemExit(f"cannot resume checkpoint {out_path}: prompts must be a JSON string array")
+    if not prompts or checkpoint.get("n_prompts") != len(prompts) or not isinstance(source, str):
+        raise SystemExit(f"cannot resume checkpoint {out_path}: invalid prompt metadata")
+    return list(prompts), source
+
+
+def _resume_from_checkpoint(out_path: str, fresh: dict, checkpoint: dict | None = None) -> tuple[dict, float]:
+    """Load completed dials only when every result-affecting run setting matches exactly.
+
+    Strict compatibility is deliberate: silently mixing prompt banks, steering layers, quantization,
+    batch shapes, or direction recipes would make one JSON look like a single experiment when it was not.
+    """
+    checkpoint = checkpoint if checkpoint is not None else _read_resume_checkpoint(out_path)
+
+    mismatches = [key for key in _RESUME_COMPAT_KEYS if checkpoint.get(key) != fresh.get(key)]
+    if mismatches:
+        raise SystemExit(
+            f"cannot resume incompatible checkpoint {out_path}; differing field(s): {', '.join(mismatches)}"
+        )
+    old_dials = checkpoint.get("dials")
+    if not isinstance(old_dials, dict):
+        raise SystemExit(f"cannot resume checkpoint {out_path}: dials must be a JSON object")
+    unknown = [name for name in old_dials if name not in fresh["dial_order"]]
+    if unknown:
+        raise SystemExit(f"cannot resume checkpoint {out_path}: unknown completed dial(s): {unknown}")
+
+    fresh["dials"] = {name: old_dials[name] for name in fresh["dial_order"] if name in old_dials}
+    try:
+        prior_elapsed = float(checkpoint.get(
+            "elapsed_wall_clock_sec", checkpoint.get("wall_clock_sec", 0.0)
+        ) or 0.0)
+    except (TypeError, ValueError):
+        prior_elapsed = 0.0
+    fresh["elapsed_wall_clock_sec"] = round(prior_elapsed, 1)
+    fresh["resume_count"] = int(checkpoint.get("resume_count", 0) or 0) + 1
+    print(f"[resume] {len(fresh['dials'])}/{len(fresh['dial_order'])} completed dial(s) loaded from "
+          f"{out_path}", flush=True)
+    return fresh, prior_elapsed
+
+
 # ================================================================================================= run
 def run(model_name: str, dials: list[str] | None = None, n_prompts: int = 6,
         out_path: str = "research/runs/dial_autocalibrate.json", four_bit_override: str = "auto",
         smoke: bool = False, seed: int = 0, layer: int | None = None, max_new: int = 100,
         prompts_file: str | None = None, max_prompts: int | None = None,
-        exemplars: str | None = None) -> dict:
+        exemplars: str | None = None, batch_size: int = 8, resume: bool = False) -> dict:
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
     torch.manual_seed(seed)
     dial_names = list(dials) if dials else list(DEFAULT_DIALS)
     if smoke:
         dial_names = dial_names[:2]        # --smoke always caps to 1-2 dials, whatever was requested
     n_eff = 2 if smoke else n_prompts      # --smoke always uses 2 prompts
     fracs = _SWEEP_FRACS_SMOKE if smoke else _SWEEP_FRACS
+    resume_checkpoint = _read_resume_checkpoint(out_path) if resume else None
 
     # A curated --prompts-file wins over the runlog sample (and ignores n_prompts): a fixed, model-
     # independent bank is what makes two models' calibrations comparable. --smoke still overrides to keep
     # the wiring-check cheap regardless of how big the file is.
-    if prompts_file and not smoke:
+    if resume_checkpoint is not None:
+        prompts, prompt_source = _resume_prompts(resume_checkpoint, out_path)
+    elif prompts_file and not smoke:
         prompts, prompt_source = load_prompts_file(prompts_file)
         if max_prompts and 0 < max_prompts < len(prompts):
             # Evenly-spaced subsample so a grouped-by-register bank stays balanced (take 1 from each
@@ -1051,26 +1270,50 @@ def run(model_name: str, dials: list[str] | None = None, n_prompts: int = 6,
         dial_source = {name: "instructions" for name in dial_names}
 
     res = {
-        "model": model_name, "four_bit": rig.four_bit, "seed": seed, "smoke": smoke,
+        "run_kind": "dials", "model": model_name, "four_bit": rig.four_bit, "seed": seed, "smoke": smoke,
         "n_prompts": len(prompts), "prompt_source": prompt_source, "prompts": prompts,
-        "max_new": max_new, "steer_layer": sc.layer, "steer_info": steer_info,
+        "n_prompts_requested": n_prompts, "prompts_file_path": prompts_file, "max_prompts": max_prompts,
+        "max_new": max_new, "batch_size": batch_size, "steer_layer": sc.layer, "steer_info": steer_info,
         "sweep_fracs": fracs, "degen_threshold": _DEGEN_THRESHOLD, "effect_eps": _EFFECT_EPS,
-        "exemplars_path": exemplars, "dial_source": dial_source,
+        "exemplars_path": exemplars, "exemplars_sha256": _file_sha256(exemplars),
+        "dial_source": dial_source,
         "caa_pairs_used": {n: caa_stats.get(n, {}).get("pairs_used", 0) for n in dial_names},
         "caa_pairs_skipped": {n: caa_stats.get(n, {}).get("pairs_skipped", 0) for n in dial_names},
         "dial_order": dial_names, "dials": {},
     }
-    _save(out_path, res)
+    prior_elapsed = 0.0
+    if resume:
+        res, prior_elapsed = _resume_from_checkpoint(out_path, res, checkpoint=resume_checkpoint)
+    else:
+        _save(out_path, res)
 
-    print(f"[sweep] {len(dial_names)} dial(s) x {len(fracs)} doses x {len(prompts)} prompts ...", flush=True)
+    pending = [name for name in dial_names if name not in res["dials"]]
+    shared_baseline = None
+    if pending:
+        sc.disengage()
+        sc.clear()
+        print(f"[baseline] generating {len(prompts)} shared unsteered replies in batches of {batch_size} ...",
+              flush=True)
+        shared_baseline = _generate_prompts(rig, prompts, max_new=max_new, batch_size=batch_size)
+
+    print(f"[sweep] {len(pending)} pending of {len(dial_names)} dial(s) x {len(fracs)} doses x "
+          f"{len(prompts)} prompts (batch_size={batch_size}) ...", flush=True)
     t0 = time.time()
     for name in dial_names:
-        report = calibrate_dial(rig, sc, name, prompts, fracs, seed=seed, max_new=max_new)
+        if name in res["dials"]:
+            print(f"  [{name}] checkpoint complete -- skipped", flush=True)
+            continue
+        report = calibrate_dial(
+            rig, sc, name, prompts, fracs, seed=seed, max_new=max_new,
+            batch_size=batch_size, baseline_texts=shared_baseline,
+        )
         res["dials"][name] = report
+        res["elapsed_wall_clock_sec"] = round(prior_elapsed + time.time() - t0, 1)
         _save(out_path, res)
         print(f"  [{name}] usable_range={report['usable_range']} derail_point={report['derail_point']} "
               f"range_valid={report['range_valid']}", flush=True)
-    res["wall_clock_sec"] = round(time.time() - t0, 1)
+    res["wall_clock_sec"] = round(prior_elapsed + time.time() - t0, 1)
+    res["elapsed_wall_clock_sec"] = res["wall_clock_sec"]
 
     sc.disengage()
     rig.free()
@@ -1085,8 +1328,12 @@ def run(model_name: str, dials: list[str] | None = None, n_prompts: int = 6,
 
 def _save(out_path, res):
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
+    tmp_path = out_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(res, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, out_path)
 
 
 def _summary(res):
@@ -1114,7 +1361,8 @@ def _summary(res):
 # ========================================================================================= the library sweep
 def run_library(library_path: str, model_name: str = "Qwen/Qwen2.5-7B-Instruct", n_prompts: int = 6,
                 out_path: str = "research/runs/dial_library_sweep.json", four_bit_override: str = "auto",
-                smoke: bool = False, seed: int = 0, layer: int | None = None, max_new: int = 100) -> dict:
+                smoke: bool = False, seed: int = 0, layer: int | None = None, max_new: int = 100,
+                batch_size: int = 8, resume: bool = False) -> dict:
     """--library mode: sweep an entire CANDIDATE LIBRARY (research/dial_library_candidates.json's ~70-dial,
     15-category format) through the IDENTICAL per-dial calibration path run() uses for steering.AXES/
     --dials -- same calibrate_dial, same _compute_calibration, same direction-aware effect measure, same
@@ -1137,15 +1385,22 @@ def run_library(library_path: str, model_name: str = "Qwen/Qwen2.5-7B-Instruct",
     the default sweep), so, exactly like run(), the JSON at `out_path` is CHECKPOINT-SAVED after EVERY
     dial's calibration completes, not just at the end: a kill or OOM partway through still leaves every
     already-finished dial's full curve/calibration on disk, never just whatever was saved before the LAST
-    dial that happened to be in flight when the process died."""
+    dial that happened to be in flight when the process died. --resume reloads those completed rows after
+    validating that every result-affecting setting matches the checkpoint."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
     torch.manual_seed(seed)
     library = load_dial_library(library_path)
     if smoke:
         library = library[:2]          # --smoke caps to the first 2 library entries, matching run()'s cap
     n_eff = 2 if smoke else n_prompts
     fracs = _SWEEP_FRACS_SMOKE if smoke else _SWEEP_FRACS
+    resume_checkpoint = _read_resume_checkpoint(out_path) if resume else None
 
-    prompts, prompt_source = sample_prompts(n_eff, seed=seed)
+    if resume_checkpoint is not None:
+        prompts, prompt_source = _resume_prompts(resume_checkpoint, out_path)
+    else:
+        prompts, prompt_source = sample_prompts(n_eff, seed=seed)
     print(f"[prompts] {len(prompts)} prompt(s) from {prompt_source}", flush=True)
 
     rig = Rig(model_name, four_bit_override)
@@ -1162,29 +1417,52 @@ def run_library(library_path: str, model_name: str = "Qwen/Qwen2.5-7B-Instruct",
               f"library's own pos/neg + max win (axis_max_of is custom-first): {shadowed}", flush=True)
 
     res = {
-        "model": model_name, "four_bit": rig.four_bit, "seed": seed, "smoke": smoke,
+        "run_kind": "library", "model": model_name, "four_bit": rig.four_bit, "seed": seed, "smoke": smoke,
         "n_prompts": len(prompts), "prompt_source": prompt_source, "prompts": prompts,
-        "max_new": max_new, "steer_layer": sc.layer, "steer_info": steer_info,
+        "n_prompts_requested": n_prompts, "prompts_file_path": None, "max_prompts": None,
+        "max_new": max_new, "batch_size": batch_size, "steer_layer": sc.layer, "steer_info": steer_info,
         "library_path": library_path, "sweep_fracs": fracs,
         "degen_threshold": _DEGEN_THRESHOLD, "effect_eps": _EFFECT_EPS,
         "dial_order": dial_names, "dial_meta": lib_meta, "dials": {},
     }
-    _save(out_path, res)
+    prior_elapsed = 0.0
+    if resume:
+        res, prior_elapsed = _resume_from_checkpoint(out_path, res, checkpoint=resume_checkpoint)
+    else:
+        _save(out_path, res)
 
-    print(f"[sweep] {len(dial_names)} dial(s) x {len(fracs)} doses x {len(prompts)} prompts ...", flush=True)
+    pending = [name for name in dial_names if name not in res["dials"]]
+    shared_baseline = None
+    if pending:
+        sc.disengage()
+        sc.clear()
+        print(f"[baseline] generating {len(prompts)} shared unsteered replies in batches of {batch_size} ...",
+              flush=True)
+        shared_baseline = _generate_prompts(rig, prompts, max_new=max_new, batch_size=batch_size)
+
+    print(f"[sweep] {len(pending)} pending of {len(dial_names)} dial(s) x {len(fracs)} doses x "
+          f"{len(prompts)} prompts (batch_size={batch_size}) ...", flush=True)
     t0 = time.time()
     for i, name in enumerate(dial_names):
-        report_row = calibrate_dial(rig, sc, name, prompts, fracs, seed=seed, max_new=max_new)
+        if name in res["dials"]:
+            print(f"  [{i + 1}/{len(dial_names)}] [{name}] checkpoint complete -- skipped", flush=True)
+            continue
+        report_row = calibrate_dial(
+            rig, sc, name, prompts, fracs, seed=seed, max_new=max_new,
+            batch_size=batch_size, baseline_texts=shared_baseline,
+        )
         report_row["category"] = lib_meta[name]["category"]
         report_row["predict"] = lib_meta[name]["predict"]
         report_row["pos"] = lib_meta[name]["pos"]
         report_row["neg"] = lib_meta[name]["neg"]
         res["dials"][name] = report_row
+        res["elapsed_wall_clock_sec"] = round(prior_elapsed + time.time() - t0, 1)
         _save(out_path, res)      # checkpoint after EVERY dial -- a kill/OOM keeps every finished one
         print(f"  [{i + 1}/{len(dial_names)}] [{name}] ({report_row['category']}/{report_row['predict']}) "
               f"usable_range={report_row['usable_range']} derail_point={report_row['derail_point']} "
               f"range_valid={report_row['range_valid']}", flush=True)
-    res["wall_clock_sec"] = round(time.time() - t0, 1)
+    res["wall_clock_sec"] = round(prior_elapsed + time.time() - t0, 1)
+    res["elapsed_wall_clock_sec"] = res["wall_clock_sec"]
 
     sc.disengage()
     rig.free()
@@ -1410,6 +1688,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--four-bit", choices=["auto", "yes", "no"], default="auto")
     ap.add_argument("--layer", type=int, default=None, help="steering layer override (default num_layers//2)")
     ap.add_argument("--max-new", type=int, default=100, help="max new tokens per generation")
+    ap.add_argument("--batch-size", type=_positive_int, default=8,
+                    help="prompts/replies per GPU batch (default 8; lower after OOM, raise with VRAM headroom)")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue completed dials from an existing compatible --out checkpoint; every "
+                         "result-affecting setting, including --batch-size, must match")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--smoke", action="store_true",
                     help="1-2 dials, 3 doses, 2 prompts -- prove the wiring cheaply, not a finding")
@@ -1424,10 +1707,10 @@ if __name__ == "__main__":
         run_library(args.library, model_name=args.model, n_prompts=args.n_prompts,
                     out_path=args.out or _default_out_path(args.library),
                     four_bit_override=args.four_bit, smoke=args.smoke, seed=args.seed, layer=args.layer,
-                    max_new=args.max_new)
+                    max_new=args.max_new, batch_size=args.batch_size, resume=args.resume)
     else:
         run(args.model, dials=args.dials, n_prompts=args.n_prompts,
             out_path=args.out or _default_out_path(args.library),
             four_bit_override=args.four_bit, smoke=args.smoke, seed=args.seed, layer=args.layer,
             max_new=args.max_new, prompts_file=args.prompts_file, max_prompts=args.max_prompts,
-            exemplars=args.exemplars)
+            exemplars=args.exemplars, batch_size=args.batch_size, resume=args.resume)
