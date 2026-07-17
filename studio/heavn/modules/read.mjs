@@ -40,6 +40,93 @@ function band(step){
   return "decided";
 }
 
+function pct(value){
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) + "%" : "—";
+}
+
+function ActuaryPanel({ rec }){
+  const live = useStore(x => x.live);
+  const [state, setState] = useState({ status: "loading", report: null, assessment: null });
+
+  useEffect(() => {
+    let dead = false;
+    if(!live || !rec || rec._sample){ setState({ status: "sample", report: null, assessment: null }); return () => {}; }
+    setState({ status: "loading", report: null, assessment: null });
+    Promise.all([api.journalActuary(), api.runActuary(rec.id)]).then(([report, assessment]) => {
+      if(dead) return;
+      const okReport = report && report.calibration && report.failure_model;
+      const okAssessment = assessment && assessment.__status < 400 && !assessment.error;
+      setState({ status: okReport || okAssessment ? "ok" : "error",
+        report: okReport ? report : null, assessment: okAssessment ? assessment : null });
+    });
+    return () => { dead = true; };
+  }, [live, rec && rec.id]);
+
+  const a = state.assessment, report = state.report;
+  const cal = report && report.calibration;
+  const bins = cal && Array.isArray(cal.bins) ? cal.bins.filter(b => b.n) : [];
+  const drift = report && Array.isArray(report.drift) ? report.drift : [];
+  const verdict = !a || !a.available ? "unavailable" : a.warning ? "warning"
+    : a.weak_evidence ? "weak" : "clear";
+
+  return html`<section class="mod actuary-panel" data-testid="actuary-panel">
+    <div class="mod-h"><span class=${"led " + (verdict === "warning" ? "coral" : "lilac")}></span>
+      <span class="cap">journal actuary</span>
+      <span class="tail">${report ? `${report.n_runs}/${report.n_total} organic` : "behavioral proxy"}</span></div>
+    <div class="actuary-body">
+      ${state.status === "loading" && html`<div class="none">comparing this trace with earlier organic runs…</div>`}
+      ${state.status === "sample" && html`<div class="none">live journal only — the sample reel has no past outcomes.</div>`}
+      ${state.status === "error" && html`<div class="none">the journal report did not answer; no risk estimate was substituted.</div>`}
+
+      ${state.status === "ok" && html`<div class=${"actuary-current " + verdict}>
+        <div class="actuary-verdict">
+          ${verdict === "warning" && html`<span class="tag fail-t">RESEMBLES PAST FAILURES</span>`}
+          ${verdict === "clear" && html`<span class="tag cap-t">NOT FLAGGED BY HEURISTIC</span>`}
+          ${verdict === "weak" && html`<span class="tag smp-t">WEAK EVIDENCE · NO WARNING</span>`}
+          ${verdict === "unavailable" && html`<span class="tag smp-t">MODEL UNTRAINED</span>`}
+          ${a && a.score != null && html`<b>resemblance ${(+a.score).toFixed(2)}</b>`}
+        </div>
+        ${a && html`<div class="actuary-basis">${a.n_good} accepted-proxy · ${a.n_bad} bad-proxy ·
+          ${a.n_past_organic} earlier organic runs${a.warning_eligible ? ` · warning at ${(+a.threshold).toFixed(2)}`
+            : ` · warning needs ${a.min_class_n} of each class`}</div>`}
+        ${a && a.warning && html`<p>This run's recorded trace shape is closer to the earlier bad-proxy
+          centroid than the accepted-proxy centroid. Inspect the highlighted answer; this is not a fact-check.</p>`}
+        ${a && !a.warning && a.available && html`<p>${a.weak_evidence
+          ? "A resemblance score exists, but the past sample is too small to trigger an alert."
+          : "This heuristic did not flag the trace. That is not evidence that the answer is correct."}</p>`}
+        ${a && !a.available && html`<p>The journal needs at least two earlier runs in each proxy class to fit a trace-shape model.</p>`}
+        ${a && Array.isArray(a.drivers) && a.drivers.length ? html`<div class="actuary-drivers">
+          ${a.drivers.map(d => html`<span key=${d.feature}><b>${d.feature}</b> ${(+d.value).toFixed(2)} · bad-lean ${pct(d.bad_lean)}</span>`)}
+        </div>` : null}
+      </div>`}
+
+      ${report && html`<details class="actuary-report">
+        <summary>JOURNAL REPORT · PROXY, NOT CORRECTNESS</summary>
+        <div class="actuary-report-body">
+          <div class="actuary-statline"><span>scored <b>${cal.n_scored}/${cal.n_runs}</b></span>
+            <span>ECE proxy <b>${cal.ece_proxy == null ? "—" : (+cal.ece_proxy).toFixed(3)}</b></span>
+            <span>drift alarms <b>${drift.length}</b></span>
+            <span>cached <b>${Math.round(report.computed_ago_s || 0)}s ago</b></span></div>
+          ${bins.length ? html`<div class="actuary-bins">
+            ${bins.map(b => html`<div class="actuary-bin" key=${b.lo}>
+              <span>${(+b.lo).toFixed(1)}–${(+b.hi).toFixed(1)} · n=${b.n}</span>
+              <div><i style=${`width:${pct(b.trusted_rate)}`}></i>
+                <em style=${`left:${pct(b.mean_conf)}`} title=${`mean confidence ${(+b.mean_conf).toFixed(2)}`}></em></div>
+              <b>kept ${pct(b.trusted_rate)}</b>
+            </div>`)}
+          </div>` : html`<div class="none">no scored organic runs — no proxy curve was invented.</div>`}
+          ${drift.length ? html`<div class="actuary-drift">
+            ${drift.slice(0,4).map((d,i) => html`<div key=${i}><span class=${"tag " + (d.severity === "alarm" ? "fail-t" : "smp-t")}>${d.severity}</span>
+              <b>${d.prompt_class}</b><span>confidence ${d.delta == null ? "—" : (+d.delta).toFixed(2)} · bad proxy ${pct(d.bad_rate_old)}→${pct(d.bad_rate_new)}</span></div>`)}
+          </div>` : null}
+          <p class="actuary-note">${cal.note}</p>
+          ${a && html`<p class="actuary-note">${a.note}</p>`}
+        </div>
+      </details>`}
+    </div>
+  </section>`;
+}
+
 export function ReadModule(){
   const rec = useStore(x => x.rec);
   const requested = useStore(x => x.readRequest);
@@ -108,10 +195,11 @@ export function ReadModule(){
       </footer>
     </article>
 
-    <aside class="mod read-zoom">
-      <div class="mod-h"><span class="led coral"></span><span class="cap">zoom into sketchy spans</span>
+    <div class="col">
+      <aside class="mod read-zoom">
+        <div class="mod-h"><span class="led coral"></span><span class="cap">zoom into sketchy spans</span>
         <span class="tail">${lowTokens}/${steps.length || 0} tokens</span></div>
-      <div class="read-zoom-body">
+        <div class="read-zoom-body">
         ${!steps.length && html`<div class="none">No token trace was captured, so this answer can be read but not confidence-shaded.</div>`}
         ${steps.length && !spans.length && html`<div class="read-clear"><b>No token fell below ${LOW_CONF.toFixed(1)}.</b>
           That means the recorded distribution was decided, not that the answer was correct.</div>`}
@@ -135,7 +223,9 @@ export function ReadModule(){
           })}
           <div class="read-caveat">A low-confidence span is a locator for inspection. It is not a factuality verdict.</div>
         </div>`}
-      </div>
-    </aside>
+        </div>
+      </aside>
+      <${ActuaryPanel} rec=${rec}/>
+    </div>
   </div>`;
 }

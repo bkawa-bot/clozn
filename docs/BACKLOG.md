@@ -192,8 +192,10 @@ model (✅ decided: Qwen2.5-0.5B).
   confidence-only today; add receipts/NLI support + real calibration (temperature-scaling), not just raw probs.
 - [ ] **Two-tier memory surfacing** **[FABLE][STUDIO]** — the anchored "what did you learn?" α-lookup receipt
   UX + how to show anchored vs soft-prefix tiers honestly.
-- [ ] **Actuary productization** **[FB §9.2]** — `GET /journal/actuary` endpoint + studio panel + a live
-  "resembles past failures" warning (model is built; the surfacing isn't).
+- [x] **Actuary productization** **[FB §9.2]** — heavn Read now shows the cached proxy calibration/drift
+  report and a server-scored, past-only failure resemblance. The selected run and timestamped-later runs are excluded;
+  warnings require ≥5 earlier organic runs in each proxy class + score ≥0.65, while smaller samples are
+  shown as weak evidence and cannot alert. Every surface says behavioral proxy, not correctness.
 - [ ] **EXPLAIN "Explain this answer" — remaining surface** **[EXPLAIN M5]** — M1-M4 + the heavn Replay
   panel shipped; the any-client bridge (`clozn inspect` off a returned run_id) remains.
 - [ ] Calibrated-trust upgrade to the footer/alerts (F2) **[AMB]**; Route-B "revise steer_vec" engine unlock

@@ -285,6 +285,80 @@ def failure_score(run: dict, model: FailureModel) -> float:
     return (num / den) if den else 0.5
 
 
+FAILURE_WARNING_THRESHOLD = 0.65
+FAILURE_WARNING_MIN_CLASS = 5
+FAILURE_ASSESSMENT_NOTE = (
+    "Resemblance to earlier organic runs that the behavioral proxy marked bad (errored, truncated, "
+    "test-failed, low-confidence, or re-rolled). This is a trace-shape heuristic, NOT a correctness "
+    "predictor."
+)
+
+
+def assess_failure(run: dict, runs: list[dict], *, threshold: float = FAILURE_WARNING_THRESHOLD,
+                   min_class_n: int = FAILURE_WARNING_MIN_CLASS) -> dict:
+    """Score one run against an honestly PAST-only failure model.
+
+    The journal-level FailureModel is useful for a global report, but it includes the selected run itself
+    (and, for an old run, its future). A live warning must not train on the thing it is warning about, so
+    this helper refits on organic records strictly older than ``run.created_ts``. When the timestamp is
+    unavailable it still excludes the current id and reports ``temporal_cutoff:false``.
+
+    ``available`` means at least two good and two bad past runs produced a weighted model. A warning has a
+    higher bar: ``min_class_n`` of EACH class plus score >= ``threshold``. This lets a small journal expose
+    its weak evidence without turning two examples into an alarm.
+    """
+    run = run if isinstance(run, dict) else {}
+    organic_runs = organic(runs if isinstance(runs, list) else [])
+    rid = run.get("id")
+    cutoff = run.get("created_ts")
+    temporal = isinstance(cutoff, (int, float)) and math.isfinite(float(cutoff))
+    past = []
+    for candidate in organic_runs:
+        if rid is not None and candidate.get("id") == rid:
+            continue
+        if temporal:
+            ts = candidate.get("created_ts")
+            if not isinstance(ts, (int, float)) or not math.isfinite(float(ts)) or float(ts) >= float(cutoff):
+                continue
+        past.append(candidate)
+
+    model = fit_failure_model(past)
+    trained = bool(model.weights)
+    score = failure_score(run, model) if trained else None
+    eligible = trained and model.n_good >= int(min_class_n) and model.n_bad >= int(min_class_n)
+    features = _features(run)
+    drivers = []
+    for name, weight in model.weights.items():
+        value = features.get(name)
+        if value is None or name not in model.good_mean or name not in model.bad_mean:
+            continue
+        scale = model.good_std.get(name, 1e-6) or 1e-6
+        dg = abs(value - model.good_mean[name]) / scale
+        db = abs(value - model.bad_mean[name]) / scale
+        bad_lean = dg / (dg + db) if (dg + db) else 0.5
+        drivers.append({"feature": name, "value": value, "good_mean": model.good_mean[name],
+                        "bad_mean": model.bad_mean[name], "weight": weight, "bad_lean": bad_lean,
+                        "contribution": weight * bad_lean})
+    drivers.sort(key=lambda d: -d["contribution"])
+
+    return {
+        "available": trained,
+        "score": round(score, 4) if score is not None else None,
+        "warning": bool(eligible and score is not None and score >= float(threshold)),
+        "warning_eligible": bool(eligible),
+        "weak_evidence": bool(trained and not eligible),
+        "threshold": float(threshold),
+        "min_class_n": int(min_class_n),
+        "n_good": model.n_good,
+        "n_bad": model.n_bad,
+        "n_past_organic": len(past),
+        "temporal_cutoff": temporal,
+        "drivers": drivers[:4],
+        "note": FAILURE_ASSESSMENT_NOTE + (" The current run and every timestamped later run are excluded."
+          if temporal else " The current id is excluded; without its timestamp, later runs cannot be distinguished."),
+    }
+
+
 # ---------------------------------------------------------------- top-level report
 
 @dataclass

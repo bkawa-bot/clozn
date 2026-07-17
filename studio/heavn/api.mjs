@@ -57,6 +57,8 @@ export const api = {
 
   /* ── inspector features ── */
   trustSpans: id => post("/runs/" + enc(id) + "/trust_spans", {}, 60000),      // F2: journal-calibrated
+  journalActuary: () => j("/journal/actuary", null, 60000),                    // acceptance-proxy report
+  runActuary: id => postE("/runs/" + enc(id) + "/actuary", {}, 60000),        // past-only failure resemblance
   fork: (id, position, token) => post("/runs/" + enc(id) + "/fork",
                                       { position, token }, 300000),            // F3: child run back
   spanReceipt: (id, find) => postE("/runs/" + enc(id) + "/span_receipt",

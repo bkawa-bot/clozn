@@ -147,6 +147,34 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .read-empty{padding:42px 34px}.read-empty p{max-width:680px;margin:10px 0 18px;font-size:10px;line-height:1.65;color:var(--slate)}
 .read-empty .spd{margin-top:2px}
 
+/* Read · actuarial journal (acceptance proxy, never correctness) */
+.actuary-panel{overflow:hidden}.actuary-body{padding:4px 14px 14px}
+.actuary-current{padding:10px;border:1px solid var(--edge-soft);border-radius:10px;background:rgba(255,255,255,.3)}
+.actuary-current.warning{border-color:rgba(242,109,79,.5);background:rgba(242,109,79,.10)}
+.actuary-current.weak{border-color:rgba(182,176,218,.5);background:rgba(182,176,218,.10)}
+.actuary-current.clear{border-color:rgba(95,200,188,.45);background:rgba(95,200,188,.08)}
+.actuary-verdict{display:flex;align-items:center;justify-content:space-between;gap:7px;flex-wrap:wrap}
+.actuary-verdict > b{font-family:var(--disp);font-size:10px;color:var(--navy);letter-spacing:.05em}
+.actuary-basis{margin-top:6px;font-size:7.5px;line-height:1.45;color:var(--mist)}
+.actuary-current > p{margin-top:7px;font-size:8px;line-height:1.55;color:var(--slate)}
+.actuary-drivers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin-top:8px}
+.actuary-drivers span{min-width:0;padding:5px 6px;border:1px solid var(--edge-soft);border-radius:6px;font-size:7px;
+  line-height:1.4;color:var(--mist);overflow-wrap:anywhere}.actuary-drivers b{color:#1B87A8;font-weight:600}
+.actuary-report{margin-top:9px;border-top:1px solid var(--edge-soft);padding-top:8px}
+.actuary-report summary{list-style:none;cursor:pointer;font-family:var(--disp);font-size:7.5px;font-weight:600;
+  letter-spacing:.12em;color:var(--slate)}.actuary-report summary::before{content:"▸";margin-right:6px;color:var(--lilac2)}
+.actuary-report[open] summary::before{content:"▾"}.actuary-report-body{padding-top:9px}
+.actuary-statline{display:flex;gap:6px 11px;flex-wrap:wrap;font-size:7px;color:var(--mist)}
+.actuary-statline b{color:var(--slate);font-weight:600}
+.actuary-bins{display:flex;flex-direction:column;gap:5px;margin-top:9px}.actuary-bin{display:grid;grid-template-columns:64px 1fr 56px;
+  gap:6px;align-items:center;font-size:6.8px;color:var(--mist)}.actuary-bin > div{position:relative;height:5px;border-radius:3px;background:rgba(90,130,155,.14)}
+.actuary-bin i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--lilac),var(--teal))}
+.actuary-bin em{position:absolute;top:-2px;width:1px;height:9px;background:var(--navy)}.actuary-bin > b{text-align:right;color:#1B7F74;font-weight:600}
+.actuary-drift{margin-top:9px}.actuary-drift > div{display:grid;grid-template-columns:auto minmax(0,1fr);gap:3px 6px;padding:6px 0;
+  border-top:1px solid var(--edge-soft);font-size:7px}.actuary-drift b{min-width:0;color:var(--slate);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.actuary-drift > div > span:last-child{grid-column:2;color:var(--mist)}
+.actuary-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--edge-soft);font-size:6.8px;line-height:1.5;color:var(--mist)}
+
 /* module selector */
 .navmod .head{display:flex;justify-content:space-between;padding:11px 15px 8px;border-bottom:1px solid var(--edge-soft)}
 .navrow{display:grid;grid-template-columns:20px 9px 1fr 12px;align-items:center;gap:10px;width:100%;

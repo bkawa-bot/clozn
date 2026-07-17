@@ -1,7 +1,6 @@
-"""The actuarial journal over HTTP: the full ActuaryReport (GET /journal/actuary), the OUTCOME-grounded
-calibration report (GET /journal/calibration), and calibrated trust spans for one run (POST
-/runs/<id>/trust_spans) -- run confidence mapped through the user's OWN journal-derived acceptance curve
-(clozn.runs.actuary + clozn.runs.calibrated_trust).
+"""The actuarial journal over HTTP: the full ActuaryReport (GET /journal/actuary), a past-only failure
+assessment for one run (POST /runs/<id>/actuary), the OUTCOME-grounded calibration report (GET
+/journal/calibration), and calibrated trust spans (POST /runs/<id>/trust_spans) -- all model-free.
 
 Two calibration tiers sit side by side, each labelled: /journal/actuary is the PROXY curve (acceptance,
 always available, computed on-demand); /journal/calibration is the TRUTH curve (correctness on a labeled
@@ -14,11 +13,9 @@ The dataclass `note` fields ride the wire unchanged, and trust_spans carries cal
 the top level, so no consumer can read these numbers without the proxy language attached. A journal
 with no scored organic runs answers available:false -- absence over an invented curve.
 
-NOT YET REGISTERED. To enable, in clozn/server/app.py add
-    from clozn.server.routes import journal as _journal_routes
-and append `_journal_routes` to _GET_ROUTES (anywhere before _runs_fallback_routes, which would
-otherwise swallow nothing here -- /journal/* doesn't collide -- but keep the convention) and to
-_POST_ROUTES (before any generic /runs/ fallback; today's _POST_ROUTES has none, so order is free).
+The route module is registered in both product router tables in ``clozn.server.app``. The per-run
+failure assessment refits on strictly earlier organic records when timestamps are available, and never
+trains on the run id it scores.
 
 The report is cached in-process for 60s (recomputing over a few hundred journal files is cheap but not
 free on every poll); every response states its age as "computed_ago_s" so a consumer knows how stale
@@ -76,6 +73,18 @@ def try_get(h, p):
 
 
 def try_post(h, p, body):
+    if p.startswith("/runs/") and p.endswith("/actuary"):
+        rid = p[len("/runs/"):-len("/actuary")]
+        import clozn.runs.store as runlog
+        run = runlog.get_run(rid)
+        if not run:
+            h._json(404, {"error": "run not found"})
+            return True
+        from clozn.runs import actuary
+        out = actuary.assess_failure(run, actuary.load_runs())
+        out["run_id"] = rid
+        h._json(200, out)
+        return True
     if p.startswith("/runs/") and p.endswith("/trust_spans"):   # confidence spans + the journal's acceptance curve
         rid = p[len("/runs/"):-len("/trust_spans")]
         import clozn.runs.store as runlog
