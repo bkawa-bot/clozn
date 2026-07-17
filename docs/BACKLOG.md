@@ -12,6 +12,35 @@ notes/FRONTIER_BETS.md · **[UX]** = notes/CLOZN_UX.md · **[AMB]** = notes/AMBI
 
 ---
 
+## Implementation order (suggested, updated 2026-07-17 post-reconciliation)
+
+The constraint: **one GPU** (shared with a parallel effort) and helper agents that do Python / UI /
+research-harness work but **cannot build the C++ engine or use the GPU**. Drain GPU-free work first, then a
+batched GPU queue that **verifies already-merged work before building big new C++ lanes**. §1–§4 are the
+*catalog*; this is the *sequence*.
+
+**Wave A — GPU-free UI + harnesses — ✅ essentially DONE** (this reconciliation folds two parallel efforts
+into one): heavn is the one frontend; Settings/profiles, Explain, quick-repair, Scope harvest, facts tier,
+custom dial maker, memory-carrier controls, Read view, actuary panel, `clozn inspect`, trust/support
+channels, and strict OpenAI compat all shipped. H7 + H3 research harnesses built (in `notes/`, run later).
+
+**Wave B — the moment the GPU frees (verify-before-build, in order):** Route D live round-trip (does a real
+model honor verbatim pins?) · H7 + H3 live captures (armed) · real-browser pass over all heavn UI ·
+pressure-test the merged lanes (migrations / GC / cancellation) · engine-side cooperative cancel (small C++).
+
+**Wave C — big C++ arc (GPU + build), dependency-ordered:** exact-state checkpointing + batched decode →
+batched causal credit → **circuit tracer** (headline; last); device-resident readout plane alongside. Build
+the two foundations before the credit / tracer work.
+
+**Wave D — research lanes:** live risk controller (wire `eval/policy.py` into generation) · cross-model
+diffing/transplants · native fast-weight memory · closed-loop disposition guardrails · AR×diffusion H2/H5 ·
+Edit routes B/C · J-lens J5.
+
+**Parked (unblock condition):** lab artifact contracts + qualification (in progress) · Ollama drop-in (owner
+decision) · docs-heavy polish (owner-deferred) · real-runtime-smoke green (needs an owner `workflow_dispatch`).
+
+---
+
 ## 0. Already shipped (do NOT re-do — the docs still list much of this as "planned")
 
 - **Product/lab split** — Stages 1-7, landed on `main` 2026-07-16 (`ec5a0bc..10b9215`). This IS the
@@ -140,7 +169,30 @@ The "make it a product people can actually run" track. Ordered per the handoff's
   (J-lens / dials / SAE), validated before load; qualify a hero model per architecture. Related **[MODEL]**:
   parameterize the ~73 hardcoded Qwen literals into a registry; **verify white-box taps on a 2nd
   architecture** (Gemma/Llama) — the honest "any GGUF" check; LLM-judge for push-button Tier-1 dial sweeps.
-- [ ] Batched multi-sequence **serving** decode; auth/TLS if remote binding is ever added **[SPLIT P4]**.
+- [ ] **Native exact-state checkpointing + token-exact branching** — a serializable/clonable `EngineState`
+  in the C++ worker: KV cache + exact token ids + generation position + sampler/RNG state + active
+  interventions + model/artifact hashes, with snapshot/clone/restore/lifecycle in the engine rather than
+  only in Python descriptors. Today `clozn/replay/timetravel.py` is descriptor-only and rebuilds a branch by
+  re-prefilling a transcript, and `clozn/replay/fork.py` can cross tokenizer boundaries — useful replay, not
+  exact computational time-travel. Add copy-on-write / paged KV so branches share a prefix instead of
+  re-prefilling; patch a residual/feature at token t then resume from precisely that state; snapshot compat
+  fails closed across model/tokenizer/quant/context. Correctness bar: bit-exact greedy suffix after
+  save→restore, deterministic sampled suffix when RNG+sampler state are restored. Big C++ lane.
+- [ ] **Device-resident multi-observer readout plane** — replace the single-owner activation tap (live
+  J-lens is exclusive with other white-box modes + does a CPU transport/unembed; the SAE path starts
+  host-resident — `engine/core/serve/server_main.cpp`, `server_shared.hpp`, `include/cloze/sae.hpp`) with a
+  per-request multi-subscriber plan: keep selected-layer activations device-resident, fan them out to J-lens
+  / SAE top-k / probes / norms on an async side stream, copy back only compact top-k / scalar records;
+  multiple observed layers + observers per request; bounded queues, cancellation, backpressure. Bar: all
+  observers together at a measured <5–10% throughput overhead with CPU-parity under real concurrent serving,
+  not isolated kernel speed. Engine perf + interpretability in one lane; composes with the readout plumbing
+  the protocol handshake + StreamEnvelope already carry.
+- [ ] **Batched multi-sequence serving decode** **[SPLIT P4]** — the shared-prefix batch primitive (auth/TLS
+  too if remote binding is ever added). This same batch API unlocks **interaction-aware causal credit**:
+  teacher-force many counterfactual arms in one pass → coalition / sampled-Shapley scoring + pairwise and
+  higher-order interaction terms, with uncertainty + matched-null arms. Today `clozn/receipts/core.py` is
+  sequential leave-one-out + pairwise-only and (by its own note) misses 3-way-and-higher interactions;
+  batched and sequential scores must agree within a documented tolerance.
 
 **Owner decisions still open** **[H]**: Ollama compat · network exposure (loopback vs remote+auth) ·
 release order (Linux-CPU-first recommended) · worker distribution (prebuilt vs build-local) · reference
@@ -162,10 +214,40 @@ model (✅ decided: Qwen2.5-0.5B).
   free-text via LLaDA-8B-Instruct (engine has native LLaDA) — the research swing.
 - [ ] **Closed-loop disposition guardrails** **[FB §9.1]** — "the biggest unclaimed frontier": mid-gen lens
   polling → threshold → `dir(c)` counter-injection, on a banned-topic battery.
-- [ ] **Calibration next rungs** **[CALIBRATION_FINDINGS]** — ✅ exact-model scalar-temperature fitting,
-  provenance/probe-count gates, and the separate Replay truth channel shipped (`6af7cc0`). Still open:
-  bigger probe sets + CIs; a retrieval/clarify action wired to the policy's `ask` band; render the full
-  truth-tier curve in Studio.
+- [ ] **Calibration next rungs → live risk controller** **[CALIBRATION_FINDINGS]** — ✅ exact-model
+  scalar-temperature fitting, provenance/probe-count gates, and the separate Replay truth channel shipped
+  (`6af7cc0`). Still open: bigger probe sets + CIs; render the full truth-tier curve in Studio; and close
+  the loop into the runtime — wire the offline answer/ask/abstain policy (`clozn/eval/policy.py`, today
+  selection-only — product generation never executes it) into live generation so a request can answer, ask
+  to clarify, abstain, or run a counterfactual check before answering. Condition calibration on
+  model/quant/decode-policy/task; drift-invalidate a stale policy; log decision→evidence→action→verified
+  outcome; and prove it beats strong black-box + random-signal baselines held-out with CIs.
+- [ ] **Intervention-validated circuit tracer** — an attribution graph over input tokens, attn/MLP
+  components, SAE/transcoder features, a residual-error node, and output logits; attribute signed logit
+  contribution through it while keeping an explicit *unexplained-mass* term (a sparse graph must never imply
+  omitted computation was zero); make every selected path testable by patch/inhibit/ablate at the exact
+  token+layer, and compare predicted vs observed logit movement against matched random-node,
+  random-direction, and shuffled-edge controls; report stability across paraphrases/seeds/quant/pruning
+  thresholds; emit a machine-readable graph + intervention receipt. `clozn/analysis/microscope.py` is the
+  correlational precursor (sparse directional decomposition, not intervention-validated); ARCHITECTURE marks
+  circuit tracing + scaled-transcoder inference unbuilt. Leans on the exact-state + batched-scoring
+  foundations in §2; the largest research lane here — build those first.
+- [ ] **Cross-model causal state diffing + transplants** — align residual spaces across model / quant
+  variants (CKA/CCA/Procrustes or a shared feature dict, held-out alignment quality reported); locate the
+  first statistically-meaningful internal divergence *before* the first output-token divergence; transplant
+  an aligned residual/feature from model A into model B at an exact token+layer and measure how much of A's
+  target-logit behavior it recovers in B; decompose quant/finetune regressions by layer + component + signed
+  logit effect, with reverse / adjacent-layer / random-state controls. `clozn/analysis/model_diff.py` is
+  observational-only after divergence today; `clozn/receipts/quant_receipts.py` is the common-continuation
+  scoring baseline to build on.
+- [ ] **Native fast-weight fact memory** **[FABLE]** — port the keyed / fast-weight memory mechanism into
+  the native engine (today `clozn/server/facts_store.py`'s read receipt does NOT alter the product reply,
+  and `clozn/memory/slotmem_qwen` is a research-only substrate): surprise-gated write/update/exact-delete
+  with stable inspectable ids; topic+confidence-gated reads injected into generation at a known token/layer;
+  with-memory / without-memory / matched-null receipts on every claimed recall; abstain on ambiguous
+  retrieval rather than forcing a memory in. Bar: recall/abstention curves 10→10k memories with
+  unrelated-fact + near-neighbor controls, plus exact-delete + ghost-memory (residue) probes. Cross-refs the
+  §4 facts-tier UI (now shipped).
 - [ ] Assembled-but-unconnected bets **[FB §9.3-9.9]** — model's-own-CI, legible-basis microscope (OMP),
   branch-on-doubt, paraphrase-brittleness receipts, cross-model disposition transfer (pilot).
 - [ ] J-lens post-v1 (J5) — Dream/denoise lens, chat-vs-web-text lens, stream top-k during generation.
