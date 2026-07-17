@@ -405,6 +405,27 @@ details[open].leader summary::before{content:"▾"}
 .quick-repair-message.ok{color:#1B7F74;border-color:rgba(95,200,188,.45);background:rgba(95,200,188,.10)}
 .quick-repair-message.error{color:#C24A31;border-color:rgba(242,109,79,.45);background:rgba(242,109,79,.09)}
 
+/* Memory · carrier and strength controls */
+.memory-controls-body{padding:3px 14px 12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.memory-mode-control,.memory-strength-control{min-width:0;padding:9px 10px;border:1px solid var(--edge-soft);
+  border-radius:9px;background:rgba(255,255,255,.3)}
+.memory-control-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px}
+.memory-control-title > b{font-family:var(--disp);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--navy)}
+.memory-control-title output{font-family:var(--mono);font-size:12px;color:#1B87A8;font-weight:600}
+.memory-control-copy{font-size:8px;line-height:1.55;color:var(--mist)}
+.memory-control-copy b,.memory-mode-truth b{color:var(--navy);font-weight:600}
+.memory-mode-options{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.memory-mode-truth{display:flex;flex-direction:column;gap:3px;padding-top:8px;margin-top:8px;
+  border-top:1px solid var(--edge-soft);font-size:7.8px;line-height:1.45;color:var(--mist)}
+.memory-strength-control input[type="range"]{width:100%;accent-color:#1B87A8;cursor:pointer}
+.memory-strength-control input[type="range"]:disabled{opacity:.5;cursor:not-allowed}
+.memory-strength-ticks{display:flex;justify-content:space-between;margin:2px 0 7px;font-size:7px;color:var(--mist)}
+.memory-control-message{grid-column:1/-1;padding:8px 10px;border:1px solid var(--edge-soft);
+  border-radius:8px;font-size:8.5px;line-height:1.5}
+.memory-control-message.ok{color:#1B7F74;border-color:rgba(95,200,188,.45);background:rgba(95,200,188,.10)}
+.memory-control-message.warn{color:#9B6C24;border-color:rgba(230,196,120,.55);background:rgba(230,196,120,.12)}
+.memory-control-message.error{color:#C24A31;border-color:rgba(242,109,79,.45);background:rgba(242,109,79,.09)}
+
 /* Memory · optional fact slot store */
 .facts-body{padding:3px 14px 13px;display:flex;flex-direction:column;gap:10px}
 .facts-topline{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
@@ -504,6 +525,7 @@ details[open].leader summary::before{content:"▾"}
   .fact-form .spd{justify-self:start}
   .runtime-observe-controls,.runtime-distributions{grid-template-columns:1fr}
   .runtime-observe-controls .spd{justify-self:start}
+  .memory-controls-body{grid-template-columns:1fr}
 }
 
 .footer{display:flex;align-items:center;gap:18px;margin-top:12px;padding:10px 15px;flex-wrap:wrap;

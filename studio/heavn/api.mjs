@@ -91,6 +91,9 @@ export const api = {
 
   /* ── memory (contracts §14: list is POST /memory/cards; actions carry {id} in the BODY) ── */
   memoryList: () => post("/memory/cards", {}),
+  memoryMode: () => j("/memory/mode", null, 10000),
+  memorySetMode: mode => postE("/memory/mode", { mode }, 30000),
+  memoryStrength: value => postE("/memory/strength", value == null ? {} : { value }, 30000),
   memoryAdd: body => post("/memory/add", body),
   memoryAct: (id, verb) => post("/memory/" + verb, { id }),   // approve|reject|disable|enable|remove
   memoryRuns: id => j("/memory/" + enc(id) + "/runs"),        // GET (contracts §14)

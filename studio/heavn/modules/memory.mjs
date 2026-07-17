@@ -10,16 +10,6 @@ import { store, useStore, toast } from "../state.mjs";
 import { api } from "../api.mjs";
 import { FactsPanel } from "./facts.mjs";
 
-/* api.mjs has no GET /memory/mode wrapper — a tiny local fetch, kept inside this file only
-   (contracts §14: `{"mode": "prompt", "modes": ["prompt","internalized"]}`, never throws). */
-async function fetchMemoryMode(){
-  try{
-    const r = await fetch("/memory/mode");
-    if(!r.ok) return null;
-    return await r.json();
-  }catch(e){ return null; }
-}
-
 const guardLive = live => {
   if(!live){ toast("live server only"); return true; }
   return false;
@@ -32,6 +22,10 @@ export function MemoryModule(){
 
   const [mode, setMode] = useState(null);           // GET /memory/mode response, or null
   const [modeErr, setModeErr] = useState(false);
+  const [strength, setStrength] = useState(null);   // POST /memory/strength response, or null
+  const [strengthDraft, setStrengthDraft] = useState(0);
+  const [controlBusy, setControlBusy] = useState("");
+  const [controlMessage, setControlMessage] = useState(null);
   const [cards, setCards] = useState(null);          // null = loading; [] = loaded, empty
   const [listMeta, setListMeta] = useState({ has_prefix: false, mode: null, retraining: null });
   const [busy, setBusy] = useState({});               // "<id>:<verb>" -> bool
@@ -47,16 +41,62 @@ export function MemoryModule(){
       setCards([]);
     }
   };
-  const refreshMode = async () => setMode(await fetchMemoryMode());
+  const refreshMode = async () => {
+    const r = await api.memoryMode();
+    setModeErr(!r); if(r) setMode(r);
+    return r;
+  };
+  const refreshStrength = async () => {
+    const r = await api.memoryStrength();
+    if(r && (!r.__status || r.__status < 400) && r.strength != null){
+      const v = Math.max(0, Math.min(2, +r.strength));
+      setStrength(r); setStrengthDraft(v);
+    } else {
+      setStrength(null);
+    }
+    return r;
+  };
 
   useEffect(() => {
-    (async () => {
-      const m = await fetchMemoryMode();
-      if(!m) setModeErr(true);
-      setMode(m);
-    })();
+    refreshMode();
+    refreshStrength();
     refreshCards();
   }, []);
+
+  const switchMode = async target => {
+    if(guardLive(live) || controlBusy || !target) return;
+    setControlBusy("mode"); setControlMessage(null);
+    const r = await api.memorySetMode(target);
+    if(!r || r.__status >= 400 || r.ok === false){
+      setControlBusy("");
+      setControlMessage({ kind: "error", text: (r && (r.error || r.reason)) || "Mode switch did not reach the server." });
+      return;
+    }
+    await Promise.all([refreshMode(), refreshStrength(), refreshCards()]);
+    setControlBusy("");
+    const retraining = !!(r.resync && r.resync.retraining);
+    setControlMessage({ kind: retraining ? "warn" : "ok", text: target === "prompt"
+      ? "Prompt mode is active. Cards now ride as readable, topic-gated context; the trained prefix was left intact."
+      : `Internalized mode is active.${retraining ? " The prefix is retraining from the current cards now; this can take a few minutes." : " The existing prefix already matched the active cards."}` });
+  };
+
+  const commitStrength = async value => {
+    if(guardLive(live) || controlBusy) return;
+    const v = Math.max(0, Math.min(2, +value || 0));
+    setControlBusy("strength"); setControlMessage(null);
+    const r = await api.memoryStrength(v);
+    setControlBusy("");
+    if(!r || r.__status >= 400 || r.strength == null){
+      setControlMessage({ kind: "error", text: (r && (r.error || r.reason)) || "Memory strength was not saved." });
+      return;
+    }
+    const saved = Math.max(0, Math.min(2, +r.strength));
+    setStrength(r); setStrengthDraft(saved);
+    const activeMode = r.mode || (mode && mode.mode) || listMeta.mode;
+    setControlMessage({ kind: "ok", text: activeMode === "prompt"
+      ? (saved === 0 ? "Memory is off for every prompt." : "Memory is on when the topic gate admits the cards. Values above zero have the same effect in prompt mode.")
+      : `Internalized memory strength saved at ${saved.toFixed(1)}.` });
+  };
 
   const act = async (id, verb) => {
     if(guardLive(live)) return;
@@ -81,7 +121,9 @@ export function MemoryModule(){
   };
 
   return html`<div class="col">
-    <${ModeStrip} mode=${mode} modeErr=${modeErr} listMeta=${listMeta}/>
+    <${MemoryControls} live=${live} mode=${mode} modeErr=${modeErr} listMeta=${listMeta}
+      strength=${strength} strengthDraft=${strengthDraft} setStrengthDraft=${setStrengthDraft}
+      busy=${controlBusy} message=${controlMessage} onMode=${switchMode} onStrength=${commitStrength}/>
     <${ReviewQueue} cards=${cards} act=${act} busy=${busy}/>
     <${CardsPanel} cards=${cards} act=${act} busy=${busy}
       expanded=${expanded} toggleRuns=${toggleRuns} runsCache=${runsCache}/>
@@ -188,21 +230,55 @@ function AnchoredShelf({ cards, live }){
 }
 
 /* ───────────────────────── A) mode strip ───────────────────────── */
-function ModeStrip({ mode, modeErr, listMeta }){
+function MemoryControls({ live, mode, modeErr, listMeta, strength, strengthDraft, setStrengthDraft,
+                          busy, message, onMode, onStrength }){
   const m = (mode && mode.mode) || listMeta.mode || null;
+  const modes = (mode && Array.isArray(mode.modes) && mode.modes.length) ? mode.modes : (m ? [m] : []);
   const copy = m === "internalized"
     ? "a trained soft prefix — not self-reportable, per-card ablation not possible"
     : m === "prompt"
     ? "cards ride the prompt, topic-gated per turn — per-card receipts work here"
     : null;
   const retraining = listMeta.retraining;
-  return html`<div class="cfg">
-    <span class="cap">memory mode</span><b>${m || (modeErr ? "unreachable" : "—")}</b>
-    ${copy && html`<span>${copy}</span>`}
-    ${retraining && retraining.active && html`<span class="tag der-t">RETRAINING</span>`}
-    ${modeErr && html`<span style="color:#C24A31">GET /memory/mode didn't answer — is the server up?</span>`}
-    <span style="margin-left:auto" class=${"tag " + (m === "prompt" ? "cap-t" : m === "internalized" ? "smp-t" : "fail-t")}>
-      ${m ? m.toUpperCase() : "—"}</span>
+  const strengthMode = (strength && strength.mode) || m;
+  return html`<div class="mod" data-testid="memory-controls">
+    <div class="mod-h"><span class="led"></span><span class="cap">memory controls</span>
+      <span class="tail">${busy ? "saving..." : m || (modeErr ? "unreachable" : "loading...")}</span>
+      ${retraining && retraining.active && html`<span class="tag der-t">RETRAINING</span>`}</div>
+    <div class="memory-controls-body">
+      <section class="memory-mode-control">
+        <div class="memory-control-title"><b>carrier</b>
+          <span class=${"tag " + (m === "prompt" ? "cap-t" : m === "internalized" ? "smp-t" : "fail-t")}>
+            ${m ? m.toUpperCase() : "—"}</span></div>
+        ${copy && html`<div class="memory-control-copy">${copy}</div>`}
+        ${modeErr && html`<div class="memory-control-message error">GET /memory/mode did not answer.</div>`}
+        ${modes.length > 1 ? html`<div class="memory-mode-options">
+          ${modes.map(x => html`<button class=${"spd " + (x === m ? "primary" : "")}
+            disabled=${!live || !!busy || x === m} onClick=${() => onMode(x)}>${x.toUpperCase()}</button>`)}
+        </div>` : modes.length === 1 ? html`<div class="memory-control-copy">
+          This runtime exposes only <b>${modes[0]}</b> memory. Internalized soft-prefix memory is lab-only.</div>` : null}
+        <div class="memory-mode-truth">
+          <span><b>prompt</b> readable context; edits instant; per-card receipts work.</span>
+          <span><b>internalized</b> lab-only soft prefix; card changes can retrain for minutes.</span>
+        </div>
+      </section>
+
+      <section class="memory-strength-control">
+        <div class="memory-control-title"><b>strength</b><output>${strength ? strengthDraft.toFixed(1) : "—"}</output></div>
+        <input data-testid="memory-strength" type="range" min="0" max="2" step="0.1"
+          value=${strengthDraft} disabled=${!live || !strength || !!busy}
+          onInput=${e => setStrengthDraft(Math.max(0, Math.min(2, +e.target.value)))}
+          onChange=${e => onStrength(+e.target.value)}/>
+        <div class="memory-strength-ticks"><span>0 · off</span><span>1 · normal</span><span>2 · max</span></div>
+        <div class="memory-control-copy">${strengthMode === "prompt"
+          ? "Prompt mode is binary: 0 keeps cards out; any value above 0 injects them only when the topic gate admits them. Positive values do not scale intensity."
+          : "Internalized mode is continuous: 0 is off, 1 is trained strength, and values above 1 bite harder. Saving does not retrain."}</div>
+        ${!strength && html`<div class="memory-control-message error">POST /memory/strength did not answer.</div>`}
+        ${strength && html`<div class="memory-control-copy">${strength.has_prefix
+          ? "A trained prefix is present on this substrate." : "No trained prefix is present; prompt cards can still work."}</div>`}
+      </section>
+      ${message && html`<div class=${"memory-control-message " + message.kind}>${message.text}</div>`}
+    </div>
   </div>`;
 }
 
