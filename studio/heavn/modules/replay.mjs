@@ -1113,7 +1113,10 @@ function ExplainPanel({ rec }){
     if(!r){ setError("No explanation came back. The run may no longer be in the journal."); return; }
     setOut(r);
   };
-  const num = (v, places = 2) => Number.isFinite(+v) ? (+v).toFixed(places) : "-";
+  // null/undefined is MISSING, checked before the +coercion: +null===0 is finite, so without this guard
+  // an absent value (e.g. topic gate in internalized mode) would fabricate "0.00" -- a real signal where
+  // there is none. A missing readout must read "-", never a made-up zero.
+  const num = (v, places = 2) => (v == null ? "-" : Number.isFinite(+v) ? (+v).toFixed(places) : "-");
   const confidence = (out && out.confidence) || {};
   const influences = (out && out.influences_active) || {};
   const forks = (out && out.forks) || {};

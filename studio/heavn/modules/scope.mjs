@@ -202,7 +202,7 @@ function RuntimeStateBench({ text, live }){
     <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
     <div class="mod-h"><span class="led blue"></span><span class="cap" id="runtime-bench-title">runtime state bench</span>
       <span class="tail">raw residual magnitude · temporary write · observed prediction</span>
-      <span class="tag cap-t">RAW</span></div>
+      <span class="tag cap-t">RAW — NOT A THOUGHT READOUT</span></div>
     <div class="runtime-bench-body" data-testid="runtime-bench">
       <div class="runtime-bench-intro">Harvest reads every token position from one C++ engine forward.
         Observe scales one selected residual <b>for a single comparison forward only</b>; no model weights,
