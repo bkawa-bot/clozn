@@ -29,6 +29,7 @@ export function ReplayModule(){
       <${ReceiptsPanel} rec=${rec}/>
       <${SpanForensics} rec=${rec}/>
       <${LieDetector} rec=${rec}/>
+      <${QuickRepair} rec=${rec}/>
       <${Steer} rec=${rec}/>
       <${Minfl} rec=${rec}/>
     </div>
@@ -1206,6 +1207,106 @@ function ReceiptsPanel({ rec }){
       ${receipts && html`<div class="none" style="padding:6px 0 2px;font-size:8px">
         forced Δ measures dependence — a nonzero delta does NOT mean the answer would have differed.
         Pairwise redundancy guard only, not the full power set.</div>`}
+    </div>
+  </div>`;
+}
+
+/* Common complaint -> one capped positive-pole dial move. The two-arm counterfactual is deliberately
+   used instead of comparing the stored sampled reply with a greedy replay (which would mix two changes). */
+const QUICK_REPAIRS = [
+  { key: "verbose", label: "Too verbose", axis: "concise", title: "Move toward concise" },
+  { key: "vague", label: "Too vague", axis: "concrete", title: "Move toward concrete" },
+  { key: "agreeable", label: "Too agreeable", axis: "candid", title: "Move toward candid" },
+  { key: "cold", label: "Too cold", axis: "warm", title: "Move toward warm" },
+];
+const QUICK_AXIS_MAX = { concise: 1.5, concrete: 0.5, candid: 0.45, warm: 1.5 };
+const quickValue = (rec, preset) => {
+  const current = +((((rec || {}).behavior || {}).active_dials || {})[preset.axis] || 0);
+  return Math.min(QUICK_AXIS_MAX[preset.axis] ?? 1.5, current + 0.5);
+};
+
+function QuickRepair({ rec }){
+  const [busy, setBusy] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [picked, setPicked] = useState(null);
+  const [result, setResult] = useState(null);
+  const [message, setMessage] = useState(null);
+  const request = useRef(0);
+  useEffect(() => {
+    request.current += 1; setBusy(""); setSaving(false); setPicked(null); setResult(null); setMessage(null);
+  }, [rec.id]);
+
+  const run = async preset => {
+    if(guardSample(rec) || busy) return;
+    const target = quickValue(rec, preset), nonce = ++request.current;
+    setBusy(preset.key); setPicked({ ...preset, target }); setResult(null); setMessage(null);
+    /* Preference capture is best-effort and must never delay the actual comparison. It changes no dial. */
+    api.feedbackRecord({ run_id: rec.id, kind: "quick_repair", dial: preset.axis,
+      direction: 1, meta: { complaint: preset.key } });
+    toast(`${preset.label.toLowerCase()} - comparing ${preset.axis} at ${target.toFixed(2)} in two greedy arms...`);
+    const r = await api.counterfactual(rec.id, { [preset.axis]: target });
+    if(nonce !== request.current) return;
+    setBusy("");
+    if(!r){ setMessage({ kind: "error", text: "Comparison did not run. Quick repair needs a ready model worker and two generation passes." }); return; }
+    setResult(r);
+  };
+
+  const save = async () => {
+    if(!picked || !result || saving) return;
+    const nonce = ++request.current;
+    setSaving(true);
+    setMessage({ kind: "info", text: `Saving ${picked.axis} ${picked.target.toFixed(2)} as the live default...` });
+    const r = await api.steerSet(picked.axis, picked.target);
+    if(nonce !== request.current) return;
+    setSaving(false);
+    setMessage(r ? { kind: "ok", text: `Saved ${picked.axis} ${picked.target.toFixed(2)} as the default.` }
+                 : { kind: "error", text: "The comparison remains recorded, but the default was not saved." });
+  };
+
+  const dials = ((rec.behavior || {}).active_dials) || {};
+  const coherence = (result && result.coherence) || {};
+  const saveable = !!(result && result.causal_verified === true && result.has_effect === true && !coherence.degenerate);
+  const delta = (result && result.delta) || {};
+  return html`<div class="mod" data-testid="quick-repair">
+    <div class="mod-h"><span class="led" style="background:var(--coral);box-shadow:0 0 8px var(--coral)"></span>
+      <span class="cap">quick repair</span><span class="tail">${busy ? "running 2 greedy arms..." : "one complaint · one dial"}</span></div>
+    <div class="quick-repair-body">
+      <div class="quick-repair-rule">Each preset moves one dial +0.5 from this run's recorded value (capped),
+        then compares two matched greedy generations. Nothing becomes a default unless you explicitly save it.</div>
+      <div class="quick-repair-presets">
+        ${QUICK_REPAIRS.map(p => {
+          const cur = +(dials[p.axis] || 0), target = quickValue(rec, p), capped = target <= cur;
+          return html`<button class="quick-repair-btn" data-repair=${p.key}
+            title=${capped ? `${p.axis} is already at its safe cap` : `${p.title}: ${cur.toFixed(2)} -> ${target.toFixed(2)}`}
+            disabled=${!!busy || saving || !!rec._sample || capped} onClick=${() => run(p)}>
+            <b>${p.label}</b><span>${p.axis} ${cur.toFixed(2)} -> ${target.toFixed(2)}${capped ? " · AT CAP" : ""}</span>
+          </button>`;
+        })}
+      </div>
+      ${busy && html`<div class="none">Generating a matched greedy baseline and repair candidate - two passes, no persistence.</div>`}
+      ${message && html`<div class=${"quick-repair-message " + message.kind}>${message.text}</div>`}
+      ${result && html`<div class="quick-repair-result" data-testid="quick-repair-result">
+        <div class="quick-repair-verdict">
+          <span class=${"tag " + (result.has_effect ? "cap-t" : "smp-t")}>answer changed · ${String(result.has_effect)}</span>
+          <span class=${"tag " + (result.causal_verified ? "cap-t" : "fail-t")}>override applied · ${String(result.causal_verified)}</span>
+          ${coherence.degenerate && html`<span class="tag fail-t">DEGENERATE</span>`}
+        </div>
+        <div class="quick-repair-compare">
+          <div><b>matched greedy baseline · live dials</b><p>${result.baseline_reply ?? "-"}</p></div>
+          <div><b>repair candidate · ${picked.axis} ${picked.target.toFixed(2)}</b><p>${result.counterfactual_reply ?? "-"}</p></div>
+        </div>
+        <div class="quick-repair-delta">changed ${delta.changed != null ? delta.changed + "%" : "-"}
+          · words ${Array.isArray(delta.words) ? delta.words.join(" -> ") : "-"}
+          ${result.override_note ? " · " + result.override_note : ""}</div>
+        <div class="quick-repair-actions">
+          <button class="spd primary" disabled=${!saveable || saving} onClick=${save}>
+            ${saving ? "SAVING..." : "SAVE AS DEFAULT"}</button>
+          <span>${saveable ? "This candidate changed the answer, the override was applied, and output stayed coherent."
+            : "Save unlocks only for an applied, answer-changing, non-degenerate candidate."}</span>
+        </div>
+        <div class="quick-repair-note">The stored sampled reply is context only, not a subtraction term.
+          The preference click is recorded even when the comparison fails; recording it never changes a dial.</div>
+      </div>`}
     </div>
   </div>`;
 }

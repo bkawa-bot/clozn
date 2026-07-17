@@ -381,6 +381,30 @@ details[open].leader summary::before{content:"▾"}
   background:rgba(242,109,79,.09);font-size:8.5px;color:#C24A31}
 .explain-foot{font-size:7.8px;line-height:1.45;color:var(--mist);text-transform:uppercase;letter-spacing:.05em}
 
+/* Replay · complaint-to-dial quick repair */
+.quick-repair-body{padding:3px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.quick-repair-rule,.quick-repair-note{font-size:8px;line-height:1.5;color:var(--mist)}
+.quick-repair-presets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.quick-repair-btn{min-width:0;text-align:left;padding:7px 8px;border:1px solid var(--edge);border-radius:9px;
+  color:var(--slate);background:linear-gradient(180deg,rgba(255,255,255,.8),rgba(230,243,249,.62));cursor:pointer}
+.quick-repair-btn:hover:not(:disabled){border-color:rgba(242,109,79,.65);background:rgba(242,109,79,.08)}
+.quick-repair-btn:disabled{opacity:.48;cursor:not-allowed}
+.quick-repair-btn b{display:block;font-family:var(--disp);font-size:9px;letter-spacing:.05em;color:var(--navy)}
+.quick-repair-btn span{display:block;margin-top:2px;font-family:var(--mono);font-size:7.5px;color:var(--mist)}
+.quick-repair-result{display:flex;flex-direction:column;gap:7px;padding-top:2px}
+.quick-repair-verdict{display:flex;gap:5px;flex-wrap:wrap}
+.quick-repair-compare{display:grid;grid-template-columns:1fr;gap:6px}
+.quick-repair-compare > div{padding:8px 9px;border:1px solid var(--edge-soft);border-radius:8px;background:rgba(255,255,255,.3)}
+.quick-repair-compare b{font-family:var(--disp);font-size:8px;letter-spacing:.08em;text-transform:uppercase;color:#1B87A8}
+.quick-repair-compare p{margin:4px 0 0;font-size:9px;line-height:1.5;color:var(--slate);white-space:pre-wrap}
+.quick-repair-delta{font-size:8px;line-height:1.45;color:var(--mist);overflow-wrap:anywhere}
+.quick-repair-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.quick-repair-actions span{flex:1;min-width:140px;font-size:7.8px;line-height:1.45;color:var(--mist)}
+.quick-repair-message{padding:7px 9px;border:1px solid var(--edge-soft);border-radius:8px;font-size:8.5px;line-height:1.45}
+.quick-repair-message.info{color:#5F5794;background:rgba(182,176,218,.10)}
+.quick-repair-message.ok{color:#1B7F74;border-color:rgba(95,200,188,.45);background:rgba(95,200,188,.10)}
+.quick-repair-message.error{color:#C24A31;border-color:rgba(242,109,79,.45);background:rgba(242,109,79,.09)}
+
 /* Memory · optional fact slot store */
 .facts-body{padding:3px 14px 13px;display:flex;flex-direction:column;gap:10px}
 .facts-topline{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}

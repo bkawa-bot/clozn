@@ -50,6 +50,7 @@ export const api = {
   swapReceipt: (id, body) => post("/runs/" + enc(id) + "/swap_receipt", body, 300000),
   counterfactual: (id, overrides) => post("/runs/" + enc(id) + "/counterfactual",
                                           { behavior_overrides: overrides }, 300000),
+  feedbackRecord: body => post("/feedback", body, 30000),              // records preference only; mutates no dial
   explain:  id => post("/runs/" + enc(id) + "/explain", {}, 30000),   // POST-only (contracts §11)
   narrate:  id => postE("/runs/" + enc(id) + "/narrate", {}, 300000), // __status rides (503 = needs qwen)
   proposeMemory: id => post("/runs/" + enc(id) + "/propose-memory", {}, 60000),

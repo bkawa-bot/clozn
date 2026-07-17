@@ -176,8 +176,8 @@ model (✅ decided: Qwen2.5-0.5B).
   ✅ profiles CRUD → heavn Settings (snapshot/update/switch/import/export/delete; active-delete guarded)
   ✅ facts tier UI → heavn Memory (mode/list/add/read/delete with surprise + abstention receipts)
   ✅ engine.html harvest/observe → heavn Scope; `/steer/*` is canonical and `/engine/steer/*` is a deprecated
-  compatibility facade over the same EngineSteer. ✅ run-view ports: narrate + explain + lineage tree in Replay,
-  propose-memory in Memory; remaining: quick-repair presets. ⑤ memory-mode toggle + strength slider ⑥ custom dial maker
+  compatibility facade over the same EngineSteer. ✅ run-view ports: narrate + explain + lineage tree +
+  quick-repair presets in Replay, propose-memory in Memory. ⑤ memory-mode toggle + strength slider ⑥ custom dial maker
   + learned-preference suggestions. Then cut the remaining pages/*.js + engine.html.
 
 - [ ] **Document-first "Read view"** **[AMB]** — make it the default `/r/<id>` landing ("read it, zoom into
