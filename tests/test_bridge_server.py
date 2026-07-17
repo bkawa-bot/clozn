@@ -192,7 +192,8 @@ def test_chat_completions_carries_clozn_run_id_that_resolves_to_the_logged_run(i
     out = _post("/v1/chat/completions", {"model": "clozn-qwen",
                                          "messages": [{"role": "user", "content": "hi there"}]})
     # the OpenAI shape is untouched except for the one additive field
-    assert set(out.keys()) == {"id", "object", "created", "model", "choices", "usage", "clozn_run_id"}
+    assert set(out.keys()) == {"id", "object", "created", "model", "choices", "clozn_run_id"}
+    assert "usage" not in out                     # unknown counts are omitted, never fabricated as zeros
     assert out["object"] == "chat.completion"
     assert out["choices"][0]["finish_reason"] == "stop"
     assert out["choices"][0]["message"] == {"role": "assistant", "content": "A plain reply."}

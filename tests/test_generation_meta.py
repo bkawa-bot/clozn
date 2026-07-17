@@ -69,8 +69,8 @@ def test_engine_generation_meta_forced_greedy_regime_is_honest():
     assert meta["sampler_mode"] == "greedy" and meta["sampling"] == "greedy"
     assert meta["max_tokens"] == 128
     assert meta["stream"] is True
-    # the C++ engine's SampleConfig (sample_from() in cloze_server.cpp) has no top_p/top_k/
-    # no_repeat_ngram_size knob at all for this path -- never fabricated
+    # top_p/top_k do not participate in the forced-greedy path; no_repeat_ngram_size is not an engine knob
+    # at all. None should be fabricated in the metadata for this call.
     assert "top_p" not in meta and "top_k" not in meta and "no_repeat_ngram_size" not in meta
 
 

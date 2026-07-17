@@ -4,8 +4,8 @@ import time
 from clozn.server import app as ctx
 
 
-def _api_error(h, status: int, message: str, *, param=None, kind="invalid_request_error"):
-    error = {"message": message, "type": kind, "param": param, "code": status}
+def _api_error(h, status: int, message: str, *, param=None, kind="invalid_request_error", code=None):
+    error = {"message": message, "type": kind, "param": param, "code": code or status}
     h._json(status, {"error": error})
 
 
@@ -29,33 +29,23 @@ def try_post(h, p, body):
         return True
     if p != "/v1/chat/completions":   # OpenAI-compatible: chat with memory prefix + tone steering applied
         return False
+    from clozn.server.openai_compat import CompatibilityError, normalize_chat_request
+    try:
+        body = normalize_chat_request(body)
+    except CompatibilityError as exc:
+        _api_error(h, 400, str(exc), param=exc.param, code=exc.code)
+        return True
     if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):
         h._json(503, {"error": {"message": "model worker unavailable", "type": "service_unavailable"}})
         return True
     from clozn.server.generation_gateway import model_id
     selected_model = str(body.get("model") or model_id())
-    msgs = body.get("messages", [])
-    if not isinstance(msgs, list) or not all(
-        isinstance(message, dict)
-        and message.get("role") in ("system", "user", "assistant", "tool")
-        and isinstance(message.get("content", ""), str)
-        for message in msgs
-    ):
-        _api_error(h, 400, "messages must be a list of {role, content:string} objects", param="messages")
-        return True
-    try:
-        mx = int(body.get("max_tokens", 256))
-    except (TypeError, ValueError):
-        _api_error(h, 400, "max_tokens must be an integer", param="max_tokens")
-        return True
-    if mx < 1:
-        _api_error(h, 400, "max_tokens must be at least 1", param="max_tokens")
-        return True
-    try:
-        temperature = float(body.get("temperature", 0.7))
-    except (TypeError, ValueError):
-        _api_error(h, 400, "temperature must be a number", param="temperature")
-        return True
+    msgs = body["messages"]
+    mx = int(body.get("max_tokens", 256))
+    temperature = float(body.get("temperature", 0.8))
+    sample_request = {key: body[key] for key in ("temperature", "top_p", "top_k", "repeat_penalty", "seed")
+                      if key in body and body[key] is not None}
+    sample = sample_request or (temperature > 0)
     # SYMMETRY (context-contamination guard): clients echo the whole conversation back, footers and all.
     # Whatever clozn appended to a past reply, it strips here -- the model must never read its own
     # receipt footers as context (it would imitate/steer on them). No-op when no footer ever rode.
@@ -67,7 +57,7 @@ def try_post(h, p, body):
         # F1 live lens: clozn_lens {layer?, topk?, every?} (or true) is a clozn extension -- absent for
         # standard OpenAI clients, so their streams stay byte-identical (same opt-in rule as clozn_trust).
         # receipt: the in-band footer as a final content chunk (the one ambient surface).
-        sse.sse_chat(h, msgs, mx, selected_model, lens=body.get("clozn_lens"),
+        sse.sse_chat(h, msgs, mx, selected_model, lens=body.get("clozn_lens"), sample=sample,
                      receipt=body.get("clozn_receipt", receipt_enabled()))
         return True
     t0 = time.time()
@@ -77,7 +67,7 @@ def try_post(h, p, body):
     if isinstance(ctx.active_sub(h), ctx.EngineSubstrate):
         chat_kw["apply_anchored"] = True
     try:
-        reply = ctx.active_sub(h).chat(msgs, mx, temperature > 0, **chat_kw)
+        reply = ctx.active_sub(h).chat(msgs, mx, sample, **chat_kw)
     except Exception as exc:
         h._log_run("openai_api", msgs, "", selected_model, t0, error=str(exc), mem_out=memout)
         _api_error(h, 502, str(exc), kind="upstream_error")
@@ -91,8 +81,7 @@ def try_post(h, p, body):
     resp = {"id": "chatcmpl-clozn", "object": "chat.completion",
            "created": int(time.time()), "model": selected_model,
            "choices": [{"index": 0, "finish_reason": openai_fr,
-                        "message": {"role": "assistant", "content": reply}}],
-           "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+                        "message": {"role": "assistant", "content": reply}}]}
     # M5 any-client run_id bridge (EXPLAIN_THIS_ANSWER_SPEC.md): surface the id two ways so a
     # companion `clozn explain <run_id>` can inspect THIS reply from any OpenAI-compatible client
     # -- an additive top-level field (spec-compliant clients ignore unknown fields) and a response

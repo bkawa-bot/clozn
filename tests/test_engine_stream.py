@@ -317,10 +317,8 @@ def test_chat_stream_request_body_mirrors_engine_complete_traced(iso, monkeypatc
 # ==================================================================================== S5: interactive sampling
 
 def test_chat_stream_samples_by_default(iso, monkeypatch, fake_urlopen):
-    """chat_stream has no per-call `sample` arg -- it's always eligible, and the "sampling" setting
-    defaults ON (S5), so the request body carries the full Ollama/llama.cpp canonical params + a real
-    seed: temperature, rep_penalty, AND the top_k/top_p nucleus (the engine now enforces them, so a
-    sampled chat lands on the same distribution the user knows from Ollama)."""
+    """The default-True `sample` arg inherits the persisted Ollama/llama.cpp params + a real seed:
+    temperature, rep_penalty, AND the top_k/top_p nucleus."""
     monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
     sub = _bare_engine_substrate(FakeEngine())
 
@@ -335,6 +333,19 @@ def test_chat_stream_samples_by_default(iso, monkeypatch, fake_urlopen):
     meta = sub._last_generation_meta
     assert meta["sampler_mode"] == "sample"
     assert meta["decode"]["top_p"] == 0.9 and meta["decode"]["top_k"] == 40
+
+
+def test_chat_stream_honors_per_request_sampling_override(iso, monkeypatch, fake_urlopen):
+    monkeypatch.setattr(cs, "_prompt_block_for", _no_block)
+    memory_mode.set_setting("sampling", False)  # explicit HTTP fields must still win
+    sub = _bare_engine_substrate(FakeEngine())
+
+    sample = {"temperature": 0.4, "top_p": 0.65, "top_k": 12, "repeat_penalty": 1.03, "seed": 77}
+    list(sub.chat_stream([{"role": "user", "content": "hi"}], sample=sample))
+
+    body = json.loads(fake_urlopen[-1]["req"].data.decode("utf-8"))
+    assert {key: body[key] for key in ("temperature", "top_p", "top_k", "rep_penalty", "seed")} == {
+        "temperature": 0.4, "top_p": 0.65, "top_k": 12, "rep_penalty": 1.03, "seed": 77}
 
 
 def test_chat_stream_sampling_off_is_byte_identical_to_pre_s5(iso, monkeypatch, fake_urlopen):

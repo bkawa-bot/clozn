@@ -718,7 +718,7 @@ def test_run_meta_reflects_a_sampled_chat_call(iso, monkeypatch):
     decode = meta["decode"]
     assert decode["mode"] == "sample"
     assert decode["top_p"] == 0.9 and decode["top_k"] == 40
-    assert "note" in decode                       # honest: top_p/top_k are requested, not enforced
+    assert "note" not in decode                   # top-p/k are enforced by engine/core/src/sample.cpp
 
 
 def test_sampling_setting_off_forces_greedy_even_when_sample_true(iso, monkeypatch):
@@ -766,6 +766,17 @@ def test_resolve_sampling_generates_a_fresh_seed_each_call(iso):
     b = cs._resolve_sampling(True)
     assert a["on"] is True and b["on"] is True
     assert a["seed"] != b["seed"]
+
+
+def test_explicit_request_sampling_fields_win_over_the_studio_default(iso):
+    """An OpenAI request is a per-call contract: Studio's persisted master switch must not silently
+    discard fields the HTTP request explicitly supplied."""
+    memory_mode.set_setting("sampling", False)
+    out = cs._resolve_sampling({"temperature": 0.35, "top_p": 0.7, "top_k": 9,
+                                "repeat_penalty": 1.02, "seed": 123})
+    assert out == {"on": True, "temperature": 0.35, "top_p": 0.7, "top_k": 9,
+                   "repeat_penalty": 1.02, "seed": 123}
+    assert cs._resolve_sampling({"temperature": 0, "seed": 123}) is None
 
 
 def test_engine_complete_traced_sends_the_resolved_sampler_params(iso, fake_engine, monkeypatch):

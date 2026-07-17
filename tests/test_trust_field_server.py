@@ -194,7 +194,7 @@ def test_default_off_is_byte_compatible_no_trust_fields(iso):
     assert "clozn_spans" not in out
     assert "clozn_spans_note" not in out
     # unchanged OpenAI shape (+ the pre-existing clozn_run_id bridge field)
-    assert set(out.keys()) == {"id", "object", "created", "model", "choices", "usage", "clozn_run_id"}
+    assert set(out.keys()) == {"id", "object", "created", "model", "choices", "clozn_run_id"}
 
 
 def test_explicit_false_does_not_attach_spans(iso):

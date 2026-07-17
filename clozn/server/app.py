@@ -129,11 +129,13 @@ _SAMPLING_DEFAULTS = {
 
 
 def _resolve_sampling(want_sample):
-    """Whether THIS engine generation should sample, and under what params -- S5. `want_sample` is the
-    caller's own per-call ask (EngineSubstrate.chat's `sample` arg; chat_stream always asks True and lets
-    the setting alone decide). Returns None (greedy, temperature 0 -- exactly pre-S5 behavior) when
-    `want_sample` is falsy OR the persisted "sampling" setting is off; otherwise a dict {"on": True,
-    "temperature", "top_p", "top_k", "repeat_penalty", "seed"} with a FRESH per-turn seed.
+    """Whether THIS engine generation should sample, and under what params -- S5. `want_sample` is either
+    a bool or a per-request override dict (used by the OpenAI compatibility route for temperature/top_p/
+    top_k/repeat_penalty/seed). Returns None (greedy, temperature 0 -- exactly pre-S5 behavior) when the
+    request is falsy, its temperature is zero, OR a default boolean request is disabled by the persisted
+    "sampling" master switch. An explicit override dict is per-request and wins over that switch. Otherwise
+    this returns {"on": True, "temperature", "top_p", "top_k", "repeat_penalty", "seed"}. Missing fields
+    use the persisted defaults; a missing seed gets a fresh per-turn value.
 
     Critical for the receipt/replay/rederive stack: `want_sample=False` (replay.py's
     `sampled = not changes.get("greedy")`, always False for receipts) short-circuits to None BEFORE the
@@ -148,21 +150,29 @@ def _resolve_sampling(want_sample):
     top_k/top_p included -- so receipts and forced-greedy replay stay bit-exact."""
     if not want_sample:
         return None
+    overrides = want_sample if isinstance(want_sample, dict) else {}
     import clozn.memory.mode as memory_mode
-    if not bool(memory_mode.get_setting("sampling", _SAMPLING_DEFAULTS["sampling"])):
+    # The persisted switch controls Clozn's own default behavior. An OpenAI request that explicitly names
+    # sampling fields is a per-call contract and must win; otherwise we would accept temperature/top_p and
+    # silently run greedy because somebody toggled Studio's global setting earlier.
+    if not overrides and not bool(memory_mode.get_setting("sampling", _SAMPLING_DEFAULTS["sampling"])):
         return None
-    return {
+    resolved = {
         "on": True,
-        "temperature": float(memory_mode.get_setting("sample_temperature", _SAMPLING_DEFAULTS["sample_temperature"])),
-        "top_p": float(memory_mode.get_setting("sample_top_p", _SAMPLING_DEFAULTS["sample_top_p"])),
-        "top_k": int(memory_mode.get_setting("sample_top_k", _SAMPLING_DEFAULTS["sample_top_k"])),
-        "repeat_penalty": float(memory_mode.get_setting("sample_repeat_penalty",
-                                                         _SAMPLING_DEFAULTS["sample_repeat_penalty"])),
+        "temperature": float(overrides.get("temperature", memory_mode.get_setting(
+            "sample_temperature", _SAMPLING_DEFAULTS["sample_temperature"]))),
+        "top_p": float(overrides.get("top_p", memory_mode.get_setting(
+            "sample_top_p", _SAMPLING_DEFAULTS["sample_top_p"]))),
+        "top_k": int(overrides.get("top_k", memory_mode.get_setting(
+            "sample_top_k", _SAMPLING_DEFAULTS["sample_top_k"]))),
+        "repeat_penalty": float(overrides.get("repeat_penalty", memory_mode.get_setting(
+            "sample_repeat_penalty", _SAMPLING_DEFAULTS["sample_repeat_penalty"]))),
         # A FRESH seed every turn (not a fixed one) -- what makes a sampled reply vary turn to turn while
         # still being independently reproducible: re-POSTing /v1/completions with this same seed+params
         # reproduces the text (mode.decode records it on the run).
-        "seed": secrets.randbits(63),
+        "seed": int(overrides.get("seed", secrets.randbits(63))),
     }
+    return resolved if resolved["temperature"] > 0 else None
 
 
 def _sampling_settings():
@@ -186,12 +196,7 @@ def _engine_generation_meta(max_new=None, stream=None, sample=None):
                "repetition_penalty": sample["repeat_penalty"], "seed": sample["seed"]}
         decode = {"mode": "sample", "temperature": sample["temperature"], "top_p": sample["top_p"],
                   "top_k": sample["top_k"], "repeat_penalty": sample["repeat_penalty"],
-                  "seed": sample["seed"],
-                  # HONESTY: top_p/top_k are the requested settings, not a guess -- but this engine build
-                  # does not enforce them (see _resolve_sampling's docstring); only temperature/
-                  # repeat_penalty/seed actually shaped this reply's sampler.
-                  "note": "top_p/top_k are requested settings, NOT enforced by this engine build "
-                          "(temperature + repeat_penalty softmax only; see engine/core/src/sample.cpp)"}
+                  "seed": sample["seed"]}
     else:
         top = {"sampler_mode": "greedy", "sampling": "greedy", "temperature": 0.0,
                "repetition_penalty": 1.0, "seed": 0}

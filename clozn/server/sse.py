@@ -33,7 +33,7 @@ from clozn.server import app as ctx
 from clozn.server.http_policy import send_cors_headers
 
 
-def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
+def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample=True):
     """Stream one /v1/chat/completions reply as OpenAI-style `chat.completion.chunk` frames over SSE,
     then log the run. `handler` is the live BaseHTTPRequestHandler (needs .wfile + ._log_run).
 
@@ -70,15 +70,17 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
         # ignore the extra top-level field without encountering a foreign event shape on /v1/*.
         chunk({}, extension={"clozn_lens": obj})
 
-    lens_kw = {}
+    import inspect
+    try:
+        params = inspect.signature(ctx.active_sub(handler).chat_stream).parameters
+    except Exception:
+        params = {}
+    stream_kw = {}
+    if "sample" in params:
+        stream_kw["sample"] = sample
     if lens:
-        import inspect
-        try:
-            params = inspect.signature(ctx.active_sub(handler).chat_stream).parameters
-        except Exception:
-            params = {}
         if "lens" in params and "on_frame" in params:
-            lens_kw = {"lens": (lens if isinstance(lens, dict) else {}), "on_frame": side_frame}
+            stream_kw.update(lens=(lens if isinstance(lens, dict) else {}), on_frame=side_frame)
         else:
             side_frame({"error": "live lens needs the engine substrate (post-hoc: POST /runs/<id>/jlens)"})
 
@@ -99,7 +101,7 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False):
     # Left unchanged; non-streaming (the required deliverable) carries clozn_run_id both ways.
     t0 = time.time(); acc = []; memout = {}
     sub = ctx.active_sub(handler)
-    gen = sub.chat_stream(messages, max_new, mem_out=memout, **lens_kw)
+    gen = sub.chat_stream(messages, max_new, mem_out=memout, **stream_kw)
     disconnect_error = None
 
     def _write(delta, finish=None, extension=None):

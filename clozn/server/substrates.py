@@ -437,9 +437,9 @@ class EngineSubstrate(Substrate):
         applied. Mirrors QwenSubstrate.chat's contract EXACTLY (same signature, same trace_out/mem_out
         fill) so the receipts/replay stack is backend-agnostic.
 
-        `sample`: the caller's request to sample (True) or force greedy (False). REPRODUCE_AND_PROVE_PLAN
-        S5: `sample=True` (the default, and what interactive chat -- openai.py's /v1/chat/completions --
-        passes) resolves via ctx._resolve_sampling against the persisted "sampling" setting (default ON,
+        `sample`: the caller's request to sample (True), force greedy (False), or override this request's
+        sampling fields with a dict. REPRODUCE_AND_PROVE_PLAN S5: `sample=True` (the default) resolves via
+        ctx._resolve_sampling against the persisted "sampling" setting (default ON,
         Ollama/llama.cpp's canonical temperature=0.8/top_p=0.9/top_k=40/repeat_penalty=1.1, a FRESH seed
         every turn); the setting off degrades to greedy, byte-identical to pre-S5 behavior.
         `sample=False` ALWAYS decodes greedy (temperature 0) regardless of the setting -- this is what the
@@ -634,7 +634,7 @@ class EngineSubstrate(Substrate):
         meta.update(getattr(self, "_last_generation_meta", None) or {})
         return dict(meta)
 
-    def chat_stream(self, messages, max_new=256, mem_out=None, lens=None, on_frame=None):
+    def chat_stream(self, messages, max_new=256, mem_out=None, lens=None, on_frame=None, sample=True):
         """Streaming twin of chat(): the SAME memory-block + tone-dial + anchored-memory construction
         (kept in lockstep -- see chat()'s comments; do not let this drift from that logic), but opens the engine's
         /v1/completions with stream:True (mirrors _engine_complete_traced's request) and yields text as
@@ -657,11 +657,10 @@ class EngineSubstrate(Substrate):
         partial stream still logs whatever trace it managed. Wrapped so any parse hiccup just leaves it
         [], same as the non-streaming path's fallback.
 
-        SAMPLING (S5): chat_stream has no per-call `sample` arg -- unlike chat(), no receipt/replay path
-        ever drives this method (only the live SSE studio chat does), so it is always ELIGIBLE to sample;
-        ctx._resolve_sampling(True) alone decides, against the persisted "sampling" setting (default ON --
-        temperature/top_p/top_k/repeat_penalty/a fresh seed) exactly like chat()'s sample=True path. The
-        setting off degrades to greedy, byte-identical to pre-S5 behavior.
+        SAMPLING (S5): `sample` has the same bool-or-override-dict contract as chat(). The OpenAI SSE route
+        uses the dict form so explicit temperature/top_p/top_k/repeat_penalty/seed values affect the stream;
+        ordinary callers use True and inherit the persisted defaults. The master setting off degrades to
+        greedy, byte-identical to pre-S5 behavior.
 
         REQUEST ISOLATION + CANCELLATION (backlog #2): this call's own RequestContext (self._new_request())
         replaces the old piecemeal self._last_generation_meta/_last_stream_trace/_last_finish_reason
@@ -675,7 +674,7 @@ class EngineSubstrate(Substrate):
         import urllib.request
         import clozn.runs.store as runlog
         req = self._new_request()
-        samp = ctx._resolve_sampling(True)
+        samp = ctx._resolve_sampling(sample)
         req.sampling = samp
         req.generation_meta = ctx._engine_generation_meta(max_new, stream=True, sample=samp)
         # MEMORY + TONE: built EXACTLY as chat() builds them.

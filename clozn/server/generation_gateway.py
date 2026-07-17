@@ -104,6 +104,13 @@ def _completion_chunk(text: str, model: str, finish_reason=None) -> dict:
 
 def openai_completion(handler, body: dict) -> None:
     """Strict OpenAI text-completion view over the worker's richer event protocol."""
+    from clozn.server.openai_compat import CompatibilityError, normalize_completion_request
+    try:
+        body = normalize_completion_request(body)
+    except CompatibilityError as exc:
+        handler._json(400, {"error": {"message": str(exc), "type": "invalid_request_error",
+                                      "param": exc.param, "code": exc.code}})
+        return
     model = str(body.get("model") or model_id())
     try:
         response = _request(body)
@@ -177,10 +184,9 @@ def openai_completion(handler, body: dict) -> None:
                 "logprobs": choice.get("logprobs"),
                 "finish_reason": choice.get("finish_reason") or "stop",
             }],
-            "usage": upstream.get("usage") or {
-                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0
-            },
         }
+        if upstream.get("usage") is not None:
+            normalized["usage"] = upstream["usage"]
         handler._json(200, normalized)
     except Exception as exc:
         _error(handler, exc)
