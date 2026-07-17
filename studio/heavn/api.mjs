@@ -119,6 +119,8 @@ export const api = {
 
   steerAxes: () => post("/steer/axes", {}),
   steerSet: (name, value) => post("/steer/set", { name: name ?? "", value }),
+  preferences: (threshold = 3) => postE("/preferences", { threshold }, 30000),
+  preferenceResolve: (id, action) => postE("/preferences/resolve", { id, action }, 30000),
 
   /* ── chat (SSE stream). onDelta(textChunk), onDone(finalInfo|null), onLens(readout) — the F1 live
         lens frames when `lens` ({layer, topk?, every?}) is passed. Returns abort fn. ── */

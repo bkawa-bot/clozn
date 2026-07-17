@@ -3,7 +3,7 @@
    null), and per-dial counterfactuals ("what if this dial were X"). Honesty rules carried over:
    nothing computed is implied to pre-exist, failures are reported in the server's own words, no
    mock data, sample-mode (store.get().live === false) is read-only everywhere. */
-import { html, useState, useEffect } from "../vendor/preact-standalone.mjs";
+import { html, useState, useEffect, useRef } from "../vendor/preact-standalone.mjs";
 import { store, useStore, toast } from "../state.mjs";
 import { api } from "../api.mjs";
 
@@ -18,22 +18,24 @@ const fmt = v => (typeof v === "number" ? v.toFixed(2) : (v ?? "—"));
 export function PatchModule(){
   /* one shared /steer/axes read — feeds both the dials panel and the counterfactual dial picker */
   const [axesState, setAxesState] = useState({ status: "loading", axes: [] });
+  const mounted = useRef(true);
+  const loadAxes = async () => {
+    const res = await api.steerAxes();
+    if(!mounted.current) return;
+    if(res && Array.isArray(res.axes) && res.axes.length)
+      setAxesState({ status: "ok", axes: res.axes, ready: res.ready, substrate: res.substrate });
+    else if(res && Array.isArray(res.axes))
+      setAxesState({ status: "empty", axes: [] });
+    else
+      setAxesState({ status: "error", axes: [] });
+  };
   useEffect(() => {
-    let dead = false;
-    (async () => {
-      const res = await api.steerAxes();
-      if(dead) return;
-      if(res && Array.isArray(res.axes) && res.axes.length)
-        setAxesState({ status: "ok", axes: res.axes, ready: res.ready, substrate: res.substrate });
-      else if(res && Array.isArray(res.axes))
-        setAxesState({ status: "empty", axes: [] });
-      else
-        setAxesState({ status: "error", axes: [] });
-    })();
-    return () => { dead = true; };
+    mounted.current = true; loadAxes();
+    return () => { mounted.current = false; };
   }, []);
 
   return html`<div class="col">
+    <${PreferenceSuggestions} onApplied=${loadAxes}/>
     <${DialsPanel} axesState=${axesState}/>
     <${SwapReceiptPanel}/>
     <${CounterfactualPanel} axesState=${axesState}/>
@@ -41,6 +43,69 @@ export function PatchModule(){
 }
 
 /* ───────────────────────── A) any-concept dials ───────────────────────── */
+/* Model-free propose-and-review over accumulated quick-repair feedback. The server creates a pending
+   proposal at its evidence threshold; approval is the only action here that may persist a dial. */
+function PreferenceSuggestions({ onApplied }){
+  const live = useStore(x => x.live);
+  const [pending, setPending] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState(null);
+
+  const refresh = async () => {
+    if(!live){ setPending([]); setMessage(null); return; }
+    const r = await api.preferences(3);
+    if(!r || r.__status >= 400){ setPending([]); return; }
+    setPending(Array.isArray(r.pending) ? r.pending : []);
+  };
+  useEffect(() => { refresh(); }, [live]);
+
+  const resolve = async (proposal, action) => {
+    if(!live || busy) return;
+    setBusy(proposal.id + ":" + action); setMessage(null);
+    const r = await api.preferenceResolve(proposal.id, action);
+    if(!r || r.__status >= 400 || r.ok === false){
+      setBusy("");
+      setMessage({ kind: "error", text: (r && r.error) || "The proposal was not resolved." });
+      return;
+    }
+    if(action === "dismiss"){
+      setMessage({ kind: "info", text: `Dismissed ${proposal.dial}. It will not resurface without a fresh threshold of evidence.` });
+    } else if(r.applied && !r.applied.error){
+      setMessage({ kind: "ok", text: `Approved and saved ${r.applied.dial} ${(+r.applied.value).toFixed(2)} as the default.` });
+      await onApplied();
+    } else if(r.applied && r.applied.error){
+      setMessage({ kind: "error", text: `Approved, but the dial could not be saved: ${r.applied.error}` });
+    } else {
+      setMessage({ kind: "warn", text: "Approved, but no live steering object was available, so no dial changed." });
+    }
+    await refresh();
+    setBusy("");
+  };
+
+  if(pending === null || (!pending.length && !message)) return null;
+  return html`<div class="mod" data-testid="preference-suggestions">
+    <div class="mod-h"><span class="led lilac"></span><span class="cap">learned preference suggestions</span>
+      <span class="tail">${pending.length} pending · threshold 3</span></div>
+    <div class="preference-body">
+      <div class="preference-rule">A model-free rollup of your quick-repair clicks, not an inference about
+        your personality. Evidence stays tied to the runs that produced it; no dial changes without APPROVE.</div>
+      ${pending.map(p => html`<div class="preference-row" key=${p.id}>
+        <div class="preference-summary"><b>${p.label || `Make ${p.dial} a default?`}</b>
+          <span>${p.dial} ${(+p.suggested_value).toFixed(2)} · ${p.count || 0} signal(s)</span></div>
+        <div class="preference-evidence">evidence · ${(p.evidence || []).length
+          ? p.evidence.join(" · ") : "no run ids recorded"}</div>
+        <div class="preference-actions">
+          <button class="spd primary" disabled=${!!busy}
+            onClick=${() => resolve(p, "approve")}>${busy === p.id + ":approve" ? "APPROVING..." : "APPROVE"}</button>
+          <button class="spd" disabled=${!!busy}
+            onClick=${() => resolve(p, "dismiss")}>${busy === p.id + ":dismiss" ? "DISMISSING..." : "DISMISS"}</button>
+        </div>
+      </div>`)}
+      ${message && html`<div class=${"preference-message " + message.kind}>${message.text}</div>`}
+    </div>
+  </div>`;
+}
+
 function DialsPanel({ axesState }){
   const live = useStore(x => x.live);
   const [values, setValues] = useState({});

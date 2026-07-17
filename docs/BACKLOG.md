@@ -178,7 +178,8 @@ model (✅ decided: Qwen2.5-0.5B).
   ✅ engine.html harvest/observe → heavn Scope; `/steer/*` is canonical and `/engine/steer/*` is a deprecated
   compatibility facade over the same EngineSteer. ✅ run-view ports: narrate + explain + lineage tree +
   quick-repair presets in Replay, propose-memory in Memory. ✅ memory-mode selector + strength slider → heavn
-  Memory. ⑥ custom dial maker + learned-preference suggestions. Then cut the remaining pages/*.js + engine.html.
+  Memory. ✅ learned-preference suggestions → heavn Patch. ⑥ custom dial maker remains. Then cut the
+  remaining pages/*.js + engine.html.
 
 - [ ] **Document-first "Read view"** **[AMB]** — make it the default `/r/<id>` landing ("read it, zoom into
   the sketchy spans"). The docs call this *"the answer to why use clozn instead of just calling the model."*

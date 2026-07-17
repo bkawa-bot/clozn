@@ -426,6 +426,23 @@ details[open].leader summary::before{content:"▾"}
 .memory-control-message.warn{color:#9B6C24;border-color:rgba(230,196,120,.55);background:rgba(230,196,120,.12)}
 .memory-control-message.error{color:#C24A31;border-color:rgba(242,109,79,.45);background:rgba(242,109,79,.09)}
 
+/* Patch · learned preference proposals */
+.preference-body{padding:3px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.preference-rule{font-size:8px;line-height:1.55;color:var(--mist)}
+.preference-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 12px;padding:9px 0;
+  border-top:1px solid var(--edge-soft)}
+.preference-row:first-of-type{border-top:none}
+.preference-summary{min-width:0;display:flex;flex-direction:column;gap:3px}
+.preference-summary b{font-size:10px;line-height:1.45;color:var(--navy);font-weight:600}
+.preference-summary span,.preference-evidence{font-size:8px;line-height:1.45;color:var(--mist)}
+.preference-evidence{grid-column:1/-1;overflow-wrap:anywhere}
+.preference-actions{grid-column:2;grid-row:1;display:flex;gap:5px;align-items:center}
+.preference-message{padding:8px 10px;border:1px solid var(--edge-soft);border-radius:8px;font-size:8.5px;line-height:1.5}
+.preference-message.info{color:#5F5794;background:rgba(182,176,218,.10)}
+.preference-message.ok{color:#1B7F74;border-color:rgba(95,200,188,.45);background:rgba(95,200,188,.10)}
+.preference-message.warn{color:#9B6C24;border-color:rgba(230,196,120,.55);background:rgba(230,196,120,.12)}
+.preference-message.error{color:#C24A31;border-color:rgba(242,109,79,.45);background:rgba(242,109,79,.09)}
+
 /* Memory · optional fact slot store */
 .facts-body{padding:3px 14px 13px;display:flex;flex-direction:column;gap:10px}
 .facts-topline{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
@@ -526,6 +543,8 @@ details[open].leader summary::before{content:"▾"}
   .runtime-observe-controls,.runtime-distributions{grid-template-columns:1fr}
   .runtime-observe-controls .spd{justify-self:start}
   .memory-controls-body{grid-template-columns:1fr}
+  .preference-row{grid-template-columns:1fr}
+  .preference-actions{grid-column:1;grid-row:auto}
 }
 
 .footer{display:flex;align-items:center;gap:18px;margin-top:12px;padding:10px 15px;flex-wrap:wrap;
