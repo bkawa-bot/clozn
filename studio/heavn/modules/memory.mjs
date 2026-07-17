@@ -8,6 +8,7 @@
 import { html, useState, useEffect } from "../vendor/preact-standalone.mjs";
 import { store, useStore, toast } from "../state.mjs";
 import { api } from "../api.mjs";
+import { FactsPanel } from "./facts.mjs";
 
 /* api.mjs has no GET /memory/mode wrapper — a tiny local fetch, kept inside this file only
    (contracts §14: `{"mode": "prompt", "modes": ["prompt","internalized"]}`, never throws). */
@@ -84,6 +85,7 @@ export function MemoryModule(){
     <${ReviewQueue} cards=${cards} act=${act} busy=${busy}/>
     <${CardsPanel} cards=${cards} act=${act} busy=${busy}
       expanded=${expanded} toggleRuns=${toggleRuns} runsCache=${runsCache}/>
+    <${FactsPanel} live=${live}/>
     <${AnchoredShelf} cards=${cards} live=${live}/>
     <${AddCard} live=${live} onAdded=${refreshCards}/>
     <${ProposeFromRun} rec=${rec} live=${live} onProposed=${refreshCards}/>

@@ -174,8 +174,8 @@ model (✅ decided: Qwen2.5-0.5B).
   ✅ Theme aligned to the ambient-runtime refs (honesty pills, live /readyz nav-footer, killed a fabricated
   98% health stat). **PORT QUEUE** (remaining pages/*.js stay on disk as reference until ported, UI-unreachable):
   ✅ profiles CRUD → heavn Settings (snapshot/update/switch/import/export/delete; active-delete guarded)
-  ② facts tier UI (large; separate
-  slot-memory subsystem) ③ engine.html harvest/observe residual panels (moderate; FIRST resolve whether
+  ✅ facts tier UI → heavn Memory (mode/list/add/read/delete with surprise + abstention receipts)
+  ③ engine.html harvest/observe residual panels (moderate; FIRST resolve whether
   /steer/* and /engine/steer/* are the same dial system exposed twice) ④ small run-view gaps (narrate, explain
   tab, lineage tree, quick-repair, propose-memory) ⑤ memory-mode toggle + strength slider ⑥ custom dial maker
   + learned-preference suggestions. Then cut the remaining pages/*.js + engine.html.

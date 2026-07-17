@@ -92,6 +92,14 @@ export const api = {
   memoryAct: (id, verb) => post("/memory/" + verb, { id }),   // approve|reject|disable|enable|remove
   memoryRuns: id => j("/memory/" + enc(id) + "/runs"),        // GET (contracts §14)
 
+  /* facts: optional per-profile cue→answer slot store. All operations use postE so the panel can
+     distinguish an unavailable backend from the store's deliberate write refusal / read abstention. */
+  factsList:   () => postE("/facts/list", {}, 30000),
+  factsMode:   enabled => postE("/facts/mode", { enabled }, 30000),
+  factsAdd:    (cue, answer) => postE("/facts/add", { cue, answer }, 120000),
+  factsDelete: cue => postE("/facts/delete", { cue }, 30000),
+  factsRead:   query => postE("/facts/read", { query }, 120000),
+
   /* ── steering (contracts §17: axes is POST-only; /steer/set REQUIRES name even if empty) ── */
   /* profiles: portable card/dial/fact source bundles. Mutations use postE so Settings can show the
      server's exact validation, switch, or guarded-delete reason instead of a generic null. */
