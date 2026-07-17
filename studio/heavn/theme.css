@@ -359,6 +359,28 @@ details[open].leader summary::before{content:"▾"}
 .receipt-row .sub{grid-column:1/-1;font-size:8.5px;color:var(--mist);display:flex;gap:12px;flex-wrap:wrap}
 .receipt-row .sub .yes{color:#1B7F74}.receipt-row .sub .no{color:var(--mist)}
 
+/* Replay · model-free Explain assembly */
+.explain-body{padding:3px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.explain-grid{display:grid;grid-template-columns:1fr;gap:8px}
+.explain-card{min-width:0;padding:9px 10px;border:1px solid var(--edge-soft);border-radius:9px;
+  background:rgba(255,255,255,.3)}
+.explain-title{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin-bottom:3px}
+.explain-title b{font-family:var(--disp);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--navy)}
+.explain-rule{font-size:8px;line-height:1.45;color:var(--mist);margin-bottom:6px}
+.explain-summary{display:flex;justify-content:space-between;gap:8px;font-size:9px;color:#1B87A8;
+  padding:5px 0;border-bottom:1px solid var(--edge-soft)}
+.explain-summary span{font-size:8px;color:var(--mist);text-align:right}
+.explain-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;padding:6px 0;
+  border-top:1px solid var(--edge-soft);font-size:9px;color:var(--slate)}
+.explain-summary + .explain-row{border-top:none}
+.explain-row > span:nth-child(2){font-size:8px;color:#1B87A8;text-align:right}
+.explain-row small{grid-column:1/-1;font-size:7.8px;line-height:1.45;color:var(--mist);overflow-wrap:anywhere}
+.explain-row b{color:var(--navy);font-weight:600}
+.explain-card > .none{padding:6px 0 2px;line-height:1.5}
+.explain-error{padding:8px 10px;border-radius:8px;border:1px solid rgba(242,109,79,.45);
+  background:rgba(242,109,79,.09);font-size:8.5px;color:#C24A31}
+.explain-foot{font-size:7.8px;line-height:1.45;color:var(--mist);text-transform:uppercase;letter-spacing:.05em}
+
 /* Memory · optional fact slot store */
 .facts-body{padding:3px 14px 13px;display:flex;flex-direction:column;gap:10px}
 .facts-topline{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}

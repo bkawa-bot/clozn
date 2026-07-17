@@ -25,6 +25,7 @@ export function ReplayModule(){
     </div>
     <div class="col">
       <${Meters} rec=${rec}/>
+      <${ExplainPanel} rec=${rec}/>
       <${ReceiptsPanel} rec=${rec}/>
       <${SpanForensics} rec=${rec}/>
       <${LieDetector} rec=${rec}/>
@@ -1037,6 +1038,116 @@ function Meters({ rec }){
       <div class="mcap" style="margin-top:8px"><span><i style="background:var(--lilac2)"></i>entropy</span>
         <span class="tag der-t" style="margin-left:auto">DERIVED</span></div>
       <${AreaChart} vals=${steps.map(s => s.ent ?? 0)} rgb="154,146,200"/>
+    </div>
+  </div>`;
+}
+
+/* Free explanation assembly: reads only signals already captured on the run. It deliberately does not
+   generate a story about the model's hidden process; the separate self-report check below tests that. */
+function ExplainPanel({ rec }){
+  const [out, setOut] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const request = useRef(0);
+  useEffect(() => { request.current += 1; setOut(null); setBusy(false); setError(""); }, [rec.id]);
+
+  const assemble = async () => {
+    if(guardSample(rec) || busy) return;
+    const nonce = ++request.current;
+    setBusy(true); setError("");
+    const r = await api.explain(rec.id);
+    if(nonce !== request.current) return;       /* ignore an old run's answer after a fast run switch */
+    setBusy(false);
+    if(!r){ setError("No explanation came back. The run may no longer be in the journal."); return; }
+    setOut(r);
+  };
+  const num = (v, places = 2) => Number.isFinite(+v) ? (+v).toFixed(places) : "-";
+  const confidence = (out && out.confidence) || {};
+  const influences = (out && out.influences_active) || {};
+  const forks = (out && out.forks) || {};
+  const concepts = (out && out.concepts) || {};
+  const cards = influences.cards || [], dials = influences.dials || [], anchored = influences.anchored || [];
+
+  return html`<div class="mod" data-testid="explain-panel">
+    <div class="mod-h"><span class="led blue"></span><span class="cap">explain this answer</span>
+      <span class="tail">${busy ? "assembling..." : out ? "recorded signals" : "zero generation · on demand"}</span></div>
+    <div class="explain-body">
+      ${!out && !busy && html`
+        <span class="none">Assemble what the run actually recorded: per-token hesitation, active influences,
+          close-call forks, and concept readouts when present. This is journal math, not a model-written story.</span>
+        <button class="spd" style="align-self:start" disabled=${!!rec._sample} onClick=${assemble}>
+          ASSEMBLE EXPLANATION</button>
+        ${rec._sample && html`<span class="none">Live recorded runs only - sample reels have no journal record.</span>`}`}
+      ${busy && html`<span class="none">reading the recorded run - no model or GPU work...</span>`}
+      ${error && html`<span class="explain-error">${error}</span>`}
+      ${out && html`
+        <div class="explain-grid">
+          <section class="explain-card" data-testid="explain-confidence">
+            <div class="explain-title"><b>confidence</b><span class="tag cap-t">CAPTURED</span></div>
+            <div class="explain-rule">Measured per token - never an overall score.</div>
+            ${confidence.available === false
+              ? html`<div class="none">${confidence.note || "No per-token trace was recorded."}</div>`
+              : html`
+                <div class="explain-summary">${confidence.summary || "0 hesitations"}
+                  <span>${confidence.n_tokens || 0} tokens · below ${num(confidence.threshold)}</span></div>
+                ${(confidence.uncertain_moments || []).length
+                  ? (confidence.uncertain_moments || []).map(m => html`<div class="explain-row">
+                      <span><b>#${m.index}</b> ${String(m.token || "∅")}</span>
+                      <span>p ${num(m.confidence, 3)}</span>
+                      ${(m.alternatives || []).length && html`<small>alternatives · ${(m.alternatives || [])
+                        .slice(0, 3).map(a => `${String(a.piece || "∅").trim()} ${num(a.prob, 3)}`).join(" · ")}</small>`}
+                    </div>`)
+                  : html`<div class="none">No token fell below the recorded threshold.</div>`}`}
+          </section>
+
+          <section class="explain-card" data-testid="explain-influences">
+            <div class="explain-title"><b>active influences</b><span class="tag der-t">ACTIVE · NOT PROVEN</span></div>
+            <div class="explain-rule">Present on this turn does not mean causally responsible.</div>
+            ${(influences.mode != null || influences.gate != null) && html`<div class="explain-summary">
+              ${influences.mode || "memory"}<span>topic gate ${num(influences.gate)}</span></div>`}
+            ${cards.map(c => html`<div class="explain-row">
+              <span><b>card</b> ${String(c.text || c.id || "untitled").slice(0, 80)}</span><span>unproven</span>
+              ${c.quoted_span && html`<small>provenance quote · “${String(c.quoted_span).slice(0, 110)}”</small>`}
+              ${c.note && html`<small>${String(c.note)}</small>`}
+            </div>`)}
+            ${anchored.map(a => html`<div class="explain-row">
+              <span><b>anchored</b> ${String(a.card_id || a.text || "memory bag").slice(0, 70)}</span>
+              <span>${a.gate != null ? "gate " + num(a.gate) : "active"}</span>
+            </div>`)}
+            ${dials.map(d => html`<div class="explain-row">
+              <span><b>dial</b> ${d.name}</span><span>${num(d.value)} · unproven</span>
+            </div>`)}
+            ${!cards.length && !anchored.length && !dials.length && html`<div class="none">
+              ${influences.note || "No memory or dials were logged as active."}</div>`}
+          </section>
+
+          <section class="explain-card" data-testid="explain-forks">
+            <div class="explain-title"><b>close-call forks</b><span class="tag der-t">DERIVED</span></div>
+            <div class="explain-rule">A correlational locator for a useful branch test, never a fragility verdict.</div>
+            ${forks.available === false
+              ? html`<div class="none">${forks.note || "No token alternatives were recorded."}</div>`
+              : html`
+                <div class="explain-summary">${forks.summary || "No close calls"}
+                  <span>${forks.meaningful_count || 0} meaning-changing</span></div>
+                ${(forks.forks || []).map(f => html`<div class="explain-row">
+                  <span><b>#${f.index}</b> “${f.top}” vs “${f.alt}”</span>
+                  <span>${num(f.top_prob, 3)} / ${num(f.alt_prob, 3)}</span>
+                  <small>emitted “${f.emitted}” · margin ${num(f.margin, 3)}${f.meaningful ? " · meaning-changing" : ""}</small>
+                </div>`)}`}
+          </section>
+
+          <section class="explain-card" data-testid="explain-concepts">
+            <div class="explain-title"><b>concept readouts</b><span class="tag der-t">RECORDED IF PRESENT</span></div>
+            <div class="explain-rule">Feature labels describe activations, not a verified chain of thought.</div>
+            ${concepts.available === false
+              ? html`<div class="none">${concepts.note || "No concept readouts were recorded."}</div>`
+              : (concepts.spans || []).map(s => html`<div class="explain-row">
+                  <span><b>${s.position != null ? "#" + s.position : "span"}</b> ${String(s.piece || "")}</span>
+                  <small>${(s.features || []).map(f => `${f.label || ("sae:" + (f.id ?? "?"))} ${num(f.score, 3)}`).join(" · ")}</small>
+                </div>`)}
+          </section>
+        </div>
+        <div class="explain-foot">Assembled from this recorded run only · zero generation · unavailable signals stay unavailable.</div>`}
     </div>
   </div>`;
 }

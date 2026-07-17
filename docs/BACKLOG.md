@@ -176,8 +176,8 @@ model (✅ decided: Qwen2.5-0.5B).
   ✅ profiles CRUD → heavn Settings (snapshot/update/switch/import/export/delete; active-delete guarded)
   ✅ facts tier UI → heavn Memory (mode/list/add/read/delete with surprise + abstention receipts)
   ✅ engine.html harvest/observe → heavn Scope; `/steer/*` is canonical and `/engine/steer/*` is a deprecated
-  compatibility facade over the same EngineSteer ④ small run-view gaps (narrate, explain
-  tab, lineage tree, quick-repair, propose-memory) ⑤ memory-mode toggle + strength slider ⑥ custom dial maker
+  compatibility facade over the same EngineSteer. ✅ run-view ports: narrate + explain + lineage tree in Replay,
+  propose-memory in Memory; remaining: quick-repair presets. ⑤ memory-mode toggle + strength slider ⑥ custom dial maker
   + learned-preference suggestions. Then cut the remaining pages/*.js + engine.html.
 
 - [ ] **Document-first "Read view"** **[AMB]** — make it the default `/r/<id>` landing ("read it, zoom into
@@ -190,8 +190,8 @@ model (✅ decided: Qwen2.5-0.5B).
   UX + how to show anchored vs soft-prefix tiers honestly.
 - [ ] **Actuary productization** **[FB §9.2]** — `GET /journal/actuary` endpoint + studio panel + a live
   "resembles past failures" warning (model is built; the surfacing isn't).
-- [ ] **EXPLAIN "Explain this answer" — remaining surfaces** **[EXPLAIN M5]** — M1-M4 shipped; the
-  any-client bridge (`clozn inspect` off a returned run_id) + web "Explain" tab remain.
+- [ ] **EXPLAIN "Explain this answer" — remaining surface** **[EXPLAIN M5]** — M1-M4 + the heavn Replay
+  panel shipped; the any-client bridge (`clozn inspect` off a returned run_id) remains.
 - [ ] Calibrated-trust upgrade to the footer/alerts (F2) **[AMB]**; Route-B "revise steer_vec" engine unlock
   for content edits **[EDIT]**; the CLOZN_UX §11 design-agent mock pack (D1-D5) if pursuing the visual polish.
 
