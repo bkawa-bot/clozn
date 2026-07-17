@@ -160,6 +160,18 @@ model (✅ decided: Qwen2.5-0.5B).
 
 ## 4. Product / UX polish (heavn is built; these are refinements)
 
+- [ ] **UI consolidation → heavn only** (owner decision 2026-07-17: one frontend). ✅ CUT: instrument/
+  studio/jlens/brain/app.html + clozn.css + pages/agent.js + pages/lab.js (all dead or superseded — the
+  legacy pages assumed the pre-split multi-substrate server; /say, /denoise, /engine/concepts 409/410 on
+  the product gateway). `denoise.html` re-homed as a lab-served page (works only under `clozn lab dream`).
+  ✅ Theme aligned to the ambient-runtime refs (honesty pills, live /readyz nav-footer, killed a fabricated
+  98% health stat). **PORT QUEUE** (remaining pages/*.js stay on disk as reference until ported, UI-unreachable):
+  ① profiles CRUD → heavn Settings (biggest gap; /profiles/* routes live) ② facts tier UI (large; separate
+  slot-memory subsystem) ③ engine.html harvest/observe residual panels (moderate; FIRST resolve whether
+  /steer/* and /engine/steer/* are the same dial system exposed twice) ④ small run-view gaps (narrate, explain
+  tab, lineage tree, quick-repair, propose-memory) ⑤ memory-mode toggle + strength slider ⑥ custom dial maker
+  + learned-preference suggestions. Then cut the remaining pages/*.js + engine.html.
+
 - [ ] **Document-first "Read view"** **[AMB]** — make it the default `/r/<id>` landing ("read it, zoom into
   the sketchy spans"). The docs call this *"the answer to why use clozn instead of just calling the model."*
 - [ ] **Ambient channel-3 endgame** **[AMB]** — inline confidence-shading right inside Cursor / the ChatGPT
