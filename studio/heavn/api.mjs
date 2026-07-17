@@ -85,6 +85,8 @@ export const api = {
     { ...(layer != null ? { layer } : {}), ...(topk != null ? { topk } : {}) }, 60000),
   jlensText: (text, layer) => post("/jlens", { text, ...(layer != null ? { layer } : {}) }, 60000),
   engineLayers: text => post("/engine/layers", { text }, 60000),
+  engineHarvest: text => postE("/engine/harvest", { text }, 60000),
+  engineObserve: (text, position, scale) => postE("/engine/observe", { text, position, scale }, 120000),
 
   /* ── memory (contracts §14: list is POST /memory/cards; actions carry {id} in the BODY) ── */
   memoryList: () => post("/memory/cards", {}),

@@ -68,6 +68,11 @@ HTTP process rejects all `/v1/*` and `/api/clozn/*` routes, so it is not a compe
 - The gateway translates worker events for `/v1/completions`; native event frames never appear on
   `/v1/*`. Opt-in chat extensions such as live lens data stay inside a standard
   `chat.completion.chunk` envelope.
+- `/steer/*` is the canonical product-owned tone-dial surface: it carries live values, calibration,
+  custom/library axes, and persistence. `/engine/steer/*` reaches the same `EngineSteer` in the product
+  process but remains only as a deprecated compatibility facade for the old `engine.html` diagnostic;
+  new UI and clients must not use it. Raw runtime inspection stays distinct under `/engine/harvest`,
+  `/engine/layers`, and `/engine/observe`.
 
 ## Persistence
 

@@ -220,6 +220,12 @@ class Substrate:
         if path == "/steer/check":              # A/B one dial: baseline vs steered (subclass _gen)
             prompt = str(body.get("prompt", ""))[:300]
             base = self._gen(prompt)
+            # The check is diagnostic, not a settings mutation. Preserve every pre-existing value (including
+            # explicit zeros used by the UI) and the engagement state. The old implementation cleared the
+            # whole live persona after every A/B check, so merely inspecting one dial silently erased all
+            # persisted in-process tone settings until the next restart/profile switch.
+            prior = dict(getattr(self.steer, "strength", {}) or {})
+            was_engaged = bool(getattr(self.steer, "_engaged", False))
             self.steer.clear()
             self.steer.set(str(body["name"]), float(body.get("value", 1.0)))
             self.steer.engage()
@@ -228,6 +234,10 @@ class Substrate:
             finally:
                 self.steer.disengage()
                 self.steer.clear()
+                for name, value in prior.items():
+                    self.steer.set(name, value)
+                if was_engaged:
+                    self.steer.engage()
             return {"prompt": prompt, "axis": body.get("name"), "value": body.get("value", 1.0),
                     "baseline": base, "steered": steered}
         if path == "/steer/custom":             # USER-DEFINED dial: compute mean(+pole)-mean(-pole) live

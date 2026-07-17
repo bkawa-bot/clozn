@@ -144,5 +144,118 @@ export function ScopeModule(){
         sweep.prov.fit_model ? " · fitted: " + sweep.prov.fit_model : ""} ·
         a disposition, not a verified thought; blank ≠ nothing</div>`}
     </div>`}
+    <${RuntimeStateBench} text=${text} live=${live}/>
+  </div>`;
+}
+
+/* Raw runtime bench: unlike the fitted J-lens above, this reads activation magnitudes straight from
+   the C++ worker. Observe applies one temporary scale transform during a comparison forward and reports
+   the next-token distribution delta; it never changes weights, saved dials, cards, or future runs. */
+function RuntimeStateBench({ text, live }){
+  const [harvest, setHarvest] = useState(null);
+  const [selected, setSelected] = useState(0);
+  const [scale, setScale] = useState(4);
+  const [observation, setObservation] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState(null);
+
+  const reason = (response, fallback) => {
+    const err = response && response.error;
+    return typeof err === "string" ? err : fallback;
+  };
+
+  const doHarvest = async () => {
+    const sourceText = text.trim();
+    if(!live){ toast("the raw runtime bench needs the live local engine"); return; }
+    if(!sourceText){ toast("give the runtime some text to harvest"); return; }
+    setBusy("harvest"); setError(null); setObservation(null);
+    const response = await api.engineHarvest(sourceText);
+    setBusy("");
+    if(!response || response.__status >= 400 || !Array.isArray(response.tokens)
+        || !Array.isArray(response.norms)){
+      setHarvest(null); setError(reason(response, "the engine did not return token residuals")); return;
+    }
+    if(!response.tokens.length){
+      setHarvest(null); setError("the engine returned no token positions for that text"); return;
+    }
+    setHarvest({ ...response, sourceText });
+    setSelected(index => Math.max(0, Math.min(index, response.tokens.length - 1)));
+  };
+
+  const doObserve = async () => {
+    if(!live || !harvest || busy) return;
+    setBusy("observe"); setError(null); setObservation(null);
+    const response = await api.engineObserve(harvest.sourceText, selected, scale);
+    setBusy("");
+    if(!response || response.__status >= 400){
+      setError(reason(response, "the engine could not run the temporary residual edit")); return;
+    }
+    setObservation(response);
+  };
+
+  const norms = harvest ? harvest.tokens.map((_, index) => Number(harvest.norms[index]) || 0) : [];
+  const maxNorm = Math.max(1e-9, ...norms);
+  const selectedToken = harvest && harvest.tokens[selected] != null
+    ? String(harvest.tokens[selected]) : "—";
+
+  return html`<section class="mod runtime-bench" aria-labelledby="runtime-bench-title">
+    <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
+    <div class="mod-h"><span class="led blue"></span><span class="cap" id="runtime-bench-title">runtime state bench</span>
+      <span class="tail">raw residual magnitude · temporary write · observed prediction</span>
+      <span class="tag cap-t">RAW</span></div>
+    <div class="runtime-bench-body" data-testid="runtime-bench">
+      <div class="runtime-bench-intro">Harvest reads every token position from one C++ engine forward.
+        Observe scales one selected residual <b>for a single comparison forward only</b>; no model weights,
+        memory, profiles, or dial settings are changed.</div>
+      <div class="runtime-bench-actions">
+        <button class=${"spd primary" + (busy === "harvest" ? " busy" : "")} type="button"
+          disabled=${!live || !!busy || !text.trim()} onClick=${doHarvest}>HARVEST CURRENT TEXT</button>
+        ${harvest && html`<span>snapshot layer <b>${harvest.layer ?? "—"}</b><span> · </span>
+          ${harvest.n_embd ?? "—"}-dim · ${harvest.tokens.length} positions</span>`}
+        ${!live && html`<span>live local engine only — sample mode never fabricates activations</span>`}
+      </div>
+
+      ${harvest && html`<div class="runtime-token-grid" data-testid="runtime-token-grid">
+        ${harvest.tokens.map((token, index) => html`<button type="button" key=${index}
+          class=${"runtime-token" + (selected === index ? " selected" : "")}
+          data-token-index=${index} onClick=${() => { setSelected(index); setObservation(null); }}>
+          <span class="runtime-token-label">${String(token).trim() || "·"}</span>
+          <span class="runtime-token-meter"><i style=${`width:${Math.round(norms[index] / maxNorm * 100)}%`}></i></span>
+          <span class="runtime-token-norm">L2 ${norms[index].toFixed(3)}</span>
+        </button>`)}</div>`}
+
+      ${harvest && html`<div class="runtime-observe-controls">
+        <span>temporary scale at position <b>${selected}</b> · token <b>${JSON.stringify(selectedToken)}</b></span>
+        <input aria-label="residual scale" type="range" min="0" max="8" step="0.25" value=${scale}
+          disabled=${!!busy} onInput=${event => setScale(Number(event.currentTarget.value))}/>
+        <b>×${Number(scale).toFixed(2)}</b>
+        <button class=${"spd" + (busy === "observe" ? " busy" : "")} type="button"
+          disabled=${!!busy} onClick=${doObserve}>WRITE & OBSERVE</button>
+      </div>`}
+
+      ${error && html`<div class="runtime-error" role="status">${error}</div>`}
+      ${observation && html`<div class="runtime-observation" data-testid="runtime-observation">
+        <div class="runtime-shift-strip"><span class="cap">prediction delta</span>
+          <b>L2 ${Number(observation.moved_l2 || 0).toFixed(3)}</b>
+          <span class=${"tag " + (observation.shifted ? "cap-t" : "smp-t")}>
+            ${observation.shifted ? "TOP-1 FLIPPED" : "TOP-1 HELD"}</span></div>
+        <div class="runtime-distributions">
+          <${TopDistribution} label="baseline · before" rows=${observation.baseline_top}/>
+          <${TopDistribution} label=${`edited · position ${observation.position ?? selected} ×${observation.scale ?? scale}`}
+            rows=${observation.edited_top}/>
+        </div>
+        <div class="runtime-receipt">This is an observed next-token distribution change from a transient
+          activation edit, not evidence that the model permanently learned or stored anything.</div>
+      </div>`}
+    </div>
+  </section>`;
+}
+
+function TopDistribution({ label, rows }){
+  return html`<div class="runtime-distribution"><span class="cap">${label}</span>
+    ${(Array.isArray(rows) ? rows : []).map((row, index) => html`<div key=${index}>
+      <b>${JSON.stringify(row.token ?? "")}</b><span>${Number(row.prob || 0).toFixed(4)}</span>
+    </div>`)}
+    ${(!Array.isArray(rows) || !rows.length) && html`<span class="none">no candidates returned</span>`}
   </div>`;
 }

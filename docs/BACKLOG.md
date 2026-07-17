@@ -175,8 +175,8 @@ model (✅ decided: Qwen2.5-0.5B).
   98% health stat). **PORT QUEUE** (remaining pages/*.js stay on disk as reference until ported, UI-unreachable):
   ✅ profiles CRUD → heavn Settings (snapshot/update/switch/import/export/delete; active-delete guarded)
   ✅ facts tier UI → heavn Memory (mode/list/add/read/delete with surprise + abstention receipts)
-  ③ engine.html harvest/observe residual panels (moderate; FIRST resolve whether
-  /steer/* and /engine/steer/* are the same dial system exposed twice) ④ small run-view gaps (narrate, explain
+  ✅ engine.html harvest/observe → heavn Scope; `/steer/*` is canonical and `/engine/steer/*` is a deprecated
+  compatibility facade over the same EngineSteer ④ small run-view gaps (narrate, explain
   tab, lineage tree, quick-repair, propose-memory) ⑤ memory-mode toggle + strength slider ⑥ custom dial maker
   + learned-preference suggestions. Then cut the remaining pages/*.js + engine.html.
 
