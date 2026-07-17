@@ -173,7 +173,8 @@ model (✅ decided: Qwen2.5-0.5B).
   the product gateway). `denoise.html` re-homed as a lab-served page (works only under `clozn lab dream`).
   ✅ Theme aligned to the ambient-runtime refs (honesty pills, live /readyz nav-footer, killed a fabricated
   98% health stat). **PORT QUEUE** (remaining pages/*.js stay on disk as reference until ported, UI-unreachable):
-  ① profiles CRUD → heavn Settings (biggest gap; /profiles/* routes live) ② facts tier UI (large; separate
+  ✅ profiles CRUD → heavn Settings (snapshot/update/switch/import/export/delete; active-delete guarded)
+  ② facts tier UI (large; separate
   slot-memory subsystem) ③ engine.html harvest/observe residual panels (moderate; FIRST resolve whether
   /steer/* and /engine/steer/* are the same dial system exposed twice) ④ small run-view gaps (narrate, explain
   tab, lineage tree, quick-repair, propose-memory) ⑤ memory-mode toggle + strength slider ⑥ custom dial maker

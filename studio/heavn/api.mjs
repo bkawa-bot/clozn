@@ -93,6 +93,16 @@ export const api = {
   memoryRuns: id => j("/memory/" + enc(id) + "/runs"),        // GET (contracts §14)
 
   /* ── steering (contracts §17: axes is POST-only; /steer/set REQUIRES name even if empty) ── */
+  /* profiles: portable card/dial/fact source bundles. Mutations use postE so Settings can show the
+     server's exact validation, switch, or guarded-delete reason instead of a generic null. */
+  profilesList:   () => j("/profiles/list", null, 10000),
+  profilesSave:   profile => postE("/profiles/save", profile, 30000),
+  profilesSwitch: name => postE("/profiles/switch", { name }, 180000),
+  profilesExport: name => postE("/profiles/export", { name }, 30000),
+  profilesImport: (profile, rename = null) => postE("/profiles/import",
+    { profile, ...(rename ? { rename } : {}) }, 30000),
+  profilesDelete: name => postE("/profiles/delete", { name }, 30000),
+
   steerAxes: () => post("/steer/axes", {}),
   steerSet: (name, value) => post("/steer/set", { name: name ?? "", value }),
 

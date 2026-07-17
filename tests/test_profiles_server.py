@@ -392,3 +392,33 @@ def test_import_rejects_a_malformed_bundle(iso):
     out = _post("/profiles/import", {"profile": {"name": "bad name here"}})
     assert "error" in out
     assert _get("/profiles/list")["profiles"] == []
+
+
+# ---- /profiles/delete -----------------------------------------------------------------------------
+
+def test_delete_removes_an_inactive_profile(iso):
+    _post("/profiles/save", _friend_bundle())
+    _post("/profiles/save", _work_bundle())
+
+    out = _post("/profiles/delete", {"name": "friend"})
+
+    assert out == {"ok": True, "name": "friend"}
+    assert [p["name"] for p in _get("/profiles/list")["profiles"]] == ["work"]
+
+
+def test_delete_refuses_the_active_profile_without_changing_it(iso, monkeypatch):
+    _post("/profiles/save", _friend_bundle())
+    monkeypatch.setattr(cs, "SUB", FakeSub())
+    _post("/profiles/switch", {"name": "friend"})
+
+    out = _post("/profiles/delete", {"name": "friend"})
+
+    assert "cannot delete the active profile" in out["error"]
+    listed = _get("/profiles/list")
+    assert listed["active"] == "friend"
+    assert [p["name"] for p in listed["profiles"]] == ["friend"]
+
+
+def test_delete_unknown_or_invalid_profile_is_clean(iso):
+    assert "error" in _post("/profiles/delete", {"name": "ghost"})
+    assert "error" in _post("/profiles/delete", {"name": "../escape"})

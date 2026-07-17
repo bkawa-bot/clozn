@@ -1,7 +1,8 @@
-"""Named persona bundles: list every saved profile (GET /profiles/list), save/update one (does NOT apply
-it), THE switch that applies a bundle's cards+dials to the live substrate, and export/import the bundle's
-portable JSON. Mechanical extraction of the matching `if p == "/profiles/..."` branches out of
-clozn.server.app's do_GET/do_POST; behavior unchanged. -> clozn.profiles.
+"""Named persona bundles: list, save/update, switch, export/import, and delete inactive bundles.
+
+Switch applies a bundle's cards+dials to the live substrate. Delete deliberately refuses the active
+profile so its still-live persona can never outlast the bundle that explains where it came from.
+-> clozn.profiles.
 """
 from clozn.server import app as ctx
 
@@ -65,5 +66,24 @@ def try_post(h, p, body):
             h._json(400, {"error": f"bad profile bundle: {e}"})
             return True
         h._json(200, {"ok": True, "path": path, "profile": p2})
+        return True
+    if p == "/profiles/delete":       # inactive bundles only; never leave a deleted persona applied live
+        from clozn.profiles import store as profiles
+        name = str(body.get("name") or "")
+        if not name:
+            h._json(400, {"error": "need a profile name"})
+            return True
+        if name == ctx._active_profile_name():
+            h._json(409, {"error": "cannot delete the active profile; switch to another profile first"})
+            return True
+        try:
+            deleted = profiles.ProfileStore().delete(name)
+        except ValueError as exc:
+            h._json(400, {"error": f"bad profile name: {exc}"})
+            return True
+        if not deleted:
+            h._json(404, {"error": f"no such profile '{name}'"})
+            return True
+        h._json(200, {"ok": True, "name": name})
         return True
     return False

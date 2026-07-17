@@ -9,7 +9,8 @@ import { ExperimentModule } from "./modules/experiment.mjs";
 import { EditModule } from "./modules/edit.mjs";
 import { ScopeModule } from "./modules/scope.mjs";
 import { AtlasModule } from "./modules/atlas.mjs";
-import { ModelsStub, SettingsStub } from "./modules/stubs.mjs";
+import { SettingsModule } from "./modules/settings.mjs";
+import { ModelsStub } from "./modules/stubs.mjs";
 
 const MODULES = [
   { id: "replay",   nm: "Replay",   sub: "runtime desk",    view: ReplayModule },
@@ -20,7 +21,7 @@ const MODULES = [
   { id: "scope",    nm: "Scope",    sub: "layer inspector", view: ScopeModule },
   { id: "atlas",    nm: "Atlas",    sub: "concept map",     view: AtlasModule },
   { id: "models",   nm: "Models",   sub: "local inventory", view: ModelsStub,   soon: true },
-  { id: "settings", nm: "Settings", sub: "runtime prefs",   view: SettingsStub, soon: true },
+  { id: "settings", nm: "Settings", sub: "profiles & prefs", view: SettingsModule },
 ];
 
 function Topbar(){
