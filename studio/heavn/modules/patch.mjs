@@ -36,7 +36,8 @@ export function PatchModule(){
 
   return html`<div class="col">
     <${PreferenceSuggestions} onApplied=${loadAxes}/>
-    <${DialsPanel} axesState=${axesState}/>
+    <${DialsPanel} axesState=${axesState} onChanged=${loadAxes}/>
+    <${CustomDialMaker} axesState=${axesState} onCreated=${loadAxes}/>
     <${SwapReceiptPanel}/>
     <${CounterfactualPanel} axesState=${axesState}/>
   </div>`;
@@ -106,9 +107,11 @@ function PreferenceSuggestions({ onApplied }){
   </div>`;
 }
 
-function DialsPanel({ axesState }){
+function DialsPanel({ axesState, onChanged }){
   const live = useStore(x => x.live);
   const [values, setValues] = useState({});
+  const [deleteArm, setDeleteArm] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState("");
   useEffect(() => {
     if(axesState.status === "ok"){
       const v = {};
@@ -127,6 +130,20 @@ function DialsPanel({ axesState }){
     toast(`${axis.name} → ${val.toFixed(2)} · active: ${JSON.stringify(res.active)}`);
   }
 
+  async function remove(axis){
+    if(guardLive(null) || deleteBusy) return;
+    if(deleteArm !== axis.name){ setDeleteArm(axis.name); return; }
+    setDeleteBusy(axis.name);
+    const res = await api.steerCustomDelete(axis.name);
+    setDeleteBusy(""); setDeleteArm("");
+    if(!res || res.__status >= 400 || res.error){
+      toast((res && res.error) || `could not delete "${axis.name}"`);
+      return;
+    }
+    toast(`deleted custom dial "${axis.name}"`);
+    await onChanged();
+  }
+
   return html`<div class="mod">
     <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
     <div class="mod-h"><span class="led lilac"></span><span class="cap">any-concept dials</span>
@@ -143,7 +160,11 @@ function DialsPanel({ axesState }){
         : (a.custom ? " · custom" : (a.library ? " · library" : ""));
       return html`<div class="steer-row" key=${a.name}>
         <span>${a.name}<span style="color:var(--mist)"> ${(a.poles || []).join(" ↔ ")}${extra}</span></span>
-        <span class="v">${v.toFixed(2)}</span>
+        <span class="steer-actions"><span class="v">${v.toFixed(2)}</span>
+          ${a.custom && html`<button class=${"steer-delete" + (deleteArm === a.name ? " armed" : "")}
+            disabled=${!live || !!deleteBusy} onClick=${() => remove(a)}
+            title="Delete this user-created dial">${deleteBusy === a.name ? "DELETING…" :
+              deleteArm === a.name ? "CONFIRM" : "DELETE"}</button>`}</span>
         <input style="grid-column:1/-1" type="range" min=${-max} max=${max} step="0.1"
           value=${v} disabled=${!live}
           onInput=${e => setValues(s => ({ ...s, [a.name]: +e.target.value }))}
@@ -151,6 +172,74 @@ function DialsPanel({ axesState }){
       </div>`;
     })}
     <div class="none" style="padding:8px 14px 12px">content concepts steer; style words don't (validated: dir(c) names behavior, can't enact style)</div>
+  </div>`;
+}
+
+/* A custom style dial is not a label or prompt preset: the server harvests both pole descriptions over
+   its shared seed prompts and persists the resulting direction recipe. Creation therefore uses the loaded
+   model and may be slow; it deliberately does not claim calibration or validate behavioral effect. */
+function CustomDialMaker({ axesState, onCreated }){
+  const live = useStore(x => x.live);
+  const [name, setName] = useState("");
+  const [pos, setPos] = useState("");
+  const [neg, setNeg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  const create = async e => {
+    e && e.preventDefault();
+    if(!live || busy) return;
+    const n = name.trim(), p = pos.trim(), q = neg.trim();
+    if(!n || !p || !q){
+      setMessage({ kind: "error", text: "Need a name and both pole descriptions." }); return;
+    }
+    if(p === q){
+      setMessage({ kind: "error", text: "The two poles must describe different behavior." }); return;
+    }
+    const axes = axesState.status === "ok" ? axesState.axes : [];
+    if(axes.some(a => String(a.name).toLowerCase() === n.toLowerCase())){
+      setMessage({ kind: "error", text: `A dial named "${n}" already exists. Choose a unique name.` }); return;
+    }
+    setBusy(true); setMessage({ kind: "info", text: "Computing the direction from both poles…" });
+    const r = await api.steerCustom(n, p, q);
+    setBusy(false);
+    if(!r || r.__status >= 400 || r.error){
+      setMessage({ kind: "error", text: (r && r.error) || "Dial creation did not reach the server." });
+      return;
+    }
+    setName(""); setPos(""); setNeg("");
+    setMessage({ kind: "ok", text: `Created "${r.name || n}" with a ±${(+r.max || 0.5).toFixed(2)} range. The recipe is saved; calibration has not been run.` });
+    await onCreated();
+  };
+
+  return html`<div class="mod" data-testid="custom-dial-maker">
+    <div class="mod-h"><span class="led lilac"></span><span class="cap">make your own dial</span>
+      <span class="tail">pole pair → direction</span></div>
+    <form class="custom-dial-form" onSubmit=${create}>
+      <div class="custom-dial-rule"><b>Model work.</b> Creation reads the loaded substrate across shared
+        seed prompts, so it can take a while and use the GPU. It creates and saves a direction; it does
+        <b> not</b> run calibration or prove that the dial changes behavior.</div>
+      <label>name <span>${name.length}/24</span>
+        <input value=${name} maxlength="24" autocomplete="off" disabled=${!live || busy}
+          onInput=${e => setName(e.target.value)} placeholder="skeptical"/>
+      </label>
+      <label class="custom-dial-pole">positive pole <span>${pos.length}/320</span>
+        <textarea value=${pos} maxlength="320" rows="2" disabled=${!live || busy}
+          onInput=${e => setPos(e.target.value)}
+          placeholder="Responds with sharp skepticism and asks for evidence."></textarea>
+      </label>
+      <label class="custom-dial-pole">negative pole <span>${neg.length}/320</span>
+        <textarea value=${neg} maxlength="320" rows="2" disabled=${!live || busy}
+          onInput=${e => setNeg(e.target.value)}
+          placeholder="Accepts claims with credulous enthusiasm."></textarea>
+      </label>
+      <div class="custom-dial-actions">
+        <button type="submit" class=${"spd primary" + (busy ? " busy" : "")} disabled=${!live || busy}>
+          ${busy ? "COMPUTING…" : "CREATE DIAL"}</button>
+        ${!live && html`<span>live server only — sample mode cannot create dials.</span>`}
+      </div>
+      ${message && html`<div class=${"custom-dial-message " + message.kind}>${message.text}</div>`}
+    </form>
   </div>`;
 }
 

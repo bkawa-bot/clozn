@@ -119,6 +119,10 @@ export const api = {
 
   steerAxes: () => post("/steer/axes", {}),
   steerSet: (name, value) => post("/steer/set", { name: name ?? "", value }),
+  /* Compiles a pole pair over the substrate's shared seed prompts. This is model work, so keep the
+     same generous ceiling as other on-demand computations and preserve the server's validation text. */
+  steerCustom: (name, pos, neg) => postE("/steer/custom", { name, pos, neg }, 300000),
+  steerCustomDelete: name => postE("/steer/custom_delete", { name }, 30000),
   preferences: (threshold = 3) => postE("/preferences", { threshold }, 30000),
   preferenceResolve: (id, action) => postE("/preferences/resolve", { id, action }, 30000),
 

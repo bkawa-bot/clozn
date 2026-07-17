@@ -345,6 +345,11 @@ details[open].leader summary::before{content:"▾"}
 .steer-row .v{font-size:9px;color:#1B87A8;font-weight:600}
 .steer-row .bar{grid-column:1/-1;height:4px;border-radius:2px;background:rgba(90,130,155,.16);overflow:hidden}
 .steer-row .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--teal))}
+.steer-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px}
+.steer-delete{font-family:var(--disp);font-size:6.5px;letter-spacing:.08em;color:#A65A4A;border:1px solid rgba(242,109,79,.32);
+  border-radius:5px;padding:2px 5px;background:rgba(242,109,79,.05)}
+.steer-delete:hover:not(:disabled),.steer-delete.armed{color:#fff;border-color:#C24A31;background:#C24A31}
+.steer-delete:disabled{opacity:.45;cursor:not-allowed}
 .sooncard{padding:9px 14px;border-top:1px solid var(--edge-soft);display:flex;align-items:center;gap:10px;font-size:10px}
 .sooncard .ds{font-size:8px;color:var(--mist);display:block}
 .sooncard .stag{margin-left:auto;font-size:7px;letter-spacing:.12em;color:#5F5794;text-transform:uppercase;
@@ -442,6 +447,26 @@ details[open].leader summary::before{content:"▾"}
 .preference-message.ok{color:#1B7F74;border-color:rgba(95,200,188,.45);background:rgba(95,200,188,.10)}
 .preference-message.warn{color:#9B6C24;border-color:rgba(230,196,120,.55);background:rgba(230,196,120,.12)}
 .preference-message.error{color:#C24A31;border-color:rgba(242,109,79,.45);background:rgba(242,109,79,.09)}
+
+/* Patch · user-created pole-pair dials */
+.custom-dial-form{padding:4px 14px 13px;display:grid;grid-template-columns:minmax(120px,.55fr) minmax(180px,1fr) minmax(180px,1fr);
+  gap:9px 10px;align-items:start}
+.custom-dial-rule{grid-column:1/-1;font-size:8px;line-height:1.55;color:var(--mist)}
+.custom-dial-rule b{color:#1B87A8;font-weight:600}
+.custom-dial-form label{min-width:0;display:grid;grid-template-columns:1fr auto;gap:4px;font-size:8px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--mist)}
+.custom-dial-form label > span{font-size:7px;letter-spacing:0}
+.custom-dial-form input,.custom-dial-form textarea{grid-column:1/-1;box-sizing:border-box;width:100%;min-width:0;font-family:var(--mono);
+  font-size:9.5px;line-height:1.45;color:var(--navy);border:1px solid var(--edge);border-radius:8px;padding:7px 9px;
+  resize:vertical;background:linear-gradient(180deg,#fff,#EAF4FA);box-shadow:inset 0 1px 3px rgba(90,130,160,.12)}
+.custom-dial-form input:focus-visible,.custom-dial-form textarea:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.custom-dial-form input:disabled,.custom-dial-form textarea:disabled{opacity:.55}
+.custom-dial-actions{grid-column:1/-1;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.custom-dial-actions span{font-size:8px;color:var(--mist)}
+.custom-dial-message{grid-column:1/-1;padding:8px 10px;border:1px solid var(--edge-soft);border-radius:8px;font-size:8.5px;line-height:1.5}
+.custom-dial-message.info{color:#5F5794;background:rgba(182,176,218,.10)}
+.custom-dial-message.ok{color:#1B7F74;border-color:rgba(95,200,188,.45);background:rgba(95,200,188,.10)}
+.custom-dial-message.error{color:#C24A31;border-color:rgba(242,109,79,.45);background:rgba(242,109,79,.09)}
 
 /* Memory · optional fact slot store */
 .facts-body{padding:3px 14px 13px;display:flex;flex-direction:column;gap:10px}
@@ -545,6 +570,8 @@ details[open].leader summary::before{content:"▾"}
   .memory-controls-body{grid-template-columns:1fr}
   .preference-row{grid-template-columns:1fr}
   .preference-actions{grid-column:1;grid-row:auto}
+  .custom-dial-form{grid-template-columns:1fr}
+  .custom-dial-rule,.custom-dial-actions,.custom-dial-message{grid-column:1}
 }
 
 .footer{display:flex;align-items:center;gap:18px;margin-top:12px;padding:10px 15px;flex-wrap:wrap;
