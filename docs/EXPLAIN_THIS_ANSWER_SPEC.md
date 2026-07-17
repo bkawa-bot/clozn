@@ -28,7 +28,7 @@ manifest, not today's; use the **actual** (post-truncation) input that was sent,
 `runlog` logs per reply: `messages` (the recipe), `response`, `memory{mode,cards_applied,applied_ids,
 gate}`, `behavior.active_dials`, `trace{tokens,confidence,alternatives}`, `timing`. `replay.py` does the
 greedy ablation (`/runs/<id>/replay` with `memory_off|disabled_memory_ids|behavior_off|behavior_overrides
-|greedy`), state restored in `finally`. `run.js` renders the token timeline, influence column, per-card /
+|greedy`), state restored in `finally`. heavn Replay renders the token timeline, influence column, per-card /
 per-dial receipt buttons + delta strips. `memory_cards` carries provenance quotes. The engine emits
 `sae:<id>` concept readouts on the stream. **The missing work is assembly + a lightweight surface + the
 narration, not new primitives.**

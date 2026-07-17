@@ -23,7 +23,7 @@ import html
 # Cap the phosphor token stream so a pathological trace can't blow the ~150KB budget. Typical replies
 # are <=256 tokens; the cap only ever bites on something abnormal, and it says so on the card.
 MAX_TOKENS = 4000
-LOW_CONF = 0.5   # matches clozn.receipts.explain.LOW_CONF / studio run.js — ONE "unsure" convention
+LOW_CONF = 0.5   # matches clozn.receipts.explain.LOW_CONF — ONE "unsure" convention
 
 _ABSENT_RECEIPTS = "no receipts computed for this run — receipts are measured on demand, never assumed"
 _ABSENT_LENS = ("no lens readout recorded on this run — the lens reads on demand from the engine "

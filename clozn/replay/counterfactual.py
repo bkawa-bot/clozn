@@ -11,7 +11,7 @@ chat time. Diffing a new counterfactual reply against that stored sampled reply 
 once (dial value change AND sampled->greedy decoding) -- exactly the bug M2's receipts.py exists to fix for
 ablation. So the baseline here is ALSO regenerated greedy, with the run's OWN dials untouched
 (`replay.replay(run, {"greedy": True}, sub)`) -- never the stored sampled response. Both arms greedy, both
-from the SAME stored messages, diffed via `receipts.receipt_metrics` -- the identical metric math run.js's
+from the SAME stored messages, diffed via `receipts.receipt_metrics` -- the identical metric math heavn Replay's
 delta strip and receipts.py already use, so a client never sees three different numbers for the same kind
 of diff.
 

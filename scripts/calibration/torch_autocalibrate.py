@@ -261,7 +261,7 @@ def effect_vs_baseline(baseline_texts: list[str], steered_texts: list[str]) -> f
     the direction-aware rewrite (see the module docstring's THE EFFECT MEASURE section): 1 minus the
     word-type-Jaccard-similarity between a steered reply and that SAME prompt's dose-0 (unsteered) reply --
     concretely, receipts.receipt_metrics(baseline, steered)["changed"] / 100, averaged over the prompt
-    sample. This is deliberately the SAME pure-counting "%-of-wording-changed" metric run.js's delta strip /
+    sample. This is deliberately the SAME pure-counting "%-of-wording-changed" metric heavn Replay's delta strip /
     receipts.py / counterfactual.py already compute for every other receipt in this codebase, so "how much
     did this dose move the text, lexically" is never a second, silently-different definition of that
     question.

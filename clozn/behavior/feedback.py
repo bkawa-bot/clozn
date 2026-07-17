@@ -1,7 +1,7 @@
 """feedback.py -- the preference-signal store (the CAPTURE layer of preference plumbing).
 
 The Run Inspector already lets a user say a reply was off ("Too verbose" -> nudge `concise` + replay,
-run.js's quick-repairs) and persist that fix (the F2 save-fix -> /steer/set). That is the MANUAL loop:
+heavn Replay's quick repairs) and persist that fix (the F2 save-fix -> /steer/set). That is the MANUAL loop:
 the user drives it, one reply at a time. What's missing is LEARNING -- noticing "you keep asking for
 concise" and proactively offering to make it a default. This module is the foundation for that: it
 records each directional feedback signal, tied to the run that prompted it, so a later accumulate-and-

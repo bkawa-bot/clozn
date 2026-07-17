@@ -312,7 +312,7 @@ def test_explicit_style_overrides_the_persisted_setting(iso):
 def test_no_style_arg_honors_the_persisted_setting(iso):
     # this is the part that makes existing call sites configurable WITHOUT editing them: they pass no
     # style, so compile_prompt_block falls through to get_block_style() and picks up whatever a user
-    # (or the toggle in memory.js) has set.
+    # (or the heavn Memory mode control) has set.
     memory_mode.set_block_style("strict")
     assert "use it naturally to tailor" not in memory_mode.compile_prompt_block(["likes tea"])
     memory_mode.set_block_style("soft")

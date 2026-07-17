@@ -37,9 +37,8 @@ from __future__ import annotations
 import clozn.memory.cards as memory_cards
 from clozn.runs import close_calls
 
-# Matches studio/pages/run.js's `LOW_CONF` (the token-timeline's "unsure" cutoff) -- ONE convention
-# read in both places, so the studio's visual "unsure" underline and this endpoint's "uncertain moment"
-# never disagree about what counts as a hesitation.
+# Matches the run timeline and confidence-span `LOW_CONF` values -- one convention, so every recorded
+# hesitation and the heavn Explain panel's uncertain moments agree about what counts as unsure.
 LOW_CONF = 0.5
 
 _NO_TRACE_NOTE = "token trace captured on the engine path"
@@ -57,8 +56,7 @@ def _as_dict(x) -> dict:
 def _card_text(c) -> str:
     """cards_applied entries are plain strings on every current path (_log_run's prompt AND internalized
     branches both store texts, not dicts) -- but tolerate a {"text": ...} shape too, defensively, exactly
-    like studio/pages/run.js's cardLabel() does, so a future shape change degrades instead of
-    breaking the endpoint."""
+    like the timeline assembler does, so a future shape change degrades instead of breaking the endpoint."""
     if isinstance(c, str):
         return c
     if isinstance(c, dict):
@@ -156,7 +154,7 @@ def _influences_active(run: dict) -> dict:
     if not cards and not anchored:
         # Prompt mode logs PER-TURN application: "none" there means the block wasn't injected on THIS turn
         # (topic-gated out, or strength 0) -- not that no cards exist at all. Say so explicitly rather than
-        # let an empty list misread as "memory is unconfigured" (mirrors run.js's influenceCol note).
+        # let an empty list misread as "memory is unconfigured" (mirrors heavn Explain's influence note).
         out["note"] = ("no memory applied this turn (block not injected)" if mem.get("mode") == "prompt"
                        else "no memory applied")
     return out

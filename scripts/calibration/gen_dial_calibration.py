@@ -5,7 +5,7 @@ don't exist as a steering.AXES built-in) so they show up as sliders; THIS script
 RANGE file that caps ALL 33 shipped dials -- both the 27 library dials and the 6 that overlap a built-in
 (warm, playful, formal, concise, poetic, concrete). clozn_server.py's /steer/axes reads this file (via
 _dial_calibration / _with_calibration) to serve each dial's calibrated `max` + `usable_range` +
-`works`, and behavior.js uses those to cap the slider + show the "works 0.25-1.0 ..." hint.
+`works`, and heavn Patch uses those to cap each dial slider and label its usable range.
 
 No model / no GPU: the ranges are already baked into research/dial_library_shipped.json's `ship_range`
 (the human-curated conservative range from the autocalibrate sweep). This is a

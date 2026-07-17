@@ -1,7 +1,7 @@
 """Engine-backed chat + steering + model routing, and the two studio chat surfaces that log a run
 (POST /say for the HF/qwen memory model, POST /denoise for the Dream diffusion window). `/engine/*` here
 covers WRITE/generation calls (as opposed to the pure readouts in routes/readouts.py): observe (edit a
-residual, watch the prediction move), legacy engine.html tone-dial compatibility aliases, and
+residual, watch the prediction move), deprecated tone-dial compatibility aliases, and
 native GGUF chat with prompt-card memory. `/say` and
 `/denoise` dispatch to whichever substrate is active (SUB.handle) and additionally log the run -- unlike
 the fully generic SUB.handle(path, body) fallback (still in clozn.server.app's do_POST), these two shape
@@ -72,7 +72,7 @@ def try_post(h, p, body):
         except Exception as e:
             h._json(502, {"error": f"engine: {e}"})
         return True
-    if p == "/engine/steer/axes":   # legacy engine.html alias; /steer/axes is the product contract
+    if p == "/engine/steer/axes":   # deprecated alias; /steer/axes is the product contract
         from clozn.behavior.steering.axes import AXES
         es = ctx._engine_steer()
         sub = ctx.active_sub(h)

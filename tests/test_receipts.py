@@ -9,7 +9,7 @@ replay.py actually changed, never by randomness.
 What's under test:
   * the BOTH-ARMS-GREEDY seam: receipt() calls sub.chat() exactly twice, both greedy (sample=False), both
     over the run's own stored messages -- never touching the run's stored sampled `response`.
-  * receipt_metrics() mirrors run.js's receiptMetrics() EXACTLY, including the two JS-vs-Python rounding
+  * receipt_metrics() is the canonical metric assembly used by heavn Replay, including the rounding
     ties (Math.round rounds a trailing .5 UP; Python's builtin round() would bankers'-round it down).
   * causal_verified is True on a real ablation, and correctly FALSE (with an `ablation_note`) when the
     ablation could not actually apply (a per-card ablation attempted in "internalized" memory mode) --

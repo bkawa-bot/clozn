@@ -3,7 +3,7 @@
   "_provenance": "71 candidates (dial_library_candidates.json) -> 47 direction-aware metric-usable (dial_autocalibrate.py) -> 33 human-curated keepers (read actual replies, kept only dials that genuinely READ AS their tone; conservative ship_range dropped back from the raw usable_max wherever the top dose rambled / inverted facts / drifted).",
   "_model": "Qwen/Qwen2.5-7B-Instruct (nf4)",
   "_per_model": "Ranges + which dials survive are MODEL-SPECIFIC (Law #6). A different model needs its own sweep.",
-  "_deploy": "To go live: (1) register these dials on the studio (steer.add_custom(name,pos,neg)) so the library-only ones appear; (2) write a ~/.clozn/dial_calibration.json keyed by name -> {usable_max: ship_range[1], usable_range: ship_range, works: true} so /steer/axes caps the sliders (the wiring is already in clozn_server.py + behavior.js).",
+  "_deploy": "To go live: (1) register these dials on the studio (steer.add_custom(name,pos,neg)) so the library-only ones appear; (2) write a ~/.clozn/dial_calibration.json keyed by name -> {usable_max: ship_range[1], usable_range: ship_range, works: true} so /steer/axes caps the heavn Patch sliders.",
   "n_dials": 33,
   "dials": [
     {

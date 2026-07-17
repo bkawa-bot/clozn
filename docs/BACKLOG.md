@@ -167,19 +167,20 @@ model (✅ decided: Qwen2.5-0.5B).
 
 ## 4. Product / UX polish (heavn is built; these are refinements)
 
-- [ ] **UI consolidation → heavn only** (owner decision 2026-07-17: one frontend). ✅ CUT: instrument/
+- [x] **UI consolidation → heavn only** (owner decision 2026-07-17: one frontend). ✅ CUT: instrument/
   studio/jlens/brain/app.html + clozn.css + pages/agent.js + pages/lab.js (all dead or superseded — the
   legacy pages assumed the pre-split multi-substrate server; /say, /denoise, /engine/concepts 409/410 on
   the product gateway). `denoise.html` re-homed as a lab-served page (works only under `clozn lab dream`).
   ✅ Theme aligned to the ambient-runtime refs (honesty pills, live /readyz nav-footer, killed a fabricated
-  98% health stat). **PORT QUEUE** (remaining pages/*.js stay on disk as reference until ported, UI-unreachable):
+  98% health stat). **COMPLETED PORT QUEUE** (legacy sources were retained until their replacements landed):
   ✅ profiles CRUD → heavn Settings (snapshot/update/switch/import/export/delete; active-delete guarded)
   ✅ facts tier UI → heavn Memory (mode/list/add/read/delete with surprise + abstention receipts)
   ✅ engine.html harvest/observe → heavn Scope; `/steer/*` is canonical and `/engine/steer/*` is a deprecated
   compatibility facade over the same EngineSteer. ✅ run-view ports: narrate + explain + lineage tree +
   quick-repair presets in Replay, propose-memory in Memory. ✅ memory-mode selector + strength slider → heavn
   Memory. ✅ learned-preference suggestions + custom dial maker (create, honest model-cost note, two-step
-  delete) → heavn Patch. Then cut the remaining pages/*.js + engine.html.
+  delete) → heavn Patch. ✅ CUT: the remaining legacy `pages/*.js` bundle + `engine.html`; heavn is the only
+  product frontend, while `denoise.html` remains an explicitly lab-served Dream page.
 
 - [ ] **Document-first "Read view"** **[AMB]** — make it the default `/r/<id>` landing ("read it, zoom into
   the sketchy spans"). The docs call this *"the answer to why use clozn instead of just calling the model."*

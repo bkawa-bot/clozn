@@ -195,7 +195,7 @@ def test_influences_active_internalized_mode_has_no_applied_ids_at_all(store):
 
 def test_influences_active_empty_cards_notes_the_prompt_mode_nuance(store):
     """Prompt mode logs PER-TURN application: an empty cards_applied means the block wasn't injected THIS
-    turn (topic-gated out), not that no cards exist -- the note must say so, matching run.js's rendering."""
+    turn (topic-gated out), not that no cards exist -- the note must say so, matching heavn's rendering."""
     rid = store.record(source="studio_chat", messages=[{"role": "user", "content": "q"}], response="a",
                        memory={"cards_applied": [], "mode": "prompt"})
     inf = explain.explain(store.get_run(rid))["influences_active"]
