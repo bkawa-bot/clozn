@@ -5,9 +5,11 @@ Watch a model think (per-token confidence + the alternatives it weighed), steer 
 as readable cards, and get **causal receipts**: teacher-force a stored answer back through the model to
 measure *which* memory it actually leaned on, and by how much. Read a per-token **J-lens**: a fitted
 linear lens, applied forward on the GGUF's own head, reads what the model was "disposed to say" at each
-position — not a decode of its literal thought (a linear lens always emits *something*). Runs on **any
-autoregressive GGUF** (Llama, Qwen, Mistral, Gemma, …), not just one model. Ollama's structural opposite:
-not a black box you prompt, a glass box you inspect — and can hold to account.
+position — not a decode of its literal thought (a linear lens always emits *something*). The core runtime
+has passed basic/deep qualification across five autoregressive GGUF families; deeper white-box writes and
+optional dials/lenses remain model-qualified. Ollama's structural opposite: not a black box you prompt, a
+glass box you inspect — and can hold to account. See [model support](docs/MODEL_SUPPORT.md) for the exact
+evidence boundary.
 
 `clozn` = `cloze` (the engine inside) + *cozen* (to deceive — the illusion it reveals).
 
@@ -50,9 +52,11 @@ for an interactive chat (multi-turn; `/reset` clears, `/bye` quits).
 gateway/worker pair and tears it down after. Product commands never bypass the gateway to call a warm
 worker directly. `clozn serve` supervises the private worker and restarts it after an unexpected exit.
 
-OpenAI clients use `/v1/chat/completions`, `/v1/completions`, and `/v1/models`. Clozn's CLI and Studio
-instrumentation use `/api/clozn/generate`, which preserves the native state-event stream. Native event
-frames never leak into an OpenAI completion stream.
+OpenAI clients use the documented subset of `/v1/chat/completions`, `/v1/completions`, and `/v1/models`;
+unsupported behavior-bearing fields return a typed 400 instead of being silently ignored. See the exact
+[endpoint/field matrix](docs/OPENAI_COMPATIBILITY.md). Clozn's CLI and Studio instrumentation use
+`/api/clozn/generate`, which preserves the native state-event stream. Native event frames never leak into
+an OpenAI completion stream.
 
 Every run is debuggable — and provable — after the fact. The engine streams per-token confidence + the
 alternatives it weighed; open a run in Studio's **Run Inspector** for **causal receipts** (which memory
@@ -92,8 +96,8 @@ first: `cd engine/core && build_gpu.bat` (GPU, CUDA) or `build_serve.bat` (CPU).
 The legibility-science spikes and findings (the interpretability-tax thread) live in a separate
 local-only sibling repo: `../clozn-research`.
 
-Two model substrates behind one spine today: **autoregressive** (any GGUF — Llama/Qwen/Mistral/Gemma/…)
-and **diffusion** (LLaDA/Dream, viz-only). The white-box taps — trace, harvest, steer, and the
-teacher-forced `/score` receipts — work on any AR GGUF you load. **J-lens is fit per model** (offline,
-nf4 + autograd) and applied forward on the engine's own GGUF head; today that fit covers Qwen2.5-7B.
-Model-agnostic J-lens (fit-per-model, any AR GGUF) is next, not yet shipped.
+Two model substrates sit behind one spine today: **autoregressive** GGUF and **diffusion** LLaDA/Dream
+(viz-only). The AR core contract includes trace, harvest, steer, and teacher-forced `/score`; the checked-in
+qualification ledger records how far each exact model/quant has passed. **J-lens is fit per model**
+(offline, nf4 + autograd) and applied forward on the engine's own GGUF head; today's qualified fit covers
+Qwen2.5-7B. A second-family fit and targeted cross-family write checks remain open.

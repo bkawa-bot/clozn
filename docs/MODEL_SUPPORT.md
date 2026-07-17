@@ -1,164 +1,82 @@
-# Model Support & Agnosticism
+# Model support and qualification
 
-**Thesis:** clozn is a GGUF runtime, so portability is **tiered, not all-or-nothing**. Most of the product
-is model-agnostic today (or one bounded fix away); only the SAE concept viz is genuinely model-gated.
+**Thesis:** model support is an evidence ladder, not a yes/no label. Clozn's core is built around
+autoregressive GGUF capabilities, while white-box writes, calibrated dials, J-lenses, and SAEs require
+increasingly model-specific evidence or artifacts.
 
-> **Status (2026-07-16):** Tier-0 (any-AR-GGUF, engine-side chat templating) has **shipped** — the
-> "chat template is the one real Tier-0 blocker" framing below is now resolved. The product/lab split has
-> landed. Current open model work (model registry, 2nd-architecture verification, qualification matrix)
-> is tracked in **[BACKLOG.md](BACKLOG.md) §2**; this file is the design reference, not the live tracker.
+> **Status (2026-07-17):** engine-side chat templating and cross-family Tier-0 core support have shipped.
+> The checked-in [Wave 1 qualification ledger](qualification/wave1.json) records CPU basic/deep smoke on
+> Qwen 2.5, Llama 3.1, Qwen 3.5, Gemma 4, and Ministral 3. It does **not** claim that every white-box write
+> or optional artifact is qualified on every family. Open model work lives in [BACKLOG.md](BACKLOG.md) §2.
 
-| Tier | Features | Portability | Per-model cost |
+## What “supports a model” means
+
+The ordered qualification levels are the ones serialized in `docs/qualification/wave1.json`:
+
+| Level | What passed | Per-model work |
+|---|---|---|
+| **Discovered** | GGUF identity, architecture, dimensions, tokenizer, and embedded chat template can be read | no training |
+| **Core** | chat, OpenAI/native streaming, prompt-card memory, run persistence, scoring, receipts, worker restart, and cleanup | run basic + deep smoke |
+| **White-box** | activation taps, steering writes, and teacher-forced scoring work at valid layers for this architecture | targeted read/write qualification |
+| **Calibrated** | model-scoped dial directions and safe ranges passed their sweep | forward-pass sweep + curation |
+| **Lens-qualified** | a model-scoped J-lens manifest and payload passed identity, checksum, dimension, and quant-transfer checks | offline fit + transfer qualification |
+
+SAE concept atlases are a separate bespoke feature: they require a compatible trained SAE and are never
+implied by core or J-lens qualification.
+
+“Any AR GGUF” therefore names the **core runtime contract**, not a claim that every file on the internet
+has already been tested. A candidate still needs to load in the pinned engine, contain a usable embedded
+chat template, and pass the appropriate qualification rung. LLaDA/Dream remain a separate diffusion lane;
+autoregressive forced scoring and receipts do not automatically carry over.
+
+## Claims and evidence
+
+| Claim | Implementation | Repeatable check or recorded measurement | Boundary |
 |---|---|---|---|
-| **0 — Universal** | chat, token trace / confidence timeline, prompt-mode memory (cards), receipts / rederive / forced-scoring, run inspector | **any autoregressive GGUF** llama.cpp loads | **$0** (once the template is engine-sourced) |
-| **1 — Calibrated** | tone dials / steering, linear probes | any GGUF **+ one automated sweep** | ~1 GPU sweep (forward passes, no backprop) + a curation pass |
-| **2 — Bespoke** | SAE concept atlas / "brain" readouts (named sparse features) | **only models with a trained SAE** | free where a suite exists (GemmaScope); research-grade otherwise |
+| The product applies the loaded GGUF's own chat template | `engine/core/serve/chat_template_renderer.cpp`, `routes_whitebox.cpp:/apply_template`, `clozn/server/app.py:_engine_tmpl` | `tests/test_engine_apply_template.py` (5 model-free seam checks); Wave 1 records full-Jinja Gemma 4 deep smoke | a GGUF without a valid embedded template fails visibly; there is no silent Qwen fallback |
+| The product path is Torch-free | `clozn/server/` + the private C++ worker | `.github/workflows/ci.yml:product-minimal`; `tests/test_runtime_architecture.py` verifies the product/lab boundary | lab fitting and research still use PyTorch |
+| Core support crosses model families | the same gateway/worker and smoke gate for every model | Wave 1: Qwen 2.5 deep **26/26**; Llama 3.1, Qwen 3.5, Gemma 4, and Ministral 3 basic **24/24** + deep **26/26**, CPU | four non-Qwen rows still list targeted white-box write tests as pending |
+| J-lens application is engine-native | `engine/core/serve/routes_jlens.cpp`; gateway proxy in `clozn/server/routes/receipts.py` | `tests/test_jlens_server.py` (12 contract/degradation checks); Wave 1 marks the exact Qwen2.5-7B Q4_K_M digest `qualified_q4_k_m`; the live 96–99% top-1 engine-vs-numpy result is recorded in `docs/ROADMAP.md` | the checked-in qualified fit covers Qwen2.5-7B only; a lens read is not causal proof |
+| Sampling metadata describes the sampler that ran | `clozn/server/app.py:_engine_generation_meta`; `engine/core/src/sample.cpp` | `tests/test_engine_substrate.py` and `tests/test_engine_stream.py` check the full temperature/top-k/top-p/repetition/seed handoff | receipts and forced replay explicitly use the separate greedy path |
 
-Tier 0 is a **capability**, not a roster. Tier 1 is a **growable roster** (add a model by running its sweep).
-Tier 2 is **hero-only**.
+Exact checkpoint identity, GGUF SHA-256, tokenizer/template digests, dimensions, and per-rung status live in
+the qualification ledger rather than prose so a marketing sentence cannot silently broaden the evidence.
 
----
+## Current qualification roster
 
-## What's model-locked today, and the fix
+| Family / exact checkpoint | Core | White-box | Dials | J-lens |
+|---|---|---|---|---|
+| Qwen 2.5 — `Qwen/Qwen2.5-7B-Instruct` | deep CPU 26/26 | partial | legacy global library; model-scoped recalibration required | exact Q4_K_M qualified |
+| Llama 3.1 — `meta-llama/Llama-3.1-8B-Instruct` | basic 24/24 + deep 26/26 CPU | native probe startup passed; targeted writes pending | pending | pending |
+| Qwen 3.5 — `Qwen/Qwen3.5-9B` | basic 24/24 + deep 26/26 CPU | native probe startup passed; targeted writes pending | pending | pending |
+| Gemma 4 — `google/gemma-4-E4B-it` | basic 24/24 + deep 26/26 CPU; full Jinja template passed | native probe startup passed; targeted writes pending | pending | pending |
+| Ministral 3 — `mistralai/Ministral-3-3B-Instruct-2512` | basic 24/24 + deep 26/26 CPU | native probe startup passed; targeted writes pending | pending | pending |
 
-Survey (2026-07-08): 123 `Qwen` references across 13 `clozn/*.py` files, concentrated in `clozn_server.py`
-(73). The couplings that actually matter:
+This table summarizes `wave1.json`; the JSON is authoritative when prose and the ledger disagree.
 
-1. **Chat template — the one real Tier-0 blocker.** `_qwen_tmpl` (`clozn/clozn_server.py:121-132`)
-   hardcodes Qwen's ChatML (`<|im_start|>…<|im_end|>`) and is called in *every* generation path
-   (`:1595, :1640, :1723, :2708, :2710`). Pointing clozn at a Llama/Gemma GGUF today would feed it the
-   wrong prompt format.
-   **Fix:** apply the GGUF's *embedded* chat template engine-side (`llama_chat_apply_template` reads it from
-   model metadata); Python sends messages, the engine templates per-model. Bounded, mechanical.
+## Remaining model coupling
 
-2. **Hardcoded model defaults.** `"Qwen/Qwen2.5-7B-Instruct"` as `model_id` (`:70`) and in `SelfTeach(...)`
-   (`:1174`), plus scattered assumptions.
-   **Fix:** a small **model registry / config** (id, tap layer, quant, sampler defaults) instead of literals.
+1. **Registry coverage is incomplete.** `clozn/server/substrates.py` recognizes the Wave 1 families, but
+   model defaults and research paths still contain Qwen-specific literals. These must move behind one
+   model identity/config contract instead of growing more filename heuristics.
+2. **White-box portability needs targeted writes.** Core smoke is cross-family; tap/write/score parity is
+   not yet fully qualified for the four non-Qwen Wave 1 rows. This is the honest boundary on “any GGUF.”
+3. **Dials are model- and substrate-scoped.** A direction and safe range calibrated on Qwen2.5/PyTorch
+   cannot be relabeled as qualified on another checkpoint or on the C++ substrate. Each model gets its
+   own survivors and limits.
+4. **J-lenses are fit per model.** Application is forward-only C++, but fitting requires the PyTorch lab
+   and every product quant needs transfer evidence. The Qwen2.5-7B qualification record proves the path,
+   not a universal artifact.
+5. **SAEs remain bespoke.** The existing Qwen SAE/concept stack does not generalize without a compatible
+   trained SAE and matching identity/dimensions.
 
-3. **SAE / concept stack** (`sae7b.py`, `brain_readout.py`, `atlas_concepts.py`) — trained on Qwen-7B with
-   Neuronpedia labels. Fully Tier-2; does not generalize without a per-model SAE.
+## Next qualification work
 
-4. **Dials** (`steering.py` + `clozn/data/dial_library_shipped.json`) — steer vectors + the 33-dial safe
-   ranges are per-model ("a different model needs its own sweep" — the library says so itself, Law #6).
+1. Finish the artifact-contract/model-registry lane already tracked as in progress in `BACKLOG.md`.
+2. Run targeted `/harvest`, `/state`/steer, and `/score` qualification on at least one non-Qwen Wave 1
+   architecture, then record the exact result and GGUF digest in `wave1.json`.
+3. Produce model-scoped dial sweeps; do not inherit Qwen's safe ranges.
+4. Fit and quant-transfer a second-family J-lens before describing J-lens availability as cross-family.
 
----
-
-## Per-model cost & the honest nuances
-
-- **Tier 0: $0.** Any AR GGUF llama.cpp supports. Diffusion models (Dream/LLaDA) are the exception —
-  they use a separate substrate (no forced-scoring; the AR factorization doesn't apply).
-- **Tier 1 (dials): one automated sweep, with two caveats.**
-  1. You **don't get the same 33 dials on every model** — you get *that model's* survivors, with their own
-     safe ranges (Qwen-7B: 71 candidates → 47 metric-usable → 33 human-kept). A weaker/stronger model keeps
-     a different subset.
-  2. The final "reads-as-its-tone" curation was **human**. To make Tier 1 push-button per model, replace it
-     with an **LLM-judge** rating each dose. Automatable, but a real step.
-  - Steering hooks must support the architecture (fine for standard + MoE transformers — the residual stream
-    is there; verify on a second architecture before claiming it).
-- **Tier 2 (concept / "brain" readouts).** Two paths, and the SAE path is *consumed, not trained*:
-  - **SAE atlas (model-gated).** We do NOT train SAEs — `sae7b.py` loads a *downloaded* single-layer SAE
-    (`~/hf_models/andyrdt_l15_sae.pt`, Andy Arditi's Qwen-7B layer-15). So "which models get the SAE atlas"
-    = "which have a *public* SAE": Qwen-7B (andyrdt), Gemma-2/3 (GemmaScope). Training our own is a small
-    single-layer SAE at best (feasible-with-effort on 16 GB: corpus + harvest pipeline + days) and won't
-    match a curated suite — not worth it vs. consuming a public one. GemmaScope-scale suites are flatly out
-    of reach (multi-GPU).
-  - **Jacobian lens (SELF-SERVE, model-agnostic) — the unlock.** Fit it *yourself* for *any* model: the
-    fit needs backprop (PyTorch/lab, offline) but is cheap (`~100 prompts` saturates quality; solarkyle fit
-    5 open models on a 16 GB card same-day). The fitted artifact is per-layer matrices; **application is
-    forward-only** (`unembed(J_l @ h)` — a matmul + unembed, same shape as the SAE readout), so it drops
-    into clozn's existing harvest-and-project path and the reserved `jacobian_lens` provider slot. The
-    upstream repo says "not compatible with forward-only runtimes" — but that assumes vanilla llama.cpp;
-    clozn's engine *does* expose activations via `/harvest`, so the apply IS engine-compatible (wiring, not
-    new capability). **This moves brain-viz from Tier-2-gated toward self-serve Tier-1**, and pairs with
-    Thread-A forced receipts as read-(J-lens)-plus-prove-(receipts) on any model. Caveats: fit is torch/lab
-    offline; 27B may need the repo's `merge()` slicing; a lens is a *reading*, not causal.
-  - **Other SAE-free fallbacks** (also `provider_type` slots): **activation MRI** (residual norms / layer
-    geometry, just reads `/harvest`); **logit lens** (zero-training token-leanings per layer); cheap
-    **linear probes** per concept.
-
----
-
-## Roster
-
-- **Tier 0 (any AR GGUF, free):** Llama-3.x, Qwen3.x, Gemma 3/4, Mistral, Phi-4, DeepSeek, GPT-OSS, …
-- **Tier 1 featured (run the sweep):** Qwen3-14B, Gemma 4-12B, **GPT-OSS 20B** — plus **Qwen2.5-7B** (legacy
-  baseline; its 33-dial library is already calibrated).
-- **Tier 2 full-brain hero:** **Gemma 3-12B** (GemmaScope 2 SAEs, free). Qwen2.5-7B keeps its existing
-  `sae7b`. Other models get logit-lens + probes + MRI instead of the SAE atlas.
-
-All picks fit a 16 GB card at Q4.
-
----
-
-## Near-term work plan (to unlock Tier-0 agnosticism)
-
-1. **Engine-side templating** — replace `_qwen_tmpl` with the GGUF's embedded chat template
-   (`llama_chat_apply_template` on the C++ side); Python passes messages, not a pre-rendered string.
-2. **Model registry** — parameterize the ~73 Qwen literals in `clozn_server.py` into a config object
-   (id, tap layer, sampler defaults).
-3. **Verify white-box taps** (`/harvest`, steer, `/score`) on a **second architecture** (Gemma 3 or GPT-OSS)
-   — the honest check that "any GGUF" is real, not assumed.
-
-After that: Tier 1 per model = a sweep (+ LLM-judge curation); Tier 2 = wire Gemma-3 GemmaScope SAEs.
-
----
-
-## Reference: model landscape (from web research on 2026-07-08 — time-sensitive; verify before acting)
-
-> Claude's own training cutoff is Jan 2026, so the below is from live search, not memory.
-
-- **Latest Qwen:** Qwen3.6 (Apr 2026): 27B dense + 35B-A3B MoE. 16 GB-fit sweet spot = **Qwen3-14B** (~9 GB
-  Q4) or Qwen3.5-9B; Qwen3.6-27B Q4_K_M is **16.8 GB** (edge of a 16 GB card). llama.cpp supports Qwen3.6.
-- **Latest Gemma:** Gemma 4 (Apr 2026): E2B / E4B / 12B / 26B-MoE / 31B-dense. **GemmaScope 2 SAEs cover
-  Gemma 3 only** (270m/1b/4b/12b/27b, PT+IT) — Gemma 4 has no SAEs yet. → the SAE hero is **Gemma 3**, even
-  though Gemma 4 is newer.
-- **Popularity (Jun-Jul 2026):** six families that matter — Llama, Mistral, Qwen, DeepSeek, Gemma, Phi.
-  Qwen = safe all-around default. **GPT-OSS 20B** is the repeatedly-cited 16 GB champion (~42 tok/s,
-  ~13.7 GB VRAM).
-
-Sources: Qwen3.6 (unsloth/Qwen3.6-27B-GGUF; github.com/QwenLM/Qwen3.6) · Gemma 4 (blog.google) ·
-Gemma Scope 2 (lesswrong "Announcing Gemma Scope 2"; deepmind.google/models/gemma/gemma-scope) ·
-Best local LLM Jul 2026 (app.stationx.net) · Best 16 GB VRAM LLMs (localllm.in).
-
----
-
-## Wave 1 qualification roster (2026-07-14)
-
-The qualification gate is now explicit. Core support does not require a J-lens
-or a pretrained dial bundle; ordinary chat, OpenAI/native streaming,
-prompt-card memory, runs, traces, scoring, and raw forward intervention must
-work before optional artifacts are considered.
-
-| Family | Exact training checkpoint | Qualification GGUF | Why this size |
-|---|---|---|---|
-| Qwen 2.5 | `Qwen/Qwen2.5-7B-Instruct` | `Qwen2.5-7B-Instruct-Q4_K_M.gguf` | Existing fitted lens; the 7B checkpoint is the family's strongest adoption target |
-| Llama | `meta-llama/Llama-3.1-8B-Instruct` | `Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf` | The practical local size in the very widely used Llama 3.1 family |
-| Qwen 3.5 | `Qwen/Qwen3.5-9B` | `Qwen3.5-9B-Q4_K_M.gguf` | Default Ollama size; narrowly more downloaded than 4B |
-| Gemma 4 | `google/gemma-4-E4B-it` | `gemma-4-E4B-it-Q4_K_M.gguf` | Default Ollama tag and a practical 5.34 GB official GGUF |
-| Ministral 3 | `mistralai/Ministral-3-3B-Instruct-2512` | `Ministral-3-3B-Instruct-2512-Q4_K_M.gguf` | The 3B checkpoint materially leads 8B in checkpoint and GGUF downloads |
-
-The evidence ladder is: discovered (valid header/template), core-qualified
-(real basic and deep smoke), white-box-qualified (tap/write/score), calibrated
-(model-scoped dial ranges), then lens-qualified (semantic and quant-transfer
-tests). “Supports a model” means the achieved level, not that all optional
-artifacts exist.
-
-Sources reviewed for the roster: [Ollama's popular model library](https://ollama.com/library?sort=popular),
-[LM Studio models](https://lmstudio.ai/models), the
-[Qwen 3.5 tags](https://ollama.com/library/qwen3.5),
-[Gemma 4 tags](https://ollama.com/library/gemma4), and the model cards for
-[Gemma 4 E4B GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) and
-[Ministral 3 3B GGUF](https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF).
-
-LLaDA remains a separate diffusion/research qualification lane. Its
-architecture cannot inherit the autoregressive gate merely because a GGUF
-converter can produce a file.
-
-### Artifact rule
-
-Every product artifact uses `clozn.artifacts.contracts` contract version 1.
-Its manifest records the source checkpoint, architecture,
-hidden/layer/vocabulary dimensions, tokenizer digest, exact qualified GGUF
-SHA-256 values, and a digest and byte count for every payload. Lab fitting may
-use BF16/NF4, but a product quant is accepted only after its exact GGUF digest
-has passed transfer tests.
+The former speculative “latest model” roster was removed from this status document. Model popularity,
+download counts, and hardware-fit estimates are time-sensitive selection inputs, not runtime evidence.

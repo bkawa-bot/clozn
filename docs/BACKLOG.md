@@ -54,8 +54,11 @@ These make the branch we just pushed trustworthy and the docs honest. All small.
   Moved `MODEL_PATH` to a `$GITHUB_ENV`-writing step instead. Verified locally (`yaml.safe_load` + manual
   schema review); **still needs a live `workflow_dispatch` run to confirm the CPU build + smoke steps
   themselves pass** -- that part was never reachable before this fix.
-- [ ] **Docs/claims refresh** **[RM][SPLIT][MODEL]** — `MODEL_SUPPORT.md` + `RUNTIME_SPLIT.md` still list
-  *shipped* things (Tier-0 chat templating, J-lens) as blockers. Trace every headline claim to a measurement.
+- [x] **Docs/claims refresh** **[RM][SPLIT][MODEL]** — DONE 2026-07-17: `MODEL_SUPPORT.md` and
+  `RUNTIME_SPLIT.md` now describe the shipped template/J-lens/runtime paths, tie headline claims to
+  repeatable tests or the exact Wave 1 qualification ledger, and state the cross-family white-box/artifact
+  boundaries. README/ROADMAP overclaims and the stale sampled-run “top-k/top-p not enforced” metadata were
+  corrected in the same audit.
 - [x] **Security: neutralize the planted prompt-injection** **[SPLIT]** — DONE: the vendored
   `llama.cpp/CLAUDE.md` + `AGENTS.md` are gone from the local checkout, and `bootstrap_llama.py` strips
   them on every future bootstrap (47c5072), so the injection cannot come back with a re-vendor.
@@ -104,9 +107,13 @@ The "make it a product people can actually run" track. Ordered per the handoff's
   lands with an honest "evidence-missing" flag/meta instead of vanishing or reading as "no trace ever
   existed". 42 new tests (migrations, GC, CLI, evidence-write); full suite 1631 passed/11 skipped (skips
   all pre-existing model-gated).
-- [ ] **Client compatibility matrix** **[H:P2]** — publish an endpoint/field support matrix; unsupported
-  fields → OpenAI-shaped 4xx or documented-ignored (no silent pretend). Integration tests with the real
-  OpenAI client. **Owner decision: Ollama drop-in?** (recommended: thin `/api/chat|generate|tags|version`).
+- [x] **Client compatibility matrix** **[H:P2]** — DONE 2026-07-17: `OPENAI_COMPATIBILITY.md` publishes
+  the exact endpoint/field subset; one validator rejects unknown or behavior-bearing unsupported fields
+  with OpenAI-shaped 400s and strips only documented neutral values. Explicit sampling fields now reach
+  both streaming and non-streaming engine calls, `max_completion_tokens` is supported, fake zero usage was
+  removed, and the CPU CI lane drives the real `openai` Python client against a model-free live gateway.
+- [ ] **Owner decision: Ollama drop-in?** **[H:P2]** — recommended thin
+  `/api/chat|generate|tags|version`; intentionally not inferred from OpenAI compatibility work.
 - [x] **CI lanes + release artifact** **[H:P2]** — ✅ **DONE 2026-07-16**: root `pyproject.toml` (setuptools)
   + `setup.py` (the studio/protocol `package_dir` remap `find()` can't express) + single-source version
   (`clozn.__version__`) + `clozn = clozn.cli.main:main` console entry point. `clozn version` (+ git commit

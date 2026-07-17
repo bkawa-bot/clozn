@@ -61,7 +61,8 @@ HTTP process rejects all `/v1/*` and `/api/clozn/*` routes, so it is not a compe
 
 ## Public and native APIs
 
-- `/v1/models`, `/v1/chat/completions`, and `/v1/completions` are client-facing OpenAI surfaces.
+- `/v1/models`, `/v1/chat/completions`, and `/v1/completions` are the client-facing OpenAI subset; the
+  exact endpoint/field contract is [OPENAI_COMPATIBILITY.md](OPENAI_COMPATIBILITY.md).
 - `/api/clozn/generate` is the namespaced native stream consumed by Clozn tooling. It carries typed
   state events such as token commits and lens frames.
 - The gateway translates worker events for `/v1/completions`; native event frames never appear on

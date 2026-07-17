@@ -14,9 +14,10 @@ The consolidated map: the thesis, what's shipped, and where the open work lives.
   deterministic rederive, and the graded-leaning inspector UI. A null-floor experiment killed the
   planned "silent influence" badge (filler-swap can't discriminate — Pearson 0.9985 against the
   null); graded per-card leaning via co-present leave-one-out shipped instead.
-- **Tier-0 model-agnosticism** — clozn runs **any AR GGUF** across the whole white-box stack
-  (proven tap-by-tap on Llama-1B). Engine-side chat templating; the model is derived from the
-  engine's own `/health`.
+- **Tier-0 core portability** — engine-side chat templating and one gateway/worker path are live.
+  `docs/qualification/wave1.json` records CPU basic/deep smoke across five exact AR checkpoints
+  (Qwen 2.5, Llama 3.1, Qwen 3.5, Gemma 4, Ministral 3). Targeted white-box writes remain pending on
+  the four non-Qwen rows, so “any AR GGUF” is a capability contract, not an all-model qualification.
 - **Engine-native J-lens** — the lens is fitted offline (PyTorch, autograd), then applied
   forward-only by the C++ engine on the GGUF's own final-norm + quantized head. Validated in
   stages: the HF-fitted lens transfers to the engine's activations essentially losslessly
@@ -51,6 +52,7 @@ open work: refactor close-out · runtime → production beta · research frontie
    teacher-forced batch scoring is the spec-decode verifier, the routing judge, the
    quant-sensitivity meter, and the context-receipt prober. Built for honesty; it doubles as
    the perf roadmap's foundation.
-2. **The J-lens completes the model-agnostic brain viz.** Fit-in-lab / apply-forward matches
-   clozn's substrate split; with Tier-0 done it runs on *any* GGUF. It's the read half of
+2. **The J-lens completes the fit-per-model brain-viz path.** Fit-in-lab / apply-forward matches
+   clozn's substrate split. The apply path is architecture-generic, but the checked-in ledger qualifies
+   only Qwen2.5-7B; a second-family fit is still evidence owed. It's the read half of
    read-(lens)-plus-prove-(receipts).

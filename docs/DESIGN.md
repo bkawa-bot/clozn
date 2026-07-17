@@ -222,6 +222,10 @@ One server, two presentations of the same event stream.
 
 ### 6.1 Compatibility mode (OpenAI-style)
 
+> **Implementation status (2026-07-17):** the shipped, narrower endpoint/field contract is documented in
+> [OPENAI_COMPATIBILITY.md](OPENAI_COMPATIBILITY.md). The bullets below are the original diffusion-serving
+> design, not a claim that every OpenAI field or the proposed `cloze` object shipped.
+
 Endpoints: `POST /v1/chat/completions`, `POST /v1/completions` (+ `GET /v1/models`).
 
 Mapping rules:
@@ -229,11 +233,13 @@ Mapping rules:
 - Buffer events until `block_finalized`; emit the block's text as a normal SSE `chat.completion.chunk` delta. To clients this looks like chunky-but-valid AR streaming. With L=32 and a fast first block, time-to-first-text stays competitive.
 - Revisions: impossible to express in append-only SSE → in compat mode the scheduler runs with `remask_lowconf` disabled **after block finalization** (revisions allowed only within the active block, which hasn't been emitted yet). No client ever sees text retracted.
 - `finish_reason`: `stop` on EOS-commit, `length` on max_new reached.
-- `usage`: prompt/completion tokens as usual; extend with `"cloze": {"steps": 134, "fwd_passes": 134, "cache_mode": "delta"}` in an extra field (ignored by standard clients).
+- `usage`: proposed prompt/completion token counts plus a namespaced `cloze` extension. The current gateway
+  omits usage when unknown rather than fabricating counts; the proposed extension has not shipped.
 - Non-streaming requests: trivially supported (wait for `gen_finished`).
 - Extra request params (all optional, namespaced): `"cloze": {"effort": "medium", "block_len": 32, "cache_mode": "delta", "seed": 7}`.
 
-**Result:** Open WebUI, Continue, aider-class tools, and anything OpenAI-compatible works day one with zero client changes.
+**Original target:** broad client interoperability. Actual compatibility is the tested subset linked above;
+do not infer tool calling, structured output, stop sequences, or Responses API support from this design.
 
 ### 6.2 Native mode — the Diffusion Streaming Protocol (DSP/0.1)
 
