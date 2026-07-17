@@ -4,7 +4,16 @@
    values, custom-dial pole recipes, and fact cue/answer pairs. Saving snapshots the live cards+dials;
    updating preserves a profile's fact sources because there is no honest way to reconstruct those from
    the active vector store. Switching is replacement, never blending. Every mutation refreshes from the
-   server, and server-written errors are shown verbatim. */
+   server, and server-written errors are shown verbatim — including the switch receipt itself: a
+   successful /profiles/switch is rendered close to verbatim (cards replaced, dials applied, whether a
+   background retrain kicked off, and the actual prompt_block the profile injects) rather than reduced
+   to a generic "done".
+
+   Two more cards close out the desk below the profile grid. They are NOT more CRUD — they're fixed,
+   honest facts about this install: RUNTIME (the one substrate this server runs, its model, and a
+   copyable OpenAI-compatible endpoint — no substrate-switcher dropdown, because POST /substrate now
+   returns 410 and a dead control is worse than no control) and COUNTS (runs / memories / active dials,
+   read live off the same APIs the rest of heavn uses, "—" when unavailable, never fabricated). */
 import { html, useEffect, useRef, useState } from "../vendor/preact-standalone.mjs";
 import { useStore, toast } from "../state.mjs";
 import { api } from "../api.mjs";
@@ -33,13 +42,20 @@ const profileCounts = profile => {
   };
 };
 
+async function copyText(text){
+  try{ await navigator.clipboard.writeText(text); return true; }catch(e){ return false; }
+}
+
 export function SettingsModule(){
   const live = useStore(state => state.live);
+  const rec = useStore(state => state.rec);
   const fileInput = useRef(null);
   const [profiles, setProfiles] = useState(null);       // null = loading, [] = loaded empty/offline
   const [active, setActive] = useState(null);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState(null);         // {kind: ok|error|info, text}
+  const [switchResult, setSwitchResult] = useState(null); // last successful /profiles/switch response,
+                                                            // rendered close to verbatim below
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -110,7 +126,7 @@ export function SettingsModule(){
       say("error", `“${profileName}” already exists. Use UPDATE FROM LIVE on its row.`);
       return;
     }
-    setBusy("save:" + profileName); setConfirmDelete(null);
+    setBusy("save:" + profileName); setConfirmDelete(null); setSwitchResult(null);
     say("info", "Reading the active cards and dials…");
     try{
       const bundle = await readLiveSnapshot(profileName, requestedDescription, existing);
@@ -127,7 +143,7 @@ export function SettingsModule(){
 
   const switchProfile = async profile => {
     if(!live || busy || profile.name === active) return;
-    setBusy("switch:" + profile.name); setConfirmDelete(null);
+    setBusy("switch:" + profile.name); setConfirmDelete(null); setSwitchResult(null);
     say("info", `Replacing the active cards and dials with “${profile.name}”…`);
     const response = await api.profilesSwitch(profile.name);
     if(good(response)){
@@ -136,6 +152,10 @@ export function SettingsModule(){
         ? "; the internalized prefix is retraining in the background."
         : "; prompt-mode changes are active now."}${response.facts_note ? " " + response.facts_note : ""}`);
       toast(`profile · ${profile.name}`);
+      // The message line above is the short version; the response itself says exactly what changed
+      // (cards replaced, dials applied, whether a retrain kicked off, and the actual prompt this
+      // profile injects) -- render that close to verbatim rather than let the summary be the last word.
+      setSwitchResult({ name: profile.name, ...response });
       await refresh();
     }else say("error", reason(response, "The profile could not be switched."));
     setBusy("");
@@ -143,7 +163,7 @@ export function SettingsModule(){
 
   const exportProfile = async profile => {
     if(!live || busy) return;
-    setBusy("export:" + profile.name); setConfirmDelete(null);
+    setBusy("export:" + profile.name); setConfirmDelete(null); setSwitchResult(null);
     const response = await api.profilesExport(profile.name);
     if(good(response) && response.profile){
       const blob = new Blob([JSON.stringify(response.profile, null, 2)], { type: "application/json" });
@@ -161,7 +181,7 @@ export function SettingsModule(){
     const file = event.target.files && event.target.files[0];
     event.target.value = "";
     if(!file || !live || busy) return;
-    setBusy("import"); setConfirmDelete(null); say("info", "Reading profile JSON…");
+    setBusy("import"); setConfirmDelete(null); setSwitchResult(null); say("info", "Reading profile JSON…");
     try{
       const parsed = JSON.parse(await file.text());
       const bundle = parsed && parsed.profile && typeof parsed.profile === "object" ? parsed.profile : parsed;
@@ -180,7 +200,7 @@ export function SettingsModule(){
       say("info", `Press CONFIRM DELETE on “${profile.name}” once more. This removes its JSON bundle.`);
       return;
     }
-    setBusy("delete:" + profile.name);
+    setBusy("delete:" + profile.name); setSwitchResult(null);
     const response = await api.profilesDelete(profile.name);
     if(good(response)){
       say("ok", `Deleted “${profile.name}”.`); setConfirmDelete(null); await refresh();
@@ -254,11 +274,29 @@ export function SettingsModule(){
             <div><b>vectors</b><span>never exported — rebuilt for the currently loaded model</span></div>
           </div>
         </section>
+
+        <${RuntimeCard} rec=${rec}/>
+        <${CountsCard} live=${live}/>
       </div>
     </div>
 
     ${message && html`<div class=${"profile-message " + message.kind} role="status" aria-live="polite">
       ${message.text}</div>`}
+
+    ${switchResult && html`<div class="cfg profile-switch-receipt" data-testid="profile-switch-receipt">
+      <span class="cap">switched</span><b>${switchResult.name}</b>
+      <span>${switchResult.cards
+        ? `${switchResult.cards.removed} removed, ${switchResult.cards.added} added` : "—"} card(s)</span>
+      <span>${switchResult.dials && switchResult.dials.applied
+        ? Object.keys(switchResult.dials.applied).length : 0} dial(s) applied</span>
+      <span class=${"tag " + (switchResult.resync && switchResult.resync.retraining ? "der-t" : "cap-t")}>
+        ${switchResult.resync && switchResult.resync.retraining ? "RETRAINING IN BACKGROUND" : "INSTANT"}</span>
+      ${switchResult.facts_note && html`<span class="profile-switch-note">${switchResult.facts_note}</span>`}
+      ${switchResult.prompt_block && html`<details class="profile-switch-block">
+        <summary>what this profile actually injects</summary>
+        <div class="none">${switchResult.prompt_block}</div>
+      </details>`}
+    </div>`}
   </div>`;
 }
 
@@ -286,4 +324,67 @@ function ProfileRow({ profile, active, busy, confirmDelete, onSwitch, onUpdate, 
         onClick=${() => onDelete(profile)}>${confirmDelete === profile.name ? "CONFIRM DELETE" : "DELETE"}</button>
     </div>
   </article>`;
+}
+
+/* ───────────────────────── Runtime — fixed facts, not a dead switcher ───────────────────────── */
+function RuntimeCard({ rec }){
+  const endpoint = (typeof location !== "undefined" ? location.origin : "") + "/v1";
+  const [copied, setCopied] = useState(false);
+  return html`<section class="mod profile-runtime" aria-labelledby="profile-runtime-title" data-testid="profile-runtime">
+    <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
+    <div class="mod-h"><span class="led blue"></span><span class="cap" id="profile-runtime-title">runtime</span>
+      <span class="tail">one substrate — no live switching</span></div>
+    <div class="profile-runtime-note">This product server runs the C++ engine substrate only. PyTorch
+      model-switching (Qwen ↔ Dream) is a lab-only workbench now (<span class="mono">clozn lab</span>) —
+      the old studio's model-switch control has no live route to call here (POST /substrate returns
+      410), so it isn't reproduced as a dropdown that would just fail.</div>
+    <div class="steer-row"><span>active substrate</span><span class="v">engine</span></div>
+    <div class="steer-row"><span>model</span><span class="v">${(rec && rec.model) || "—"}</span></div>
+    <div class="steer-row">
+      <span>OpenAI-compatible endpoint</span>
+      <span class="v profile-runtime-endpoint">
+        <span class="mono">${endpoint}</span>
+        <button class="spd" type="button" onClick=${() => copyText(endpoint).then(ok => {
+            setCopied(ok); setTimeout(() => setCopied(false), 1400); })}>
+          ${copied ? "COPIED ✓" : "COPY"}</button>
+      </span>
+    </div>
+  </section>`;
+}
+
+/* ───────────────────────── Counts — what's here ───────────────────────── */
+function CountsCard({ live }){
+  const [runs, setRuns] = useState(null);
+  const [mems, setMems] = useState(null);
+  const [dials, setDials] = useState(null);
+
+  useEffect(() => {
+    if(!live){ setRuns(null); setMems(null); setDials(null); return; }
+    let cancelled = false;
+    (async () => {
+      const [r, c, a] = await Promise.all([api.listRuns(), api.memoryList(), api.steerAxes()]);
+      if(cancelled) return;
+      setRuns(r ? (r.runs || []).length : null);
+      setMems(c ? (c.cards || []).length : null);
+      setDials(a ? (a.axes || []).filter(x => Math.abs(+x.value || 0) >= 0.05).length : null);
+    })();
+    return () => { cancelled = true; };
+  }, [live]);
+
+  return html`<section class="mod profile-counts-card" aria-labelledby="profile-counts-title" data-testid="profile-counts">
+    <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
+    <div class="mod-h"><span class="led"></span><span class="cap" id="profile-counts-title">what's here</span>
+      <span class="tail">everything lives under ~/.clozn — local only, nothing uploaded</span></div>
+    <div class="settings-counts">
+      ${countBox("runs", runs)}
+      ${countBox("memories", mems)}
+      ${countBox("active dials", dials)}
+    </div>
+  </section>`;
+}
+function countBox(label, n){
+  return html`<div class="settings-count-box">
+    <div class=${"mono settings-count-value" + (n == null ? " empty" : "")}>${n == null ? "—" : n}</div>
+    <div class="settings-count-label">${label}</div>
+  </div>`;
 }
