@@ -128,7 +128,7 @@ export function MemoryModule(){
     <${CardsPanel} cards=${cards} act=${act} busy=${busy}
       expanded=${expanded} toggleRuns=${toggleRuns} runsCache=${runsCache}/>
     <${FactsPanel} live=${live}/>
-    <${AnchoredShelf} cards=${cards} live=${live}/>
+    <${AnchoredShelf} cards=${cards} live=${live} rec=${rec}/>
     <${AddCard} live=${live} onAdded=${refreshCards}/>
     <${ProposeFromRun} rec=${rec} live=${live} onProposed=${refreshCards}/>
   </div>`;
@@ -139,12 +139,13 @@ export function MemoryModule(){
    LOOKUP of what is injected (never a self-report); deleting a word is a real edit (refit). Bags ride
    LIVE CHAT turns only, as one composed steer at L21 — the validated envelope. Content only: style/rule
    cards are refused with the measured reason and belong on the dials. */
-function AnchoredShelf({ cards, live }){
+function AnchoredShelf({ cards, live, rec }){
   const [bags, setBags] = useState(null);          // null = loading
   const [envelope, setEnvelope] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState({});            // key -> bool
   const [fitMsg, setFitMsg] = useState(null);      // last fit outcome (refusals shown verbatim)
+  const [proofs, setProofs] = useState({});         // card_id -> { result } | { error }
 
   const refresh = async () => {
     const r = await api.anchoredList();
@@ -178,6 +179,22 @@ function AnchoredShelf({ cards, live }){
     else if(r && r.deleted_bag) toast("last word removed — the whole memory is gone (an empty memory is no memory)");
     await refresh();
   });
+  const prove = bag => withBusy("proof:" + bag.card_id, async () => {
+    if(guardLive(live)) return;
+    if(!rec){ toast("load a recorded run from Replay before proving this memory"); return; }
+    if(bag.on === false){ toast("switch this anchored bag on before proving it"); return; }
+    setProofs(p => ({ ...p, [bag.card_id]: null }));
+    const r = await api.runExperiment(rec.id, { type: "anchored_recall", card_id: bag.card_id });
+    if(!r){
+      setProofs(p => ({ ...p, [bag.card_id]: { error: "no response from the server — is it up?" } }));
+      return;
+    }
+    if(r.__status && r.__status >= 400){
+      setProofs(p => ({ ...p, [bag.card_id]: { error: r.error || ("receipt failed (" + r.__status + ")") } }));
+      return;
+    }
+    setProofs(p => ({ ...p, [bag.card_id]: { result: r } }));
+  });
 
   const anchoredIds = new Set((bags || []).map(b => b.card_id));
   const anchorable = (cards || []).filter(c => c.status === "active" && !anchoredIds.has(c.id));
@@ -188,6 +205,14 @@ function AnchoredShelf({ cards, live }){
       <span class="tail">${bags === null ? "loading…" : bags.length + " bag(s) · " + envelope}</span>
       <span class="tag der-t">DERIVED</span></div>
     <div style="padding:2px 14px 12px;display:flex;flex-direction:column;gap:8px">
+      <div class="memory-carrier-map" data-testid="memory-carrier-map">
+        <div><span class="tag cap-t">ANCHORED · PRODUCT</span><b>named directions</b>
+          <span>sparse α lookup; instant edits; per-card receipt attempts an equal-magnitude random control.</span></div>
+        <div><span class="tag smp-t">INTERNALIZED · LAB</span><b>soft prefix</b>
+          <span>opaque trained carrier; retraining can take minutes; per-card attribution unavailable.</span></div>
+        <p>These are the two learned-vector carriers. Prompt cards are a separate readable-context route,
+          not a learned carrier.</p>
+      </div>
       <span class="none" style="font-size:8.5px">memory as named word-directions: “what do you
         remember?” is a lookup of this table, never a generation. Bags ride LIVE chat turns as one
         composed steer (L21, s=0.5 — the measured envelope). Content only — style routes to dials.</span>
@@ -207,10 +232,16 @@ function AnchoredShelf({ cards, live }){
         <span class="sub" style="grid-column:1/-1">
           <button class=${"spd" + (busy["tg:" + bag.card_id] ? " busy" : "")}
             onClick=${() => toggle(bag)}>${bag.on !== false ? "SWITCH OFF" : "SWITCH ON"}</button>
+          <button class=${"spd" + (busy["proof:" + bag.card_id] ? " busy" : "")}
+            disabled=${!live || !rec || bag.on === false || !!busy["proof:" + bag.card_id]}
+            title="Runs baseline, anchored, and equal-magnitude random-control generations"
+            onClick=${() => prove(bag)}>${busy["proof:" + bag.card_id] ? "PROVING…" : "PROVE ON THIS RUN"}</button>
+          <span>cost: 2–3 fresh model generations · no KV reuse</span>
           ${bag.reconstruction_cos != null && bag.reconstruction_cos < .5
             && html`<span style="color:#C24A31;font-size:8.5px">low cos — the card's own words barely
               span the target; read this bag skeptically</span>`}
         </span>
+        ${proofs[bag.card_id] && html`<${AnchoredProof} proof=${proofs[bag.card_id]} rec=${rec}/>`}
       </div>`)}
       ${bags !== null && !bags.length && html`<span class="none">no anchored bags yet — anchor an
         active content card below.</span>`}
@@ -226,6 +257,62 @@ function AnchoredShelf({ cards, live }){
         <span style=${fitMsg.ok ? "" : "color:#C24A31"}>${fitMsg.msg}</span></div>`}
       ${note && html`<span class="none" style="font-size:8px">${note}</span>`}
     </div>
+  </div>`;
+}
+
+function truthWord(value, yes, no){
+  if(value === true) return yes;
+  if(value === false) return no;
+  return "not computed";
+}
+
+function metric(value){
+  return value == null || Number.isNaN(+value) ? "—" : (+value).toFixed(2);
+}
+
+/* A compact view of the generic Experiment envelope. The full raw receipt remains available in the
+   Experiment drawer; this shelf shows the causal facts needed to judge one anchored bag in context. */
+function AnchoredProof({ proof, rec }){
+  if(proof.error) return html`<div class="anchored-proof error" data-testid="anchored-proof">
+    <b>receipt unavailable</b><span>${proof.error}</span></div>`;
+  const res = proof.result || {};
+  const result = res.result || {};
+  const receipt = result.receipt || {};
+  const injected = receipt.injected || {};
+  const hits = receipt.lexicon_hits || {};
+  const lp = receipt.logprob_shift || {};
+  const nul = result.null || {};
+  const blocked = receipt.blocked;
+  const nullAvailable = nul.available === true || receipt.null_control_available === true;
+  const effectText = result.has_effect === true
+    ? (nullAvailable ? "EFFECT BEYOND NULL" : "EFFECT VS BASELINE · NULL MISSING")
+    : result.has_effect === false
+    ? (nullAvailable ? "NO EFFECT BEYOND NULL" : "NO EFFECT VS BASELINE · NULL MISSING")
+    : "not computed";
+  return html`<div class=${"anchored-proof" + (blocked ? " error" : "")} data-testid="anchored-proof">
+    <div class="anchored-proof-head"><b>null-controlled receipt · ${res.run_id || (rec && rec.id) || "—"}</b>
+      <span class=${"tag " + (result.causal_verified === true ? "cap-t" : result.causal_verified === false ? "fail-t" : "smp-t")}>
+        ${truthWord(result.causal_verified, "CAUSAL PATH VERIFIED", "NOT VERIFIED")}</span>
+      <span class=${"tag " + (result.has_effect === true && nullAvailable ? "cap-t" : "smp-t")}>
+        ${effectText}</span></div>
+    ${blocked && html`<span><b>blocked · ${blocked}</b> — ${receipt.note || "no detail returned"}</span>`}
+    ${!blocked && html`<span>${result.plain || "No plain-language summary returned."}</span>`}
+    ${!blocked && !nullAvailable && html`<span class="anchored-proof-weak">
+      Random-control arm unavailable — this is baseline-only, weaker evidence.</span>`}
+    <div class="anchored-proof-metrics">
+      <span><b>named cause</b>${injected.target_term || "—"}</span>
+      <span><b>lexicon hits</b>${hits.baseline ?? "—"} → ${hits.anchored ?? "—"} · null ${hits.null ?? "—"}</span>
+      <span><b>target logprob</b>${metric(lp.anchored_over_baseline_nat)} nat vs base · ${metric(lp.anchored_over_null_nat)} vs null</span>
+      <span><b>coherence</b>${metric(receipt.coherence_score)}${receipt.coherent === false ? " · degraded" : ""}</span>
+    </div>
+    <details><summary>compare the three replies</summary>
+      <div class="anchored-proof-arms">
+        <span><b>baseline</b>${(res.baseline && res.baseline.reply) || receipt.baseline_reply || "—"}</span>
+        <span><b>anchored</b>${result.changed_reply || receipt.anchored_reply || "—"}</span>
+        <span><b>random control</b>${nul.reply || receipt.null_reply || "—"}</span>
+      </div>
+      <p>${nul.note || receipt.null_note || "The random arm was not available; treat this as weaker evidence."}</p>
+    </details>
   </div>`;
 }
 

@@ -190,8 +190,10 @@ model (✅ decided: Qwen2.5-0.5B).
   web UI (needs text↔trace alignment via `X-Clozn-Run-Id`). Highest effort.
 - [ ] **Trust in the UI: fold in the SUPPORT channel** **[FB §1.1][FABLE]** — trust spans are
   confidence-only today; add receipts/NLI support + real calibration (temperature-scaling), not just raw probs.
-- [ ] **Two-tier memory surfacing** **[FABLE][STUDIO]** — the anchored "what did you learn?" α-lookup receipt
-  UX + how to show anchored vs soft-prefix tiers honestly.
+- [x] **Two-tier memory surfacing** **[FABLE][STUDIO]** — heavn Memory now presents the anchored α lookup
+  as the inspectable product carrier beside the opaque, lab-only soft prefix, while explicitly keeping
+  prompt cards separate. Each anchored bag can run its existing baseline/anchored/equal-magnitude-null
+  receipt against the current recorded run; the UI discloses its 2–3 fresh-generation cost before launch.
 - [x] **Actuary productization** **[FB §9.2]** — heavn Read now shows the cached proxy calibration/drift
   report and a server-scored, past-only failure resemblance. The selected run and timestamped-later runs are excluded;
   warnings require ≥5 earlier organic runs in each proxy class + score ≥0.65, while smaller samples are
