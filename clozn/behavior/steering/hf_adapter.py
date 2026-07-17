@@ -29,11 +29,13 @@ class SteeringControl:
     @torch.no_grad()
     def _last_resid(self, system: str, user: str) -> torch.Tensor:
         """Residual at the last prompt token at self.layer."""
-        ids = self.tok.apply_chat_template(
+        enc = self.tok.apply_chat_template(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             add_generation_prompt=True,
             return_tensors="pt",
-        ).to(DEV)
+        )
+        # transformers 4.x returns a bare tensor here; 5.x returns a BatchEncoding -- normalize to the ids tensor.
+        ids = (enc if isinstance(enc, torch.Tensor) else enc["input_ids"]).to(DEV)
         hs = self.model(ids, output_hidden_states=True).hidden_states[self.layer + 1]
         return hs[0, -1].float()
 
@@ -147,11 +149,13 @@ class SteeringControl:
     @torch.no_grad()
     def generate(self, prompt: str, max_new=100) -> str:
         """Generate a single turn on the bare backbone with any engaged steering hook active."""
-        ids = self.tok.apply_chat_template(
+        enc = self.tok.apply_chat_template(
             [{"role": "user", "content": prompt}],
             add_generation_prompt=True,
             return_tensors="pt",
-        ).to(DEV)
+        )
+        # transformers 4.x returns a bare tensor here; 5.x returns a BatchEncoding -- normalize to the ids tensor.
+        ids = (enc if isinstance(enc, torch.Tensor) else enc["input_ids"]).to(DEV)
         out = self.model.generate(
             ids,
             max_new_tokens=max_new,

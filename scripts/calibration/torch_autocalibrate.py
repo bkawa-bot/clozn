@@ -135,6 +135,32 @@ PLUS one cheap forward pass (no generation, output_hidden_states only) per reply
 config (12 dials x 7 doses x 6 prompts) is a few hundred short greedy decodes -- --smoke (1-2 dials, 3
 doses, 2 prompts) proves the wiring in a handful of decodes first, and is NOT a finding.
 
+--exemplars MODE -- A/B the DIRECTION RECIPE, not just the dose (motivated by a real, measured failure: on
+Qwen3.5-9B, every dial under the instruction recipe below came back near-zero effect except `poetic`, while
+the SAME harness steers Qwen2.5-14B strongly -- see dial_exemplars.py's own module docstring for the full
+story). The DEFAULT recipe this module has always used (compute_dials -> SteeringControl.compute/add_custom)
+contrasts ONE instruction pair ("Respond warmly" vs "Respond coldly") across a handful of SEED_PROMPTS and
+diff-of-means the last prompt token's residual -- cheap, and it works on some model families, but it carves a
+much fainter axis on others. `--exemplars [BANK.json]` swaps in a STRONGER recipe for any dial the bank
+covers: derive_caa_directions reads dial_exemplars.py's matched-pair bank (many {prompt, pos reply, neg
+reply} triples per dial, the standard contrastive-activation-steering construction) and, for each pair, reads
+the residual IN CHAT CONTEXT -- render the chat template with `prompt` as the user turn and the reply
+appended as the assistant turn, then MEAN-POOL sc.layer's hidden state over the reply's OWN token span only
+-- rather than a single instruction's last prompt token. This matters for two independent reasons: (1) real
+styled TEXT captures the actual output distribution a working dial needs to steer toward, not the model's
+(possibly weak) READING of a command; (2) many matched pairs, mean-differenced, is a more robust estimate
+than one pair x a few seeds. Both knobs are stated loud so a reader can tell which one (if either) mattered.
+
+ORDERING IS LOAD-BEARING: compute_dials() ALWAYS runs first, unchanged, computing every requested dial's
+instruction-derived direction AND calibrating sc.base/sc.resid_norm (the per-model dose SCALE -- see Law #6
+in the docstring above). Only THEN, if --exemplars was passed, does derive_caa_directions/apply_caa_directions
+REPLACE sc.vecs[name] for whichever dials the bank covers with >= dial_exemplars.MIN_RECOMMENDED_PAIRS pairs
+-- sc.base is never recomputed from the exemplar bank, so the two recipes are compared at the IDENTICAL dose
+scale, and the only thing that differs between an "exemplars" dial and an "instructions" dial in the same run
+is the ORIENTATION of the unit direction being swept, never the strength units it's swept in. A dial the bank
+doesn't cover (or covers too thinly) keeps its instruction-derived vector -- an honest partial swap, recorded
+per-dial in the saved report's dial_source/caa_pairs_used/caa_pairs_skipped fields, never silently assumed.
+
 Run (CUDA venv):
     PY=C:/Users/brigi/src/cloze/.venv/Scripts/python.exe
     $PY research/dial_autocalibrate.py --model Qwen/Qwen2.5-7B-Instruct --out research/runs/dial_autocalibrate.json
@@ -171,6 +197,7 @@ from clozn.behavior.steering import SteeringControl
 from clozn.replay.counterfactual import _coherence   # {"degenerate": bool, "reason": str} -- the mandatory coherence axis
 from clozn import receipts                          # receipt_metrics -- the word-type-Jaccard "%changed" DIAGNOSTIC
 import clozn.runs.store as runlog
+import dial_exemplars   # sibling module (scripts/calibration/) -- the matched-pair CAA exemplar bank loader
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -455,9 +482,10 @@ class SingleTurnSteer(SteeringControl):
 
     @torch.no_grad()
     def _last_resid(self, system: str, user: str) -> torch.Tensor:
-        ids = self.tok.apply_chat_template(
+        enc = self.tok.apply_chat_template(
             [{"role": "user", "content": f"{system}\n\n{user}"}],
-            add_generation_prompt=True, return_tensors="pt").to(DEV)
+            add_generation_prompt=True, return_tensors="pt")
+        ids = (enc if isinstance(enc, torch.Tensor) else enc["input_ids"]).to(DEV)  # 5.x returns a BatchEncoding
         hs = self.model(ids, output_hidden_states=True).hidden_states[self.layer + 1]
         return hs[0, -1].float()
 
@@ -486,8 +514,9 @@ class Rig:
         """Single USER-turn only -- never a system role, matching SingleTurnSteer's own recipe uniformly.
         repetition_penalty/no_repeat_ngram_size tame steering-induced loops (steer_vs_prompt.py's/
         parliament.py's Rig.gen do the same)."""
-        ids = self.tok.apply_chat_template([{"role": "user", "content": user}],
-                                           add_generation_prompt=True, return_tensors="pt").to(DEV)
+        enc = self.tok.apply_chat_template([{"role": "user", "content": user}],
+                                           add_generation_prompt=True, return_tensors="pt")
+        ids = (enc if isinstance(enc, torch.Tensor) else enc["input_ids"]).to(DEV)  # 5.x returns a BatchEncoding
         kw = dict(max_new_tokens=max_new, repetition_penalty=1.3, no_repeat_ngram_size=3,
                   pad_token_id=self.tok.eos_token_id or 0)
         if sample:
@@ -557,6 +586,176 @@ def compute_dials(sc, dial_names: list[str]) -> dict:
             unknown.append(dname)
     info["unknown_dials"] = unknown
     return info
+
+
+# =========================================================================== CAA exemplar-bank derivation
+# See the module docstring's "--exemplars MODE" section for the why + the ordering requirement (compute_dials
+# must run BEFORE any of this touches sc.vecs). This section is the derivation itself.
+
+@torch.no_grad()
+def _pooled_reply_resid(sc, prompt: str, reply: str) -> torch.Tensor | None:
+    """The CAA primitive: read ONE reply's residual at sc.layer, IN CHAT CONTEXT, mean-pooled over the
+    reply's OWN tokens only -- never the prompt's. This is deliberately a DIFFERENT read than
+    SingleTurnSteer._last_resid (which reads the LAST token of an instruction+seed PROMPT, never a reply) --
+    the whole point of the exemplar-bank recipe is to read the residual a finished, styled REPLY actually
+    occupies, in the same chat-templated geometry steering is later applied in (see the module docstring's
+    "--exemplars MODE" section for why bare-text reading would misalign with that geometry).
+
+    MECHANICS: render two chat-template encodings --
+      full_ids   = template([user: prompt, assistant: reply])                   (no add_generation_prompt)
+      prefix_ids = template([user: prompt], add_generation_prompt=True)
+    Both use the SAME `(enc if isinstance(enc, torch.Tensor) else enc["input_ids"])` normalization idiom
+    _last_resid/Rig.gen already use elsewhere in this file (transformers 5.x returns a BatchEncoding here,
+    4.x a bare tensor). The reply's own tokens are then exactly full_ids[0, prefix_ids.shape[1]:] -- for
+    every chat template this codebase targets, `template([user], add_generation_prompt=True)` IS the literal
+    token prefix of `template([user, assistant])` (the generation-prompt scaffolding -- e.g. an opened
+    "<|im_start|>assistant\\n" -- is exactly what add_generation_prompt=True inserts, and exactly what the
+    non-generation-prompt full render also inserts before the assistant's own content). Two forward passes'
+    worth of tokenization, ONE forward pass (only `full_ids` is ever run through the model).
+
+    GUARD (stated loud, not silently swallowed): if that span is EMPTY (an empty/whitespace-only reply) OR
+    full_ids is no LONGER than prefix_ids (a template that does not nest the way assumed above -- has not
+    been observed on any model this rig targets, but would silently pool garbage -- prompt tokens, or
+    nothing -- as if it were the reply's own signal if not caught), this returns None and the CALLER
+    (derive_caa_directions) is responsible for counting that as a SKIPPED pair rather than pooling it. This
+    function never raises on that condition; a malformed/unusual pair degrading a whole calibration run
+    would be a worse failure mode than silently, honestly dropping one pair and saying so in the count.
+
+    Pooling is MEAN over hidden_states[sc.layer + 1][0, prefix_len:, :] -- the SAME layer-indexing
+    convention _last_resid/directional_alignment already use (decoder block sc.layer's output), and the SAME
+    mean-pool CHOICE directional_alignment already makes for a different reason (there: pooling a whole
+    generated reply being read as a finished utterance; here: pooling a whole EXEMPLAR reply for the same
+    reason) -- see directional_alignment's own docstring for the caveats that choice carries (a trait
+    concentrated in one clause of a longer reply gets diluted by the tokens around it)."""
+    full_text = sc.tok.apply_chat_template(
+        [{"role": "user", "content": prompt}, {"role": "assistant", "content": reply}], tokenize=False)
+    # Locate the reply's OWN characters in the rendered text, then map that char span to tokens via the
+    # fast tokenizer's offset mapping. This replaces the old prefix-length subtraction
+    # (len(template([user], add_generation_prompt=True)) as the reply's start), which ASSUMED the
+    # generation prompt is a literal token-prefix of the full render. MEASURED FALSE on Qwen3.5-9B, a
+    # REASONING model: the generation prompt ends inside an OPEN think block ("...assistant\n<think>\n"),
+    # while the full render emits a CLOSED, empty one ("...<think>\n\n</think>\n\n" + reply + "<|im_end|>").
+    # Subtracting the prefix length there starts the pool on "</think>" and also swallows the trailing
+    # <|im_end|>, i.e. it pools scaffold+reply, not the reply. That scaffold does NOT cancel in the pos-neg
+    # difference: its hidden states are identical across the pair (same prompt, causal attention), but the
+    # replies differ in LENGTH, so the shared scaffold is averaged in with different weights on each side --
+    # a quiet, asymmetric contamination of exactly the vector this recipe exists to measure. Char-span
+    # location is template-agnostic: think block or not, it pools the reply's tokens and nothing else.
+    char_start = full_text.rfind(reply)
+    if char_start < 0:
+        return None   # the template normalized/mangled the reply text -- SKIP, never pool garbage
+    char_end = char_start + len(reply)
+    enc = sc.tok(full_text, return_tensors="pt", return_offsets_mapping=True, add_special_tokens=False)
+    offsets = enc["offset_mapping"][0].tolist()
+    idx = [i for i, (a, b) in enumerate(offsets) if b > a and b > char_start and a < char_end]
+    if not idx:
+        return None   # empty/whitespace reply, or no token overlapped the span -- SKIP
+    ids = enc["input_ids"].to(DEV)
+    hs = sc.model(ids, output_hidden_states=True).hidden_states[sc.layer + 1]
+    pooled = hs[0, idx, :].float().mean(dim=0)
+    del ids, hs   # free the (batch, seq, hidden) activation promptly -- see derive_caa_directions
+    return pooled
+
+
+@torch.no_grad()
+def derive_caa_directions(sc, bank: dict, dial_names: list[str]) -> tuple[dict[str, torch.Tensor], dict[str, dict]]:
+    """Derive a CAA (contrastive-activation-addition) direction per dial from the matched-pair exemplar
+    bank, for every name in `dial_names` the bank covers with >= dial_exemplars.MIN_RECOMMENDED_PAIRS pairs
+    (dial_exemplars.ready(bank) is the SAME gate the bank's own --list/--validate CLI reports) -- a dial
+    below that bar is simply absent from the returned dict, left for the caller (apply_caa_directions) to
+    fall back to its instruction-derived vector, honestly, not silently under-averaged.
+
+    DIVERGENCE FROM dial_exemplars.pairs_for(): that helper returns [(pos_text, neg_text), ...] tuples --
+    exactly the shape a BARE-TEXT CAA derivation would consume, but it drops each pair's `prompt` field,
+    which THIS derivation needs (chat-context reading is the entire point -- see the module docstring's
+    "--exemplars MODE" section for why bare-text reading was rejected). So this function reads
+    bank["dials"][name]["pairs"] directly (each a raw {prompt, pos, neg} dict) instead of going through
+    pairs_for -- dial_exemplars.load()/.ready() are still used exactly as the brief for this feature
+    specified; only pairs_for was inapplicable, because it discards the one field this recipe is built on.
+
+    PER PAIR: pooled(pos) = _pooled_reply_resid(sc, prompt, pos_reply); pooled(neg) likewise; diff = pooled
+    (pos) - pooled(neg), float32. A pair is SKIPPED (counted, not silently dropped) if `prompt` is missing/
+    blank, `pos`/`neg` aren't strings, or _pooled_reply_resid returns None for EITHER pole (a partially-
+    computable pair is not half-pooled -- the whole pair is excluded, so every contributing diff is a clean,
+    matched pos-vs-neg contrast).
+
+    PER DIAL: direction = mean of every usable pair's diff, then UNIT-NORMALIZED as `v / (v.norm() + 1e-8)``
+    -- the IDENTICAL formula SteeringControl.compute/add_custom already use to build sc.vecs[name] (see
+    hf_adapter.py: `d / (d.norm() + 1e-8)`), so a CAA-derived direction and an instruction-derived one are
+    stored in EXACTLY the same convention (float32, device=DEV, shape [hidden_size], unit norm) -- the A/B
+    this feature exists for is only fair if the only thing that differs is the direction's ORIENTATION, never
+    its scale convention. If a dial ends up with zero usable pairs (every pair skipped -- e.g. a template
+    that never nests, or an all-blank-prompt dial), it is simply absent from the returned dict, same as a
+    dial that never cleared MIN_RECOMMENDED_PAIRS in the first place.
+
+    Returns (directions, stats): `directions` is {dial_name: unit_tensor} for every dial that produced at
+    least one usable pair; `stats` is {dial_name: {"pairs_used", "pairs_skipped"}} for every dial that was
+    AT LEAST ATTEMPTED (i.e. cleared the MIN_RECOMMENDED_PAIRS gate), whether or not it ended up producing a
+    direction -- a two-value return, one more than the brief's originally-sketched `dict[str, torch.Tensor]`
+    signature, because the self-documenting run() output this feature also requires (dial_source AND a
+    per-dial pairs-used/skipped count) needs both, and threading the counts back out through a second,
+    mutated argument would be a worse API than just returning them.
+
+    Runs under @torch.no_grad() throughout; intermediates (`hs`/`reply_hs`/`full_ids` inside
+    _pooled_reply_resid, `diffs` here) are `del`eted as soon as they're no longer needed and _free_cuda() is
+    called once per dial (not once per pair -- torch.cuda.empty_cache() is itself not free, and a per-dial
+    cadence is the same granularity run()'s own per-dial checkpointing already uses) so a 9B nf4 model
+    sweeping a dozen dials x ~10 pairs x 2 poles doesn't accumulate enough live activation tensors to OOM a
+    16GB card."""
+    directions: dict[str, torch.Tensor] = {}
+    stats: dict[str, dict] = {}
+    ready = set(dial_exemplars.ready(bank))
+    for name in dial_names:
+        if name not in ready:
+            continue
+        pairs = (bank.get("dials", {}).get(name) or {}).get("pairs", [])
+        diffs: list[torch.Tensor] = []
+        used = skipped = 0
+        for p in pairs:
+            if not isinstance(p, dict):
+                skipped += 1
+                continue
+            prompt, pos_reply, neg_reply = p.get("prompt"), p.get("pos"), p.get("neg")
+            if not (isinstance(prompt, str) and prompt.strip()
+                    and isinstance(pos_reply, str) and isinstance(neg_reply, str)):
+                skipped += 1
+                continue
+            pos_pooled = _pooled_reply_resid(sc, prompt, pos_reply)
+            neg_pooled = _pooled_reply_resid(sc, prompt, neg_reply)
+            if pos_pooled is None or neg_pooled is None:
+                skipped += 1
+                continue
+            diffs.append(pos_pooled - neg_pooled)
+            used += 1
+        if diffs:
+            mean_diff = torch.stack(diffs).mean(0)
+            directions[name] = mean_diff / (mean_diff.norm() + 1e-8)
+        stats[name] = {"pairs_used": used, "pairs_skipped": skipped}
+        del diffs
+        _free_cuda()
+    return directions, stats
+
+
+def apply_caa_directions(sc, dial_names: list[str],
+                         directions: dict[str, torch.Tensor]) -> dict[str, str]:
+    """Swap sc.vecs[name] for every dial `directions` covers, leaving every OTHER requested dial's
+    instruction-derived vector (already computed by compute_dials, which MUST have run first -- see the
+    module docstring's "--exemplars MODE" ordering note) untouched. This is the ONLY place sc.vecs is
+    mutated for the CAA path -- derive_caa_directions itself never touches `sc` beyond reading sc.tok/
+    sc.model/sc.layer, so this function is pure enough to unit-test with a bare object exposing `.vecs`.
+
+    Returns the `dial_source` map ({name: "exemplars" | "instructions"}) for EVERY name in `dial_names`, in
+    order -- run()'s self-documenting output stamps this directly into its saved report so a reader can
+    never mistake which recipe produced which dial's swept direction, without re-deriving it from whether
+    the dial happened to appear in `directions`."""
+    source: dict[str, str] = {}
+    for name in dial_names:
+        if name in directions:
+            sc.vecs[name] = directions[name]
+            source[name] = "exemplars"
+        else:
+            source[name] = "instructions"
+    return source
 
 
 # ======================================================================================= the candidate library
@@ -794,7 +993,8 @@ def calibrate_dial(rig, sc, name: str, prompts: list[str], fracs: list[float], s
 def run(model_name: str, dials: list[str] | None = None, n_prompts: int = 6,
         out_path: str = "research/runs/dial_autocalibrate.json", four_bit_override: str = "auto",
         smoke: bool = False, seed: int = 0, layer: int | None = None, max_new: int = 100,
-        prompts_file: str | None = None) -> dict:
+        prompts_file: str | None = None, max_prompts: int | None = None,
+        exemplars: str | None = None) -> dict:
     torch.manual_seed(seed)
     dial_names = list(dials) if dials else list(DEFAULT_DIALS)
     if smoke:
@@ -807,6 +1007,12 @@ def run(model_name: str, dials: list[str] | None = None, n_prompts: int = 6,
     # the wiring-check cheap regardless of how big the file is.
     if prompts_file and not smoke:
         prompts, prompt_source = load_prompts_file(prompts_file)
+        if max_prompts and 0 < max_prompts < len(prompts):
+            # Evenly-spaced subsample so a grouped-by-register bank stays balanced (take 1 from each
+            # stretch, not the first N -- which would over-weight whatever group leads the file).
+            idx = sorted({round(i * (len(prompts) - 1) / (max_prompts - 1)) for i in range(max_prompts)})
+            prompts = [prompts[j] for j in idx]
+            prompt_source += f"[{len(prompts)}/{'orig'}]"
     else:
         prompts, prompt_source = sample_prompts(n_eff, seed=seed)
     print(f"[prompts] {len(prompts)} prompt(s) from {prompt_source}", flush=True)
@@ -824,11 +1030,34 @@ def run(model_name: str, dials: list[str] | None = None, n_prompts: int = 6,
     if not dial_names:
         raise SystemExit("no valid dials left to calibrate after filtering unknown --dials names")
 
+    # --exemplars: ONLY after compute_dials has already run (sc.base/sc.resid_norm are calibrated above,
+    # unconditionally, exactly as they were before this feature existed) does the CAA recipe get a chance to
+    # REPLACE sc.vecs[name] for whichever dials the bank covers -- see the module docstring's "--exemplars
+    # MODE" section for why that ordering is load-bearing. dial_source/caa_pairs_used/caa_pairs_skipped are
+    # always present in the saved report (even when --exemplars was never passed, in which case every dial
+    # is honestly "instructions" and every count is 0) so the JSON schema never silently changes shape
+    # between an A and a B run -- the whole point is that the two are diffable side by side.
+    caa_stats: dict[str, dict] = {}
+    if exemplars:
+        bank = dial_exemplars.load(exemplars)
+        caa_directions, caa_stats = derive_caa_directions(sc, bank, dial_names)
+        dial_source = apply_caa_directions(sc, dial_names, caa_directions)
+        n_from_exemplars = len(caa_directions)
+        n_fallback = len(dial_names) - n_from_exemplars
+        warm_pairs = ", ".join(f"{n}:{s['pairs_used']}" for n, s in sorted(caa_stats.items()))
+        print(f"[caa] derived {n_from_exemplars} dial(s) from {os.path.basename(exemplars)} "
+              f"(pairs used -- {warm_pairs}); {n_fallback} fell back to instructions", flush=True)
+    else:
+        dial_source = {name: "instructions" for name in dial_names}
+
     res = {
         "model": model_name, "four_bit": rig.four_bit, "seed": seed, "smoke": smoke,
         "n_prompts": len(prompts), "prompt_source": prompt_source, "prompts": prompts,
         "max_new": max_new, "steer_layer": sc.layer, "steer_info": steer_info,
         "sweep_fracs": fracs, "degen_threshold": _DEGEN_THRESHOLD, "effect_eps": _EFFECT_EPS,
+        "exemplars_path": exemplars, "dial_source": dial_source,
+        "caa_pairs_used": {n: caa_stats.get(n, {}).get("pairs_used", 0) for n in dial_names},
+        "caa_pairs_skipped": {n: caa_stats.get(n, {}).get("pairs_skipped", 0) for n in dial_names},
         "dial_order": dial_names, "dials": {},
     }
     _save(out_path, res)
@@ -864,11 +1093,17 @@ def _summary(res):
     print("\n" + "=" * 78, flush=True)
     print(f"DIAL AUTO-CALIBRATION -- {res['model']} ({'nf4' if res['four_bit'] else 'bf16'}) -- "
           f"{res['n_prompts']} prompt(s) from {res['prompt_source']}", flush=True)
-    print(f"\n{'dial':12} {'dead_below':11} {'usable_max':11} {'derail_at':10} {'valid':6}", flush=True)
+    # "source" (added alongside --exemplars) prints alongside the calibration numbers so an A/B reader never
+    # has to cross-reference res["dial_source"] separately to know which recipe produced which dial's row --
+    # see the module docstring's "--exemplars MODE" section.
+    dial_source = res.get("dial_source", {})
+    print(f"\n{'dial':12} {'dead_below':11} {'usable_max':11} {'derail_at':10} {'valid':6} {'source':12}",
+          flush=True)
     for name in res["dial_order"]:
         c = res["dials"][name]
         print(f"{name:12} {str(c['dead_below']):11} {str(c['usable_max']):11} "
-              f"{str(c['derail_point']):10} {str(c['range_valid']):6}", flush=True)
+              f"{str(c['derail_point']):10} {str(c['range_valid']):6} "
+              f"{dial_source.get(name, 'instructions'):12}", flush=True)
     invalid = [n for n in res["dial_order"] if not res["dials"][n]["range_valid"]]
     if invalid:
         print(f"\nno honestly-calibrated usable range on this sample: {invalid}", flush=True)
@@ -1157,6 +1392,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "object, or one-per-line text) used verbatim and in FULL instead of the runlog "
                          "sample -- the reusable knob: sweep the SAME file against any --model to get "
                          "comparable calibrations. Ignores --n-prompts; overridden by --smoke.")
+    ap.add_argument("--max-prompts", type=int, default=None, metavar="N",
+                    help="cap a --prompts-file to an EVENLY-SPACED N (keeps a grouped bank balanced) -- "
+                         "e.g. take a representative 50 from the 97-prompt bank without editing the file.")
+    ap.add_argument("--exemplars", nargs="?", const=dial_exemplars.DEFAULT_PATH, default=None,
+                    metavar="EXEMPLARS.json",
+                    help="derive each covered dial's steering direction from a matched-pair CAA exemplar "
+                         "bank (dial_exemplars.py's schema) instead of the default one-instruction-pair "
+                         "recipe -- runs AFTER compute_dials (which still calibrates sc.base/resid_norm "
+                         "unconditionally; see the module docstring's '--exemplars MODE' section). Bare "
+                         "'--exemplars' (no value) defaults to scripts/calibration/dial_exemplars.json; a "
+                         "dial the bank doesn't cover with >= MIN_RECOMMENDED_PAIRS pairs honestly falls "
+                         "back to its instruction-derived vector (see dial_source in the saved report).")
     ap.add_argument("--out", default=None,
                     help="output path (default: dial_library_sweep.json for --library, else "
                          "dial_autocalibrate.json -- see _default_out_path)")
@@ -1182,4 +1429,5 @@ if __name__ == "__main__":
         run(args.model, dials=args.dials, n_prompts=args.n_prompts,
             out_path=args.out or _default_out_path(args.library),
             four_bit_override=args.four_bit, smoke=args.smoke, seed=args.seed, layer=args.layer,
-            max_new=args.max_new, prompts_file=args.prompts_file)
+            max_new=args.max_new, prompts_file=args.prompts_file, max_prompts=args.max_prompts,
+            exemplars=args.exemplars)
