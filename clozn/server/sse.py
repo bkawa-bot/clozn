@@ -149,6 +149,14 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample
                     chunk({"content": foot})
             except Exception:
                 pass                              # additive -- a footer hiccup never breaks the stream
+        # CALIBRATION BACKLOG #10 "ask/abstain bands": same metadata-only signal as the non-streaming
+        # route (see generation_gateway.policy_signal), delivered as one side-frame before the finish
+        # chunk -- silent (no frame at all) unless a matching, fitted calibration actually says "ask" or
+        # "abstain".
+        from clozn.server.generation_gateway import policy_signal
+        policy = policy_signal(trace, model)
+        if policy:
+            chunk({}, extension={"clozn_policy": policy})
         chunk({}, finish=openai_fr)
         handler.wfile.write(b"data: [DONE]\n\n")
         handler.wfile.flush()

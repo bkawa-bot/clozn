@@ -1,6 +1,8 @@
 """Tests for the selective-generation policy (eval.policy) -- pure over synthetic (score, correct) pairs."""
 from __future__ import annotations
 
+import pytest
+
 from clozn.eval import policy
 
 
@@ -52,3 +54,71 @@ def test_empty_and_junk_never_raise():
     assert policy.choose_threshold([])["achievable"] is False
     assert policy.apply_policy([], answer_at=0.5)["n"] == 0
     assert policy.recommend([(0.5, None), ("x", True)])["summary"]["n"] == 0
+
+
+# ============================================================== score_from_trace / classify_run (runtime)
+
+_TRACE = {"tokens": ["Par", "is", "", " "], "confidence": [0.9, 0.3, 0.5, 0.1]}
+
+
+def test_score_from_trace_drops_structural_tokens():
+    # empty/whitespace pieces excluded -- only 0.9 and 0.3 count
+    assert policy.score_from_trace(_TRACE, "min") == 0.3
+    assert policy.score_from_trace(_TRACE, "mean") == pytest.approx(0.6)
+
+
+def test_score_from_trace_none_when_nothing_scored():
+    assert policy.score_from_trace({}, "min") is None
+    assert policy.score_from_trace({"tokens": ["a"], "confidence": []}, "min") is None
+
+
+_SAVED = {"model": "qwen2.5-7b-instruct.Q4_K_M", "score": "min",
+          "policy": {"answer_at": 0.8, "ask_at": 0.4}}
+
+
+def test_classify_run_bands_answer_ask_abstain():
+    hi = {"tokens": ["ok"], "confidence": [0.95]}
+    mid = {"tokens": ["ok"], "confidence": [0.6]}
+    lo = {"tokens": ["ok"], "confidence": [0.1]}
+    model = _SAVED["model"]
+    assert policy.classify_run(hi, _SAVED, model=model)["band"] == "answer"
+    assert policy.classify_run(mid, _SAVED, model=model)["band"] == "ask"
+    assert policy.classify_run(lo, _SAVED, model=model)["band"] == "abstain"
+
+
+def test_classify_run_reports_score_and_thresholds():
+    r = policy.classify_run({"tokens": ["ok"], "confidence": [0.6]}, _SAVED, model=_SAVED["model"])
+    assert r == {"available": True, "band": "ask", "score": 0.6, "score_aggregate": "min",
+                "answer_at": 0.8, "ask_at": 0.4}
+
+
+def test_classify_run_unavailable_with_no_saved_calibration():
+    r = policy.classify_run({"tokens": ["ok"], "confidence": [0.1]}, None, model="qwen2.5-7b-instruct.Q4_K_M")
+    assert r["available"] is False and "no calibration saved" in r["reason"]
+
+
+def test_classify_run_unavailable_on_model_mismatch():
+    r = policy.classify_run({"tokens": ["ok"], "confidence": [0.1]}, _SAVED, model="llama-3.2-3b-instruct")
+    assert r["available"] is False and "does not match" in r["reason"]
+
+
+def test_classify_run_unavailable_with_no_model_provenance():
+    r = policy.classify_run({"tokens": ["ok"], "confidence": [0.1]}, _SAVED, model=None)
+    assert r["available"] is False and "provenance" in r["reason"]
+
+
+def test_classify_run_unavailable_on_unsupported_score_aggregate():
+    saved = {**_SAVED, "score": "weighted"}
+    r = policy.classify_run({"tokens": ["ok"], "confidence": [0.1]}, saved, model=_SAVED["model"])
+    assert r["available"] is False and "score aggregate" in r["reason"]
+
+
+def test_classify_run_unavailable_with_no_scored_tokens():
+    r = policy.classify_run({}, _SAVED, model=_SAVED["model"])
+    assert r["available"] is False and "no scored content tokens" in r["reason"]
+
+
+def test_classify_run_unavailable_with_no_policy_block():
+    saved = {"model": _SAVED["model"], "score": "min"}
+    r = policy.classify_run({"tokens": ["ok"], "confidence": [0.1]}, saved, model=_SAVED["model"])
+    assert r["available"] is False and "no policy" in r["reason"]

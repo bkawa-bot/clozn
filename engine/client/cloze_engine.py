@@ -306,6 +306,11 @@ class EngineClient:
             body["steer_vec"] = flatten_values(steer_vec)
         return self._post("/score", body)
 
+    def cancel(self, req_id: str) -> dict:
+        """POST /cancel: cooperative cancel of a running generation. Idempotent — an unknown or
+        already-finished id returns {cancelled: false}. Returns {cancelled: bool, req: str}."""
+        return self._post("/cancel", {"req": req_id})
+
     def jlens(self, text: str, layer: Optional[int] = None, topk: int = 5) -> dict:
         """POST /jlens: the J-lens (Jacobian-lens) readout -- per position, the top-k tokens that
         position is 'disposed to say later' (Anthropic 2026, transferred to this GGUF).

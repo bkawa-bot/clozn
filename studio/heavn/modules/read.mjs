@@ -4,6 +4,7 @@
 import { html, useState, useEffect } from "../vendor/preact-standalone.mjs";
 import { store, useStore, normSteps, shortTime } from "../state.mjs";
 import { api } from "../api.mjs";
+import { PolicyChip } from "../policy.mjs";
 
 const LOW_CONF = 0.5;
 const WATCH_CONF = 0.8;
@@ -127,6 +128,64 @@ function ActuaryPanel({ rec }){
   </section>`;
 }
 
+function CalibrationCurve({ rec }){
+  const [state, setState] = useState({ status: "loading", data: null });
+  useEffect(() => {
+    let dead = false;
+    setState({ status: "loading", data: null });
+    api.journalCalibration().then(d => {
+      if(dead) return;
+      setState({ status: d && d.available ? "ok" : "none", data: d });
+    });
+    return () => { dead = true; };
+  }, [rec && rec.id]);
+
+  if(state.status === "loading") return null;
+  if(state.status === "none") return html`<section class="mod calibration-panel">
+    <div class="mod-h"><span class="led lilac"></span><span class="cap">truth-tier calibration</span></div>
+    <div class="none">${state.data && state.data.note
+      ? state.data.note
+      : "no outcome-grounded calibration available — run clozn eval --save"}</div>
+  </section>`;
+
+  const d = state.data;
+  const bins = Array.isArray(d.reliability_bins) ? d.reliability_bins.filter(b => b.n) : [];
+  const report = d.report || {};
+  const temp = report.temperature_scaling || {};
+  const sel = report.selective || {};
+  const sel70 = sel["70"] || {};
+
+  return html`<section class="mod calibration-panel">
+    <div class="mod-h"><span class="led cyan"></span>
+      <span class="cap">truth-tier calibration</span>
+      <span class="tail">${d.n || 0} probes · ${d.set || "unknown"} · ${d.score || "—"}</span></div>
+    <div class="calibration-body">
+      <div class="actuary-statline">
+        <span>ECE <b>${report.ece != null ? (+report.ece).toFixed(3) : "—"}</b></span>
+        <span>Brier <b>${report.brier != null ? (+report.brier).toFixed(3) : "—"}</b></span>
+        <span>AURC <b>${report.aurc != null ? (+report.aurc).toFixed(3) : "—"}</b></span>
+        ${temp.available && html`<span>T <b>${(+temp.temperature).toFixed(2)}</b></span>`}
+      </div>
+      ${sel70.available && html`<div class="calibration-selective">
+        at ${pct(sel70.coverage)} coverage: error ${pct(sel70.error_at_coverage)} vs ${pct(sel70.full_coverage_error)} full
+        ${sel70.error_reduction_vs_full != null ? ` · ${pct(sel70.error_reduction_vs_full)} reduction` : ""}
+      </div>`}
+      ${bins.length ? html`<div class="actuary-bins">
+        ${bins.map(b => html`<div class="actuary-bin" key=${b.lo}>
+          <span>${(+b.lo).toFixed(1)}–${(+b.hi).toFixed(1)} · n=${b.n}</span>
+          <div><i style=${`width:${pct(b.accuracy)}`}></i>
+            <em style=${`left:${pct(b.mean_score)}`} title=${`mean score ${b.mean_score != null ? (+b.mean_score).toFixed(2) : "—"}`}></em></div>
+          <b>correct ${pct(b.accuracy)}</b>
+          ${b.ci_lo != null && b.ci_hi != null ? html`<span class="ci">CI ${pct(b.ci_lo)}–${pct(b.ci_hi)}</span>` : null}
+        </div>`)}
+      </div>` : html`<div class="none">no bins available</div>`}
+      <p class="actuary-note">outcome-grounded: correctness on a labeled probe set, not the acceptance proxy.
+        ${d.model ? ` Model: ${d.model}.` : ""}</p>
+      ${d.saved_ago_s != null && html`<p class="actuary-note">saved ${Math.round(d.saved_ago_s)}s ago</p>`}
+    </div>
+  </section>`;
+}
+
 export function ReadModule(){
   const rec = useStore(x => x.rec);
   const requested = useStore(x => x.readRequest);
@@ -152,12 +211,14 @@ export function ReadModule(){
   const chosen = selected == null ? (spans[0] || null) : spans.find(s => s.id === selected) || null;
   const answer = steps.length ? null : (rec.response || rec.reply || "No response text was recorded.");
   const finish = rec.finish_reason || "not recorded";
+  const policy = rec.clozn_policy || null;
 
   return html`<div class="read-grid">
     <article class="mod read-document">
       <header class="read-head">
         <div><div class="read-kicker">recorded answer</div>
-          <h1>${promptFor(rec)}</h1></div>
+          <h1>${promptFor(rec)}</h1>
+          ${policy && html`<div style="margin-top:9px"><${PolicyChip} policy=${policy}/></div>`}</div>
         <div class="read-actions">
           <button class="spd primary" onClick=${() => store.set({ route: "replay", P: steps.length })}>OPEN REPLAY</button>
           ${!rec._sample && html`<a class="spd read-link" href=${api.cardUrl(rec.id)} target="_blank" rel="noopener">RECEIPT CARD</a>`}
@@ -226,6 +287,7 @@ export function ReadModule(){
         </div>
       </aside>
       <${ActuaryPanel} rec=${rec}/>
+      <${CalibrationCurve} rec=${rec}/>
     </div>
   </div>`;
 }

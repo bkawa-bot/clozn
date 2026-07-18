@@ -184,6 +184,7 @@ def test_no_pins_omits_the_constraint_paragraph(fake_chat_sub):
     assert status == 200
     system = fake_chat_sub.calls[-1]["messages"][0]["content"]
     assert "HARD CONSTRAINT" not in system
+    assert out["all_pins_kept"] is None
 
 
 def test_multiple_pins_all_quoted_in_order(fake_chat_sub):

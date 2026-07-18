@@ -59,6 +59,7 @@ export const api = {
   trustSpans: (id, support = false) => post("/runs/" + enc(id) + "/trust_spans",
     support ? { support: true } : {}, support ? 300000 : 60000),               // F2: proxy+truth; NLI explicit
   journalActuary: () => j("/journal/actuary", null, 60000),                    // acceptance-proxy report
+  journalCalibration: () => j("/journal/calibration", null, 15000),            // truth-tier curve (clozn eval)
   runActuary: id => postE("/runs/" + enc(id) + "/actuary", {}, 60000),        // past-only failure resemblance
   fork: (id, position, token) => post("/runs/" + enc(id) + "/fork",
                                       { position, token }, 300000),            // F3: child run back
@@ -130,8 +131,11 @@ export const api = {
   preferenceResolve: (id, action) => postE("/preferences/resolve", { id, action }, 30000),
 
   /* ── chat (SSE stream). onDelta(textChunk), onDone(finalInfo|null), onLens(readout) — the F1 live
-        lens frames when `lens` ({layer, topk?, every?}) is passed. Returns abort fn. ── */
-  chatStream(messages, { onDelta, onDone, onError, onLens, lens = null, trust = false } = {}){
+        lens frames when `lens` ({layer, topk?, every?}) is passed. onPolicy(policy) — the clozn_policy
+        side-frame (calibrated ask-band verdict), sent once before the finish chunk when the reply
+        lands in the "ask" band; absent otherwise, same as the non-streaming response field. Returns
+        abort fn. ── */
+  chatStream(messages, { onDelta, onDone, onError, onLens, onPolicy, lens = null, trust = false } = {}){
     const c = new AbortController();
     (async () => {
       try{
@@ -159,6 +163,7 @@ export const api = {
               const obj = JSON.parse(payload);
               if(obj.error){ onError && onError(String(obj.error)); continue; }   /* mid-stream error frame */
               if(obj.clozn_lens){ onLens && onLens(obj.clozn_lens); continue; }   /* F1 live lens side-frame */
+              if(obj.clozn_policy){ onPolicy && onPolicy(obj.clozn_policy); continue; }  /* calibrated ask-band side-frame */
               const delta = obj.choices && obj.choices[0] && (obj.choices[0].delta?.content ?? obj.choices[0].text);
               if(delta) onDelta && onDelta(delta, obj);
               if(obj.choices && obj.choices[0] && obj.choices[0].finish_reason) final = obj;

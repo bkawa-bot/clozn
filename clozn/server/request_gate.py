@@ -81,8 +81,9 @@ class RequestGate:
         finally:
             with self._state_lock:
                 self._waiting -= 1
+            if not acquired:
+                self._slots.release()
         if not acquired:
-            self._slots.release()
             return "cancelled" if cancelled else "timeout"
         with self._state_lock:
             self._active = 1

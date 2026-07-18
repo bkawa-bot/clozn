@@ -587,19 +587,53 @@ class Rig:
     Rig (itself following steer_vs_prompt.py's), except four_bit uses this module's own wants_four_bit."""
 
     def __init__(self, name: str, four_bit_override: str = "auto"):
+        from transformers import AutoConfig
         path = os.path.join(os.path.expanduser("~"), "hf_models", name.split("/")[-1])
         path = path if os.path.isfile(os.path.join(path, "config.json")) else name
-        self.four_bit = wants_four_bit(name, four_bit_override)
-        print(f"[load] {name} ({'nf4' if self.four_bit else 'bf16'}, {DEV}) ...", flush=True)
-        self.tok = AutoTokenizer.from_pretrained(path)
-        if self.four_bit:
+        cfg = AutoConfig.from_pretrained(path)
+        # Wave-1 note: some checkpoints ship as MULTIMODAL wrappers (Gemma-4-E4B = Gemma4ForConditionalGeneration,
+        # Ministral-3 = Mistral3ForConditionalGeneration) whose text decoder lives at .model.language_model, and
+        # some ship PRE-QUANTIZED (Ministral-3 in FineGrainedFP8) so bitsandbytes must NOT stack on top. The seam
+        # everything downstream needs is unchanged: a `self.model` that generates and returns text hidden_states,
+        # with `self.model.model.layers` = the decoder stack (SteeringControl hooks there).
+        text_cfg = getattr(cfg, "text_config", None)            # non-None => multimodal wrapper
+        prequant = getattr(cfg, "quantization_config", None)    # non-None => already quantized on disk
+        self.four_bit = False if prequant is not None else wants_four_bit(name, four_bit_override)
+        kind = "native-prequant" if prequant is not None else ("nf4" if self.four_bit else "bf16")
+        print(f"[load] {name} ({kind}{', multimodal->text' if text_cfg else ''}, {DEV}) ...", flush=True)
+
+        is_mistral = "mistral" in str(getattr(cfg, "model_type", "")).lower() or "mistral" in name.lower()
+        self.tok = AutoTokenizer.from_pretrained(path, **({"fix_mistral_regex": True} if is_mistral else {}))
+        if not getattr(self.tok, "chat_template", None):        # Mistral ships a standalone chat_template.jinja
+            try:
+                from transformers.utils import cached_file
+                jinja = cached_file(path, "chat_template.jinja", _raise_exceptions_for_missing_entries=False)
+                if jinja:
+                    self.tok.chat_template = open(jinja, encoding="utf-8").read()
+            except Exception:
+                pass
+
+        loader = AutoModelForCausalLM
+        if text_cfg is not None:
+            from transformers import AutoModelForImageTextToText
+            loader = AutoModelForImageTextToText
+        if prequant is not None:
+            self.model = loader.from_pretrained(path, device_map={"": 0}).eval()
+        elif self.four_bit:
             from transformers import BitsAndBytesConfig
             bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                      bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
-            self.model = AutoModelForCausalLM.from_pretrained(path, quantization_config=bnb,
-                                                              device_map={"": 0}).eval()
+            self.model = loader.from_pretrained(path, quantization_config=bnb, device_map={"": 0}).eval()
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16).to(DEV).eval()
+            self.model = loader.from_pretrained(path, dtype=torch.bfloat16).to(DEV).eval()
+
+        if text_cfg is not None:
+            # Point the decoder-stack seam at the text backbone and make num_hidden_layers the TEXT count, so
+            # SteeringControl (model.model.layers[L], model.config.num_hidden_layers) resolves unchanged.
+            self.model.model.layers = self.model.model.language_model.layers
+            if getattr(self.model.config, "num_hidden_layers", None) is None:
+                self.model.config.num_hidden_layers = text_cfg.num_hidden_layers
+
         _ensure_padding_token(self.tok)
         # Decoder-only generation must left-pad: the final input position for every row must be a real
         # prompt token, not padding, because generate() selects next-token logits from that position.
@@ -965,6 +999,14 @@ _DEGEN_THRESHOLD = 0.34   # a dose is flagged derailing once MORE than ~1-in-3 s
                           # degenerate (counterfactual._coherence) -- copied from parliament.py's _DEGEN_OK.
                           # UNCHANGED by the direction-aware rewrite: coherence has nothing to do with the
                           # effect measure, so it needed no re-tuning.
+# SCALE-RELATIVE floor: the effect metric is a raw projection magnitude that scales with the model+layer's
+# residual norm, so a FIXED 2.0 that is right on the 7B (resid_norm 68.7) is ~4x too strict on Llama-3.1-8B
+# @L16 (resid_norm ~11) and ~50x too strict on Gemma-4-E4B @L24 (resid_norm ~116). _scale_effect_eps() rewrites
+# _EFFECT_EPS per run to a fixed FRACTION of the measured resid_norm, so "a real effect" means the same thing
+# across models. _EFFECT_EPS_SCALE_K is that fraction; at the 7B reference (2.0/68.7) it reproduces 2.0 EXACTLY,
+# leaving every existing Qwen2.5-7B calibration unchanged. --effect-eps pins an absolute floor and opts out.
+_EFFECT_EPS_SCALE_K = 2.0 / 68.7    # 0.0291 effect-units per unit of residual norm
+_EFFECT_EPS_OVERRIDE = None         # set by --effect-eps to pin an absolute floor (disables the scale rule)
 _EFFECT_EPS = 2.0         # RE-TUNED for the new metric's scale (a raw projection delta, not a [0,1] Jaccard
                           # ratio -- full derivation in the module docstring's THRESHOLDS section). Picked,
                           # not derived, from this rig's own most recent real run against
@@ -976,6 +1018,24 @@ _EFFECT_EPS = 2.0         # RE-TUNED for the new metric's scale (a raw projectio
                           # -- but SCALE-TIED to this model/layer/quantization in a way the old dimensionless
                           # 0.03 never was: re-picking (not just re-deriving) this number is expected when
                           # this rig is run against a differently-scaled model/layer.
+
+
+def _scale_effect_eps(resid_norm: float | None) -> float:
+    """Rewrite the module-global _EFFECT_EPS for THIS run: an absolute pin if --effect-eps was given, else a
+    fixed fraction (_EFFECT_EPS_SCALE_K) of the measured residual norm. Called once, right after compute_dials
+    calibrates sc.resid_norm and before any curve is scored, so the whole sweep (and the saved effect_eps) use
+    the scale-correct floor. Leaves _EFFECT_EPS at its 2.0 default when resid_norm is unavailable."""
+    global _EFFECT_EPS
+    if _EFFECT_EPS_OVERRIDE is not None:
+        _EFFECT_EPS = float(_EFFECT_EPS_OVERRIDE)
+        basis = "override (--effect-eps)"
+    elif resid_norm and resid_norm > 0:
+        _EFFECT_EPS = round(_EFFECT_EPS_SCALE_K * resid_norm, 4)
+        basis = f"{_EFFECT_EPS_SCALE_K:.4f} x resid_norm {resid_norm:.1f}"
+    else:
+        basis = "default (resid_norm unavailable)"
+    print(f"[eps] effect_eps = {_EFFECT_EPS}  ({basis})", flush=True)
+    return _EFFECT_EPS
 
 
 def _compute_calibration(curve: list[dict]) -> dict:
@@ -1242,6 +1302,7 @@ def run(model_name: str, dials: list[str] | None = None, n_prompts: int = 6,
           flush=True)
     steer_info = compute_dials(sc, dial_names)
     print(f"[dials] {steer_info}", flush=True)
+    _scale_effect_eps(steer_info.get("resid_norm"))   # scale the effect floor to THIS model's residual norm
     if steer_info["unknown_dials"]:
         print(f"[warn] unknown dial(s) ignored (not a steering.AXES built-in or a registered custom dial "
               f"-- known customs: {sorted(_CUSTOM_DIAL_DEFS)}): {steer_info['unknown_dials']}", flush=True)
@@ -1407,6 +1468,7 @@ def run_library(library_path: str, model_name: str = "Qwen/Qwen2.5-7B-Instruct",
     sc = SingleTurnSteer(rig.model, rig.tok, layer=layer)
     print(f"[library] {len(library)} candidate dial(s) loaded from {library_path}", flush=True)
     steer_info = compute_dials(sc, [])     # calibrates sc.base/resid_norm; no built-ins requested for sweep
+    _scale_effect_eps(steer_info.get("resid_norm"))   # scale the effect floor to THIS model's residual norm
     lib_meta = register_library_dials(sc, library)
     dial_names = list(lib_meta)
     print(f"[library] registered {len(dial_names)} custom dial(s) (max={_LIBRARY_DEFAULT_MAX} each)",
@@ -1686,6 +1748,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="output path (default: dial_library_sweep.json for --library, else "
                          "dial_autocalibrate.json -- see _default_out_path)")
     ap.add_argument("--four-bit", choices=["auto", "yes", "no"], default="auto")
+    ap.add_argument("--effect-eps", type=float, default=None, metavar="EPS",
+                    help="pin an ABSOLUTE effect floor in projection units. Default (recommended): scale-"
+                         "relative -- 0.0291 x this model's measured resid_norm, which reproduces the tuned "
+                         "2.0 at the Qwen2.5-7B reference and scales correctly to other models' activation "
+                         "magnitudes. Pass this only to override the auto floor with a fixed number.")
     ap.add_argument("--layer", type=int, default=None, help="steering layer override (default num_layers//2)")
     ap.add_argument("--max-new", type=int, default=100, help="max new tokens per generation")
     ap.add_argument("--batch-size", type=_positive_int, default=8,
@@ -1701,6 +1768,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     args = build_arg_parser().parse_args()
+    if args.effect_eps is not None:
+        _EFFECT_EPS_OVERRIDE = args.effect_eps   # pin the absolute floor; _scale_effect_eps honors it
     if args.report:
         report(args.report, curated_out=args.curated_out)
     elif args.library:

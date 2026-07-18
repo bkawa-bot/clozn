@@ -126,5 +126,13 @@ def try_post(h, p, body):
                                         "self-confidence != correctness")
         except Exception:
             pass                          # trust is additive: a spans hiccup never breaks the reply
+    # CALIBRATION BACKLOG #10 "ask/abstain bands": a metadata-only signal when this reply's confidence
+    # lands in the saved policy's ask OR abstain band (clozn eval --save). Never opt-in-gated -- it is
+    # silent (no key at all) unless a matching, fitted calibration actually says "ask" or "abstain"; see
+    # generation_gateway.policy_signal.
+    from clozn.server.generation_gateway import policy_signal
+    policy = policy_signal(trace_steps, selected_model)
+    if policy:
+        resp["clozn_policy"] = policy
     h._json(200, resp, extra_headers=extra_headers)
     return True

@@ -49,6 +49,7 @@ class Migration:
     version: int
     description: str
     apply: Callable[[sqlite3.Connection], None]
+    verify: Callable[[sqlite3.Connection], bool] | None = None
 
 
 def _migration_0001_initial_schema(db: sqlite3.Connection) -> None:
@@ -88,11 +89,17 @@ def _migration_0001_initial_schema(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS runs_model_idx ON runs(model, created_ts DESC)")
 
 
+def _verify_0001(db: sqlite3.Connection) -> bool:
+    """Schema-level check that migration 1 actually landed: the runs table must exist."""
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'").fetchone() is not None
+
+
 # The shipped, ordered migration set. Append-only: once released, a migration's `apply` must never be
 # edited (a DB that already applied it would silently diverge from one that applies the edited version) --
 # ship a NEW migration with a higher version instead.
 MIGRATIONS: tuple[Migration, ...] = (
-    Migration(1, "initial schema: schema_meta + runs + indexes", _migration_0001_initial_schema),
+    Migration(1, "initial schema: schema_meta + runs + indexes", _migration_0001_initial_schema,
+              verify=_verify_0001),
 )
 
 TARGET_VERSION = max(m.version for m in MIGRATIONS)
@@ -120,9 +127,22 @@ def current_version(db: sqlite3.Connection) -> int:
 
 
 def pending(db: sqlite3.Connection, migrations: Sequence[Migration] = MIGRATIONS) -> list[Migration]:
-    """Migrations not yet applied to `db`, in ascending version order."""
-    applied = current_version(db)
-    return sorted((m for m in migrations if m.version > applied), key=lambda m: m.version)
+    """Migrations not yet applied to `db`, in ascending version order. A migration is pending if its
+    ledger row is absent OR its verify callback reports the schema is inconsistent."""
+    _ensure_ledger_table(db)
+    rows = db.execute("SELECT key FROM schema_meta WHERE key LIKE 'migration:%'").fetchall()
+    claimed: set[int] = set()
+    for row in rows:
+        m = _MIGRATION_KEY_RE.match(row[0])
+        if m:
+            claimed.add(int(m.group(1)))
+    result = []
+    for m in sorted(migrations, key=lambda x: x.version):
+        if m.version not in claimed:
+            result.append(m)
+        elif m.verify is not None and not m.verify(db):
+            result.append(m)
+    return result
 
 
 def migrate(db: sqlite3.Connection, migrations: Sequence[Migration] = MIGRATIONS) -> list[int]:
@@ -130,6 +150,10 @@ def migrate(db: sqlite3.Connection, migrations: Sequence[Migration] = MIGRATIONS
     applied (empty list if already current). Raises on the first failing step WITHOUT applying any step
     after it -- the caller decides whether that's fatal (the CLI) or should degrade quietly (store._ensure,
     which already tolerated an unusable DB before this module existed)."""
+    versions = [m.version for m in migrations]
+    dupes = sorted({v for v in versions if versions.count(v) > 1})
+    if dupes:
+        raise ValueError(f"duplicate migration version(s): {dupes}")
     _ensure_ledger_table(db)
     applied: list[int] = []
     prior_isolation = db.isolation_level
@@ -140,10 +164,19 @@ def migrate(db: sqlite3.Connection, migrations: Sequence[Migration] = MIGRATIONS
         for m in pending(db, migrations):
             db.execute("BEGIN IMMEDIATE")
             try:
+                already = db.execute(
+                    "SELECT 1 FROM schema_meta WHERE key = ?", (f"migration:{m.version}",)
+                ).fetchone()
+                if already and (m.verify is None or m.verify(db)):
+                    db.execute("ROLLBACK")
+                    continue
                 m.apply(db)
                 stamp = json.dumps({"description": m.description,
                                      "applied_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
-                db.execute("INSERT INTO schema_meta(key, value) VALUES(?, ?)", (f"migration:{m.version}", stamp))
+                db.execute(
+                    "INSERT OR REPLACE INTO schema_meta(key, value) VALUES(?, ?)",
+                    (f"migration:{m.version}", stamp),
+                )
                 db.execute(
                     "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -169,6 +202,6 @@ def status(db: sqlite3.Connection, migrations: Sequence[Migration] = MIGRATIONS)
     return {
         "current_version": current,
         "target_version": target,
-        "up_to_date": current >= target,
+        "up_to_date": len(todo) == 0,
         "pending": [{"version": m.version, "description": m.description} for m in todo],
     }

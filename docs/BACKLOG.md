@@ -16,22 +16,23 @@ anything needing Qwen-7B + Dream co-resident (~13 GB) waits for the parallel eff
 
 Not new features — the trust gate before we build more. Payoff = confidence the shipped product works.
 
-1. **Route D live round-trip** — does a real model honor the verbatim pins? Validates the shipped Rewrite
-   (AR) mode; the pin-fidelity chips report honestly. Single engine boot, no worker restart.
-   *Why:* we shipped Rewrite mode but never confirmed a real model keeps pins verbatim. *Payoff:* proof the
-   studio's Edit → Rewrite mode works — or honest ✗ chips when a model breaks a pin, never a silent lie.
+1. ~~**Route D live round-trip**~~ ✅ DONE 2026-07-18: tested against qwen-0.5b/CUDA via
+   `POST /engine/rewrite`. Pin-fidelity chips honestly report kept/not-kept: formal rewrite keeps pins;
+   translation correctly reports `kept: false` when model translates a pinned phrase; truncation
+   (`finish_reason: "length"`) correctly reports unreached pins as not-kept. Minor wart: `all_pins_kept`
+   is vacuously `true` with zero pins (Python `all([])`). Bug found + fixed: receipt footer in probe
+   replies contaminated numeric grading (run_id hex contained gold answer as substring).
 2. **Real-browser pass over heavn UI** — click through Settings / Explain / quick-repair / Scope / Read /
    actuary against a live engine.
    *Why:* the reconciled UI only had model-free render checks; no human has clicked it live. *Payoff:* no
    broken panel waiting for a user — an end-to-end quality gate on the whole studio.
-3. **Pressure-test the merged lanes** — hostile hands-on over migrations / GC / cancellation (kill workers
-   mid-stream, disconnect clients, corrupt/fill the blob store).
-   *Why:* the new persistence/cancel code only saw unit tests; hostile testing has found real bugs every
-   prior time. *Payoff:* the product won't corrupt a run, hang, or lose data under messy real usage.
-4. **Engine-side cooperative cancel** (small C++) — make "cancel" actually stop the worker, not just drop
-   the socket. Completes the request-isolation lane.
-   *Why:* today the worker keeps decoding after a cancel (wasted GPU). *Payoff:* hitting Stop frees the GPU
-   instantly — snappier iteration, no compute burned on an abandoned generation.
+3. ~~**Pressure-test the merged lanes**~~ ✅ DONE 2026-07-18: 47 hostile tests across cancel proxy,
+   truth-tier calibration, migrations (TOCTOU, ledger, duplicate versions, semaphore leak). Found + fixed
+   5 real bugs. `tests/test_pressure.py`, all green.
+4. ~~**Engine-side cooperative cancel**~~ ✅ DONE 2026-07-18: CancelRegistry + `POST /cancel` +
+   broken-pipe auto-detect, all 3 streaming handlers wired, exception-safe cleanup (revise + board).
+   GPU build verified. Gateway `req_` → engine `req` correlation wired (`RequestContext.engine_req`,
+   captured off first SSE frame; `req_id` body key in cancel proxy).
 5. **H7 + H3 live captures** — ⛔ **blocked on VRAM** (need Qwen-7B + Dream, ~13 GB). Harnesses armed in
    `notes/ar_diffusion/{h7,h3}/`; two commands each once ~10 GB frees.
    *Why:* run the harnesses to answer "does generation *order* change *content*? does diffusion commit
@@ -74,8 +75,11 @@ possible and make the white-box readouts fast enough to watch live.
 
 Higher variance; each is a real capability if it lands.
 
-10. **Live risk controller** — wire the offline answer/ask/abstain policy (`clozn/eval/policy.py`, today
-    selection-only) into live generation; beat black-box baselines held-out with CIs.
+10. **Live risk controller** — 🔄 PARTIAL 2026-07-18: ask-band signal wired into both streaming + non-streaming
+    `/v1/chat/completions` (`clozn_policy` metadata field, silent unless calibration says "ask").
+    `policy.score_from_trace` + `classify_run` + `generation_gateway.ask_band_signal` landed.
+    REMAINING: abstain-band action (refuse / self-check), heavn UI indicator, beat black-box baselines
+    held-out with CIs.
     *Why:* the eval layer computes thresholds but generation never uses them. *Payoff:* the model can
     actually **abstain, ask to clarify, or self-check before answering** when likely wrong — measurably
     fewer wrong answers, not a decorative confidence meter.
@@ -99,14 +103,17 @@ Higher variance; each is a real capability if it lands.
     ⚠ needs a `/v1/revise` ablated-context spike first). Specs in `notes/ar_diffusion/specs/`.
     *Why:* research bets on combining the AR + diffusion substrates. *Payoff:* possibly better generation or
     richer receipts — honestly may not pan out (its sibling H1 was killed; we keep the honesty).
-15. **Edit routes B / C** — Route **B** content-concept via `dir(c)` (~dozen-line engine unlock); Route
-    **C** free-text via LLaDA-8B-Instruct (the research swing). Route D shipped.
+15. **Edit routes ~~B~~ / C** — Route **B** ✅ DONE 2026-07-18 (`steer_vec` on all 3 endpoints,
+    exception-safe cleanup, heavn Edit concept input + strength slider). Route **C** free-text via
+    LLaDA-8B-Instruct (the research swing) still open.
     *Why:* extend the edit vocabulary past Rewrite. *Payoff:* more Edit-drawer modes — steer content *by
-    concept* inside a real bidirectional resolve (B); free-text edit instructions to a diffusion model (C).
+    concept* inside a real bidirectional resolve (B, done); free-text edit instructions to a diffusion model (C).
 16. **J-lens post-v1 (J5)** — Dream/denoise lens, chat-vs-web-text lens, stream top-k during generation.
     *Why:* extend the shipped "disposed to say" lens. *Payoff:* richer live readouts in the studio.
-17. **Assembled-but-unconnected bets** — model's-own-CI, legible-basis microscope (OMP), branch-on-doubt,
-    paraphrase-brittleness receipts, cross-model disposition transfer (pilot).
+17. **Assembled-but-unconnected bets** — ~~model's-own-CI~~ (DONE 2026-07-18: `clozn test-model` CLI +
+    `clozn.eval.golden` + 210-probe golden fixture saved on GPU; extended probe set added),
+    ~~legible-basis microscope (OMP)~~ (DONE — shipped via anchored memory X7),
+    branch-on-doubt, paraphrase-brittleness receipts.
     *Why:* validated-but-unwired research primitives. *Payoff:* each *could* become a studio feature;
     low-priority exploration.
 
@@ -116,10 +123,7 @@ Higher variance; each is a real capability if it lands.
     text↔trace alignment via `X-Clozn-Run-Id`). Highest effort of the three.
     *Why:* the ambient-delivery endgame. *Payoff:* clozn's confidence/trust shading **inside the tools
     people already use** — "zoom into the sketchy spans" without leaving their workflow.
-19. **Route-B "revise steer_vec" engine unlock** — content-concept edits inside a real bidirectional
-    resolve (pairs with #15's Route B).
-    *Why:* the engine unlock that makes Route B real. *Payoff:* content edits that *propagate* through a
-    resolve, not just regenerate.
+19. ~~**Route-B "revise steer_vec" engine unlock**~~ ✅ DONE 2026-07-18 (see #15).
 20. **Design-agent mock pack (D1–D5)** — only if pursuing the visual-polish direction (`notes/CLOZN_UX.md` §11).
     *Why:* optional visual polish. *Payoff:* a more finished studio look — only if we pursue it.
 
@@ -127,12 +131,17 @@ Higher variance; each is a real capability if it lands.
 
 ## Parked — needs an owner decision or an external unblock
 
-- **Lab artifact contracts + model qualification** — 🔄 in progress in the parallel effort
-  (`clozn/artifacts/contracts.py`, `docs/qualification/`). End-state: a one-command
-  `clozn qualify-whitebox <gguf> --checkpoint <org/model>` proven on Qwen + Gemma + Llama.
+- ~~**Lab artifact contracts + model qualification**~~ ✅ DONE 2026-07-18: `clozn qualify-whitebox <gguf>`
+  landed — 39 model-free tests, honest per-feature capability matrix from contracts.gguf_identity + wave1
+  ledger + local artifact lookup. Two feature families gated differently: core (receipts/explain/rewrite)
+  qualified unconditionally; white-box (steering/j-lens/SAE) qualified only with real per-model data.
+  Surfaced a real nuance: qwen2.5-7b has a calibrated steer tap layer (14) but wave1 dials status is
+  `legacy_global_requires_model_scoped_recalibration` — correctly reports steering as NOT qualified.
   *Why/Payoff:* makes clozn's white-box features work on **any GGUF**, with an honest capability matrix —
   single-model → real multi-model platform.
-- **Ollama drop-in?** — owner decision (recommended: a thin `/api/chat|generate|tags|version`).
+- **Ollama drop-in?** — owner decision. ✅ Shim written 2026-07-18 (`clozn/server/routes/ollama.py`:
+  `GET /api/tags|version`, `POST /api/generate|chat`; non-streaming only; version returns
+  `"0.0.0-clozn"`). NOT registered in `app.py` — one-line wire when decided.
   *Why/Payoff:* point your existing Ollama tools at clozn and get white-box on top — an adoption lever.
 - **`real-runtime-smoke.yml` green** — the "zero jobs" parse bug is fixed but unverified; needs an owner
   `workflow_dispatch` click.

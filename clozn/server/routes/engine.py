@@ -28,6 +28,46 @@ def try_get(h, p):
 
 
 def try_post(h, p, body):
+    if p == "/cancel":
+        if ctx.ENGINE is None:
+            h._json(503, {"error": "no engine connected"})
+            return True
+        # `req` is the pre-existing contract: the worker's OWN id, forwarded to ENGINE.cancel() verbatim
+        # -- untouched below, so every existing caller of that shape keeps working byte-for-byte.
+        # `req_id` is new: the GATEWAY's own id (request_context.new_request_id(), e.g. from a
+        # RequestContext a caller learned some other way), which this gateway can resolve to the
+        # worker's own req itself -- the correlation the backlog calls out ("correlate req_ ids with the
+        # worker's req"). Kept as a separate key rather than sniffing a "req_" prefix on `req` itself,
+        # since `req` already accepts arbitrary opaque worker-minted ids and must not change meaning.
+        engine_req = str(body.get("req") or "")
+        req_id = str(body.get("req_id") or "")
+        if req_id and not engine_req:
+            sub = ctx.active_sub(h)
+            # Only one generation is in flight at a time (POST_GATE serializes it; /cancel itself is
+            # gate-exempt precisely so it can reach that in-flight call concurrently -- see
+            # app._GATE_EXEMPT_POSTS), so the substrate's live self._request IS "the" request req_id
+            # could be naming. A stale/unknown req_id (already finished, or from a since-replaced
+            # RequestContext) simply doesn't match -- nothing to resolve, nothing to cancel.
+            current = getattr(sub, "_request", None) if sub is not None else None
+            if current is not None and current.request_id == req_id:
+                # Local stop signal fires unconditionally on a match, even if the worker hasn't stamped
+                # its own req yet (generation just started, no frame parsed): chat_stream's read loop
+                # checks is_cancelled() between frames independent of the worker-side /cancel below, so
+                # this alone still halts the stream promptly.
+                current.cancel()
+                engine_req = current.engine_req or ""
+            if not engine_req:
+                # Nothing to hand the worker's /cancel (unmatched req_id, or no worker req yet) -- report
+                # honestly instead of forwarding an empty id, which the worker 400s on.
+                h._json(200, {"cancelled": False, "req": req_id})
+                return True
+        try:
+            result = ctx.ENGINE.cancel(engine_req)
+        except Exception as e:
+            h._json(502, {"error": f"engine cancel failed: {e}"})
+            return True
+        h._json(200, result)
+        return True
     if p == "/sampling/mode":   # S5: adjust/toggle interactive-chat sampling (on/off + the 4 params)
         import clozn.memory.mode as memory_mode
         changed = False

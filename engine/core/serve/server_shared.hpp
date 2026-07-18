@@ -41,6 +41,7 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -124,27 +125,102 @@ inline std::string dump_json(const json& j) {
     return j.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
+// ---- cooperative cancellation ------------------------------------------------------------------
+// The Python gateway (clozn/server/sse.py) detects a client disconnect (a failed write to the far
+// end) well before the C++ worker would ever notice on its own -- a generation loop has no socket of
+// its own to watch; it just calls on_event() and keeps computing until it naturally finishes. Two
+// independent signals feed ONE per-request flag so either is enough to stop generation PROMPTLY
+// (within one committed token/pass, not at the natural end):
+//   (1) POST /cancel {"req": id} -- an explicit "stop this", e.g. once the gateway notices the client
+//       is gone.
+//   (2) A failed SSE frame write (StreamEnvelope::write_raw below) -- the socket is ALREADY dead (tab
+//       closed, curl Ctrl-C'd, the gateway's resp.close()), so this fires with no round-trip at all --
+//       an ordinary disconnect is caught even if nothing ever calls /cancel.
+// GenerationCancelled unwinds out of the generator through the SAME exception path an n_ctx-exceeded
+// or decode-failure throw already takes (server_main.cpp's per-request cleanup()/catch(...) already
+// restores the pooled context on ANY throw) -- so this needed no change to that machinery, only a new
+// throw site (StreamEnvelope::check_cancelled, called once per emitted event).
+struct GenerationCancelled : std::runtime_error {
+    GenerationCancelled() : std::runtime_error("cancelled") {}
+};
+
+// Maps a live streaming request's id (StreamEnvelope::req -- the same cmpl-/infill-/revise-/board- id
+// every frame is already stamped with) to its cancel flag, so POST /cancel (handled on httplib's
+// listener thread) can reach a generation running on a DIFFERENT worker thread. Registered when a
+// stream starts, erased when it ends (Guard, RAII) -- cancelling an id from a finished/unknown request
+// just reports cancelled:false, never an error: cancellation is inherently racy (the generation may
+// finish the instant before or after the cancel arrives), and both outcomes are fine.
+class CancelRegistry {
+public:
+    std::shared_ptr<std::atomic<bool>> register_request(const std::string& req_id) {
+        auto flag = std::make_shared<std::atomic<bool>>(false);
+        std::lock_guard<std::mutex> lk(mtx_);
+        flags_[req_id] = flag;
+        return flag;
+    }
+    void unregister_request(const std::string& req_id) {
+        std::lock_guard<std::mutex> lk(mtx_);
+        flags_.erase(req_id);
+    }
+    // true => a live request was found and flagged; false => nothing to cancel (done/unknown id).
+    bool cancel(const std::string& req_id) {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto it = flags_.find(req_id);
+        if (it == flags_.end()) return false;
+        it->second->store(true, std::memory_order_relaxed);
+        return true;
+    }
+    // RAII unregister on scope exit (every path out of a streaming handler -- normal finish, cancel,
+    // or an unrelated throw) so a handler with several exit points never has to remember cleanup.
+    struct Guard {
+        CancelRegistry& reg;
+        std::string req_id;
+        ~Guard() { reg.unregister_request(req_id); }
+    };
+
+private:
+    std::mutex mtx_;
+    std::map<std::string, std::shared_ptr<std::atomic<bool>>> flags_;
+};
+
 // Per-request SSE frame envelope. Every JSON frame on a native stream is stamped with the request id
 // (`req`, the same cmpl-/infill-/revise- id the final frame carries) and a monotonic per-request
 // sequence number (`seq`, from 0) -- so a consumer can correlate a frame to its request and detect a
 // dropped or reordered frame. `[DONE]` and any non-object frame (a hand-serialized error, say) pass
 // through untouched: the envelope never drops a frame it can't stamp. Frames route through ONE counter
 // per request, so the per-step frames and the trailing final frame share one contiguous sequence.
+//
+// Cooperative cancel: `write` reports success/failure (cpp-httplib's DataSink::write already returns
+// bool -- a failed write means the socket is gone), and a failure flips `cancel` when one is wired up
+// (see CancelRegistry above) -- so a dead client is noticed the very next time ANY frame is sent, no
+// polling needed. check_cancelled() is what the generation loop's on_event wrapper calls once per
+// emitted event to actually stop (see server_main.cpp's streaming handlers).
 struct StreamEnvelope {
     std::string req;
-    std::function<void(const std::string&)> write;
+    std::function<bool(const std::string&)> write;   // returns false on a broken/closed send
     uint64_t seq = 0;
+    std::shared_ptr<std::atomic<bool>> cancel;        // optional: set by /cancel or a failed write
+
+    void write_raw(const std::string& s) {
+        if (!write(s) && cancel) cancel->store(true, std::memory_order_relaxed);
+    }
     void frame(json f) {                       // stamp a json frame, then write it
         f["req"] = req;
         f["seq"] = seq++;
-        write("data: " + dump_json(f) + "\n\n");
+        write_raw("data: " + dump_json(f) + "\n\n");
     }
     void frame_str(const std::string& dumped) {  // a pre-serialized frame (sse_data): parse, stamp, write
         json f = json::parse(dumped, nullptr, /*allow_exceptions=*/false);
-        if (f.is_discarded() || !f.is_object()) { write("data: " + dumped + "\n\n"); return; }
+        if (f.is_discarded() || !f.is_object()) { write_raw("data: " + dumped + "\n\n"); return; }
         frame(std::move(f));
     }
-    void done() { write("data: [DONE]\n\n"); }
+    void done() { write_raw("data: [DONE]\n\n"); }
+    // Throws GenerationCancelled if cancellation was signaled -- call once per emitted event from
+    // inside the on_event callback (AR mode emits at least one event per committed token, diffusion at
+    // least one per pass), so a cancel is noticed within one token/pass, not just at stream end.
+    void check_cancelled() const {
+        if (cancel && cancel->load(std::memory_order_relaxed)) throw GenerationCancelled();
+    }
 };
 
 inline std::string sse_data(const Event& e, const GgmlModel& model, const std::vector<int>& prompt_ids,

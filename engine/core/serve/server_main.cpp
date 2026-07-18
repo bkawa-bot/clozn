@@ -214,6 +214,11 @@ int main(int argc, char** argv) {
 
     httplib::Server svr;
 
+    // Cooperative cancellation (see server_shared.hpp's CancelRegistry docstring): shared by every
+    // SSE streaming route below so POST /cancel can reach a generation running on another worker
+    // thread, and so a dead client socket is noticed the next time that request tries to write a frame.
+    CancelRegistry cancel_registry;
+
     int model_n_embd = 0;
     int model_n_layer = 0;
     std::string model_architecture;
@@ -273,6 +278,25 @@ int main(int argc, char** argv) {
     // The real-time denoise visualization (a pure consumer of the SSE event stream).
     svr.Get("/", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(VIZ_HTML, "text/html; charset=utf-8");
+    });
+
+    // POST /cancel {"req": "<id>"} -- cooperative cancel: flip the named request's cancel flag (if
+    // it's still live) so its generation loop stops within one token/pass instead of running to
+    // completion. The gateway can call this the instant it notices its client is gone; an ordinary
+    // disconnect is usually caught even sooner (see StreamEnvelope::write_raw). Idempotent and never
+    // an error: an unknown/already-finished id just reports cancelled:false -- the request is moot
+    // either way, since it has either already stopped or there was nothing to stop.
+    svr.Post("/cancel", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+        const std::string id = (!body.is_discarded() && body.is_object())
+                                    ? body.value("req", std::string()) : std::string();
+        if (id.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "need {\"req\": \"<request id>\"}"}}.dump(), "application/json");
+            return;
+        }
+        const bool found = cancel_registry.cancel(id);
+        res.set_content(json{{"cancelled", found}, {"req", id}}.dump(), "application/json");
     });
 
     // Shared body of completions + infill: build the runner, then either stream the events as SSE
@@ -379,10 +403,8 @@ int main(int argc, char** argv) {
         if (prefix_rows > 0 && body.contains("prefix_embd") && body["prefix_embd"].is_array()) {
             prefix_embd = body["prefix_embd"].get<std::vector<float>>();   // AR: ar_forward_embd; diffusion: set_diffusion_prefix
         }
-        // Optional RAW tone direction (the studio's engine tone dials): an n_embd control vector applied
-        // via set_steer during THIS generation -- so memory (prefix) + tone steer ride together. AR-only.
         std::vector<float> steer_vec;
-        if (ar_mode && body.contains("steer_vec") && body["steer_vec"].is_array()) {
+        if (body.contains("steer_vec") && body["steer_vec"].is_array()) {
             steer_vec = body["steer_vec"].get<std::vector<float>>();
         }
         // Optional early-stop reference (prove-all ablated arms, AR-only): the baseline reply's committed
@@ -475,17 +497,19 @@ int main(int argc, char** argv) {
             res.set_chunked_content_provider(
                 "text/event-stream",
                 [run, id, object, model, prompt_ids, suffix_ids, protocol, state_full, substrate, mask_token,
-                 &jlens, lens_on, lens_layer, lens_topk, lens_every]
+                 &jlens, lens_on, lens_layer, lens_topk, lens_every, &cancel_registry]
                 (size_t, httplib::DataSink& sink) {
-                    auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                    auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
                     StreamEnvelope env{id, write};        // stamps req + monotonic seq on every frame
+                    env.cancel = cancel_registry.register_request(id);      // cooperative cancel (see
+                    CancelRegistry::Guard cancel_guard{cancel_registry, id};  // server_shared.hpp); unregisters on any exit
                     try {                                 // a generator throw here would otherwise escape into
                                                           // httplib's worker thread -> abort(); catch it below.
                     if (protocol) {
                         // State-stream protocol: fold the §5.1 events into StateStep frames.
                         StateStepBuilder builder(*model, substrate, state_full,
                                                  [&](json f) { env.frame(std::move(f)); });
-                        auto on_event = [&](const Event& e) { builder.on_event(e); };
+                        auto on_event = [&](const Event& e) { env.check_cancelled(); builder.on_event(e); };
                         GenerateResult r = run(on_event);
                         builder.finish();
                         // Final summary frame: the canonical snapshot (board + text + layout) the
@@ -501,6 +525,7 @@ int main(int argc, char** argv) {
                     }
                     int lens_n = 0; bool lens_err_sent = false;
                     auto on_event = [&](const Event& e) {
+                        env.check_cancelled();
                         // F1 live lens: consume the raw StepActivations event (heavy, never forwarded in
                         // lens mode) into a compact jlens_live frame — the J-lens "disposed to say" top-k
                         // for the just-committed token, computed mid-generation. Readout shape mirrors
@@ -551,6 +576,16 @@ int main(int argc, char** argv) {
                     env.done();
                     sink.done();
                     return true;
+                    } catch (const GenerationCancelled&) {
+                        // Cooperative cancel fired (POST /cancel, or the client socket write itself
+                        // already failed) -- stop, and say so honestly: this is an intentional stop, not
+                        // a "generation failed". run() already restored the pooled context via its own
+                        // catch(...); a frame write here may itself no-op silently (write_raw's job) if
+                        // the client is already gone -- that's fine, nobody's reading it either way.
+                        env.frame(json{{"cancelled", true}, {"id", id}});
+                        env.done();
+                        sink.done();
+                        return true;
                     } catch (const std::exception& e) {
                         // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
                         // and close the stream gracefully -- run() already restored the pooled context.
@@ -665,8 +700,12 @@ int main(int argc, char** argv) {
             steer_coef = body["steer"].value("coef", 0.0);
             steer_layer = body["steer"].value("layer", 0);
         }
+        std::vector<float> steer_vec;
+        if (body.contains("steer_vec") && body["steer_vec"].is_array()) {
+            steer_vec = body["steer_vec"].get<std::vector<float>>();
+        }
 
-        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, board, cfg, revise, sample, features, steer_concept, steer_coef, steer_layer](const std::function<void(const Event&)>& on_event) {
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, board, cfg, revise, sample, features, steer_concept, steer_coef, steer_layer, steer_vec](const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);
             const bool sae_on = features && sae_serve.on;
@@ -675,32 +714,56 @@ int main(int argc, char** argv) {
             const std::function<void(const Event&)> ev = with_sae_readout(on_event, sae_serve, sae_on);
             const ConceptProbes* probes = (features && concept_probes.ready()) ? &concept_probes : nullptr;
             const bool steering = !steer_concept.empty() && steer_coef != 0.0 && steer_probes.ready();
-            if (steering) {
+            const bool raw_steer = !steer_vec.empty();
+            if (steering || raw_steer) {
                 const int nl = (*lease).n_layer();
                 int lo, hi;
                 if (steer_layer >= 1) { lo = hi = (steer_layer < nl ? steer_layer : nl - 1); }
-                else { const int tl = nl * 2 / 3;  // steer at mid-depth, where steer_probes is calibrated
+                else { const int tl = nl * 2 / 3;
                        lo = (tl - 2 > 1 ? tl - 2 : 1); hi = (tl + 2 < nl ? tl + 2 : nl - 1); }
                 if (lo < 1) lo = 1;
-                (*lease).set_steer(build_steer_cvec(steer_probes, steer_concept, steer_coef, lo, hi, nl), lo, hi);
+                if (steering) {
+                    (*lease).set_steer(build_steer_cvec(steer_probes, steer_concept, steer_coef, lo, hi, nl), lo, hi);
+                } else {
+                    const int ne = static_cast<int>(steer_vec.size());
+                    std::vector<float> cvec(static_cast<size_t>(ne) * nl, 0.0f);
+                    const double c = steer_coef != 0.0 ? steer_coef : 1.0;
+                    for (int L = lo; L <= hi; ++L) {
+                        if (L < 1 || L >= nl) continue;
+                        float* slice = cvec.data() + static_cast<size_t>(L - 1) * ne;
+                        for (int i = 0; i < ne; ++i) slice[i] = static_cast<float>(c * steer_vec[i]);
+                    }
+                    (*lease).set_steer(cvec, lo, hi);
+                }
             }
-            auto r = denoise(*lease, board, cfg, nullptr, ev, revise, sample, probes);
-            if (steering) (*lease).clear_steer();
-            if (sae_on) (*lease).set_tap_layer(default_tap);
-            (*lease).set_emit_activations(false);
-            return r;
+            auto cleanup = [&]() {
+                if (steering || raw_steer) (*lease).clear_steer();
+                if (sae_on) (*lease).set_tap_layer(default_tap);
+                (*lease).set_emit_activations(false);
+            };
+            try {
+                auto r = denoise(*lease, board, cfg, nullptr, ev, revise, sample, probes);
+                cleanup();
+                return r;
+            } catch (...) {
+                cleanup();
+                throw;
+            }
         };
         const std::string id = make_id("revise-");
 
         if (stream) {
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [run, id, model, board, mask_token](size_t, httplib::DataSink& sink) {
-                    auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                [run, id, model, board, mask_token, &cancel_registry](size_t, httplib::DataSink& sink) {
+                    auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
                     StreamEnvelope env{id, write};        // stamps req + monotonic seq on every frame
+                    env.cancel = cancel_registry.register_request(id);      // cooperative cancel (see
+                    CancelRegistry::Guard cancel_guard{cancel_registry, id};  // server_shared.hpp); unregisters on any exit
                     try {                                 // a generator throw here would otherwise escape into
                                                           // httplib's worker thread -> abort(); catch it below.
                     auto on_event = [&](const Event& e) {
+                        env.check_cancelled();
                         env.frame_str(sse_data_revise(e, *model, board, mask_token));
                     };
                     GenerateResult r = run(on_event);
@@ -711,6 +774,13 @@ int main(int argc, char** argv) {
                     env.done();
                     sink.done();
                     return true;
+                    } catch (const GenerationCancelled&) {
+                        // Cooperative cancel fired -- stop, and say so honestly (never "generation
+                        // failed"); run() already restored the pooled context via its own catch(...).
+                        env.frame(json{{"cancelled", true}, {"id", id}});
+                        env.done();
+                        sink.done();
+                        return true;
                     } catch (const std::exception& e) {
                         // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
                         // and close the stream gracefully, mirroring /v1/completions' streaming guard.
@@ -795,8 +865,12 @@ int main(int argc, char** argv) {
             steer_coef = body["steer"].value("coef", 0.0);
             steer_layer = body["steer"].value("layer", 0);
         }
+        std::vector<float> steer_vec;
+        if (body.contains("steer_vec") && body["steer_vec"].is_array()) {
+            steer_vec = body["steer_vec"].get<std::vector<float>>();
+        }
 
-        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, board, cfg, revise, sample, features, steer_concept, steer_coef, steer_layer](const std::function<void(const Event&)>& on_event) {
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, board, cfg, revise, sample, features, steer_concept, steer_coef, steer_layer, steer_vec](const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_emit_activations(features);
             const bool sae_on = features && sae_serve.on;
@@ -805,32 +879,56 @@ int main(int argc, char** argv) {
             const std::function<void(const Event&)> ev = with_sae_readout(on_event, sae_serve, sae_on);
             const ConceptProbes* probes = (features && concept_probes.ready()) ? &concept_probes : nullptr;
             const bool steering = !steer_concept.empty() && steer_coef != 0.0 && steer_probes.ready();
-            if (steering) {
+            const bool raw_steer = !steer_vec.empty();
+            if (steering || raw_steer) {
                 const int nl = (*lease).n_layer();
                 int lo, hi;
                 if (steer_layer >= 1) { lo = hi = (steer_layer < nl ? steer_layer : nl - 1); }
-                else { const int tl = nl * 2 / 3;  // steer at mid-depth, where steer_probes is calibrated
+                else { const int tl = nl * 2 / 3;
                        lo = (tl - 2 > 1 ? tl - 2 : 1); hi = (tl + 2 < nl ? tl + 2 : nl - 1); }
                 if (lo < 1) lo = 1;
-                (*lease).set_steer(build_steer_cvec(steer_probes, steer_concept, steer_coef, lo, hi, nl), lo, hi);
+                if (steering) {
+                    (*lease).set_steer(build_steer_cvec(steer_probes, steer_concept, steer_coef, lo, hi, nl), lo, hi);
+                } else {
+                    const int ne = static_cast<int>(steer_vec.size());
+                    std::vector<float> cvec(static_cast<size_t>(ne) * nl, 0.0f);
+                    const double c = steer_coef != 0.0 ? steer_coef : 1.0;
+                    for (int L = lo; L <= hi; ++L) {
+                        if (L < 1 || L >= nl) continue;
+                        float* slice = cvec.data() + static_cast<size_t>(L - 1) * ne;
+                        for (int i = 0; i < ne; ++i) slice[i] = static_cast<float>(c * steer_vec[i]);
+                    }
+                    (*lease).set_steer(cvec, lo, hi);
+                }
             }
-            auto r = denoise(*lease, board, cfg, nullptr, ev, revise, sample, probes);
-            if (steering) (*lease).clear_steer();
-            if (sae_on) (*lease).set_tap_layer(default_tap);
-            (*lease).set_emit_activations(false);
-            return r;
+            auto cleanup = [&]() {
+                if (steering || raw_steer) (*lease).clear_steer();
+                if (sae_on) (*lease).set_tap_layer(default_tap);
+                (*lease).set_emit_activations(false);
+            };
+            try {
+                auto r = denoise(*lease, board, cfg, nullptr, ev, revise, sample, probes);
+                cleanup();
+                return r;
+            } catch (...) {
+                cleanup();
+                throw;
+            }
         };
         const std::string id = make_id("board-");
 
         if (stream) {
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [run, id, model, board, mask_token](size_t, httplib::DataSink& sink) {
-                    auto write = [&](const std::string& s) { sink.write(s.data(), s.size()); };
+                [run, id, model, board, mask_token, &cancel_registry](size_t, httplib::DataSink& sink) {
+                    auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
                     StreamEnvelope env{id, write};        // stamps req + monotonic seq on every frame
+                    env.cancel = cancel_registry.register_request(id);      // cooperative cancel (see
+                    CancelRegistry::Guard cancel_guard{cancel_registry, id};  // server_shared.hpp); unregisters on any exit
                     try {                                 // a generator throw here would otherwise escape into
                                                           // httplib's worker thread -> abort(); catch it below.
                     auto on_event = [&](const Event& e) {
+                        env.check_cancelled();
                         env.frame_str(sse_data_revise(e, *model, board, mask_token));
                     };
                     GenerateResult r = run(on_event);
@@ -842,6 +940,13 @@ int main(int argc, char** argv) {
                     env.done();
                     sink.done();
                     return true;
+                    } catch (const GenerationCancelled&) {
+                        // Cooperative cancel fired -- stop, and say so honestly (never "generation
+                        // failed"); run() already restored the pooled context via its own catch(...).
+                        env.frame(json{{"cancelled", true}, {"id", id}});
+                        env.done();
+                        sink.done();
+                        return true;
                     } catch (const std::exception& e) {
                         // The generator threw (n_ctx exceeded, decode failure, ...). Emit a clean error frame
                         // and close the stream gracefully, mirroring /v1/completions' streaming guard.

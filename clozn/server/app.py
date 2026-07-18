@@ -53,7 +53,7 @@ POST_GATE = RequestGate.from_env()
 # or writes that shared state and stays fully serialized. The risk of a wrong "this is safe" call here is a
 # corrupted run record or a torn dial read, so the bar is "audited to touch nothing substrate-shaped", not
 # a coarse heuristic like "looks read-only".
-_GATE_EXEMPT_POSTS = frozenset({"/capture/tier", "/substrate"})
+_GATE_EXEMPT_POSTS = frozenset({"/capture/tier", "/substrate", "/cancel"})
 
 try:
     from cloze_engine import EngineClient, EngineError

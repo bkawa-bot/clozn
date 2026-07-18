@@ -133,7 +133,7 @@ def try_post(h, p, body):
         return True
 
     verified = _verify_pins(pins, pinned_texts, rewritten)
-    all_kept = all(v["kept"] for v in verified)
+    all_kept = all(v["kept"] for v in verified) if verified else None
     fr = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
     openai_fr = ctx._openai_finish_reason(fr)
 

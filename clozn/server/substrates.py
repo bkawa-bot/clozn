@@ -308,9 +308,9 @@ class _EngineMemory:
         self.lock = threading.Lock()
         try:
             import clozn.memory.mode as memory_mode                    # 0.35 == the shipped product default (commit f3e9f60, the
-            self.memory_strength = float(memory_mode.get_setting("memory_strength", 0.35))   # over-bleed fix);
-        except Exception:                          # matches SelfTeach.__init__ so a fresh engine-first boot
-            self.memory_strength = 0.35            # doesn't diverge. (Prompt mode treats it as on/off anyway.)
+            self.memory_strength = float(memory_mode.get_setting("memory_strength", 0.0))    # off by default;
+        except Exception:                          # cards are opt-in via the UI strength slider, not always-on
+            self.memory_strength = 0.0             # prompt injection into unrelated topics.
 
     @property
     def rules(self):
@@ -745,6 +745,15 @@ class EngineSubstrate(Substrate):
                 except Exception:
                     continue
                 frames.append(obj)
+                if req.engine_req is None:
+                    # StreamEnvelope (server_shared.hpp) stamps `req` on EVERY frame of this stream, so
+                    # the first one parsed already carries it -- capture once here rather than waiting
+                    # for a specific frame type. This is the req_ <-> worker-req correlation
+                    # request_context.py's new_request_id() describes: routes/engine.py's POST /cancel
+                    # reads it off self._request to resolve a gateway id to the worker's own.
+                    engine_req = obj.get("req")
+                    if engine_req:
+                        req.engine_req = str(engine_req)
                 if obj.get("type") == "jlens_live":     # F1: side-channel to the SSE relay, never yielded
                     if on_frame is not None:
                         try:

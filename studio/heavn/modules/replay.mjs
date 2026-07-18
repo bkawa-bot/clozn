@@ -6,6 +6,7 @@ import { store, useStore, toast, normSteps, weightsFor, colsFor, colGeom,
          firstLine, shortTime, REDUCED } from "../state.mjs";
 import { api } from "../api.mjs";
 import { loadRun } from "../app.mjs";
+import { PolicyChip } from "../policy.mjs";
 
 /* ───────────────────────── module root ───────────────────────── */
 export function ReplayModule(){
@@ -59,12 +60,14 @@ function Monitor({ rec }){
   const chatBuf = useStore(x => x.chatBuf);
   const chatPrompt = useStore(x => x.chatPrompt);
   const liveLens = useStore(x => x.liveLens);
+  const livePolicy = useStore(x => x.livePolicy);
   const trust = useStore(x => rec ? x.trust[rec.id] : null);
   const [supportBusy, setSupportBusy] = useState(false);
   const steps = rec ? normSteps(rec) : [];
   const done = P >= steps.length;
   const trunc = rec && rec.finish_reason === "length";
   const liveView = chatting || chatBuf != null;   /* streaming, or streamed & awaiting the journal */
+  const policy = liveView ? livePolicy : (rec && rec.clozn_policy) || null;
   const stLabel = chatting ? "LIVE" : chatBuf != null ? "SAVING"
     : !rec ? "IDLE" : playing ? "PLAY" : done ? "END" : P === 0 ? "IDLE" : "PAUSE";
 
@@ -128,6 +131,7 @@ function Monitor({ rec }){
     <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
     <div class="mod-h"><span class="led"></span><span class="cap">output monitor</span>
       <span class="tail">${liveView ? "streaming" : rec ? "tokens 0–" + steps.length : "—"}</span>
+      ${policy && html`<${PolicyChip} policy=${policy}/>`}
       <span class=${"tag " + (liveView ? "der-t" : "cap-t")}>${liveView ? "LIVE" : "CAPTURED"}</span></div>
     <div class="crt-shell"><div class="crt">
       <div class="scan"></div>
@@ -202,7 +206,7 @@ async function doSend(rec, text, cont){
   const messages = (cont && rec && Array.isArray(rec.messages) ? rec.messages : [])
     .concat([{ role: "user", content: text }]);
   const lensLayer = s.lensLayer || 0;                 /* F1: 0 = off; else the requested J-lens depth */
-  store.set({ chatting: true, chatBuf: "", chatPrompt: text, playing: false, liveLens: null });
+  store.set({ chatting: true, chatBuf: "", chatPrompt: text, playing: false, liveLens: null, livePolicy: null });
   chatAbortFn = api.chatStream(messages, {
     lens: lensLayer ? { layer: lensLayer, topk: 4 } : null,
     onLens: fr => {                                    /* F1: the disposed-to-say readout, mid-stream */
@@ -211,6 +215,7 @@ async function doSend(rec, text, cont){
       store.set({ liveLens: { layer: fr.layer, t: fr.t,
         words: row.map(x => ({ piece: String(x.piece || "").trim(), score: +x.score })) } });
     },
+    onPolicy: fr => store.set({ livePolicy: fr || null }),
     onDelta: chunk => store.set(st => ({ chatBuf: (st.chatBuf || "") + chunk })),
     onDone: async () => {
       store.set({ chatting: false });

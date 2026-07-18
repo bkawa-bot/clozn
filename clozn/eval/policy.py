@@ -71,6 +71,87 @@ def apply_policy(pairs, answer_at: float, ask_at: float | None = None) -> dict:
     }
 
 
+def _content_confidences(trace: dict) -> list:
+    """Per-token confidence over a trace's CONTENT tokens (empty/whitespace pieces dropped -- they're
+    structural, not answer content). Mirrors eval.bench._answer_confidences's derivation exactly, so a
+    live classification below uses the identical signal the saved calibration was fit against. Kept as
+    its own copy rather than imported: this module takes a plain, already-normalized trace dict
+    (clozn.runs.trace.steps_to_trace's shape -- {tokens, confidence, ...}), never a live run or
+    substrate, so it stays a pure, dependency-light analysis function like the rest of this file."""
+    trace = trace if isinstance(trace, dict) else {}
+    toks = trace.get("tokens")
+    conf = trace.get("confidence")
+    toks = toks if isinstance(toks, list) else []
+    conf = conf if isinstance(conf, list) else []
+    out = []
+    for i in range(min(len(toks), len(conf))):
+        if not (toks[i] or "").strip():
+            continue
+        v = conf[i]
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        out.append(float(v))
+    return out
+
+
+def score_from_trace(trace: dict, aggregate: str = "min") -> float | None:
+    """The answer-span confidence aggregate for one reply's trace: 'min' (the weakest content token --
+    the standard selective-generation signal, and eval.bench's default) or 'mean'. None when the trace
+    carries no scored content tokens -- never a fabricated 0.0/1.0."""
+    vals = _content_confidences(trace)
+    if not vals:
+        return None
+    return min(vals) if aggregate != "mean" else sum(vals) / len(vals)
+
+
+def classify_run(trace: dict, saved: dict | None, model: str | None = None) -> dict:
+    """Classify one LIVE reply's confidence against a saved selective-generation policy -- the payload
+    `clozn eval --save` persists (clozn.eval.store) and GET /journal/calibration serves. This is the
+    RUNTIME half of the calibration backlog item ("a retrieval/clarify action wired to the policy's ask
+    band"): `decide()` already knows how to band a score; this adds the honest provenance gate around it,
+    mirroring clozn.runs.calibrated_trust.attach_truth's rules (same reasons for the same mismatches) so a
+    live verdict is never stronger than what the saved report can actually back up:
+
+      * no saved report, or one with no `policy` block -> unavailable
+      * the saved model and the model that actually produced this reply must both be known and match
+        EXACTLY (a policy tuned on one model says nothing about another)
+      * the saved score aggregate must be 'min' or 'mean' -- this call's score is derived under that SAME
+        aggregate, so it is apples-to-apples with what the policy was tuned against
+      * the saved `answer_at` threshold must be a usable number; `ask_at` is optional (its absence just
+        collapses the policy to answer/abstain -- see `decide()`)
+
+    Returns {"available": False, "reason": str} when any of the above fails, or {"available": True,
+    "band": "answer"|"ask"|"abstain", "score", "score_aggregate", "answer_at", "ask_at"}. Never raises."""
+    if not isinstance(saved, dict):
+        return {"available": False, "reason": "no calibration saved -- run `clozn eval --save`"}
+    pol = saved.get("policy")
+    if not isinstance(pol, dict):
+        return {"available": False, "reason": "saved calibration carries no policy"}
+    saved_model = str(saved.get("model") or "").strip()
+    actual_model = str(model or "").strip()
+    if not saved_model or not actual_model:
+        return {"available": False, "reason": "saved calibration or this reply is missing model provenance"}
+    if saved_model != actual_model:
+        return {"available": False,
+                "reason": f"calibration model {saved_model!r} does not match this reply's model {actual_model!r}"}
+    aggregate = str(saved.get("score") or "").strip()
+    if aggregate not in ("min", "mean"):
+        return {"available": False, "reason": "saved calibration has no supported score aggregate (min or mean)"}
+    score = score_from_trace(trace, aggregate)
+    if score is None:
+        return {"available": False, "reason": "this reply's trace carries no scored content tokens"}
+    answer_at = pol.get("answer_at")
+    if isinstance(answer_at, bool) or not isinstance(answer_at, (int, float)):
+        return {"available": False, "reason": "saved policy has no usable answer_at threshold"}
+    ask_at = pol.get("ask_at")
+    if isinstance(ask_at, bool) or not isinstance(ask_at, (int, float)):
+        ask_at = None
+    band = decide(score, float(answer_at), float(ask_at) if ask_at is not None else None)
+    return {"available": True, "band": band, "score": round(score, 4), "score_aggregate": aggregate,
+            "answer_at": round(float(answer_at), 4),
+            "ask_at": (round(float(ask_at), 4) if ask_at is not None else None)}
+
+
 def recommend(pairs, target_error: float = 0.05) -> dict:
     """A ready-to-use recommendation: `answer_at` = the tightest threshold hitting target_error, and an
     `ask` band down to a LOOSER threshold (target_error*3) -- in that middle band the model is right often

@@ -38,6 +38,9 @@ export const store = createStore({
   trust: {},              // F2: run id -> journal-calibrated trust spans (null = unavailable)
   lensLayer: 0,           // F1: 0 = live lens off; else the requested J-lens depth (2/14/21/25)
   liveLens: null,         // F1: the latest mid-stream disposed-to-say readout
+  livePolicy: null,       // clozn_policy SSE side-frame for the in-flight reply (calibrated ask-band
+                           // verdict); cleared when a new send starts. Absent unless the reply landed
+                           // in the calibrated "ask" band — never inferred, only what the server sent.
   pendingExperiment: null, // click-a-span handoff: {ctype, fields, method} the Experiment drawer
                            // consumes ONCE on mount then clears (a span's action deep-links here)
 });

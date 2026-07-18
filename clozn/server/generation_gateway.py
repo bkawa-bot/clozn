@@ -26,6 +26,61 @@ def model_id() -> str:
         return "clozn-local"
 
 
+_POLICY_NOTES = {
+    "ask": ("confidence on this reply falls in the calibrated 'ask' band -- consider a "
+            "clarifying follow-up rather than treating it as a confident answer (from "
+            "clozn eval's selective-generation policy, not a live fact-check)"),
+    "abstain": ("confidence on this reply falls in the calibrated 'abstain' band -- this answer is "
+                "likely wrong; treat it with significant skepticism (from clozn eval's "
+                "selective-generation policy, not a live fact-check)"),
+}
+
+
+def policy_signal(trace_steps, model: str | None) -> dict | None:
+    """The selective-generation policy's verdict for one just-completed /v1/chat/completions reply, or
+    None when there is nothing honest to say -- no calibration saved yet (`clozn eval --save`), the saved
+    calibration doesn't match this model or carries no usable score aggregate, or this reply's confidence
+    is in the 'answer' band. Reuses clozn.eval.policy.classify_run, which mirrors
+    clozn.runs.calibrated_trust.attach_truth's provenance rules (exact model match, a fitted score
+    aggregate) so this can never fabricate a verdict the saved report can't back up.
+
+    Signals BOTH the 'ask' and 'abstain' bands -- the calibration backlog item #10 ("a retrieval/clarify
+    action wired to the policy's ask band", plus its abstain follow-on: when confidence is low enough that
+    the model is likely wrong, say so explicitly rather than staying silent). It is a metadata field the
+    caller attaches to the response (or an SSE side-frame), never a change to the generated text; the
+    caller decides what, if anything, to do with it -- the 'ask' note suggests a clarifying follow-up, the
+    'abstain' note is a stronger warning that the reply is likely wrong. `trace_steps` is the RAW
+    per-token step list (chat()'s trace_out, or chat_stream's last_stream_trace()) -- normalized here via
+    clozn.runs.store.steps_to_trace, the same shape a stored run's trace carries. Never raises."""
+    try:
+        from clozn.eval import policy as eval_policy, store as eval_store
+        import clozn.runs.store as runlog
+        saved = eval_store.load()
+        if not saved:
+            return None
+        trace = runlog.steps_to_trace(trace_steps)
+        if not trace:
+            return None
+        verdict = eval_policy.classify_run(trace, saved, model=model)
+        band = verdict.get("band")
+        if not verdict.get("available") or band not in ("ask", "abstain"):
+            return None
+        return {
+            "band": band,
+            "score": verdict["score"],
+            "score_aggregate": verdict["score_aggregate"],
+            "answer_at": verdict["answer_at"],
+            "ask_at": verdict["ask_at"],
+            "note": _POLICY_NOTES[band],
+        }
+    except Exception:
+        return None
+
+
+# Backward-compat alias: earlier callers imported this name back when only the 'ask' band was wired.
+ask_band_signal = policy_signal
+
+
 def _request(body: dict):
     if ctx.ENGINE is None:
         raise RuntimeError("model worker unavailable")

@@ -108,6 +108,8 @@ export function EditModule(){
   const [result, setResult] = useState(null);
   const [steps, setSteps] = useState(16);
   const [grow, setGrow] = useState(0);
+  const [concept, setConcept] = useState("");
+  const [conceptStrength, setConceptStrength] = useState(0.35);
   const canvasRef = useRef(null);
 
   /* engine mode gate */
@@ -162,13 +164,35 @@ export function EditModule(){
     setBusy(true); setResult(null);
     const body = { text, spans: solves.map(([a,b]) => toByteSpan(text, a, b)),
                    steps: +steps || 16, grow: +grow || 0 };
+    if(concept.trim()){
+      try{
+        const cr = await fetch("/steer/concept/set", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ concept: concept.trim(), strength: +conceptStrength || 0.35 }) });
+        const cd = await cr.json();
+        if(cd.ok && cd.vector){
+          body.steer_vec = cd.vector;
+          body.steer = { coef: cd.coef, layer: cd.layer };
+        } else {
+          setBusy(false);
+          setResult({ mode: "resolve", ok: false, via: "concept",
+            err: cd.note || cd.error || "concept direction failed" });
+          return;
+        }
+      }catch(e){
+        setBusy(false);
+        setResult({ mode: "resolve", ok: false, via: "concept",
+          err: "concept fetch failed: " + String(e).slice(0, 120) });
+        return;
+      }
+    }
     const out = await callRevise(body);
     setBusy(false);
     if(!out.res){ setResult({ mode: "resolve", ok: false, via: out.via, err: out.err || "no response" }); return; }
     const newText = out.res.choices && out.res.choices[0] && out.res.choices[0].text;
     setResult({ mode: "resolve", ok: true, via: out.via, before: text, after: newText ?? "(no text in response)",
                 finish: out.res.choices && out.res.choices[0] && out.res.choices[0].finish_reason,
-                usage: out.res.usage || null });
+                usage: out.res.usage || null, concept: concept.trim() || null });
   };
 
   /* REWRITE (Route D): pins ride as CHAR offsets directly (no byte conversion -- this endpoint is
@@ -183,7 +207,7 @@ export function EditModule(){
     setBusy(false);
     if(!out.res){ setResult({ mode: "rewrite", ok: false, err: out.err || "no response" }); return; }
     setResult({ mode: "rewrite", ok: true, before: text, after: out.res.text,
-                pins: out.res.pins || [], allPinsKept: !!out.res.all_pins_kept,
+                pins: out.res.pins || [], allPinsKept: out.res.all_pins_kept,
                 note: out.res.note, finish: out.res.finish_reason, runId: out.res.run_id });
   };
 
@@ -260,6 +284,14 @@ export function EditModule(){
         <button class="spd" onClick=${clearMarks}>clear marks</button>
         <span style="flex:1"></span>
         ${editMode === "resolve" ? html`<span style="display:contents">
+          <span class="lbl" style="font-size:7.5px">concept</span>
+          <input type="text" placeholder="e.g. ocean" value=${concept} onInput=${e => setConcept(e.target.value)}
+            style="width:80px;font-family:var(--mono);font-size:10px;border:1px solid var(--edge);border-radius:6px;padding:3px 6px;background:#fff"
+            title="content concept to steer toward (Route B) — leave empty for unsteered resolve"/>
+          <input type="range" min="0.05" max="1.0" step="0.05" value=${conceptStrength}
+            onInput=${e => setConceptStrength(+e.target.value)}
+            style="width:50px;accent-color:#1B7F74"
+            title=${"concept strength: " + conceptStrength}/>
           <span class="lbl" style="font-size:7.5px">steps</span>
           <input type="number" min="4" max="64" value=${steps} onInput=${e => setSteps(e.target.value)}
             style="width:46px;font-family:var(--mono);font-size:10px;border:1px solid var(--edge);border-radius:6px;padding:3px 6px;background:#fff"/>
@@ -305,7 +337,8 @@ export function EditModule(){
               <div class="leader-body" style="border:1px solid rgba(95,200,188,.5);border-radius:8px;max-height:220px;background:rgba(95,200,188,.06)">${result.after}</div></div>
             <div class="none" style="grid-column:1/-1;font-size:8.5px">
               only the marked spans were re-opened; pins and unmarked text were held by the engine's
-              pin invariant. A score-delta receipt for resolves lands when /score gains a passthrough.</div>
+              pin invariant.${result.concept ? ` Steered toward "${result.concept}" (Route B concept direction).` : ""}
+              A score-delta receipt for resolves lands when /score gains a passthrough.</div>
           </div>`
         : html`<div style="padding:4px 14px 12px" class="none">${result.err}</div>`}
     </div>`}
@@ -314,14 +347,14 @@ export function EditModule(){
       <div class="mod-h"><span class=${"led " + (result.ok ? "" : "lilac")}></span>
         <span class="cap">rewrite — ${result.ok ? "returned" : "failed"}</span>
         ${result.ok && result.finish && html`<span class="tag der-t">finish · ${result.finish}</span>`}
-        ${result.ok && html`<span class=${"tag " + (result.allPinsKept ? "cap-t" : "der-t")}>${
+        ${result.ok && result.allPinsKept != null && html`<span class=${"tag " + (result.allPinsKept ? "cap-t" : "der-t")}>${
           result.allPinsKept ? "all pins kept" : "a pin broke"}</span>`}</div>
       ${result.ok
         ? html`<div style="padding:4px 14px 12px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
             <div><div class="lbl" style="padding:4px 0">before</div>
               <div class="leader-body" style="border:1px solid var(--edge-soft);border-radius:8px;max-height:220px">${result.before}</div></div>
             <div><div class="lbl" style="padding:4px 0">after — ${result.note}</div>
-              <div class="leader-body" style="border:1px solid ${result.allPinsKept ? "rgba(95,200,188,.5)" : "var(--lilac)"};border-radius:8px;max-height:220px;background:${result.allPinsKept ? "rgba(95,200,188,.06)" : "rgba(200,150,200,.06)"}">${result.after}</div></div>
+              <div class="leader-body" style="border:1px solid ${result.allPinsKept === false ? "var(--lilac)" : "rgba(95,200,188,.5)"};border-radius:8px;max-height:220px;background:${result.allPinsKept === false ? "rgba(200,150,200,.06)" : "rgba(95,200,188,.06)"}">${result.after}</div></div>
             ${result.pins.length > 0 && html`<div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
               <span class="lbl" style="font-size:7.5px">pin fidelity — measured, not assumed</span>
               ${result.pins.map(pn => html`<span class=${"tag " + (pn.kept ? "cap-t" : "der-t")}

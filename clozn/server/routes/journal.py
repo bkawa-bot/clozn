@@ -59,12 +59,11 @@ def try_get(h, p):
         h._json(200, out)
         return True
     if p == "/journal/calibration":   # the TRUTH tier: correctness on a labeled probe set + selective policy
+        import dataclasses
         import time as _time
         from clozn.eval import store as eval_store
         rep = eval_store.load()
         if not rep:
-            # 200, not an error: no eval saved yet is a clean, expected state. The PROXY curve at
-            # /journal/actuary is always available; this TRUTH tier waits for a `clozn eval --save`.
             h._json(200, {"available": False,
                           "note": "no outcome-grounded calibration saved yet -- run `clozn eval --save` "
                                   "(needs a live studio) to populate this TRUTH-tier curve. It measures "
@@ -73,6 +72,14 @@ def try_get(h, p):
         out = dict(rep)
         out["available"] = True
         out["saved_ago_s"] = round(max(0.0, _time.time() - float(out.get("saved_ts", _time.time()))), 1)
+        rows = out.get("rows") or []
+        if rows:
+            from clozn.eval import calibration as cal
+            pairs = [(r["score"], r["correct"]) for r in rows
+                     if isinstance(r, dict) and r.get("score") is not None and r.get("correct") is not None]
+            ece_result = cal.ece(pairs)
+            out["reliability_bins"] = [dataclasses.asdict(b) for b in ece_result["bins"]]
+            out["risk_coverage"] = [dataclasses.asdict(pt) for pt in cal.risk_coverage(pairs)]
         h._json(200, out)
         return True
     return False

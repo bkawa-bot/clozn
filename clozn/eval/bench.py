@@ -1,4 +1,4 @@
-"""python -m clozn.eval.bench [--url URL] [--set easy|hard|both] [--score mean|min]
+"""python -m clozn.eval.bench [--url URL] [--set easy|hard|arith|both|all|extended] [--score mean|min]
 
 Run the factual probe set through a LIVE clozn endpoint and print outcome-grounded calibration (Brier /
 ECE-vs-truth / risk-coverage for selective generation). This is the reproducible version of the harness in
@@ -41,7 +41,8 @@ def bench(base_url: str, which: str = "hard", score: str = "min") -> dict:
     standard selective-generation signal) or 'mean'."""
     pset = {"easy": probes.PROBES, "hard": probes.HARD_PROBES, "arith": probes.ARITH_PROBES,
             "both": probes.PROBES + probes.HARD_PROBES,
-            "all": probes.PROBES + probes.HARD_PROBES + probes.ARITH_PROBES}[which]
+            "extended": probes.EXTENDED_PROBES,
+            "all": probes.PROBES + probes.HARD_PROBES + probes.ARITH_PROBES + probes.EXTENDED_PROBES}[which]
     results = probes.run_probes(base_url, pset)
     by_q = _newest_runs_by_prompt()
     rows, pairs, unmatched, model = [], [], 0, None
@@ -99,7 +100,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Outcome-grounded calibration on a live clozn endpoint.")
     ap.add_argument("--url", default="http://127.0.0.1:8080", help="Clozn gateway base URL")
     ap.add_argument("--set", dest="which", default="arith",
-                    choices=["easy", "hard", "arith", "both", "all"])
+                    choices=["easy", "hard", "arith", "both", "all", "extended"])
     ap.add_argument("--score", default="min", choices=["min", "mean"])
     ap.add_argument("--target-error", type=float, default=0.05, dest="target_error",
                     help="the selective-generation error budget the policy is tuned to (default 0.05)")

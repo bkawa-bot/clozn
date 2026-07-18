@@ -37,11 +37,12 @@ def new_request_id() -> str:
     """A short, log-friendly per-request id, minted the moment a generation call BEGINS -- unlike the runs
     store's run_<ts>_<hex> id (runs/store.py's record()), which only exists after a run is successfully
     persisted, well after generation finished. Distinct namespace (`req_` vs `run_`) so the two are never
-    confused; existing to eventually correlate one gateway call with the worker's own per-request `req`
-    stamp on native SSE frames (engine/core/serve/server_shared.hpp's StreamEnvelope, guarded by
-    protocol/fixtures/handshake.json) -- not wired to that yet (the worker's `req` lives in the native
-    frame JSON chat_stream already parses but discards; a follow-up can thread it in here for exact
-    gateway<->worker correlation in logs)."""
+    confused; correlates one gateway call with the worker's own per-request `req` stamp on native SSE
+    frames (engine/core/serve/server_shared.hpp's StreamEnvelope) -- EngineSubstrate.chat_stream (see
+    substrates.py) reads that `req` off the first parsed frame and stashes it on this call's
+    RequestContext.engine_req, so routes/engine.py's POST /cancel can resolve a gateway `req_` id to the
+    worker's own id before proxying the cancel (body key `req_id`, kept distinct from the pre-existing
+    `req` key that already carries a raw worker id straight through unchanged)."""
     return "req_" + secrets.token_hex(8)
 
 
@@ -68,6 +69,14 @@ class RequestContext:
       trace                -- the per-token step list (what last_stream_trace() aliases).
       finish_reason         -- the engine's stop cause, or None (missing reads as missing, never as "stop").
       diverged/diverged_at  -- the prove-all early-stop verdict (what last_divergence() aliases).
+      engine_req            -- the worker's OWN per-request id (StreamEnvelope's `req`, stamped on every
+                              native SSE frame), captured off the FIRST frame chat_stream() parses -- or
+                              None until that first frame arrives (nothing streamed yet, or a non-streaming
+                              chat() call, which never sees native frames). This is the other half of the
+                              request_id correlation new_request_id() describes: routes/engine.py's
+                              POST /cancel resolves a gateway `req_` id to this field before proxying to
+                              EngineClient.cancel(), so a cancel request never has to already know the
+                              worker's own id scheme.
       cancelled             -- a threading.Event; see cancel()/is_cancelled().
     """
 
@@ -80,6 +89,7 @@ class RequestContext:
     finish_reason: str | None = None
     diverged: bool | None = None
     diverged_at: int | None = None
+    engine_req: str | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
 
     def cancel(self) -> None:

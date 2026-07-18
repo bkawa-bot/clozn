@@ -1,8 +1,14 @@
-"""A small built-in factual probe set + a dependency-light runner, so calibration can be computed on REAL
-model answers (not only synthetic pairs). The set deliberately MIXES difficulty -- gimmes a 7B nails
-(France -> Paris) alongside classic traps (Australia -> Canberra, not Sydney) and arithmetic that small
-models slip on -- so the risk-coverage curve has signal: the point is to see whether the model's own
-confidence separates its right answers from its wrong ones.
+"""Built-in factual probe sets + a dependency-light runner, so calibration can be computed on REAL model
+answers (not only synthetic pairs). The set deliberately MIXES difficulty -- gimmes a 7B nails (France ->
+Paris) alongside classic traps (Australia -> Canberra, not Sydney) and arithmetic that small models slip on
+-- so the risk-coverage curve has signal: the point is to see whether the model's own confidence separates
+its right answers from its wrong ones.
+
+Sets: PROBES (curated factual, easy + capital-city traps), HARD_PROBES (curated factual at the edge of a
+7B's competence), ARITH_PROBES (programmatic, guaranteed-correct golds, see arithmetic_probes()), and the
+EXTENDED_PROBES v2 set (FACTUAL_PROBES + REASONING_PROBES + MISCONCEPTION_PROBES + TRICK_PROBES -- logic
+puzzles, common misconceptions the model may have absorbed uncritically, and careful-reading trick
+questions). Select a set with `clozn eval --set {easy,hard,arith,both,all,extended}` -- see bench.py.
 
 Grading is by eval.outcome. The runner uses only the stdlib (urllib) and speaks the OpenAI chat API, so it
 works against clozn's own proxy or any OpenAI-compatible endpoint. It returns replies only; pairing each
@@ -148,6 +154,227 @@ def arithmetic_probes(n: int = 60, seed: int = 7) -> list[dict]:
 
 ARITH_PROBES: list[dict] = arithmetic_probes()
 
+# --- EXTENDED SET (v2) -- "bigger probe sets" (backlog): PROBES/HARD_PROBES/ARITH_PROBES above are
+# UNCHANGED. Everything below is new, additive, and grouped by what it tests rather than by difficulty --
+# select it with `clozn eval --set extended` (or `--set all`, which now folds it in). Two optional metadata
+# keys ride along for readers/future filtering (ignored by run_probes/bench, which read only q/gold/kind/
+# aliases): "category" (domain/purpose) and "difficulty" (easy/medium/hard, so the calibration curve keeps
+# both gimmes and traps in this set too, not just in HARD_PROBES).
+#
+# FACTUAL_PROBES -- new domains PROBES/HARD_PROBES don't touch (geography beyond capitals, more history,
+# more science, geometry/percentage math rather than raw arithmetic).
+FACTUAL_PROBES: list[dict] = [
+    {"q": "What is the longest mountain range located entirely on land?", "gold": "Andes",
+     "kind": "exact", "category": "geography", "difficulty": "medium"},
+    {"q": "What is the largest hot desert in the world?", "gold": "Sahara",
+     "kind": "exact", "category": "geography", "difficulty": "easy"},
+    {"q": "What is the deepest known point in Earth's oceans?", "gold": "Mariana Trench",
+     "kind": "exact", "aliases": ["Challenger Deep"], "category": "geography", "difficulty": "medium"},
+    {"q": "What is the largest country in the world by total area?", "gold": "Russia",
+     "kind": "exact", "category": "geography", "difficulty": "easy"},
+    {"q": "What is the largest lake in the world by surface area?", "gold": "Caspian Sea",
+     "kind": "exact", "category": "geography", "difficulty": "hard"},
+    {"q": "In what year did the American Civil War end? Answer with just the year.", "gold": "1865",
+     "kind": "numeric", "category": "history", "difficulty": "medium"},
+    {"q": "In what year did World War I begin? Answer with just the year.", "gold": "1914",
+     "kind": "numeric", "category": "history", "difficulty": "easy"},
+    {"q": "In what year did the Cold War end, marked by the dissolution of the Soviet Union? "
+          "Answer with just the year.", "gold": "1991", "kind": "numeric", "category": "history",
+     "difficulty": "medium"},
+    {"q": "In what year did the Wright brothers achieve the first powered airplane flight? "
+          "Answer with just the year.", "gold": "1903", "kind": "numeric", "category": "history",
+     "difficulty": "hard"},
+    {"q": "Who was the first Emperor of Rome?", "gold": "Augustus",
+     "kind": "exact", "category": "history", "difficulty": "hard"},
+    {"q": "Which ancient wonder of the world was located in Giza, Egypt?", "gold": "Great Pyramid",
+     "kind": "exact", "aliases": ["pyramids", "pyramid", "Pyramid of Giza", "Great Pyramid of Giza"],
+     "category": "history", "difficulty": "easy"},
+    {"q": "What is the chemical symbol for sodium?", "gold": "Na",
+     "kind": "exact", "category": "science", "difficulty": "medium"},
+    {"q": "What is the name of the structure often called the powerhouse of the cell?",
+     "gold": "mitochondria", "kind": "exact", "aliases": ["mitochondrion"], "category": "science",
+     "difficulty": "easy"},
+    {"q": "How many planets are in our solar system? Answer with just the number.", "gold": "8",
+     "kind": "numeric", "category": "science", "difficulty": "easy"},
+    {"q": "What force keeps planets in orbit around the Sun?", "gold": "gravity",
+     "kind": "exact", "category": "science", "difficulty": "easy"},
+    {"q": "At what temperature does water boil at sea level, in degrees Celsius? "
+          "Answer with just the number.", "gold": "100", "kind": "numeric", "category": "science",
+     "difficulty": "easy"},
+    {"q": "What is the value of pi rounded to two decimal places? Answer with just the number.",
+     "gold": "3.14", "kind": "numeric", "category": "math", "difficulty": "medium"},
+    {"q": "How many degrees are in a right angle? Answer with just the number.", "gold": "90",
+     "kind": "numeric", "category": "math", "difficulty": "easy"},
+]
+
+# REASONING_PROBES -- logic puzzles, syllogisms (valid AND invalid, so "yes" isn't a free lunch),
+# cause-and-effect ordering, kinship/relational deduction, sequences, and the classic CRT
+# (cognitive-reflection-test) items that induce a fast, confident, WRONG answer even in careful reasoners
+# -- exactly the kind of item where confidence/correctness divergence is the whole point of this eval.
+REASONING_PROBES: list[dict] = [
+    {"q": "All Bloops are Razzles. All Razzles are Lazzles. Are all Bloops definitely Lazzles? "
+          "Answer yes or no.", "gold": "yes", "kind": "exact", "category": "reasoning",
+     "difficulty": "easy"},
+    {"q": "If it rains, the ground gets wet. The ground is wet. Does that necessarily mean it rained? "
+          "Answer yes or no.", "gold": "no", "kind": "exact", "category": "reasoning",
+     "difficulty": "medium"},
+    {"q": "What comes next in the sequence: 2, 4, 8, 16, ? Answer with just the number.", "gold": "32",
+     "kind": "numeric", "category": "reasoning", "difficulty": "easy"},
+    {"q": "As perceived by a person on the ground during a storm, which happens first: lightning or "
+          "thunder? Answer with one word.", "gold": "lightning", "kind": "exact", "category": "reasoning",
+     "difficulty": "easy"},
+    {"q": "A is the son of B. B is the father of A. C is the father of B. What is C to A? "
+          "Answer with one word.", "gold": "grandfather", "kind": "exact", "category": "reasoning",
+     "difficulty": "medium"},
+    {"q": "Which of these is not like the others: apple, banana, carrot, orange? Answer with just "
+          "the word.", "gold": "carrot", "kind": "exact", "category": "reasoning", "difficulty": "easy"},
+    {"q": "Tom is taller than Jerry. Jerry is taller than Spike. Who is the shortest? "
+          "Answer with just the name.", "gold": "Spike", "kind": "exact", "category": "reasoning",
+     "difficulty": "medium"},
+    {"q": "All cats are animals. Fluffy is a cat. Is Fluffy an animal? Answer yes or no.", "gold": "yes",
+     "kind": "exact", "category": "reasoning", "difficulty": "easy"},
+    {"q": "If a train travels 60 miles in 1 hour, how many miles does it travel in 3 hours at the same "
+          "speed? Answer with just the number.", "gold": "180", "kind": "numeric", "category": "reasoning",
+     "difficulty": "easy"},
+    {"q": "If today is Wednesday, what day of the week will it be in 10 days? Answer with just the "
+          "day name.", "gold": "Saturday", "kind": "exact", "category": "reasoning", "difficulty": "medium"},
+    {"q": "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much "
+          "does the ball cost, in dollars? Answer with just the number, e.g. 0.05.", "gold": "0.05",
+     "kind": "numeric", "category": "reasoning", "difficulty": "hard"},
+    {"q": "You are running a race and you overtake the person in second place. What place are you "
+          "in now? Answer with just the number.", "gold": "2", "kind": "numeric", "category": "reasoning",
+     "difficulty": "hard"},
+    {"q": "A man looks at a photograph and says: 'Brothers and sisters I have none, but that man's "
+          "father is my father's son.' Who is in the photograph? Answer with one word (son/daughter/self).",
+     "gold": "son", "kind": "exact", "category": "reasoning", "difficulty": "hard"},
+    {"q": "What comes next in the sequence: 1, 1, 2, 3, 5, ? Answer with just the number.", "gold": "8",
+     "kind": "numeric", "category": "reasoning", "difficulty": "medium"},
+    {"q": "All roses are flowers. Some flowers fade quickly. Does that necessarily mean some roses "
+          "fade quickly? Answer yes or no.", "gold": "no", "kind": "exact", "category": "reasoning",
+     "difficulty": "medium"},
+    {"q": "Which of these numbers is not a prime number: 3, 5, 7, 9, 11? Answer with just the number.",
+     "gold": "9", "kind": "numeric", "category": "reasoning", "difficulty": "medium"},
+    {"q": "Hand is to glove as foot is to ? Answer with just one word.", "gold": "sock",
+     "kind": "exact", "category": "reasoning", "difficulty": "easy"},
+    {"q": "If 5 machines take 5 minutes to make 5 widgets, how many minutes would 100 machines take "
+          "to make 100 widgets? Answer with just the number.", "gold": "5", "kind": "numeric",
+     "category": "reasoning", "difficulty": "hard"},
+]
+
+# MISCONCEPTION_PROBES -- popular beliefs that are FALSE (plus a few phrased so the correct answer is
+# "yes", so a model can't just learn to answer "no" to everything in this set). Calibration value: a
+# well-calibrated model should be LESS confident here than on plain factual recall, because these are
+# exactly the claims a model is likely to have absorbed uncritically from its training text.
+MISCONCEPTION_PROBES: list[dict] = [
+    {"q": "Do humans typically use virtually all regions of their brain over the course of a day, "
+          "not just about 10% of it? Answer yes or no.", "gold": "yes", "kind": "exact",
+     "category": "misconception", "difficulty": "medium"},
+    {"q": "Does shaved hair grow back thicker and darker than before? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "easy"},
+    {"q": "Is the Great Wall of China visible to the naked eye from space? Answer yes or no.",
+     "gold": "no", "kind": "exact", "category": "misconception", "difficulty": "easy"},
+    {"q": "Do goldfish have a memory span of only a few seconds? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "easy"},
+    {"q": "Is it true that lightning never strikes the same place twice? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "easy"},
+    {"q": "Is glass actually a slow-flowing liquid at room temperature? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "medium"},
+    {"q": "Do bulls become angry specifically because of the color red? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "medium"},
+    {"q": "Was Albert Einstein a failing student in school as a child? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "medium"},
+    {"q": "Does swallowed chewing gum stay in your stomach for seven years? Answer yes or no.",
+     "gold": "no", "kind": "exact", "category": "misconception", "difficulty": "easy"},
+    {"q": "Is body heat lost roughly in proportion to exposed skin surface area, rather than "
+          "disproportionately through the head? Answer yes or no.", "gold": "yes", "kind": "exact",
+     "category": "misconception", "difficulty": "hard"},
+    {"q": "Is Mount Everest's peak the point on Earth's surface farthest from the Earth's center? "
+          "Answer yes or no.", "gold": "no", "kind": "exact", "category": "misconception",
+     "difficulty": "hard"},
+    {"q": "Was Napoleon Bonaparte unusually short for his time? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "medium"},
+    {"q": "Do ostriches bury their heads in the sand when frightened? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "easy"},
+    {"q": "Does the tongue have distinct zones that exclusively detect different tastes (the "
+          "'tongue map')? Answer yes or no.", "gold": "no", "kind": "exact", "category": "misconception",
+     "difficulty": "medium"},
+    {"q": "Did most educated medieval Europeans believe the Earth was flat? Answer yes or no.",
+     "gold": "no", "kind": "exact", "category": "misconception", "difficulty": "medium"},
+    {"q": "Is a tomato botanically classified as a vegetable? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "medium"},
+    {"q": "Did historical Vikings typically wear horned helmets? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "easy"},
+    {"q": "Is 'Frankenstein' the name of the monster in Mary Shelley's novel? Answer yes or no.",
+     "gold": "no", "kind": "exact", "category": "misconception", "difficulty": "medium"},
+    {"q": "Does consuming sugar cause hyperactivity in children? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "misconception", "difficulty": "medium"},
+    {"q": "Are Earth's seasons caused mainly by its axial tilt rather than its distance from the Sun? "
+          "Answer yes or no.", "gold": "yes", "kind": "exact", "category": "misconception",
+     "difficulty": "medium"},
+]
+
+# TRICK_PROBES -- questions with a definitive answer that only falls out if you read carefully; a plausible
+# but wrong reading produces a different, still-confident-sounding answer. Good for probing whether a
+# model's confidence tracks having actually parsed the question, not just pattern-matched a familiar shape.
+TRICK_PROBES: list[dict] = [
+    {"q": "How many months of the year have 28 days? Answer with just the number.", "gold": "12",
+     "kind": "numeric", "category": "trick", "difficulty": "medium"},
+    {"q": "If a plane crashes exactly on the border between the US and Canada, where are the "
+          "survivors buried? Answer with one word.", "gold": "nowhere",
+     "aliases": ["not buried", "none"], "kind": "exact", "category": "trick", "difficulty": "medium"},
+    {"q": "What has to be broken before you can use it? Answer with one word.", "gold": "egg",
+     "aliases": ["an egg"], "kind": "exact", "category": "trick", "difficulty": "medium"},
+    {"q": "Before Mount Everest was discovered to be the tallest mountain on Earth, what was the "
+          "tallest mountain on Earth? Answer with one or two words.", "gold": "Everest",
+     "aliases": ["Mount Everest"], "kind": "exact", "category": "trick", "difficulty": "medium"},
+    {"q": "A doctor tells you to take 3 pills, one every 30 minutes. How many minutes will it take "
+          "to take all 3 pills? Answer with just the number.", "gold": "60", "kind": "numeric",
+     "category": "trick", "difficulty": "hard"},
+    {"q": "There are 6 apples on a table and you take away 4. How many apples do you have? "
+          "Answer with just the number.", "gold": "4", "kind": "numeric", "category": "trick",
+     "difficulty": "medium"},
+    {"q": "A classic riddle asks how many of each animal Moses took on the ark. Was it actually "
+          "Moses or Noah in the Bible story? Answer with one name.", "gold": "Noah", "kind": "exact",
+     "category": "trick", "difficulty": "easy"},
+    {"q": "Is it legal for a man to marry his widow's sister? Answer yes or no.", "gold": "no",
+     "kind": "exact", "category": "trick", "difficulty": "medium"},
+    {"q": "What English word is always spelled incorrectly, no matter how you spell it? "
+          "Answer with one word.", "gold": "incorrectly", "kind": "exact", "category": "trick",
+     "difficulty": "medium"},
+    {"q": "A farmer has 17 sheep, and all but 9 die. How many sheep does the farmer have left? "
+          "Answer with just the number.", "gold": "9", "kind": "numeric", "category": "trick",
+     "difficulty": "medium"},
+    {"q": "I am an odd number. Take away one letter and I become even. What number am I? "
+          "Answer with one word.", "gold": "seven", "aliases": ["7"], "kind": "exact",
+     "category": "trick", "difficulty": "medium"},
+    {"q": "What can you catch but not throw? Answer with one word.", "gold": "cold",
+     "aliases": ["a cold"], "kind": "exact", "category": "trick", "difficulty": "easy"},
+    {"q": "A rooster lays an egg on the very top of a barn roof. Which side does the egg roll down? "
+          "Answer with one word.", "gold": "neither", "kind": "exact", "category": "trick",
+     "difficulty": "medium"},
+    {"q": "Which is heavier: a pound of feathers or a pound of bricks? Answer with one word "
+          "(feathers/bricks/equal).", "gold": "equal", "aliases": ["same"], "kind": "exact",
+     "category": "trick", "difficulty": "easy"},
+    {"q": "Mary's mother has four children. Three are named April, May, and June. What is the name "
+          "of the fourth child? Answer with one word.", "gold": "Mary", "kind": "exact",
+     "category": "trick", "difficulty": "medium"},
+    {"q": "You walk into a cold, dark room with only one match. There is an oil lamp, a candle, and "
+          "a fireplace with kindling. What do you light first? Answer with one word.", "gold": "match",
+     "aliases": ["the match"], "kind": "exact", "category": "trick", "difficulty": "medium"},
+    {"q": "What gets wetter the more it dries? Answer with one word.", "gold": "towel",
+     "kind": "exact", "category": "trick", "difficulty": "easy"},
+    {"q": "A red house is made of red bricks and a blue house is made of blue bricks. What is a "
+          "greenhouse made of? Answer with one word.", "gold": "glass", "kind": "exact",
+     "category": "trick", "difficulty": "easy"},
+]
+
+# EXTENDED_PROBES -- the v2 set: FACTUAL_PROBES + REASONING_PROBES + MISCONCEPTION_PROBES + TRICK_PROBES.
+# Select with `clozn eval --set extended` (or python -m clozn.eval.bench --set extended). Default stays
+# "arith" (see bench.py/cli/commands/eval.py) -- that choice was deliberate (guaranteed-correct golds, zero
+# gold-error risk, reproducible), and this set doesn't override it; `--set all` now folds EXTENDED_PROBES in
+# too, so "all" means all curated + generated probes.
+EXTENDED_PROBES: list[dict] = FACTUAL_PROBES + REASONING_PROBES + MISCONCEPTION_PROBES + TRICK_PROBES
+
 _SYSTEM = "You are a precise assistant. Answer the question as briefly as possible -- ideally a single word or number, with no explanation."
 
 
@@ -168,7 +395,9 @@ def run_probes(base_url: str, probes: list[dict] | None = None, model: str = "cl
             req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
-            rec["reply"] = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+            raw = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+            from clozn.runs.receipt_footer import _strip_text
+            rec["reply"] = _strip_text(raw)
         except Exception as e:                                    # noqa: BLE001 -- capture, keep going
             rec["reply"] = ""
             rec["error"] = str(e)[:200]

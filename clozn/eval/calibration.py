@@ -135,6 +135,17 @@ class ReliabilityBin:
     mean_score: float | None
     accuracy: float | None
     gap: float | None                    # mean_score - accuracy (>0 = over-confident)
+    ci_lo: float | None = None           # Wilson score interval on `accuracy`, 95% confidence
+    ci_hi: float | None = None
+
+
+def _wilson_interval(p: float, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson score interval for a binomial proportion. Preferred over the normal approximation
+    because it stays well-behaved (bounded to [0,1], sane width) even for small n."""
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = z * math.sqrt(p * (1.0 - p) / n + z * z / (4 * n * n)) / denom
+    return center - margin, center + margin
 
 
 def ece(pairs, n_bins: int = 10) -> dict:
@@ -153,9 +164,10 @@ def ece(pairs, n_bins: int = 10) -> dict:
             acc = sum(1 for _, c in cell if c) / n
             gap = ms - acc
             num += n * abs(gap)
-            bins.append(ReliabilityBin(lo, hi, n, ms, acc, gap))
+            ci_lo, ci_hi = _wilson_interval(acc, n)
+            bins.append(ReliabilityBin(lo, hi, n, ms, acc, gap, ci_lo, ci_hi))
         else:
-            bins.append(ReliabilityBin(lo, hi, 0, None, None, None))
+            bins.append(ReliabilityBin(lo, hi, 0, None, None, None, None, None))
     return {"ece": (num / total) if total else None, "bins": bins, "n": total}
 
 

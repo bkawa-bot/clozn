@@ -1,4 +1,5 @@
-"""commands.eval -- `clozn eval [--set easy|hard|both]`: outcome-grounded calibration on a live endpoint.
+"""commands.eval -- `clozn eval [--set easy|hard|arith|both|all|extended]`: outcome-grounded calibration on
+a live endpoint.
 
 The thin CLI shell around clozn.eval.bench: run the built-in factual probe set through a RUNNING Clozn
 gateway, grade each answer against gold (eval.outcome), read each reply's answer-span confidence from its
@@ -25,9 +26,11 @@ def add_subparser(sub):
                         "gateway and score Brier/ECE/risk-coverage against TRUTH (needs a running endpoint)")
     pe.add_argument("--url", default="http://127.0.0.1:8080", help="Clozn gateway base URL (default :8080)")
     pe.add_argument("--set", dest="which", default="arith",
-                    choices=["easy", "hard", "arith", "both", "all"],
+                    choices=["easy", "hard", "arith", "both", "all", "extended"],
                     help="which built-in probe set (default: arith -- programmatic, guaranteed golds, "
-                         "graded errors; 'easy'/'hard' are curated factual sets)")
+                         "graded errors; 'easy'/'hard' are curated factual sets; 'extended' is the v2 set "
+                         "-- reasoning puzzles, common misconceptions, and trick questions; 'all' folds "
+                         "every set together)")
     pe.add_argument("--score", default="min", choices=["min", "mean"],
                     help="answer-span aggregate used as the abstention signal (default: min token conf)")
     pe.add_argument("--target-error", type=float, default=0.05, dest="target_error",
