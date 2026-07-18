@@ -24,9 +24,15 @@ into one): heavn is the one frontend; Settings/profiles, Explain, quick-repair, 
 custom dial maker, memory-carrier controls, Read view, actuary panel, `clozn inspect`, trust/support
 channels, and strict OpenAI compat all shipped. H7 + H3 research harnesses built (in `notes/`, run later).
 
-**Wave B — the moment the GPU frees (verify-before-build, in order):** Route D live round-trip (does a real
-model honor verbatim pins?) · H7 + H3 live captures (armed) · real-browser pass over all heavn UI ·
-pressure-test the merged lanes (migrations / GC / cancellation) · engine-side cooperative cancel (small C++).
+**Wave B — GPU verify (verify-before-build).** ✅ Reconciliation validated end-to-end: product smoke **24/24
+against reconciled `main`** (`19f770f`) on the real 0.5B GPU engine (2026-07-17) — chat/stream/OpenAI +
+worker-restart recovery + clean managed cleanup. **GPU constraint (measured):** VRAM, not compute, is the
+limit — a single 0.5B engine takes ~2.7 GB (CUDA context + KV cache dwarf the 0.4 GB of weights), which
+fits the current ~3 GB free (one task at a time), but the H7/H3 dual-model captures need Qwen-7B + Dream
+co-resident (~13 GB) and are **blocked until the parallel effort releases ~10 GB**. Remaining, all
+0.5B-sized so they fit now: Route D live round-trip (does a real model honor verbatim pins?) · real-browser
+pass over all heavn UI · pressure-test the merged lanes (migrations / GC / cancellation) · engine-side
+cooperative cancel (small C++). Blocked on VRAM: H7 + H3 live captures (harnesses armed in `notes/`).
 
 **Wave C — big C++ arc (GPU + build), dependency-ordered:** exact-state checkpointing + batched decode →
 batched causal credit → **circuit tracer** (headline; last); device-resident readout plane alongside. Build
