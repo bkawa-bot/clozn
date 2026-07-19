@@ -7,12 +7,28 @@ import os
 import numpy as np
 
 from . import axes
+from . import jlens_transport
 
 
 class EngineSteer:
-    """Tone dials on the native engine using harvested residual directions."""
+    """Tone dials on the native engine using harvested residual directions.
 
-    def __init__(self, engine_client, layer=None):
+    J-TRANSPORT (optional, off by default -- see jlens_transport.py / notes/JLENS_SAE_FINDINGS.md
+    finding #1): these diff-of-means tone directions are built purely from harvested activations
+    and, unlike concept_dir.py's dir(c), never touch J at all. `j_transport=True` (or a later
+    `enable_j_transport()` call) turns on an explicit extra step, applied to the FINAL summed
+    vector right before it is returned to the caller (steer_vector()) or sent to /intervene
+    (generate()): J-transport it via jlens_transport.transport_direction, preserving this vector's
+    own calibrated norm (norm="preserve" -- unlike dir(c)'s unit convention, THIS vector's
+    magnitude already IS the injection strength, sent at coef=1.0). Whether it actually happened
+    is never assumed -- see self.last_j_transport (recorded after every steer_vector()/generate()
+    call) and the module docstring's HONESTY CONTRACT: a missing/wrong-model/wrong-shape J
+    degrades to the ORIGINAL vector unchanged, `last_j_transport["applied"] is False`, never a
+    silent substitution."""
+
+    def __init__(self, engine_client, layer=None, *, j_transport=False, jlens_dir=None,
+                 jlens_model_id=None, jlens_model_sha256=None, jlens_artifact_root=None,
+                 jlens_k=None):
         self.ec = engine_client
         self.layer = layer
         self.vecs = {}
@@ -20,6 +36,60 @@ class EngineSteer:
         self.strength = {}
         self.base, self.resid_norm = 1.0, 0.0
         self.ready = False
+        # J-transport config: OFF by default (see class docstring) -- enable_j_transport() flips
+        # it on later too, e.g. once the active model's identity is known. `jlens_model_sha256` is
+        # the strongest identity EngineSubstrate can actually offer (the running engine's own
+        # /health "model_sha256" -- see jlens_transport.resolve_compact_jlens's model_sha256 tier);
+        # `jlens_model_id` (a plain name string) is the weaker fallback for the legacy flat-manifest
+        # sidecar that carries no compatible_gguf_sha256 at all.
+        self._j_transport = bool(j_transport)
+        self._jlens_dir = jlens_dir
+        self._jlens_model_id = jlens_model_id
+        self._jlens_model_sha256 = jlens_model_sha256
+        self._jlens_artifact_root = jlens_artifact_root
+        self._jlens_k = int(jlens_k) if jlens_k is not None else jlens_transport.DEFAULT_K
+        self._jlens_cache: dict = {}          # {(dir, layer, k): CompactJLens}, shared across calls
+        self.last_j_transport: dict | None = None   # the HONESTY flag: last transport_direction() result
+
+    def enable_j_transport(self, *, jlens_dir=None, model_id=None, model_sha256=None,
+                           artifact_root=None, k=None):
+        """Turn on J-transport (see class docstring) after construction -- e.g. once the running
+        engine's model identity is known (server/app.py builds EngineSteer before the engine has
+        necessarily reported /health). Passing nothing just flips the flag on with whatever was
+        set at __init__ (CLOZN_JLENS_DIR / ~/.clozn/jlens / ~/.clozn/artifacts by default -- see
+        jlens_transport.resolve_compact_jlens)."""
+        self._j_transport = True
+        if jlens_dir is not None:
+            self._jlens_dir = jlens_dir
+        if model_id is not None:
+            self._jlens_model_id = model_id
+        if model_sha256 is not None:
+            self._jlens_model_sha256 = model_sha256
+        if artifact_root is not None:
+            self._jlens_artifact_root = artifact_root
+        if k is not None:
+            self._jlens_k = int(k)
+
+    def disable_j_transport(self):
+        self._j_transport = False
+
+    def _maybe_transport(self, vec: np.ndarray) -> np.ndarray:
+        """Apply the optional J-transport step to a FINAL, fully-composed steer vector. Records
+        the outcome on self.last_j_transport (the caller-visible honesty flag) every time this
+        runs, whether or not transport was actually enabled/available -- so `last_j_transport is
+        None` unambiguously means "J-transport wasn't even requested this call", and
+        `last_j_transport["applied"]` is always the ground truth for "requested AND happened"."""
+        if not self._j_transport:
+            self.last_j_transport = None
+            return vec
+        result = jlens_transport.transport_direction(
+            vec, jlens_dir=self._jlens_dir, layer=self.layer,
+            model_sha256=self._jlens_model_sha256, model_id=self._jlens_model_id,
+            artifact_root=self._jlens_artifact_root,
+            expected_d_model=int(np.asarray(vec).shape[0]), k=self._jlens_k,
+            cache=self._jlens_cache, norm="preserve")
+        self.last_j_transport = result
+        return np.asarray(result["vector"], dtype=np.float32)
 
     def _resolve_layer(self):
         """Choose a model-relative midpoint when no calibrated layer was supplied.
@@ -164,15 +234,20 @@ class EngineSteer:
         vec = np.zeros_like(next(iter(self.vecs.values())))
         for k, v in active.items():
             vec = vec + self.base * float(v) * self.vecs[k]
-        return self._text(self.ec.intervene(prompt, vector=vec.tolist(), coef=1.0,
-                                             layer=self.layer, max_tokens=max_new))
+        vec = self._maybe_transport(vec)
+        return self._text(self.ec.intervene(prompt, vector=vec.tolist() if hasattr(vec, "tolist") else list(vec),
+                                             coef=1.0, layer=self.layer, max_tokens=max_new))
 
     def steer_vector(self, strength):
-        """Return the summed, pre-scaled tone direction for active dials, or None."""
+        """Return the summed, pre-scaled tone direction for active dials, or None. When
+        J-transport is enabled (see class docstring), this is where it is applied -- right before
+        the caller puts the result on the wire (EngineSubstrate.chat's kw["steer_vec"]). Check
+        self.last_j_transport after calling this to see whether it actually happened."""
         if not self.ready:
             self.compute()
         active = {k: v for k, v in (strength or {}).items() if v and k in self.vecs}
         if not active:
+            self.last_j_transport = None
             return None
         vec = np.zeros_like(next(iter(self.vecs.values())))
         for k, v in active.items():
@@ -181,7 +256,8 @@ class EngineSteer:
         cap = self.base * 1.3
         if n > cap:
             vec = vec * (cap / n)
-        return vec.tolist()
+        vec = self._maybe_transport(vec)
+        return vec.tolist() if hasattr(vec, "tolist") else list(vec)
 
     def clear(self):
         self.strength = {}

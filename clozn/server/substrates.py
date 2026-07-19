@@ -391,6 +391,18 @@ class EngineSubstrate(Substrate):
                     self.steer.load_state(self._pers_steer)
                 except Exception:
                     pass
+            # J-TRANSPORT (engine_adapter.EngineSteer's class docstring / jlens_transport.py, see
+            # notes/JLENS_SAE_FINDINGS.md finding #1): auto-enable using the running engine's OWN
+            # reported model digest -- the strongest identity this substrate actually has (no local
+            # GGUF file path to re-derive full contracts.gguf_identity() metadata from). Safe to
+            # always attempt: a byte-identical no-op (self.steer.last_j_transport["applied"] is
+            # False) whenever no compact-eligible J artifact claims this exact GGUF sha256 -- true
+            # for every model shipped today -- never a silent substitution of a mismatched J.
+            if self.model_sha256:
+                try:
+                    self.steer.enable_j_transport(model_sha256=self.model_sha256)
+                except Exception:
+                    pass
 
     def _gen(self, prompt):                     # one-shot generate for the /steer/check A/B (base _steer)
         if self.steer is not None:
