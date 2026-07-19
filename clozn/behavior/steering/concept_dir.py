@@ -76,7 +76,7 @@ VALIDATED_SCALE_RANGE = (0.25, 0.5)
 # ../clozn-jlens-work/scripts/run_j5a_swap.py's MEDIAN_NORM (measured over cached hf_hidden
 # activations, ../clozn-jlens-work/artifacts/dirc_selfconsistency_results.json's norm_calibration).
 # Model/layer-specific: only valid for the fitted J-lens model (today: Qwen2.5-7B-Instruct).
-VALIDATED_MEDIAN_RESID_NORM = {21: 146.68, 25: 343.14}
+VALIDATED_MEDIAN_RESID_NORM = {16: 40.71, 21: 146.68, 25: 343.14}
 
 
 # ============================================================================== the blocker + loaders
