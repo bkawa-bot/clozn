@@ -3,7 +3,7 @@
    on live runs, computed-on-demand receipts never implied to pre-exist. */
 import { html, useState, useEffect, useRef } from "../vendor/preact-standalone.mjs";
 import { store, useStore, toast, normSteps, weightsFor, colsFor, colGeom,
-         firstLine, shortTime, REDUCED } from "../state.mjs";
+         firstLine, shortTime, REDUCED, withFull } from "../state.mjs";
 import { api } from "../api.mjs";
 import { loadRun } from "../app.mjs";
 import { PolicyChip } from "../policy.mjs";
@@ -201,7 +201,10 @@ let chatAbortFn = null;
 async function doSend(rec, text, cont){
   const s = store.get();
   if(!s.live){ toast("chat — live server only (this is the sample reel)"); return; }
-  if(s.chatting) return;
+  /* review finding #7: chatBuf stays non-null for the whole send, including the post-stream
+     journal-poll window after `chatting` itself has already flipped back to false -- guard on
+     both, so a second send can't start while the first is still settling into the journal. */
+  if(s.chatting || s.chatBuf != null) return;
   const prevTop = (s.runs[0] || {}).id;
   const messages = (cont && rec && Array.isArray(rec.messages) ? rec.messages : [])
     .concat([{ role: "user", content: text }]);
@@ -239,12 +242,17 @@ async function doSend(rec, text, cont){
 const LENS_STOPS = [0, 2, 14, 21, 25];   /* 0 = off, else the fitted J-lens depths */
 function ChatBar({ rec }){
   const chatting = useStore(x => x.chatting);
+  const chatBuf = useStore(x => x.chatBuf);
   const live = useStore(x => x.live);
   const lensLayer = useStore(x => x.lensLayer);
   const [text, setText] = useState("");
   const [cont, setCont] = useState(false);
+  /* review finding #7: chatBuf stays non-null through the post-stream journal-poll window even
+     after chatting flips back to false -- treat that window as busy too, so the input/SEND stay
+     disabled instead of inviting a second send while the first is still settling. */
+  const busy = chatting || chatBuf != null;
   const send = () => {
-    if(store.get().chatting) return;              /* double-send guard (review finding) */
+    if(store.get().chatting || store.get().chatBuf != null) return;   /* double-send guard */
     const t = text.trim(); if(!t) return;
     doSend(rec, t, cont); setText("");
   };
@@ -252,10 +260,10 @@ function ChatBar({ rec }){
     <input type="text" placeholder=${live
         ? "say something — it types onto the monitor and lands in the journal"
         : "live server only — this is the sample reel"}
-      value=${text} disabled=${chatting || !live}
+      value=${text} disabled=${busy || !live}
       onInput=${e => setText(e.target.value)}
       onKeyDown=${e => { if(e.key === "Enter") send(); }}/>
-    <button class="spd" disabled=${!live || chatting}
+    <button class="spd" disabled=${!live || busy}
       style=${lensLayer ? "color:#7A6FB8;border-color:rgba(154,146,200,.7)" : ""}
       title="live lens: stream the J-lens disposed-to-say readout per token while it generates (slows decoding a little)"
       onClick=${() => {
@@ -268,7 +276,7 @@ function ChatBar({ rec }){
           onClick=${() => { chatAbortFn && chatAbortFn();
             store.set({ chatting: false, chatBuf: null, chatPrompt: null });
             toast("stream aborted"); }}>ABORT</button>`
-      : html`<button class="spd" disabled=${!live} onClick=${send}>SEND ⏎</button>`}
+      : html`<button class="spd" disabled=${!live || busy} onClick=${send}>SEND ⏎</button>`}
     ${rec && Array.isArray(rec.messages) && rec.messages.length
       ? html`<label><input type="checkbox" checked=${cont}
           onChange=${e => setCont(e.target.checked)}/> continue this run</label>` : null}
@@ -313,9 +321,14 @@ function Logs({ rec }){
 function Cfg({ rec }){
   const d = (rec.meta && rec.meta.decode) || {};
   const bit = (k, v) => v != null && html`<span class="dot">·</span><span>${k} <b>${String(v)}</b></span>`;
+  /* review finding #12: `meta.decode` only ever carries mode/temperature/seed (contracts §2) --
+     there is no `quant` here on a real run (it only exists in the export bundle's separately
+     computed `repro` object, a different shape entirely); a `quant` bit here would either never
+     render (guarded by `!= null`, so harmless) or only ever show the SAMPLE fixture's dead value.
+     Dropped rather than displaying a field that can never be true of a live run. */
   return html`<div class="cfg">
     <span class="cap">run</span><b>${rec.model || "—"}</b>
-    ${bit("quant", d.quant)}${bit("decode", d.mode)}${bit("temp", d.temperature)}${bit("seed", d.seed)}
+    ${bit("decode", d.mode)}${bit("temp", d.temperature)}${bit("seed", d.seed)}
     ${bit("finish", rec.finish_reason || "?")}
     <span style="margin-left:auto" class="tag cap-t">CAPTURED</span>
   </div>`;
@@ -354,16 +367,33 @@ function RunStrip(){
     </button>`)}
   </div>`;
 }
+/* review finding #10: RunStrip can render up to 80 chips (the server's cap), and every Thumb used to
+   fire its own full-record GET on mount regardless of whether it was ever scrolled into view --
+   opening the tape with a populated history fired up to 80 full-record fetches just to draw
+   decorative sparklines. Defer the fetch until the canvas is actually (near-)visible; browsers
+   without IntersectionObserver fall back to hydrating immediately (still correct, just eager). */
 function Thumb({ id }){
   const ref = useRef(null);
   const full = useStore(x => x.full[id]);
+  const [inView, setInView] = useState(false);
   useEffect(() => {
+    if(inView) return;
+    const el = ref.current;
+    if(!el || typeof IntersectionObserver === "undefined"){ setInView(true); return; }
+    const io = new IntersectionObserver(entries => {
+      if(entries.some(e => e.isIntersecting)) setInView(true);
+    }, { rootMargin: "160px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [id, inView]);
+  useEffect(() => {
+    if(!inView) return;
     let dead = false;
     (async () => {
       let rec = full;
       if(!rec && store.get().live){
         const r = await api.getRun(id); rec = r && (r.run || r);
-        if(rec) store.set(st => ({ full: { ...st.full, [id]: rec } }));
+        if(rec) store.set(st => ({ full: withFull(st.full, id, rec) }));
       }
       if(dead || !rec || !ref.current) return;
       const conf = (rec.trace || {}).confidence || normSteps(rec).map(s => s.conf ?? 0);
@@ -378,7 +408,7 @@ function Thumb({ id }){
         x.fillRect(i*(W/n), H/2 - a, Math.max(1, W/n - 1), a*2); });
     })();
     return () => { dead = true; };
-  }, [id, full]);
+  }, [id, full, inView]);
   return html`<canvas ref=${ref} width="136" height="15"></canvas>`;
 }
 
@@ -473,7 +503,7 @@ async function adoptChild(res, verb, extra){
   const l = await api.listRuns();
   store.set(st => ({
     runs: (l && Array.isArray(l.runs)) ? l.runs : st.runs,
-    full: { ...st.full, [res.id]: res },
+    full: withFull(st.full, res.id, res),
     currentId: res.id, rec: res, P: 0, receipts: null, leaning: null,
     verbResult: { verb, ok: true, msg: `child ${res.id} recorded — now on the tape (parent: ${res.parent_run_id || "?"})${extra || ""}` },
   }));
@@ -564,6 +594,20 @@ function Arrangement({ rec }){
   const [jlBusy, setJlBusy] = useState(false);
   useEffect(() => { setJl(null); setSel(null); }, [rec.id]);
 
+  /* live width of `.arr`: `.arr` has no fixed width, so it stretches to its container whenever
+     that's wider than `innerW` (review finding #2/#9). Measure it for real, on mount/run-switch and
+     on resize, instead of trusting the static innerW estimate; the playhead effect below re-runs off
+     this too so it no longer goes stale after a viewport/DPI change. */
+  const [liveW, setLiveW] = useState(null);
+  useEffect(() => {
+    const arr = arrRef.current;
+    if(!arr) return;
+    const measure = () => setLiveW(arr.clientWidth);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [rec.id]);
+
   /* playhead + shade positioning */
   const phRef = useRef(null), shadeRef = useRef(null);
   const plateW = 118, pad = 13;
@@ -575,7 +619,7 @@ function Arrangement({ rec }){
     const x = P >= steps.length ? (g.length ? g[g.length-1].x1 : 0) : (P <= 0 ? 0 : g[P-1].x1);
     ph.hidden = false;
     ph.style.left = (plateW + pad + x) + "px";
-  }, [P, rec.id]);
+  }, [P, rec.id, liveW]);
   useEffect(() => {
     const arr = arrRef.current, shade = shadeRef.current;
     if(!arr || !shade) return;
@@ -617,7 +661,8 @@ function Arrangement({ rec }){
           ${steps.map((s,i) => html`<div class=${"tick" + (i % 5 === 0 ? " five" : "")}>
             ${i % 5 === 0 && html`<span class="idx">${i}</span>`}</div>`)}
         </div>
-        <${Locators} steps=${steps} mem=${mem} rec=${rec} w=${w} innerW=${innerW}/>
+        <${Locators} steps=${steps} mem=${mem} rec=${rec} w=${w}
+            bodyW=${(liveW ?? innerW) - plateW - pad*2}/>
       </div>
     </div>
 
@@ -673,8 +718,12 @@ function Arrangement({ rec }){
   </div></div>`;
 }
 
-function Locators({ steps, mem, rec, w, innerW }){
-  const W = innerW - 118 - 26, g = colGeom(w, W);
+/* bodyW is the Arrangement's live-measured `.arr` width (finding #2) -- NOT the static innerW
+   estimate: `.arr` has no fixed width, so on any viewport wider than the token weights' own minimum
+   it stretches past innerW and the badges would sit at the wrong offset relative to the real,
+   responsively-laid-out token columns underneath. */
+function Locators({ steps, mem, rec, w, bodyW }){
+  const g = colGeom(w, bodyW);
   const shaky = steps.findIndex(s => (s.conf ?? 1) < .5);
   return html`
     ${((mem.cards_applied || []).length || (mem.anchored || []).length) ? html`<span class="loc" style=${"left:" + (g[0].x0 + 2) + "px"}>
