@@ -118,6 +118,38 @@ def test_engine_substrate_builds_a_real_product_adapter(iso, fake_engine):
     assert sub.memory is sub._mem
 
 
+# ==================================================================================== J-transport auto-wiring
+# (engine_adapter.EngineSteer.enable_j_transport / jlens_transport.py -- see their docstrings.
+# EngineSubstrate is the ONE real production call site: it auto-enables J-transport using the
+# running engine's OWN reported model_sha256, the strongest model identity this substrate ever
+# actually has (no local GGUF file path to re-derive full contracts.gguf_identity() metadata
+# from). This is always safe to attempt -- see jlens_transport's HONESTY CONTRACT -- because
+# "no compact-eligible artifact claims this GGUF" degrades to an exact no-op, never a guess.
+
+def test_engine_substrate_auto_enables_j_transport_when_engine_reports_model_sha256(iso, monkeypatch):
+    class _FakeEngineWithHealth(FakeEngine):
+        def health(self):
+            return {"model": "qwen2.5-7b", "model_sha256": "abc123abcd"}
+
+    fe = _FakeEngineWithHealth()
+    monkeypatch.setattr(cs, "ENGINE", fe)
+    monkeypatch.setattr(cs, "ENGINE_STEER", None)
+    sub = cs.EngineSubstrate()
+    assert sub.model_sha256 == "abc123abcd"
+    assert sub.steer._j_transport is True
+    assert sub.steer._jlens_model_sha256 == "abc123abcd"
+
+
+def test_engine_substrate_leaves_j_transport_off_without_a_model_sha256(iso, fake_engine):
+    """FakeEngine (no .health() at all -- this suite's default) -> model_sha256 stays None -> the
+    J-transport wiring is skipped entirely, so every OTHER test in this file (none of which ever
+    supply a model_sha256) is byte-for-byte unaffected by its existence."""
+    sub = cs.EngineSubstrate()
+    assert sub.model_sha256 is None
+    assert sub.steer._j_transport is False
+    assert sub.steer.last_j_transport is None
+
+
 # ==================================================================================== chat() basics
 
 def test_chat_returns_the_engines_text_stripped(iso, fake_engine, monkeypatch):
