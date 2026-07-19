@@ -170,6 +170,12 @@ Higher variance; each is a real capability if it lands.
   `GET /api/tags|version`, `POST /api/generate|chat`; non-streaming only; version returns
   `"0.0.0-clozn"`). NOT registered in `app.py` — one-line wire when decided.
   *Why/Payoff:* point your existing Ollama tools at clozn and get white-box on top — an adoption lever.
-- **`real-runtime-smoke.yml` green** — the "zero jobs" parse bug is fixed but unverified; needs an owner
-  `workflow_dispatch` click.
+- ~~**`real-runtime-smoke.yml` green**~~ ✅ DONE 2026-07-19 — **first green run ever**
+  (`feat/night-2026-07-19`, run 29682484296, `conclusion=success`). The "zero jobs" parse bug was indeed
+  already fixed; what still killed every run afterwards was that the job called `setup-python` and then
+  never pip-installed anything, so the P0 step died at `ModuleNotFoundError: No module named 'numpy'`
+  (`clozn.server.app` -> `routes/readouts.py` imports numpy at module scope). One added install step,
+  pinned to ci.yml's `numpy==2.4.6` so the two product-minimal lanes can't drift. The green run builds the
+  pinned CPU worker from source, downloads + SHA-verifies the real Qwen2.5-0.5B GGUF, and passes the P0
+  contracts (46 tests, OK).
   *Why/Payoff:* a trustworthy green CI check that the real engine works — what makes a release credible.
