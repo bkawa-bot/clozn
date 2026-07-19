@@ -112,13 +112,13 @@ export function ScopeModule(){
         <table style="border-collapse:collapse;font-family:var(--mono);font-size:9px;min-width:100%">
           <thead><tr>
             <th style="text-align:left;padding:4px 8px;color:var(--mist);font-weight:400;letter-spacing:.1em">DEPTH</th>
-            ${Array.from({length: sweep.nTok}, (_,i) => html`<th style="padding:4px 5px;color:var(--slate);
+            ${Array.from({length: sweep.nTok}, (_,i) => html`<th key=${i} style="padding:4px 5px;color:var(--slate);
                font-weight:600;white-space:nowrap;border-bottom:1px solid var(--edge)">${
                String((finalRow.tokens[i] || "")).trim() || "·"}</th>`)}
           </tr></thead>
           <tbody>${sweep.rows.map(row => {
             const mx = Math.max(1e-6, ...row.top.slice(0, sweep.nTok).map(t => (t && t.score) || 0));
-            return html`<tr>
+            return html`<tr key=${row.layer}>
               <td style="padding:4px 8px;color:var(--navy);font-weight:600;white-space:nowrap;
                   border-right:1px solid var(--edge-soft)">L${row.layer}</td>
               ${Array.from({length: sweep.nTok}, (_,i) => {
@@ -127,7 +127,7 @@ export function ScopeModule(){
                 const finalPiece = finalRow.top[i] ? String(finalRow.top[i].piece || "").trim() : "";
                 const settled = piece && piece === finalPiece;   /* already holds the final disposition */
                 const a = t ? .25 + .6 * ((t.score || 0) / mx) : 0;
-                return html`<td style=${"padding:3px 5px;text-align:center;white-space:nowrap;" +
+                return html`<td key=${i} style=${"padding:3px 5px;text-align:center;white-space:nowrap;" +
                     "border-bottom:1px solid var(--edge-soft);" +
                     (settled ? `background:rgba(95,200,188,${(a*.6).toFixed(2)});color:#14584F;font-weight:600;`
                              : piece ? `background:rgba(143,168,232,${(a*.4).toFixed(2)});color:var(--slate);` : "")}

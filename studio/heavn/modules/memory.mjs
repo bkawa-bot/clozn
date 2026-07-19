@@ -441,12 +441,16 @@ function CardsPanel({ cards, act, busy, expanded, toggleRuns, runsCache }){
 }
 
 function CardRow({ card, actions, act, busy, expanded, onToggleRuns, runsData }){
+  /* review finding #13: the card shape (contracts §14, clozn/memory/cards.py:78-93) has no
+     `relevance` field -- relevance is a per-RUN quantity (run.memory.relevance[], parallel to
+     cards_applied[]; see Minfl in replay.mjs, which reads it correctly off the run). There is no per-card
+     relevance to show here, so this used to always render a blank value; dropped rather than
+     displaying a field that can never be populated. */
   return html`<div class="steer-row">
     <span>${card.text}
       <span class=${"tag " + (card.status === "active" ? "cap-t" : "smp-t")} style="margin-left:6px">
         ${card.status.toUpperCase()}</span>
     </span>
-    <span class="v">${card.relevance != null ? (+card.relevance).toFixed(2) : ""}</span>
     <span style="grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
       ${actions.map(([verb, label]) => html`<button key=${verb}
           class=${"spd" + (busy[card.id + ":" + verb] ? " busy" : "")}

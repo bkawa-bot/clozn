@@ -38,6 +38,18 @@ jobs:
         with:
           python-version: "3.11"
 
+      # This job sets up Python but never installed anything into it, so every run died at the P0
+      # contracts step with `ModuleNotFoundError: No module named 'numpy'`: importing
+      # `clozn.server.app` pulls in `clozn/server/routes/readouts.py`, which imports numpy at module
+      # scope. That is not a dependency leak to fix in the product -- numpy IS the sanctioned
+      # product-minimal dependency (see ci.yml's product-minimal lane, which installs exactly this and
+      # deliberately no torch/transformers/lab). Pinned to the same version as ci.yml so the two lanes
+      # can never disagree about what "product-minimal" means.
+      - name: Install product-minimal Python deps (numpy only; NO torch/transformers/lab)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy==2.4.6"
+
       - name: Install CPU build prerequisites
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ curl
 

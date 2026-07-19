@@ -45,13 +45,50 @@ export const store = createStore({
                            // consumes ONCE on mount then clears (a span's action deep-links here)
 });
 
+/* store.full is a full-run-record cache with no natural size limit (review finding #10): every
+   Thumb hydration, run switch, and verb-child adoption writes into it and nothing ever evicts, so a
+   long session accumulates every record it has ever touched. Bound it to the most recently
+   inserted FULL_CAP entries -- oldest key first, per plain-object insertion order (stable for the
+   string ids used here) -- so long-running tabs don't grow this cache without limit. */
+const FULL_CAP = 60;
+export function withFull(full, id, rec){
+  const next = { ...full, [id]: rec };
+  const keys = Object.keys(next);
+  while(keys.length > FULL_CAP) delete next[keys.shift()];
+  return next;
+}
+
+/* review finding #8: a selector like `x => ({ live: x.live, rec: x.rec })` allocates a brand-new
+   wrapper object on every store.set(), so a plain Object.is(prev, nv) is always false regardless of
+   whether the SELECTED fields actually changed -- e.g. the playhead's own store.set({P:...}) tick
+   during playback was forcing Topbar/NavRail/RunStrip (any object-shaped selector) to re-render on
+   every tick. One level of shallow-equality on the selected slice fixes every such call site without
+   having to touch each one individually; primitive/reference selectors (the common case) still take
+   the Object.is fast path with no behavior change. */
+/* only plain object literals / arrays get the shallow-key comparison; a Map/Set/Date/class instance
+   (none currently selected directly, but cheap to guard) falls back to the strict Object.is it always
+   had -- so this can only ever turn a missed update into a caught one, never the reverse. */
+function isPlainObj(v){
+  if(v === null || typeof v !== "object") return false;
+  if(Array.isArray(v)) return true;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+function shallowEqual(a, b){
+  if(Object.is(a, b)) return true;
+  if(!isPlainObj(a) || !isPlainObj(b)) return false;
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if(ka.length !== kb.length) return false;
+  return ka.every(k => Object.is(a[k], b[k]));
+}
+
 /* subscribe a component to a slice of the store */
 export function useStore(selector){
   const sel = selector || (s => s);
   const [v, setV] = useState(() => sel(store.get()));
   useEffect(() => store.subscribe(s => {
     const nv = sel(s);
-    setV(prev => (Object.is(prev, nv) ? prev : nv));
+    setV(prev => (shallowEqual(prev, nv) ? prev : nv));
   }), []);
   return v;
 }
@@ -72,7 +109,11 @@ export const SAMPLE = {
   memory: { mode: "prompt", gate: 0.62,
     cards_applied: ["enjoys geography trivia","prefers concise factual answers"], relevance: [0.66,0.41] },
   behavior: { active_dials: { concise: 0.4, warm: 0.2 } },
-  meta: { decode: { mode: "greedy", temperature: 0, seed: 0, quant: "Q4_K_M", engine: "cloze-server" } },
+  /* review finding #12: real run records' meta.decode only ever has mode/temperature/seed (contracts
+     §2) -- quant/engine aren't real fields there (quant only exists in the export bundle's separate
+     `repro` shape); this fixture used to invent them to match a reader that has since been fixed to
+     not look for them. */
+  meta: { decode: { mode: "greedy", temperature: 0, seed: 0 } },
   assembled_messages: [
     { role: "system", content: "[memory block · gate .62] The user enjoys geography trivia. The user prefers concise factual answers." },
     { role: "user", content: "What country is shaped like a boot?" }],

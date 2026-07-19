@@ -112,12 +112,17 @@ export function EditModule(){
   const [conceptStrength, setConceptStrength] = useState(0.35);
   const canvasRef = useRef(null);
 
-  /* engine mode gate */
-  useEffect(() => { (async () => {
-    if(!live){ setMode("offline"); return; }
-    const h = await fetch("/engine/health").then(r => r.ok ? r.json() : null).catch(() => null);
-    setMode(h && h.engine ? (h.engine.mode || "unknown") : "down");
-  })(); }, [live]);
+  /* engine mode gate (review #14: guard against setState after unmount, matching ScopeMod/Thumb/
+     PatchModule's axes loader elsewhere in the codebase) */
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      if(!live){ if(!dead) setMode("offline"); return; }
+      const h = await fetch("/engine/health").then(r => r.ok ? r.json() : null).catch(() => null);
+      if(!dead) setMode(h && h.engine ? (h.engine.mode || "unknown") : "down");
+    })();
+    return () => { dead = true; };
+  }, [live]);
 
   /* seed from the current run's answer (once per run, never overwriting user edits) */
   useEffect(() => {
