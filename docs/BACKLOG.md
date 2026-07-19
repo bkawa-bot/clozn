@@ -80,6 +80,33 @@ Higher variance; each is a real capability if it lands.
     `policy.score_from_trace` + `classify_run` + `generation_gateway.ask_band_signal` landed.
     REMAINING: abstain-band action (refuse / self-check), heavn UI indicator, beat black-box baselines
     held-out with CIs.
+
+    ⚠️ **GATE RESULT 2026-07-19 — "beat black-box baselines" is UNWINNABLE as written, because the
+    deployed signal is not white-box.** Verified in code, not just measured: `runs/trace.py` sets
+    `confidence = [s.get("prob") ...]` (the emitted token's softmax probability) and
+    `eval/policy.py:score_from_trace` aggregates exactly that. Under greedy decoding the emitted token
+    IS the argmax, so this score is the min top-1 output probability — the same number any
+    OpenAI-compatible API returns with `logprobs=true`. Confirmed empirically: white-box score and an
+    independently computed `exp(min(logprob))` baseline are **bit-identical across all 362 items (max
+    abs diff 0.0)**. No hidden-state probe, no J-lens readout, no attention signal is involved.
+
+    The signal nonetheless **works**: TEST n=182 (stratified, deterministic split; threshold + length
+    model fit on TRAIN only), AUROC **0.822 [0.760, 0.879]**, risk-coverage drives error from a 20.9%
+    base rate to **0.0% at 50% coverage** / 8.7% at 70%, and it survives a length control (length alone
+    0.806; length + score 0.865, score coefficient +1.79). Bonus finding that supports the project's
+    confabulation thesis: **self-reported confidence is degenerate** — 358/362 replies claimed exactly
+    1.0, including nearly every wrong answer (AUROC 0.510, chance).
+
+    So: (a) ship the abstain/UI work on its own merits but relabel it honestly as **token-probability
+    selective generation, not a white-box differentiator**; or (b) first feed an actually-internal score
+    (J-lens readout / hidden-state probe) into `score_from_trace` and re-run this same harness — the only
+    route to a legitimate white-box-advantage claim. Harness + data:
+    `scratchpad/wb_analyze.py`, `wb_results.json`, `wb_raw*.jsonl`.
+    Power caveat: 67 of 75 wrong items came from a constructed hard-multiplication stress set (only 8 from
+    the natural probe corpus, where this model errs ~4%), so this is well-powered for arithmetic slips,
+    not for general factual/reasoning failure. Also currently non-functional end-to-end: `:8080` is the raw
+    C++ engine, not the Python gateway, and `~/.clozn/eval_report.json` is stale for this model and would be
+    refused by `classify_run`'s exact-model provenance gate.
     *Why:* the eval layer computes thresholds but generation never uses them. *Payoff:* the model can
     actually **abstain, ask to clarify, or self-check before answering** when likely wrong — measurably
     fewer wrong answers, not a decorative confidence meter.
