@@ -102,6 +102,34 @@ Higher variance; each is a real capability if it lands.
     (J-lens readout / hidden-state probe) into `score_from_trace` and re-run this same harness — the only
     route to a legitimate white-box-advantage claim. Harness + data:
     `scratchpad/wb_analyze.py`, `wb_results.json`, `wb_raw*.jsonl`.
+
+    ⚠️ **Option (b) HAS NOW BEEN RUN, and it fails — there is no white-box advantage here.** Same 362
+    items, same TRAIN(180)/TEST(182) split. Candidates: ridge-logistic probes on layer-16/24 residuals
+    (hyperparams CV'd inside TRAIN only), J-lens live-energy fraction, hidden-state norms. Scripts:
+    `scratchpad/wb_harvest.py`, `wb_live_energy.py`, `wb_probe_analyze.py`, results `wb_probe_results.json`.
+
+    On the full mixed test set the best probe *looks* like a win (AUROC 0.900 vs 0.822) — but a
+    **1-bit topic control** (`is_hard_arith`, using zero model internals) scores **0.822**, matching the
+    baseline exactly, and `corr(probe predictions, is_hard_arith) = -0.85` versus `-0.09` for the
+    baseline. The probe is a topic detector, not a wrongness detector.
+
+    Holding task type constant (hard-arithmetic subset, n=70) inverts the result:
+
+    | arm | AUROC [95% CI] |
+    |---|---|
+    | whitebox_min (= min token logprob) | **0.937 [0.873, 0.984]** |
+    | probe_mean16 (best internal) | 0.799 [0.686, 0.894] |
+    | hidden_norm_mean_L16 | 0.709 [0.583, 0.833] |
+    | live_energy_mean_k50 | 0.670 [0.544, 0.794] |
+
+    Paired bootstrap (probe − baseline, shared resamples): full set **+0.079 [-0.007, +0.163]** (not
+    significant); hard subset **-0.138 [-0.265, -0.029]** (baseline significantly BETTER). Verified
+    independently against the raw JSON.
+
+    **Conclusion: for risk prediction, the token probability wins and internal state adds nothing.**
+    Take path (a) — ship selective generation on its merits, labelled honestly as token-probability-based.
+    Scope: Qwen3.5-9B-Q4_K_M, greedy, question mix dominated by 4-6 digit multiplication; does not test
+    other model families, non-greedy decoding, or an exhaustive layer sweep.
     Power caveat: 67 of 75 wrong items came from a constructed hard-multiplication stress set (only 8 from
     the natural probe corpus, where this model errs ~4%), so this is well-powered for arithmetic slips,
     not for general factual/reasoning failure. Also currently non-functional end-to-end: `:8080` is the raw
