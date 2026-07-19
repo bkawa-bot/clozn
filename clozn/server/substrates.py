@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 from clozn.server.config import REPO_ROOT, DEMO                        # noqa: F401
 from clozn.server import app as ctx   # the seam: live server state + patchable helpers (see docstring)
@@ -185,11 +186,22 @@ class Substrate:
 
     def _ensure_steer(self):
         """Compute the axis vectors once, race-safe (double-checked lock). Two dial calls racing on first
-        use could otherwise both run compute() on the shared model at once and corrupt it (IndexError)."""
+        use could otherwise both run compute() on the shared model at once and corrupt it (IndexError).
+
+        A dead engine surfaces here as a raw urllib.error.URLError -- self.steer.compute()'s very first
+        harvest() round-trip fails to even connect (EngineClient._request only translates an HTTPError,
+        i.e. the engine responding with a JSON 4xx, into EngineError; a connection refusal propagates
+        unwrapped). Caught here and re-raised as ctx.EngineUnavailable so the caller gets the same clean
+        502 every other engine-touching route uses, instead of a bare URLError reaching app.py's generic
+        500 fallback (engine-down pressure test finding #1)."""
         if not self._steer_ready:
             with self._steer_lock:
                 if not self._steer_ready:
-                    self._steer_info = self.steer.compute()
+                    import urllib.error
+                    try:
+                        self._steer_info = self.steer.compute()
+                    except urllib.error.URLError as e:
+                        raise ctx.EngineUnavailable(ctx._engine_unreachable_message()) from e
                     self._steer_ready = True
 
     def _steer(self, path, body):
@@ -209,6 +221,51 @@ class Substrate:
                     axis["custom"] = True      # unchanged: a genuine user-made dial ("yours" + deletable)
                 axes.append(ctx._with_calibration(axis, calib.get(k)))
             return {"axes": axes, "ready": self._steer_ready, "substrate": self.name}
+        if path == "/steer/custom_delete":      # a pure dict-pop -- doesn't touch the engine at all, so it
+            # must work (or fail on its OWN terms) even while the engine is down; must NOT sit behind
+            # _ensure_steer()'s unrelated ~35-round-trip calibration harvest (pressure test finding #1b).
+            if hasattr(self.steer, "remove_custom"):
+                self.steer.remove_custom(str(body.get("name", "")))
+                self.steer.save_custom(ctx._pers(f"studio_custom_{self.name}.json"))
+                if self._pers_steer:
+                    self.steer.save_state(self._pers_steer)
+            return {"custom": list(getattr(self.steer, "custom", {}))}
+        if path == "/steer/concept/set":         # Tier-1 #1: any-concept dial (dir(c)) -- ZERO calibration.
+            # A DIFFERENT mechanism (ConceptSteer) from the diff-of-means EngineSteer _ensure_steer()
+            # calibrates -- must not be gated behind that unrelated subsystem's readiness either.
+            import clozn.behavior.steering.concept_dir as concept_dir
+            cs = ctx._engine_concept_steer()
+            if cs is None:
+                return {"error": "concept dials need the product model worker (CLOZN_ENGINE_PORT)"}
+            concept = str(body.get("concept", "")).strip()
+            if not concept:
+                return {"error": "need a concept word"}
+            strength = float(body.get("strength", concept_dir.DEFAULT_STRENGTH))
+            result = cs.steer_toward(concept, strength)
+            result["active"] = cs.active()
+            return result
+        if path == "/steer/concept/check":       # A/B: baseline vs dir(concept)-steered (mirrors /steer/check)
+            import clozn.behavior.steering.concept_dir as concept_dir
+            cs = ctx._engine_concept_steer()
+            if cs is None:
+                return {"error": "concept dials need the product model worker (CLOZN_ENGINE_PORT)"}
+            concept = str(body.get("concept", "")).strip()
+            if not concept:
+                return {"error": "need a concept word"}
+            strength = float(body.get("strength", concept_dir.DEFAULT_STRENGTH))
+            prompt = str(body.get("prompt", ""))[:300]
+            max_new = int(body.get("max_new", 90))
+            base = concept_dir._text_of(cs.ec.complete(prompt, max_tokens=max_new))
+            built = cs.steer_toward(concept, strength)
+            if not built.get("ok"):
+                return {"prompt": prompt, "concept": concept, "strength": strength,
+                        "baseline": base, "steered": None,
+                        "blocked": built.get("blocked"), "note": built.get("note")}
+            steered = concept_dir._text_of(cs.ec.intervene(
+                prompt, vector=built["vector"], coef=built["coef"], layer=built["layer"], max_tokens=max_new))
+            return {"prompt": prompt, "concept": concept, "strength": strength, "layer": built["layer"],
+                    "token_id": built["token_id"], "coef": built["coef"],
+                    "baseline": base, "steered": steered, "note": built.get("note")}
         self._ensure_steer()                    # compute the axis vectors once on first real use (race-safe)
         if path == "/steer/compute":
             return {"ready": True, **self._steer_info}
@@ -250,47 +307,6 @@ class Substrate:
             info = self.steer.add_custom(name, pos, neg, float(body.get("max", 0.5)))
             self.steer.save_custom(ctx._pers(f"studio_custom_{self.name}.json"))
             return {"name": name, "max": info["max"], "custom": list(self.steer.custom)}
-        if path == "/steer/custom_delete":
-            if hasattr(self.steer, "remove_custom"):
-                self.steer.remove_custom(str(body.get("name", "")))
-                self.steer.save_custom(ctx._pers(f"studio_custom_{self.name}.json"))
-                if self._pers_steer:
-                    self.steer.save_state(self._pers_steer)
-            return {"custom": list(getattr(self.steer, "custom", {}))}
-        if path == "/steer/concept/set":         # Tier-1 #1: any-concept dial (dir(c)) -- ZERO calibration
-            import clozn.behavior.steering.concept_dir as concept_dir
-            cs = ctx._engine_concept_steer()
-            if cs is None:
-                return {"error": "concept dials need the product model worker (CLOZN_ENGINE_PORT)"}
-            concept = str(body.get("concept", "")).strip()
-            if not concept:
-                return {"error": "need a concept word"}
-            strength = float(body.get("strength", concept_dir.DEFAULT_STRENGTH))
-            result = cs.steer_toward(concept, strength)
-            result["active"] = cs.active()
-            return result
-        if path == "/steer/concept/check":       # A/B: baseline vs dir(concept)-steered (mirrors /steer/check)
-            import clozn.behavior.steering.concept_dir as concept_dir
-            cs = ctx._engine_concept_steer()
-            if cs is None:
-                return {"error": "concept dials need the product model worker (CLOZN_ENGINE_PORT)"}
-            concept = str(body.get("concept", "")).strip()
-            if not concept:
-                return {"error": "need a concept word"}
-            strength = float(body.get("strength", concept_dir.DEFAULT_STRENGTH))
-            prompt = str(body.get("prompt", ""))[:300]
-            max_new = int(body.get("max_new", 90))
-            base = concept_dir._text_of(cs.ec.complete(prompt, max_tokens=max_new))
-            built = cs.steer_toward(concept, strength)
-            if not built.get("ok"):
-                return {"prompt": prompt, "concept": concept, "strength": strength,
-                        "baseline": base, "steered": None,
-                        "blocked": built.get("blocked"), "note": built.get("note")}
-            steered = concept_dir._text_of(cs.ec.intervene(
-                prompt, vector=built["vector"], coef=built["coef"], layer=built["layer"], max_tokens=max_new))
-            return {"prompt": prompt, "concept": concept, "strength": strength, "layer": built["layer"],
-                    "token_id": built["token_id"], "coef": built["coef"],
-                    "baseline": base, "steered": steered, "note": built.get("note")}
         return None
 
 
@@ -347,6 +363,12 @@ class EngineSubstrate(Substrate):
 
     name = "engine"
 
+    # IDENTITY LAZY RE-RESOLUTION (engine-down pressure test finding #2): a down-at-startup engine pays
+    # this ~2s connect-refused tax (this host's control fact) at most once per cooldown window on lazy
+    # re-resolve attempts (see _maybe_reresolve_identity) -- never on every request, so a persistently-dead
+    # engine never adds latency to ordinary calls.
+    _IDENTITY_RETRY_COOLDOWN_S = 30.0
+
     def __init__(self):
         if ctx.ENGINE is None:
             raise RuntimeError("engine substrate needs the supervised GGUF worker (set CLOZN_ENGINE_PORT)")
@@ -360,7 +382,6 @@ class EngineSubstrate(Substrate):
                 pass
         self._mem = _EngineMemory()
         self.memory = self._mem                 # the studio reads SUB.memory in a few places
-        self._pers_steer = None
         self._steer_ready = False
         self._steer_info = {}
         self._steer_lock = threading.Lock()
@@ -370,27 +391,46 @@ class EngineSubstrate(Substrate):
         # and pin the tone-dial steer tap to THIS model's mid-depth: Qwen-7B -> 14 (unchanged), Llama-3.2-1B
         # -> 8, an unrecognized GGUF keeps EngineSteer's generic default. run_meta() re-derives this lazily
         # too, so the run record is correct even when the engine comes up after the substrate.
-        self.model_family = None
-        self.model_id = None
+        #
+        # model_family/model_id/model_sha256/_pers_steer are PROPERTIES (below), backed by the _val fields
+        # here: a startup-time engine outage must not permanently disable per-model dial persistence for
+        # the rest of the process's life -- every read retries _resolve_identity() (cooldown-gated) while
+        # unresolved, and never re-fetches once it resolves. See _resolve_identity/_maybe_reresolve_identity.
+        self._model_family_val = None
+        self._model_id_val = None
+        self._model_sha256_val = None
+        self._pers_steer_val = None
+        self._identity_lock = threading.Lock()
+        self._identity_last_attempt = 0.0
+        self._resolve_identity()
+
+    def _resolve_identity(self):
+        """One best-effort attempt to derive model_family/model_id/model_sha256 from the engine's /health,
+        pin the tone-dial steer layer, and -- once a sha256 is actually known -- load this exact GGUF's
+        persisted dial state and enable J-transport. Never blocks boot, never raises (a down/old engine
+        just leaves everything at its unresolved default). Called once at construction and retried lazily
+        by _maybe_reresolve_identity whenever the engine was down at the previous attempt."""
+        self._identity_last_attempt = time.time()
         h = {}
         try:
             h = self.engine.health() if (self.engine and hasattr(self.engine, "health")) else {}
-            self.model_family, _info = _engine_model_info((h or {}).get("model", ""))
-            self.model_id = _info["model_id"]
+            fam, _info = _engine_model_info((h or {}).get("model", ""))
+            self._model_family_val = fam
+            self._model_id_val = _info["model_id"]
             if self.steer is not None and _info["steer_layer"] is not None:
                 self.steer.layer = _info["steer_layer"]
         except Exception:
-            pass
-        self.model_sha256 = str((h or {}).get("model_sha256") or "") or None
-        if self.model_sha256:
-            self._pers_steer = ctx._pers(os.path.join(
-                "models", self.model_sha256, "studio_personality.json"))
+            return
+        sha256 = str((h or {}).get("model_sha256") or "") or None
+        if not sha256:
+            return
+        self._model_sha256_val = sha256
+        self._pers_steer_val = ctx._pers(os.path.join("models", sha256, "studio_personality.json"))
         if self.steer is not None:              # restore values only from this exact GGUF's state file
-            if self._pers_steer:
-                try:
-                    self.steer.load_state(self._pers_steer)
-                except Exception:
-                    pass
+            try:
+                self.steer.load_state(self._pers_steer_val)
+            except Exception:
+                pass
             # J-TRANSPORT (engine_adapter.EngineSteer's class docstring / jlens_transport.py, see
             # notes/JLENS_SAE_FINDINGS.md finding #1): auto-enable using the running engine's OWN
             # reported model digest -- the strongest identity this substrate actually has (no local
@@ -398,11 +438,46 @@ class EngineSubstrate(Substrate):
             # always attempt: a byte-identical no-op (self.steer.last_j_transport["applied"] is
             # False) whenever no compact-eligible J artifact claims this exact GGUF sha256 -- true
             # for every model shipped today -- never a silent substitution of a mismatched J.
-            if self.model_sha256:
-                try:
-                    self.steer.enable_j_transport(model_sha256=self.model_sha256)
-                except Exception:
-                    pass
+            try:
+                self.steer.enable_j_transport(model_sha256=sha256)
+            except Exception:
+                pass
+
+    def _maybe_reresolve_identity(self):
+        """Retry _resolve_identity() iff identity is still unresolved (no model_sha256 yet) AND the
+        cooldown has elapsed since the last attempt. A no-op once resolved -- never re-fetches, matching
+        the pre-existing "resolve once" behavior for a healthy startup -- and a no-op within the cooldown
+        window so a persistently-down engine doesn't add a health() round-trip to every request."""
+        if self._model_sha256_val:
+            return
+        if time.time() - self._identity_last_attempt < self._IDENTITY_RETRY_COOLDOWN_S:
+            return
+        with self._identity_lock:               # double-checked, so concurrent callers don't stack retries
+            if self._model_sha256_val:
+                return
+            if time.time() - self._identity_last_attempt < self._IDENTITY_RETRY_COOLDOWN_S:
+                return
+            self._resolve_identity()
+
+    @property
+    def model_family(self):
+        self._maybe_reresolve_identity()
+        return self._model_family_val
+
+    @property
+    def model_id(self):
+        self._maybe_reresolve_identity()
+        return self._model_id_val
+
+    @property
+    def model_sha256(self):
+        self._maybe_reresolve_identity()
+        return self._model_sha256_val
+
+    @property
+    def _pers_steer(self):
+        self._maybe_reresolve_identity()
+        return self._pers_steer_val
 
     def _gen(self, prompt):                     # one-shot generate for the /steer/check A/B (base _steer)
         if self.steer is not None:
@@ -584,9 +659,18 @@ class EngineSubstrate(Substrate):
         plus available_layers (from /health's jlens.layers). Graceful absence: if the engine was started
         WITHOUT --jlens (no jlens block in /health), returns {available:False, reason:...} so the panel
         shows a clean 'lens not loaded' instead of an error. An unknown layer surfaces the engine's 400
-        body (the available layers) cleanly rather than throwing."""
+        body (the available layers) cleanly rather than throwing.
+
+        The health() probe itself is wrapped SEPARATELY from parsing its body (pressure test finding #5):
+        a connection failure (the engine isn't running at all) is factually different from a reachable
+        engine whose /health simply carries no jlens block (it's up, just started without --jlens), and
+        the two used to collapse into the same wrong "started without --jlens" reason whenever the engine
+        was fully down."""
         try:
             h = self.engine.health() if (self.engine and hasattr(self.engine, "health")) else {}
+        except Exception:
+            return {"available": False, "reason": ctx._engine_unreachable_message()}
+        try:
             jl = (h or {}).get("jlens") or {}
             avail = [int(x) for x in (jl.get("layers") or [])]
         except Exception:

@@ -7,6 +7,7 @@ without --live is an honest skip (exit 0), never a silent pass.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -143,6 +144,79 @@ def test_causal_assertion_without_live_is_skipped_never_a_silent_pass(iso, capsy
     assert rc == 0
     assert "--live" in out
     assert "causal" in out and "leans_on" in out
+
+
+# ================================================== --live's _fetch_live_receipt (engine-down pressure test #3)
+# _fetch_live_receipt talks HTTP to a running product gateway's POST /runs/<id>/receipt; these tests fake
+# urllib.request.urlopen directly (no real socket) so the gateway's THREE distinct outcomes -- connection
+# refused, a 502/503 "engine not reachable", and an ordinary 4xx bad request -- are each driven exactly,
+# fast and deterministically (no dependence on this host's real connect-refused timing).
+
+def test_fetch_live_receipt_returns_a_sentinel_on_502_engine_not_reachable(monkeypatch):
+    """The gateway's own /runs/<id>/receipt now answers 502 "engine not reachable ..." when ITS engine is
+    down (fix 1a/3). _fetch_live_receipt used to swallow ANY failure -- this one included -- into a bare
+    None, identical to a bad influence spec; it must now surface a distinguishing sentinel instead."""
+    import urllib.error
+    import urllib.request
+    from clozn.cli.commands import test as cmd_test
+
+    detail = "engine not reachable at http://127.0.0.1:8080 -- is it running?"
+    body = json.dumps({"error": detail}).encode()
+
+    def fake_urlopen(req, timeout=120):
+        raise urllib.error.HTTPError(req.full_url, 502, "Bad Gateway", hdrs=None, fp=io.BytesIO(body))
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    out = cmd_test._fetch_live_receipt(8080, "run123", {"dial": "warm"})
+    assert out == {"_fetch_error": "engine_unreachable", "_fetch_detail": detail}
+
+
+def test_fetch_live_receipt_returns_a_sentinel_on_503_too(monkeypatch):
+    import urllib.error
+    import urllib.request
+    from clozn.cli.commands import test as cmd_test
+
+    body = json.dumps({"error": "receipt requires a ready product model worker"}).encode()
+
+    def fake_urlopen(req, timeout=120):
+        raise urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", hdrs=None, fp=io.BytesIO(body))
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    out = cmd_test._fetch_live_receipt(8080, "run123", {"dial": "warm"})
+    assert out == {"_fetch_error": "engine_unreachable",
+                   "_fetch_detail": "receipt requires a ready product model worker"}
+
+
+def test_fetch_live_receipt_returns_none_on_a_plain_400_bad_request(monkeypatch):
+    """An ordinary bad-request 4xx is UNCHANGED -- still a bare None, not the engine-down sentinel."""
+    import urllib.error
+    import urllib.request
+    from clozn.cli.commands import test as cmd_test
+
+    body = json.dumps({"error": "need an influence spec"}).encode()
+
+    def fake_urlopen(req, timeout=120):
+        raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", hdrs=None, fp=io.BytesIO(body))
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    out = cmd_test._fetch_live_receipt(8080, "run123", {"bogus": True})
+    assert out is None
+
+
+def test_fetch_live_receipt_returns_none_on_connection_refused(monkeypatch):
+    """The gateway itself is unreachable (not merely ITS engine) -- a plain URLError, not an HTTPError at
+    all. Stays a bare None: judge_receipt's ordinary "could not be computed" note is the honest message
+    when there's no gateway response to even inspect."""
+    import urllib.error
+    import urllib.request
+    from clozn.cli.commands import test as cmd_test
+
+    def fake_urlopen(req, timeout=120):
+        raise urllib.error.URLError("refused")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    out = cmd_test._fetch_live_receipt(1, "run123", {"dial": "warm"})
+    assert out is None
 
 
 # ===================================================================================================== --json

@@ -96,6 +96,24 @@ def _post(path, body_obj=None):
     return _dispatch("POST", path, body_obj)
 
 
+def _post_status(path, body_obj=None):
+    """Like _post, but also returns the HTTP status (mirrors test_rewrite_route.py's _post) -- needed for
+    the engine-not-reachable-vs-bad-request tests below, where the STATUS CODE is the thing under test,
+    not just the message."""
+    raw = json.dumps(body_obj if body_obj is not None else {}).encode("utf-8")
+    H = cs.make_handler()
+    h = object.__new__(H)
+    h.path = path
+    h.rfile = io.BytesIO(raw)
+    h.wfile = io.BytesIO()
+    h.headers = {"Content-Length": str(len(raw)), "User-Agent": "pytest"}
+    h.requestline, h.request_version, h.command = f"POST {path} HTTP/1.1", "HTTP/1.1", "POST"
+    h.do_POST()
+    head, _, payload = h.wfile.getvalue().partition(b"\r\n\r\n")
+    status = int(head.split(b" ", 2)[1])
+    return status, json.loads(payload.decode("utf-8"))
+
+
 @pytest.fixture
 def iso(tmp_path, monkeypatch):
     """Isolate the run/card/settings stores; SUB starts as a FakeSub (tests that want the 503 path
@@ -141,6 +159,50 @@ def test_receipt_rejects_an_unrecognized_influence_shape(iso):
     rid = _seed_run()
     out = _post(f"/runs/{rid}/receipt", {"influence": {"nonsense": True}})
     assert "error" in out          # _ablation_changes resolves to None -> receipts.receipt() -> None -> 500
+
+
+# ============================================================================== engine-not-reachable vs bad request
+# (engine-down pressure test finding #3): receipts.receipt() (and everything under it -- replay.py) is
+# documented to NEVER raise, so a dead-engine URLError collapses into the SAME ambiguous None a bad
+# influence spec produces (the test above). The route now probes the substrate's own engine directly on
+# that ambiguous path (only there, never on the happy path) to tell the two apart.
+
+class DownEngineSub:
+    """A substrate whose OWN engine is unreachable: .chat() fails exactly like a live EngineSubstrate.chat
+    would against a dead C++ worker, and .engine.health() fails too (what ctx._engine_reachable() probes)."""
+    name = "engine"
+
+    def __init__(self):
+        self.memory = FakeMem()
+        self.steer = FakeSteer()
+        self.base = "http://127.0.0.1:8080"
+        self.engine = self                 # simplest double: this object IS its own "engine client"
+
+    def health(self):
+        raise OSError("connection refused")
+
+    def chat(self, messages, max_new=256, sample=True):
+        raise OSError("connection refused")
+
+
+def test_receipt_reports_engine_not_reachable_distinctly_from_a_bad_spec(iso, monkeypatch):
+    sub = DownEngineSub()
+    monkeypatch.setattr(cs, "SUB", sub)
+    monkeypatch.setattr(cs, "ENGINE", sub)     # ctx._engine_unreachable_message() reads ENGINE.base
+    rid = _seed_run()
+    status, out = _post_status(f"/runs/{rid}/receipt", {"influence": {"dial": "warm"}})
+    assert status == 502
+    assert out == {"error": "engine not reachable at http://127.0.0.1:8080 -- is it running?"}
+
+
+def test_receipt_bad_spec_keeps_the_generic_500_when_the_engine_is_fine(iso, monkeypatch):
+    """Control: the SAME ambiguous-None path, but with a substrate that has no .engine at all (like this
+    file's ordinary FakeSub) -- ctx._engine_reachable() can't blame connectivity, so the original generic
+    message survives unchanged, at its original 500."""
+    rid = _seed_run()
+    status, out = _post_status(f"/runs/{rid}/receipt", {"influence": {"nonsense": True}})
+    assert status == 500
+    assert out == {"error": "receipt failed (bad influence spec, or the replay could not be generated)"}
 
 
 def test_receipt_happy_path_dial_ablation_over_http(iso):
@@ -451,3 +513,55 @@ def test_swap_receipt_happy_path_over_http(iso, monkeypatch, jlens_env):
     assert out["baseline_reply"] == "the sky is calm and blue today"
     assert out["swapped_reply"] == "a vast ocean wave of deep ocean water"
     assert "lexicon_hits" in out and "logprob_shift" in out
+
+
+# ============================================================================== fix #4: total failure is non-2xx
+# (engine-down pressure test finding #4): swap_receipt() never raises -- a total failure (no engine,
+# template render, generation, ...) degrades to causal_verified:false + blocked/note explaining why, but
+# used to still ship as plain HTTP 200, so a caller checking response.ok alone would read a complete
+# failure as a success. Body stays intact either way (swap_receipt's own blocked/note already self-
+# describe the failure) -- only the status code changes.
+
+class DownSwapEngine:
+    """A fully unreachable engine: apply_template (swap_receipt's first engine call) and health() (what
+    ctx._engine_reachable() probes) both fail with a connection-style error. complete/intervene exist
+    (swap_receipt's own hasattr gate needs them present) but are never reached -- apply_template fails first."""
+
+    def __init__(self):
+        self.base = "http://127.0.0.1:8080"
+
+    def health(self):
+        raise OSError("connection refused")
+
+    def apply_template(self, messages, add_assistant=True):
+        raise OSError("connection refused")
+
+    def complete(self, prompt, max_tokens=64):
+        raise OSError("connection refused")
+
+    def intervene(self, prompt, vector=None, coef=None, layer=None, max_tokens=64):
+        raise OSError("connection refused")
+
+
+def test_swap_receipt_total_failure_is_a_clean_502_when_the_engine_is_down(iso, monkeypatch):
+    down_engine = DownSwapEngine()
+    monkeypatch.setattr(cs, "SUB", FakeSwapSub(down_engine))
+    monkeypatch.setattr(cs, "ENGINE", down_engine)     # ctx._engine_unreachable_message() reads ENGINE.base
+    rid = _seed_run()
+    status, out = _post_status(f"/runs/{rid}/swap_receipt", {"to_concept": "ocean"})
+    assert status == 502
+    assert out["causal_verified"] is False
+    assert out["blocked"] == "template_render"
+    assert "connection refused" in out["note"]
+
+
+def test_swap_receipt_total_failure_is_a_clean_500_when_not_engine_related(iso, monkeypatch):
+    """A different total failure -- a run with no messages to reconstruct a prompt from -- has nothing to
+    do with connectivity: ctx._engine_reachable() can't blame FakeSwapEngine (no .health method at all --
+    see app._engine_reachable's docstring), so it lands on the plain 500 sibling routes use."""
+    monkeypatch.setattr(cs, "SUB", FakeSwapSub(FakeSwapEngine()))
+    rid = runlog.record(source="cli", messages=[], response="")
+    status, out = _post_status(f"/runs/{rid}/swap_receipt", {"to_concept": "ocean"})
+    assert status == 500
+    assert out["causal_verified"] is False
+    assert out["note"] == "run has no messages to reconstruct a prompt from"

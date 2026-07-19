@@ -60,6 +60,24 @@ def _post(path, body_obj=None):
     return _dispatch("POST", path, body_obj)
 
 
+def _post_status(path, body_obj=None):
+    """Like _post, but also returns the HTTP status (mirrors test_rewrite_route.py's / test_receipts_
+    server.py's own _post_status) -- the engine-not-reachable-vs-bad-request tests below need the status
+    code itself, not just the message."""
+    raw = json.dumps(body_obj if body_obj is not None else {}).encode("utf-8")
+    H = cs.make_handler()
+    h = object.__new__(H)
+    h.path = path
+    h.rfile = io.BytesIO(raw)
+    h.wfile = io.BytesIO()
+    h.headers = {"Content-Length": str(len(raw)), "User-Agent": "pytest"}
+    h.requestline, h.request_version, h.command = f"POST {path} HTTP/1.1", "HTTP/1.1", "POST"
+    h.do_POST()
+    head, _, payload = h.wfile.getvalue().partition(b"\r\n\r\n")
+    status = int(head.split(b" ", 2)[1])
+    return status, json.loads(payload.decode("utf-8"))
+
+
 @pytest.fixture
 def iso(tmp_path, monkeypatch):
     monkeypatch.setattr(runlog, "RUNS_DIR", str(tmp_path / "runs"))
@@ -126,3 +144,50 @@ def test_rederive_failure_is_a_clean_500(iso, monkeypatch):
     out = _post(f"/runs/{rid}/rederive")
     assert "error" in out
     assert "rederive failed" in out["error"]
+
+
+# ============================================================================== engine-not-reachable vs bad request
+# (engine-down pressure test finding #3): rederive.rederive() (mirrors replay.py's contract) is documented
+# to NEVER raise -- score_arm() catches whatever score_tokens() throws and returns ([], False), so
+# BoomSub's plain RuntimeError above actually surfaces as the SAME ambiguous None a truly-unscoreable run
+# would. The route now probes the substrate's own engine directly on that ambiguous path to tell "the
+# engine is down" apart from "some other reason there was nothing to score".
+
+class DownEngineScoreSub:
+    """A substrate whose OWN engine is unreachable: .score_tokens() fails exactly like a live
+    EngineSubstrate.score_tokens would against a dead C++ worker, and .engine.health() fails too (what
+    ctx._engine_reachable() probes)."""
+
+    def __init__(self):
+        self.base = "http://127.0.0.1:8080"
+        self.engine = self          # simplest double: this object IS its own "engine client"
+
+    def health(self):
+        raise OSError("connection refused")
+
+    def score_tokens(self, *a, **k):
+        raise OSError("connection refused")
+
+
+def test_rederive_reports_engine_not_reachable_distinctly_from_a_bad_request(iso, monkeypatch):
+    sub = DownEngineScoreSub()
+    monkeypatch.setattr(cs, "SUB", sub)
+    monkeypatch.setattr(cs, "ENGINE", sub)     # ctx._engine_unreachable_message() reads ENGINE.base
+    rid = _seed_run()
+    status, out = _post_status(f"/runs/{rid}/rederive")
+    assert status == 502
+    assert out == {"error": "engine not reachable at http://127.0.0.1:8080 -- is it running?"}
+
+
+def test_rederive_bad_request_keeps_the_generic_500_when_the_engine_is_fine(iso, monkeypatch):
+    """Control: the SAME ambiguous-None path (BoomSub above has no .engine at all), so
+    ctx._engine_reachable() can't blame connectivity -- the original generic message survives unchanged."""
+    class BoomSub:
+        def score_tokens(self, *a, **k):
+            raise RuntimeError("boom")
+    monkeypatch.setattr(cs, "SUB", BoomSub())
+    rid = _seed_run()
+    status, out = _post_status(f"/runs/{rid}/rederive")
+    assert status == 500
+    assert out == {"error": "rederive failed (no continuation to score, or the "
+                            "engine score call failed)"}

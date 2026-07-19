@@ -13,14 +13,17 @@ ALONGSIDE the existing tone-dial routes (/steer/set, /steer/check, /steer/custom
                         the SAME raw-vector wire /intervene already serves, see concept_dir.py's demo).
 
 Model-free and GPU-free: clozn.server.app.ENGINE is monkeypatched to a FakeEngineClient (harvest/
-complete/intervene/score -- harvest is needed because Substrate._steer's shared _ensure_steer() always
-harvests the tone-dial axes ONCE per process before any /steer/* branch runs, exactly like the existing
-/steer/custom route tests, see test_engine_add_custom.py); ENGINE_CONCEPT_STEER is a REAL ConceptSteer
-wired to a tiny on-disk J-lens + unembed FIXTURE (orthogonal J_l + orthonormal W_U rows, so dir(c) is
-exact -- mirrors test_concept_dir.py / test_swap_receipt.py's own construction), so dir(c) actually
-resolves without any engine round trip for W_U (the lab-export path wins, see concept_dir.py's
-BLOCKER_NOTE). Drives the REAL do_POST handler via the object.__new__(H) no-socket trick
-(test_receipts_server.py's _dispatch).
+complete/intervene/score); ENGINE_CONCEPT_STEER is a REAL ConceptSteer wired to a tiny on-disk J-lens +
+unembed FIXTURE (orthogonal J_l + orthonormal W_U rows, so dir(c) is exact -- mirrors
+test_concept_dir.py / test_swap_receipt.py's own construction), so dir(c) actually resolves without any
+engine round trip for W_U (the lab-export path wins, see concept_dir.py's BLOCKER_NOTE). Drives the REAL
+do_POST handler via the object.__new__(H) no-socket trick (test_receipts_server.py's _dispatch).
+
+.harvest exists on FakeEngineClient purely so a MISBEHAVING test (or a regression that re-gates these
+routes) would fail loudly rather than hang -- /steer/concept/* (ConceptSteer/dir(c)) is a mechanism
+entirely separate from Substrate._ensure_steer()'s diff-of-means EngineSteer tone-dial calibration, and
+(engine-down pressure test finding #1b) must never call it at all. The "harvest never called" section
+near the bottom of this file proves exactly that, against an engine whose harvest() would raise.
 """
 from __future__ import annotations
 
@@ -292,3 +295,55 @@ def test_steer_concept_check_passes_the_built_vector_to_intervene(wired_concept_
     assert call["layer"] == 21
     assert call["coef"] == pytest.approx(4.0)
     assert isinstance(call["vector"], list) and len(call["vector"]) == 32
+
+
+# ==================================================================================== fix 1b: no tone-dial calibration
+# Engine-down pressure test finding #1b: /steer/concept/* used to sit behind Substrate._steer's
+# unconditional _ensure_steer() call (the SAME diff-of-means EngineSteer harvest /steer/set etc. need),
+# even though ConceptSteer/dir(c) is a completely separate mechanism that never touches it. Proven here
+# against an engine whose harvest() raises -- if a regression ever re-gated these routes behind
+# _ensure_steer(), these tests would fail with a raised/propagated error instead of the clean result below.
+
+class _HarvestRefusingEngineClient(FakeEngineClient):
+    """Identical to FakeEngineClient, except .harvest() always raises -- standing in for a fully
+    unreachable engine from _ensure_steer()'s point of view (mirrors cloze_engine.EngineClient's own
+    behavior on a connection refusal: a raw urllib.error.URLError, never caught by _request())."""
+
+    def harvest(self, text, layer=None):
+        import urllib.error
+        self.harvest_calls.append(text)
+        raise urllib.error.URLError("refused")
+
+
+@pytest.fixture
+def fake_concept_engine_harvest_down(iso, monkeypatch):
+    ec = _HarvestRefusingEngineClient()
+    monkeypatch.setattr(cs, "ENGINE", ec)
+    monkeypatch.setattr(cs, "ENGINE_STEER", None)
+    monkeypatch.setattr(cs, "ENGINE_CONCEPT_STEER", None)
+    sub = cs.EngineSubstrate()
+    monkeypatch.setattr(cs, "SUB", sub)
+    monkeypatch.setattr(cs, "SUBNAME", "engine")
+    return ec
+
+
+@pytest.fixture
+def wired_concept_steer_harvest_down(fake_concept_engine_harvest_down, fixture_source, monkeypatch):
+    steer = concept_dir.ConceptSteer(fake_concept_engine_harvest_down, source=fixture_source,
+                                     layer=21, median_norm=10.0)
+    monkeypatch.setattr(cs, "ENGINE_CONCEPT_STEER", steer)
+    return steer
+
+
+def test_steer_concept_set_never_triggers_the_tone_dial_calibration_harvest(
+        wired_concept_steer_harvest_down, fake_concept_engine_harvest_down):
+    out = _post("/steer/concept/set", {"concept": "ocean", "strength": 0.4})
+    assert out["ok"] is True                                    # succeeds despite harvest() being lethal
+    assert fake_concept_engine_harvest_down.harvest_calls == []  # ...because it was never called
+
+
+def test_steer_concept_check_never_triggers_the_tone_dial_calibration_harvest(
+        wired_concept_steer_harvest_down, fake_concept_engine_harvest_down):
+    out = _post("/steer/concept/check", {"concept": "ocean", "strength": 0.4, "prompt": "hi"})
+    assert out["steered"] == "a reply steered toward the concept"
+    assert fake_concept_engine_harvest_down.harvest_calls == []

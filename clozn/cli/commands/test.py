@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.error
 import urllib.request
 
 from clozn.cli import formatting as fmt
@@ -39,15 +40,29 @@ def _load_test_spec(path: str):
 def _fetch_live_receipt(port: int, run_id: str, influence: dict):
     """POST /runs/<id>/receipt on a running product gateway -- the SAME rigorous, both-arms-greedy causal
     receipt receipts.receipt() computes in-process there (clozn.server.app), fetched over the loopback HTTP
-    bridge instead of needing an in-process model inside this CLI. Returns None on ANY failure (gateway
-    not up, run not found, worker unavailable, bad influence spec) -- never raises: testkit's honesty rule
-    (judge_receipt) turns a None receipt into an honest 'skipped' assertion, not a crashed `clozn test` run."""
+    bridge instead of needing an in-process model inside this CLI. Returns None on most failures (gateway
+    not up at all, run not found, worker unavailable, bad influence spec) -- never raises: testkit's
+    honesty rule (judge_receipt) turns a None receipt into an honest 'skipped' assertion, not a crashed
+    `clozn test` run.
+
+    The ONE distinguished case: a 502/503 response -- the gateway answered, but its own engine is down
+    (POST /runs/<id>/receipt's own "engine not reachable" 502, or a "requires a ready product model
+    worker" 503) -- returns a small sentinel dict instead of bare None, so judge_receipt can say "engine
+    not reachable" rather than conflating it with a bad influence spec (bug pressure test finding #3)."""
     url = f"http://127.0.0.1:{port}/runs/{run_id}/receipt"
     body = json.dumps({"influence": influence}).encode()
     req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code in (502, 503):
+            try:
+                detail = json.loads(e.read()).get("error") or str(e)
+            except Exception:
+                detail = str(e)
+            return {"_fetch_error": "engine_unreachable", "_fetch_detail": str(detail)}
+        return None
     except Exception:
         return None
 

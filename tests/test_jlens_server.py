@@ -78,6 +78,29 @@ def test_engine_substrate_jlens_unavailable_when_engine_has_no_jlens_block():
     assert out == {"available": False, "reason": "the engine was started without --jlens"}
 
 
+class FakeEngineDown:
+    """.health() always raises -- the engine is FULLY unreachable, as opposed to
+    FakeEngineJlens(jlens_layers=()) above, which simulates a REACHABLE engine that simply wasn't started
+    with --jlens. Fix #5 (engine-down pressure test): these two used to collapse into the identical wrong
+    "started without --jlens" reason -- .jlens() must never even be reached once health() itself fails."""
+
+    def health(self):
+        raise OSError("connection refused")
+
+    def jlens(self, text, layer=None, topk=5):
+        raise AssertionError("must never be called once health() itself failed")
+
+
+def test_engine_substrate_jlens_distinguishes_engine_down_from_no_jlens_flag(monkeypatch):
+    down = FakeEngineDown()
+    down.base = "http://127.0.0.1:8080"
+    monkeypatch.setattr(cs, "ENGINE", down)     # ctx._engine_unreachable_message() reads ENGINE.base
+    sub = _bare_engine_sub(down)
+    out = sub.jlens("hi", layer=None)
+    assert out == {"available": False,
+                   "reason": "engine not reachable at http://127.0.0.1:8080 -- is it running?"}
+
+
 def test_engine_substrate_jlens_unknown_layer_surfaces_cleanly():
     sub = _bare_engine_sub(FakeEngineJlens(raise_unknown=True))
     out = sub.jlens("hi", layer=99)

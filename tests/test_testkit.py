@@ -423,6 +423,29 @@ def test_judge_receipt_is_a_pure_function_reused_by_both_paths():
     assert status == "skip"
 
 
+def test_judge_receipt_distinguishes_engine_unreachable_from_a_bad_spec():
+    """Engine-down pressure test finding #3, CLI --live path: cli.commands.test._fetch_live_receipt
+    returns this {"_fetch_error": "engine_unreachable", ...} sentinel (instead of bare None) when the
+    live gateway itself answered 502/503 "engine not reachable" -- judge_receipt must say so distinctly
+    from the generic "bad influence spec, or the substrate could not generate" note a plain None gets."""
+    status, actual, note = testkit.judge_receipt(
+        {"_fetch_error": "engine_unreachable",
+         "_fetch_detail": "engine not reachable at http://127.0.0.1:8080 -- is it running?"}, 0.0)
+    assert status == "skip"
+    assert actual is None
+    assert note == "causal assertion skipped: engine not reachable at http://127.0.0.1:8080 -- is it running?"
+
+    # no detail supplied -> a sane fallback note, never a blank/None note
+    status, _, note = testkit.judge_receipt({"_fetch_error": "engine_unreachable"}, 0.0)
+    assert status == "skip"
+    assert note == "causal assertion skipped: engine not reachable"
+
+    # a genuinely-None receipt (the pre-existing ambiguous case) keeps its ORIGINAL generic note
+    status, _, note = testkit.judge_receipt(None, 0.0)
+    assert status == "skip"
+    assert "bad influence spec" in note
+
+
 # ============================================================================================================
 # =============================================================================== evaluate() / run_suite() ===
 # ============================================================================================================

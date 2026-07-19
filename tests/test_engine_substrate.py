@@ -150,6 +150,115 @@ def test_engine_substrate_leaves_j_transport_off_without_a_model_sha256(iso, fak
     assert sub.steer.last_j_transport is None
 
 
+# ==================================================================================== fix #2: lazy identity re-resolution
+# (engine-down pressure test finding #2): model_family/model_id/model_sha256 used to resolve from ONE
+# best-effort health() call at __init__ time, wrapped in a bare `except Exception: pass`. If the engine
+# was down when the gateway started, they stayed None (the "clozn-local" fallback) for the REST OF THE
+# PROCESS's life -- only a full restart re-derived them -- which silently and permanently disabled
+# per-model dial persistence (self._pers_steer, set once from model_sha256) even after the engine came
+# back up. They're properties now (backed by _resolve_identity()/_maybe_reresolve_identity()): a read
+# while still unresolved retries (cooldown-gated, so a persistently-down engine never taxes every
+# request with an extra health() round-trip), and never re-fetches once resolved.
+
+class _FlakyHealthEngine(FakeEngine):
+    """health() raises the first `fail_times` calls (a down-at-startup engine), then succeeds -- lets a
+    test simulate "the engine was down, then came back" with no real socket."""
+
+    def __init__(self, *, fail_times=1, model="qwen2.5-7b", model_sha256="deadbeef01"):
+        super().__init__()
+        self.health_calls = 0
+        self.fail_times = fail_times
+        self._model = model
+        self._model_sha256 = model_sha256
+
+    def health(self):
+        self.health_calls += 1
+        if self.health_calls <= self.fail_times:
+            raise OSError("connection refused")
+        return {"model": self._model, "model_sha256": self._model_sha256}
+
+
+def test_identity_stays_unresolved_when_the_engine_is_down_at_startup(iso, monkeypatch):
+    fe = _FlakyHealthEngine(fail_times=99)              # never recovers within this test
+    monkeypatch.setattr(cs, "ENGINE", fe)
+    monkeypatch.setattr(cs, "ENGINE_STEER", None)
+    sub = cs.EngineSubstrate()
+    assert fe.health_calls == 1                          # one attempt, at construction
+    assert sub.model_sha256 is None
+    assert sub.model_family is None
+    assert sub.model_id is None
+    assert sub._pers_steer is None
+
+
+def test_identity_retry_is_cooldown_gated_not_on_every_read(iso, monkeypatch):
+    """A persistently-down engine must not pay a health() round-trip on every single property read --
+    that would add the connect-refused tax to every ordinary request while the engine stays down."""
+    fe = _FlakyHealthEngine(fail_times=99)
+    monkeypatch.setattr(cs, "ENGINE", fe)
+    monkeypatch.setattr(cs, "ENGINE_STEER", None)
+    sub = cs.EngineSubstrate()
+    assert fe.health_calls == 1
+    for _ in range(10):
+        assert sub.model_sha256 is None
+        assert sub.model_family is None
+        assert sub._pers_steer is None
+    assert fe.health_calls == 1                          # still just the one attempt -- cooldown held
+
+
+def test_identity_lazily_resolves_once_the_engine_comes_back(iso, monkeypatch):
+    fe = _FlakyHealthEngine(fail_times=1)                # down for one attempt, then healthy
+    monkeypatch.setattr(cs, "ENGINE", fe)
+    monkeypatch.setattr(cs, "ENGINE_STEER", None)
+    sub = cs.EngineSubstrate()
+    assert sub.model_sha256 is None                      # unresolved right after construction
+    assert fe.health_calls == 1
+
+    sub._identity_last_attempt -= (sub._IDENTITY_RETRY_COOLDOWN_S + 1)   # the cooldown has now elapsed
+
+    assert sub.model_sha256 == "deadbeef01"              # the read itself triggers the retry
+    assert fe.health_calls == 2
+    assert sub.model_family == "qwen2.5-7b"
+    assert sub.model_id == "Qwen/Qwen2.5-7B-Instruct"
+    assert sub._pers_steer is not None
+    assert "deadbeef01" in sub._pers_steer
+
+
+def test_identity_never_refetches_once_resolved(iso, monkeypatch):
+    fe = _FlakyHealthEngine(fail_times=1)
+    monkeypatch.setattr(cs, "ENGINE", fe)
+    monkeypatch.setattr(cs, "ENGINE_STEER", None)
+    sub = cs.EngineSubstrate()
+    sub._identity_last_attempt -= (sub._IDENTITY_RETRY_COOLDOWN_S + 1)
+    assert sub.model_sha256 == "deadbeef01"
+    assert fe.health_calls == 2
+
+    sub._identity_last_attempt -= 10 ** 6                # force the cooldown check to be moot either way
+    for _ in range(5):
+        assert sub.model_sha256 == "deadbeef01"
+    assert fe.health_calls == 2                          # never re-fetched once resolved
+
+
+def test_dial_persistence_activates_once_identity_resolves(iso, monkeypatch):
+    """The functional payoff, not just cosmetics: once model_sha256 resolves, self._pers_steer becomes a
+    real per-model path and saving a dial value actually persists to disk -- silently and permanently
+    broken before this fix, for the rest of a process that started with the engine down."""
+    fe = _FlakyHealthEngine(fail_times=1)
+    monkeypatch.setattr(cs, "ENGINE", fe)
+    monkeypatch.setattr(cs, "ENGINE_STEER", None)
+    sub = cs.EngineSubstrate()
+    assert sub._pers_steer is None                       # dial persistence disabled while unresolved
+
+    sub._identity_last_attempt -= (sub._IDENTITY_RETRY_COOLDOWN_S + 1)
+    path = sub._pers_steer
+    assert path is not None
+
+    sub.steer.set("warm", 0.7)
+    sub.steer.save_state(sub._pers_steer)                # exactly what /steer/set's route code does
+    assert os.path.isfile(path)
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f)["warm"] == 0.7
+
+
 # ==================================================================================== chat() basics
 
 def test_chat_returns_the_engines_text_stripped(iso, fake_engine, monkeypatch):

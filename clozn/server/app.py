@@ -68,6 +68,48 @@ except Exception:
         pass
 
 
+class EngineUnavailable(RuntimeError):
+    """Raised when the engine is completely UNREACHABLE (connection refused / host down -- a raw
+    urllib.error.URLError, never even got an HTTP response), as opposed to EngineError (the engine
+    responded, but with a non-2xx JSON error). Routes that dispatch through Substrate.handle() (the
+    generic /steer/* + /memory/* fallback in _dispatch_post below) raise/catch this specially so a dead
+    engine answers with the same clean 502 shape every other engine-touching route uses, instead of a
+    bare URLError leaking to the generic 500 fallback (see the engine-down pressure test's finding #1)."""
+
+
+def _engine_unreachable_message() -> str:
+    """The one canonical "the engine isn't there" message, shared by every caller that needs to tell a
+    dead engine apart from some other failure (Substrate._ensure_steer, the receipt/rederive/swap_receipt
+    routes, EngineSubstrate.jlens) -- so the wording is identical everywhere, not re-typed per call site."""
+    base = getattr(ENGINE, "base", None) or "the engine"
+    return f"engine not reachable at {base} -- is it running?"
+
+
+def _engine_reachable(sub=None) -> bool:
+    """True iff there's a real engine client to ask (`sub.engine`, falling back to the module-level
+    ENGINE) AND a live GET /health round-trip on it actually connects. Used by routes whose underlying op
+    (receipts.receipt/rederive/replay -- all documented "never raise into the caller") swallows a
+    dead-engine URLError into an ambiguous None/False result: probing here on that ambiguous path (never
+    on the happy path) lets the route tell "the engine is down" apart from "bad request/other failure"
+    without threading exceptions through that deliberate no-raise contract.
+
+    Returns True (i.e. "don't blame the engine") when there's no engine client available at all to probe,
+    OR it has no `.health` method -- a duck-typed test substrate with no `.engine` (or one that doesn't
+    implement health(), like several route tests' fakes), or a runtime with none configured -- so a
+    failure that has nothing to do with engine connectivity keeps its ordinary generic message instead of
+    being mislabeled "engine not reachable"."""
+    eng = getattr(sub, "engine", None) if sub is not None else None
+    if eng is None:
+        eng = ENGINE
+    if eng is None or not hasattr(eng, "health"):
+        return True
+    try:
+        eng.health()
+        return True
+    except Exception:
+        return False
+
+
 def _git_commit():
     """Best-effort build/repro id. Returns None when this checkout is not a git repo or git is unavailable."""
     if getattr(_git_commit, "_read", False):
@@ -1073,6 +1115,10 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                     return self._json(409, {"error": f"'{p}' isn't served by the '{_subname()}' substrate",
                                             "need": "dream" if p == "/denoise" else "qwen", "active": _subname()})
                 self._json(200, r)
+            except EngineUnavailable as e:
+                # the engine is down (see Substrate._ensure_steer) -- the same clean 502 shape every
+                # other engine-touching route uses, not the generic 500 below.
+                self._json(502, {"error": str(e)})
             except Exception as e:
                 self._json(500, {"error": f"{type(e).__name__}: {e}"})
 

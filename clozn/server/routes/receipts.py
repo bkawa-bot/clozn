@@ -98,8 +98,15 @@ def try_post(h, p, body):
             h._json(500, {"error": f"receipt failed: {type(e).__name__}: {e}"})
             return True
         if out is None:
-            h._json(500, {"error": "receipt failed (bad influence spec, or the replay "
-                         "could not be generated)"})
+            # receipts.receipt (and everything it calls -- replay.py/rederive.py) is documented to NEVER
+            # raise, swallowing a dead-engine URLError into this same ambiguous None a bad influence spec
+            # also produces. Probe the engine directly (only on this already-failed path, never on the
+            # happy path) so the two don't read as the same problem to a caller debugging blind.
+            if not ctx._engine_reachable(ctx.active_sub(h)):
+                h._json(502, {"error": ctx._engine_unreachable_message()})
+            else:
+                h._json(500, {"error": "receipt failed (bad influence spec, or the replay "
+                             "could not be generated)"})
             return True
         h._json(200, out)
         return True
@@ -123,6 +130,16 @@ def try_post(h, p, body):
         except Exception as e:
             h._json(500, {"error": f"swap_receipt failed: {type(e).__name__}: {e}"})
             return True
+        if not out.get("causal_verified"):
+            # swap_receipt() never raises -- a total failure (no engine, template render, generation, ...)
+            # degrades to causal_verified:false + blocked/note explaining why, all other fields null. That
+            # used to still ship as HTTP 200, so a caller checking response.ok alone would read a complete
+            # failure as a success (unlike the sibling /receipt and /rederive routes, both non-2xx on the
+            # equivalent condition). Body is left intact -- unlike those siblings, swap_receipt's own
+            # blocked/note already self-describe the failure; only the status code was wrong.
+            status = 502 if not ctx._engine_reachable(ctx.active_sub(h)) else 500
+            h._json(status, out)
+            return True
         h._json(200, out)
         return True
     if p.startswith("/runs/") and p.endswith("/rederive"):   # S3: deterministic teacher-forced re-derivation
@@ -142,8 +159,15 @@ def try_post(h, p, body):
             h._json(500, {"error": f"rederive failed: {type(e).__name__}: {e}"})
             return True
         if out is None:
-            h._json(500, {"error": "rederive failed (no continuation to score, or the "
-                         "engine score call failed)"})
+            # rederive() is documented to NEVER raise (mirrors replay.py's contract), so a dead-engine
+            # URLError from score_tokens() collapses into this same ambiguous None a genuinely-missing
+            # continuation also produces. Probe directly (only here, on the already-failed path) so the
+            # two don't read as the same problem to a caller debugging blind.
+            if not ctx._engine_reachable(ctx.active_sub(h)):
+                h._json(502, {"error": ctx._engine_unreachable_message()})
+            else:
+                h._json(500, {"error": "rederive failed (no continuation to score, or the "
+                             "engine score call failed)"})
             return True
         h._json(200, out)
         return True

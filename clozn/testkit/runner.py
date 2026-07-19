@@ -363,6 +363,11 @@ def judge_receipt(rec: dict | None, min_effect: float) -> tuple[str, object, str
     """Pure judgement of an already-computed receipt dict -> (status, actual, note). Shared by the in-
     process `sub` path and the CLI's live-HTTP path, so both apply IDENTICAL pass/fail/skip logic to a
     receipt regardless of how it was obtained."""
+    if isinstance(rec, dict) and rec.get("_fetch_error") == "engine_unreachable":
+        # the live-HTTP path's distinguishing signal (see cli.commands.test._fetch_live_receipt): the
+        # gateway itself answered 502/503 "engine not reachable", not an ambiguous None a bad influence
+        # spec would ALSO produce -- say so, instead of the generic "bad spec or couldn't generate" note.
+        return "skip", None, f"causal assertion skipped: {rec.get('_fetch_detail') or 'engine not reachable'}"
     if rec is None:
         return "skip", None, ("causal assertion skipped: the receipt could not be computed "
                               "(bad influence spec, or the substrate could not generate)")
