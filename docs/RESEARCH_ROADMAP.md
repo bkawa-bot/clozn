@@ -159,6 +159,17 @@ Can the model identify "which J-lens readout stream is mine" above chance?
 
 ### Wave A3 — Fast-J validation (CPU, parallel to A1)
 
+**Verdicts (2026-07-19 run, full detail in `runs/experiments/a3_results.json` + `a3_1_root_cause.json`):**
+
+| # | Verdict | Headline |
+|---|---|---|
+| A3.1 | **FAIL — three diagnosed bugs in fit_lens_fast.py** | (1) dead power-iteration loop (`--n-power` is a literal `pass`); (2) JVP finite-difference eps 1000x too small (1e-3 → pure noise, 50% sign agreement; 0.1 works); (3) UNFIXED operator mismatch — fast fitter estimates J at the last-token position only, dense fitter averages all valid positions with causal-sum reduction: genuinely different linear operators, no hyperparameter reconciles them. Containment 0.08 vs 0.9 bar across three independent runs even with (1)+(2) fixed. **Production unaffected**: qualify-whitebox and shipped artifacts never call this fitter (lab-only). The prior "97.9% offline containment" claim is not reproducible from anything runnable — treat as UNVERIFIED pending re-audit. |
+| A3.2 | **Speed PASS (15.7 min), fidelity FAIL** | Llama-3.1-8B pilot fit with the patched fitter met the 20-min target. Functional smoke: fire +2.26 and ocean +1.55 vs random controls, but rain −1.33 (wrong direction); paired p=0.25 n.s. → cross-family port SKIPPED per pre-registered bar. Artifact kept at `~/.clozn/artifacts/jlens/llama3.1-8b-pilot/`, labeled PILOT with limitations in manifest. |
+
+**Path forward (A3.3, future):** fix the operator mismatch — average sketched JVPs over all valid positions like the dense fitter (more compute per prompt, possibly still inside the 20-min envelope). Only then re-attempt the cross-family port. Until then, qualify-whitebox's white-box promise stays gated.
+
+**Incidental infra bug found:** `cloze-server.exe` requires `engine/core/build-gpu/bin` on PATH for its `llama.dll`/`ggml-*` dependencies — any fresh shell hits STATUS_DLL_NOT_FOUND. Fix belongs in `clozn/cli/engine_process.py` (set the DLL path when spawning).
+
 #### A3.1 — Fast-J fresh fit on Qwen3.5-9B
 
 Validate that `clozn-jlens-work/scripts/fit_lens_fast.py` (Halko-Martinsson-Tropp randomized SVD) produces a compact J matching the dense one we already have.
@@ -274,7 +285,7 @@ From BACKLOG.md Phase 2. Start only after expand phase settles.
 - dir(c) steers live (task #76, today) — logprob rises, content-specific
 - J-transport prevents catastrophic collapse in multi-feature stacking (finding #6)
 - Live/null subspace discrimination is real on deployed Q4_K_M (finding #8)
-- Fast-J offline: 97.9% containment at k=50 (finding #5)
+- Fast-J: **claim narrowed 2026-07-19.** The original 97.9% (finding #5) validated the randomized-SVD ALGEBRA against the already-computed dense J (perfect matvec oracle) — that layer stands, and A3.1's noiseless control replicated it. What was NEVER validated is the model-side JVP oracle in fit_lens_fast.py ("needs GPU test" in the ledger; TODO in the code) — and A3.1 showed it's broken (eps noise + last-token-only operator mismatch). "Fast-J works" was a compression error, not a regression. End-to-end fast fit: unvalidated + broken until A3.3.
 - Live-energy correlates with token novelty (finding #7)
 - X1 (self-report agreement): done
 - X3 (injected-thought detection): done — d' separates real injection from sham
