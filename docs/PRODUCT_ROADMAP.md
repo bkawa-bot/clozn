@@ -13,6 +13,37 @@ The forward-looking half of `docs/ROADMAP.md` is superseded by this file.
 Effort bands: **S** ≤ ~2 days · **M** ≤ ~2 weeks · **L** weeks-to-months · **R** gated on a
 research result. Bands are planning aids, not commitments.
 
+### Delivery status — 2026-07-20
+
+Status meanings: **DONE** means the acceptance language in this roadmap is implemented and tested;
+**IN PROGRESS** means a useful slice is shipped but named acceptance work remains. Items not listed
+below are still queued/not started. Commit IDs are included so this snapshot can be audited against
+`main` rather than inferred from filenames or older planning notes.
+
+| Roadmap item | Status | Evidence and remaining work |
+|---|---|---|
+| Gate 0.1 — one instrumented request path | **IN PROGRESS** | OpenAI Chat and Ollama chat/generate share the instrumented substrate and journal stable run IDs (`c56e320`, `fd4f68e`). Legacy `/v1/completions` still calls the raw worker, and `clozn run` still journals the user prompt rather than the exact rendered prompt. |
+| Gate 0.2 — no silent field ignoring | **DONE** for the current OpenAI/Ollama shims | Central OpenAI validation and Ollama explicit-or-rejected field policy are tested and documented (`fd4f68e`). Unsupported behavior-bearing values now receive named 400s; accepted neutral values are documented. |
+| Gate 0.4 — artifact-qualified white-box features | **DONE** | `clozn qualify-whitebox` is the model/artifact capability gate; unqualified or mismatched artifacts fail closed. |
+| Phase 1.1 — `clozn diff-model` | **IN PROGRESS** | Command, same-tokenizer preflight, template policy, paired token receipts, and heuristic verdict shipped (`0ee66f2`). The required real LoRA/fine-tune pair validation and public case study remain open. |
+| Phase 1.2 — Experiment object v0 | **DONE** | `clozn experiment run/show` executes target + guard cases × base/tuned/quant/prompt/dial variants × seeds, retains instrumented run evidence, and supports per-cell drill-down (`64d0f20`). |
+| Phase 1.3 — reproduction receipt | **DONE** | Runs and exported receipt bundles carry model SHA-256, tokenizer/template rendering fingerprint, sampler/seed metadata, engine build when exposed, and Clozn version; CLI runs use the same identity producer (`0d62101`, `04af391`). Missing upstream identity remains visibly omitted rather than fabricated. |
+| Phase 1.4 — headless CI gate | **IN PROGRESS** | `clozn ci baseline/check` has deterministic exit codes, budgets, identity policy, and JSON reports (`64d5c8e`). It currently composes the golden/tiny/diff primitives directly; accepting a Phase-1.2 experiment result as the gate input remains open. |
+| Phase 1.5 — deployment equivalence v0 | **DONE** | `clozn validate-export` checks tokenizer/template/BOS-EOS/vocab compatibility plus known-answer behavioral drift (`b61c505`). |
+| Phase 2.1 — Ollama NDJSON streaming | **DONE** | Default-stream semantics, NDJSON framing, cancellation, finish reasons, and one instrumented final run are implemented and tested (`fd4f68e`). |
+| Phase 2.2 — honest Ollama fields/tags | **DONE** | Unsupported top-level/options fields are rejected, supported sampler options are forwarded, and `/api/tags` uses the real digest or omits it (`fd4f68e`). |
+| Phase 2.3 — legacy completions + CLI journal unification | **IN PROGRESS** | CLI turns now receive immutable identity (`04af391`), but the two Gate-0 gaps named above remain: legacy completions bypass journaling and CLI records the raw user prompt instead of the engine-rendered prompt. |
+| Phase 2.4 — truncation/context receipts | **IN PROGRESS** | Gateway runs retain assembled/final prompts and CLI reports a token-limit cutoff. API/Replay truncation warnings and `clozn context last` with delivered/survived sections remain open. |
+| Phase 2.6 — stable run-ID side-channel | **IN PROGRESS** | Non-streaming OpenAI and Ollama responses expose `X-Clozn-Run-Id` plus body IDs (`c56e320`, `fd4f68e`). Streaming association, latest-by-client/session, and `clozn watch` remain open. |
+| Phase 2.7 — real-client conformance | **IN PROGRESS** | The real OpenAI Python SDK runs in CI against the gateway. Ollama Python/JS SDKs, Open WebUI, a coding agent, tools, and a published matrix remain open. |
+| Phase 3.3 — memory receipts | **IN PROGRESS** | Run records capture selected/injected/omitted card evidence and the causal receipt backend exists. `memory used last`, token-cost/scoping UX, and Markdown card import/export remain open. |
+| Phase 3.5 — trust/privacy plumbing | **IN PROGRESS** | The local SQLite journal has migrations and blob GC/retention primitives. Offline verification, outbound ledger, user-facing redact/delete policy, and OTel/OpenInference export remain open. |
+| Phase 3.6 — calibrated ask/abstain | **IN PROGRESS** | `clozn eval --save` fits outcome-grounded bands and live OpenAI/SSE replies can surface model-matched ask/abstain policy metadata. The per-model/task calibration wizard and complete user flow remain open. |
+| Phase 3.7 / R1 — provenance | **IN PROGRESS; product chip still gated** | A 30-case/9-category battery, Qwen + Llama second-family validation, focus-span dependence, trimmed controls, and a null rank test shipped (`985c961`, `04af391`, `b5a089b`). The attention-heatmap-vs-causal-rank head-to-head and final product-label gate remain open. |
+| Phase 4.2 — hook/intervention contracts | **IN PROGRESS** | Engine capture/write seams, checkpoints, batched branching, multi-observer readouts, and attention knockout exist. A stable public hook vocabulary plus a versioned replayable intervention manifest remain open. |
+| R5 — tracer credibility/granularity | **IN PROGRESS** | S0–S4 causal tracing, controls, attention knockout, and the location-level CLI exist. The R5 second-family battery, reliable `FAILED_CONTROLS` exercise, and head-level node units remain open. |
+| Engine debt tail | **IN PROGRESS** | Checkpoints, batched branch execution, and the readout plane shipped. Coalition/Shapley causal credit, KV-blob fast restore, and sampler/RNG + intervention checkpoint state remain open. |
+
 ---
 
 ## 0. Positioning
@@ -100,7 +131,7 @@ per-token receipt." Shippable as an HF/HN post backed by a real LoRA case study.
 2. **Experiment object v0** — one versioned manifest: named cases × variants (base / tuned /
    quant / prompt / dial) × seeds, target suite + guard suite, per-case drill-down; subsumes the
    currently separate `test` / `eval` / `test-model` / `quant-check` outputs. **M.**
-   *Status (2026-07-20): shipped* as `clozn experiment run/show`; result artifacts retain each
+   **Status: DONE (2026-07-20).** Shipped as `clozn experiment run/show`; result artifacts retain each
    instrumented run and its immutable identity. Multi-model variants use explicit gateway URLs.
    *Why:* audit B's core diagnosis — primitives exist, the composition doesn't. *Payoff:* one
    command answers "what improved, what regressed" with paired evidence.
