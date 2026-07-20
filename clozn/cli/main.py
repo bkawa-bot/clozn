@@ -68,6 +68,7 @@ from clozn.cli.commands.preferences import cmd_preferences, format_preferences  
 from clozn.cli.commands.test import cmd_test                                                  # noqa: E402
 from clozn.cli.commands.quant_check import cmd_quant_check, add_subparser as _add_quant_check  # noqa: E402,F401
 from clozn.cli.commands.diff_model import cmd_diff_model, add_subparser as _add_diff_model      # noqa: E402,F401
+from clozn.cli.commands.validate_export import cmd_validate_export, add_subparser as _add_validate_export  # noqa: E402,F401
 from clozn.cli.commands.eval import cmd_eval, add_subparser as _add_eval                       # noqa: E402,F401
 from clozn.cli.commands.test_model import cmd_test_model, add_subparser as _add_test_model      # noqa: E402,F401
 from clozn.cli.commands.qualify import cmd_qualify, add_subparser as _add_qualify              # noqa: E402,F401
@@ -202,6 +203,7 @@ def build_parser():
     pte.set_defaults(fn=cmd_test)
     _add_quant_check(sub)   # `clozn quant-check <A> <B>` — quant-ladder receipts (Tier-1)
     _add_diff_model(sub)    # `clozn diff-model <ref> <candidate>` — base-vs-fine-tune/merge receipts (§4.1)
+    _add_validate_export(sub)  # `clozn validate-export <expected> [exported]` — deployment-equivalence check (§4.5)
     _add_eval(sub)          # `clozn eval` — outcome-grounded calibration (Brier/ECE/risk-coverage)
     _add_test_model(sub)    # `clozn test-model` — the model's own CI: pinned probes vs. a golden fixture
     _add_qualify(sub)       # `clozn qualify-whitebox <gguf>` — honest per-feature capability matrix
