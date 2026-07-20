@@ -100,6 +100,8 @@ per-token receipt." Shippable as an HF/HN post backed by a real LoRA case study.
 2. **Experiment object v0** — one versioned manifest: named cases × variants (base / tuned /
    quant / prompt / dial) × seeds, target suite + guard suite, per-case drill-down; subsumes the
    currently separate `test` / `eval` / `test-model` / `quant-check` outputs. **M.**
+   *Status (2026-07-20): shipped* as `clozn experiment run/show`; result artifacts retain each
+   instrumented run and its immutable identity. Multi-model variants use explicit gateway URLs.
    *Why:* audit B's core diagnosis — primitives exist, the composition doesn't. *Payoff:* one
    command answers "what improved, what regressed" with paired evidence.
 3. **Reproduction receipt completion** — immutable identity on every run: model SHA-256,
