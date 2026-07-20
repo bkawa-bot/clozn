@@ -121,16 +121,18 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
     PARAMETRIC now honestly means "the answer did not need this region", even when the question
     itself is load-bearing.
 
-    FOCUS MODE IS EXPERIMENTAL -- one measured control caveat (Llama-3.1-8B live, 2026-07-20):
-    when the prompt's question tokens sit OUTSIDE the focus region, the outside-focus control
-    draws include them, and their cuts are devastating -- so the control bar is very hard to
-    clear and small focus regions tend to INCONCLUSIVE even at meaningful dependence (measured:
-    a resisted override value read dep 0.49 -- the model plausibly using the override
-    CONTRASTIVELY, reading it in order to contradict it -- but the ratio fell below 3 against
-    question-containing controls). A better focus-mode null (matched spans of comparable,
-    non-question content) is an open design item; until then read a focused INCONCLUSIVE as
-    "dependence measured, control not separable", never as absence of signal. The
-    followed-override contrast case cleanly clears the bar (dep 0.85, ratio 12x)."""
+    FOCUS MODE IS EXPERIMENTAL. First measured caveat (Llama-3.1-8B live, 2026-07-20): with
+    controls drawn from ALL outside-focus positions, the draws include the question's own
+    load-bearing tokens, whose cuts are devastating -- the bar was nearly unclearable and small
+    focus regions read INCONCLUSIVE even at meaningful dependence (a resisted override value read
+    dep 0.49 -- the model plausibly using the override CONTRASTIVELY, reading it in order to
+    contradict it -- yet failed the ratio). The null now shipped in response: the outside singles
+    are scanned too and the TOP QUARTILE by delta is excluded from the control pool
+    (`focus_trim` in the receipt records exactly which tokens were trimmed), so the null asks
+    "more load-bearing than typical NON-CRITICAL context?" -- and a 12-draw rank test reports a
+    permutation `focus_null.p_value` alongside the ratio. The p is evidence, not yet folded into
+    the verdict; read a focused INCONCLUSIVE with a small p as "real dependence, ratio criterion
+    unconvinced". Costs ~n_outside extra arms."""
     import numpy as np
     budget = budget or ProvenanceBudget()
     rng = np.random.default_rng(seed)
@@ -174,14 +176,28 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
                 return {"ok": False, "blocked": f"focus region ({focus}) is empty after clamping "
                                                 f"to the prompt's {final} cuttable positions"}
             cand_pool = list(range(f0, f1))
-            ctl_pool_base = [p for p in range(final) if p < f0 or p >= f1]
-            if len(ctl_pool_base) < 2:
+            outside = [p for p in range(final) if p < f0 or p >= f1]
+            if len(outside) < 2:
                 return {"ok": False, "blocked": "focus covers (nearly) the whole prompt -- no "
                                                 "outside-focus positions left to draw controls "
                                                 "from; use the unfocused mode instead"}
+            # TRIMMED control pool (the focus-mode null redesign, from the measured caveat in the
+            # docstring): scan the OUTSIDE singles too and exclude the top quartile by delta --
+            # those are typically the question's own load-bearing tokens, and a null that includes
+            # them asks the wrong question ("is this region more critical than THE QUESTION?")
+            # instead of the honest one ("is this region more load-bearing than typical
+            # non-critical context?"). Costs len(outside) extra arms.
+            outside_singles = sorted(((cut([p])[0], p) for p in outside), key=lambda x: -x[0])
+            n_trim = max(1, len(outside_singles) // 4)
+            trimmed_out = [p for _, p in outside_singles[n_trim:]]
+            ctl_pool_base = trimmed_out if len(trimmed_out) >= 2 else outside
+            focus_trim = {"n_outside": len(outside), "n_trimmed": n_trim,
+                          "trimmed_positions": [int(p) for _, p in outside_singles[:n_trim]],
+                          "trimmed_tokens": [toks[p] for _, p in outside_singles[:n_trim]]}
         else:
             cand_pool = list(range(final))
             ctl_pool_base = None   # controls drawn from all non-span positions (original behavior)
+            focus_trim = None
 
         singles = sorted(((cut([p])[0], p) for p in cand_pool), key=lambda x: -x[0])
         span, trace, cur = [], [], 0.0
@@ -251,6 +267,25 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
         dep = context_dependence(base_lp, lp_cut)
         ratios = [t["ratio"] for t in trace if t["ratio"] is not None]
         best_ratio = max(ratios) if ratios else 0.0
+
+        # Focus-mode rank test: where does the focus span's joint delta rank among same-size
+        # random sets from the TRIMMED outside pool? A permutation p alongside the ratio -- 12
+        # draws instead of max-of-3, so one lucky control can't sink a real effect. Reported as
+        # evidence, not yet folded into the verdict (the verdict keeps the ratio criterion until
+        # this null has its own battery).
+        focus_null = None
+        if focus is not None and span:
+            pool = [p for p in ctl_pool_base if p not in span]
+            k = len(span)
+            if len(pool) >= k:
+                n_draws = 12
+                draws = [cut(rng.choice(pool, size=k, replace=False).tolist())[0]
+                         for _ in range(n_draws)]
+                worse = sum(1 for d in draws if d >= d_final)
+                focus_null = {"p_value": round((1 + worse) / (1 + n_draws), 4),
+                              "n_draws": n_draws,
+                              "control_deltas": [round(float(d), 4) for d in draws],
+                              "pool": "outside-focus, top-quartile singles trimmed"}
         return {
             "ok": True,
             "answer": answer, "baseline_logprob": base_lp, "cut_logprob": lp_cut,
@@ -265,6 +300,8 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
                             "delta": singles[0][0]},
             "trace": trace,
             "focus": list(focus) if focus is not None else None,
+            "focus_trim": focus_trim,
+            "focus_null": focus_null,
             "config": {"renormalize": budget.renormalize, "n_layer": n_layer, "seed": seed,
                        "units": "delta = logprob(baseline) - logprob(context access cut)",
                        "control_pool": ("outside-focus positions" if focus is not None
