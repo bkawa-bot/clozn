@@ -60,24 +60,17 @@ def try_post(h, p, body):
         sse.sse_chat(h, msgs, mx, selected_model, lens=body.get("clozn_lens"), sample=sample,
                      receipt=body.get("clozn_receipt", receipt_enabled()))
         return True
-    t0 = time.time()
-    trace_steps = []                            # HF non-stream: capture a per-token trace (B3)
-    memout = {}                                 # prompt mode: what memory actually rode this turn
-    chat_kw = {"trace_out": trace_steps, "mem_out": memout}
-    if isinstance(ctx.active_sub(h), ctx.EngineSubstrate):
-        chat_kw["apply_anchored"] = True
+    from clozn.server.generation_gateway import instrumented_chat
     try:
-        reply = ctx.active_sub(h).chat(msgs, mx, sample, **chat_kw)
+        generated = instrumented_chat(h, msgs, model=selected_model, max_tokens=mx,
+                                      sample=sample, source="openai_api")
     except Exception as exc:
-        h._log_run("openai_api", msgs, "", selected_model, t0, error=str(exc), mem_out=memout)
         _api_error(h, 502, str(exc), kind="upstream_error")
         return True
-    fr = ctx.active_sub(h).last_finish_reason() if hasattr(ctx.active_sub(h), "last_finish_reason") else None
-    openai_fr = ctx._openai_finish_reason(fr)
-    # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}.
-    rid = h._log_run("openai_api", msgs, reply, selected_model, t0,
-                     trace=trace_steps, mem_out=memout, finish_reason=fr,
-                     finish_reason_fallback=None if fr else openai_fr)
+    reply = generated.reply
+    trace_steps = generated.trace_steps
+    rid = generated.run_id
+    openai_fr = generated.public_finish_reason
     resp = {"id": "chatcmpl-clozn", "object": "chat.completion",
            "created": int(time.time()), "model": selected_model,
            "choices": [{"index": 0, "finish_reason": openai_fr,

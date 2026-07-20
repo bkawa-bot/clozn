@@ -21,6 +21,8 @@ def cmd_serve(args):
         flags["mask"] = args.mask
     if args.eos is not None:
         flags["eos"] = args.eos
+    if args.ctx is not None:
+        flags["ctx"] = args.ctx
     if args.sae is not None:
         flags["sae"] = args.sae
         if args.sae_k is not None:

@@ -220,8 +220,13 @@ def cmd_run(args):
         flags["mask"] = args.mask
     if args.eos is not None:
         flags["eos"] = args.eos
+    if args.ctx is not None:
+        flags["ctx"] = args.ctx
     fam = flags.get("tmpl", "qwen")
-    warm = None if args.cpu else _find_warm(model)     # reuse a live `clozn serve` instead of reloading
+    # An explicit context window is part of the requested runtime shape. Reuse a warm server only when
+    # its live /readyz worker reports the same n_ctx; silently borrowing a different context would make
+    # --ctx look accepted while ignoring it.
+    warm = None if args.cpu else _find_warm(model, args.ctx)
     stack = worker_log = gateway_log = None
     if warm:
         port, gpu, mode = warm
