@@ -76,9 +76,13 @@ possible and make the white-box readouts fast enough to watch live.
    prompts; ~3 s wall for 116 screened sites / ~60 arms. First findings: heavy sub-additivity
    (interaction gap ≈ −50% of Σsolo — self-repair is real), the biggest causal node can be ~0%
    legible via the screened direction (unexplained-but-causal, kept in the graph), Kyoto-distractor
-   sites appear as small suppressive nodes. REMAINING: S3 path patching (edges + shuffled-edge
-   control), S4 margin-test generation arms (predicted-vs-observed scorecard), run-journal input
-   mode, studio click-a-token panel.
+   sites appear as small suppressive nodes. S3+S4 LIVE same day: path patching (edges + shuffled
+   control; same-column edges route ~100% — the structural correctness check passes; off-column
+   discovery edge L16@3(France)→L24@4 routes 45%, shuffled ctl 34x smaller) + generation arms via
+   `/v1/completions` write (patch + greedy + reference early-stop). **Predicted-vs-observed
+   scorecards PERFECT on both pilot prompts (Tokyo 2/2, Paris 7 correct / 0 wrong).** Full S0–S4
+   trace ~4.4 s. REMAINING: run-journal input mode, studio click-a-token panel, more-prompt
+   validation battery (2 prompts is a pilot, not a claim).
    *Why:* clozn can inspect and intervene but can't yet *produce and prove* how an input caused an output.
    *Payoff:* **the north-star feature.** Click "Tokyo" in an answer → a compact causal path through named
    internal features to the output logit → disable it → watch the prediction move.
