@@ -94,10 +94,19 @@ class _EngineScoreSub:
     per-model steer calibration is loaded by this lightweight wrapper); a run recorded with active dials
     still teacher-forces correctly on its messages + continuation, just without replaying the dial's
     push. A documented scope choice, not an oversight -- fresh prompts and typical --from-log runs
-    (no dials) are unaffected either way."""
+    (no dials) are unaffected either way.
 
-    def __init__(self, engine):
+    `template_engine` (optional, default None meaning "use `engine` itself"): the engine whose
+    `apply_template` renders the prompt for `score_tokens`' `/score` call, while `engine` still does the
+    actual scoring. Exists for `clozn diff_model.py`'s template-policy feature -- comparing a base model
+    against a fine-tune whose chat template differs means "B's weights, but A's template" is exactly
+    `_EngineScoreSub(eng_b, template_engine=eng_a)`. Quant-check itself never sets this (its two arms are
+    always the same model's own template by construction), so this parameter is inert for every existing
+    caller."""
+
+    def __init__(self, engine, template_engine=None):
         self.engine = engine   # an EngineClient; one port = one quant file's own process
+        self.template_engine = template_engine if template_engine is not None else engine
 
     @staticmethod
     def _inject_block(messages, block):
@@ -117,7 +126,7 @@ class _EngineScoreSub:
     def score_tokens(self, messages, continuation_ids=None, *, continuation=None, block=None,
                      steer_strengths=None, steer_vec=None, topk=0):
         assembled = self._inject_block(messages, block)
-        prompt = self.engine.apply_template(assembled)
+        prompt = self.template_engine.apply_template(assembled)
         kw = {"topk": int(topk)}
         if steer_vec is not None:
             kw["steer_vec"] = steer_vec
