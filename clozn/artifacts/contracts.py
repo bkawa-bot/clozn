@@ -82,7 +82,15 @@ def gguf_identity(path: str | os.PathLike[str], *, include_file_hash: bool = Tru
         "filename": os.path.basename(resolved),
     }
     if include_file_hash:
-        identity["sha256"] = sha256_file(resolved)
+        # Routed through the persistent (path, size, mtime_ns) cache: spawn_engine calls this on
+        # EVERY engine boot, and an uncached whole-file SHA of a 5-8 GB GGUF costs tens of seconds
+        # per launch of an UNCHANGED file. Lazy import -- clozn.runs.identity imports this module
+        # for sha256_file, so a top-level import here would be a cycle. Falls back to the direct
+        # (raising) hash when the cached path returns None, preserving the strict behavior
+        # validation callers rely on: a real IO error still raises, never silently omits.
+        from clozn.runs.identity import model_sha256
+        cached = model_sha256(resolved)
+        identity["sha256"] = cached if cached else sha256_file(resolved)
     return identity
 
 

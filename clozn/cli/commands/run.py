@@ -160,11 +160,46 @@ def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, h
     print(f"{fmt.DIM}- {n} tok in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{cut}{fmt.RST}", file=sys.stderr)
     # every CLI turn becomes an inspectable run -- finish_reason mirrors Studio's chat path (the engine's
     # real stop cause: "stop" on eos, "length" on truncation), not left null like before this fix.
-    _log_run_cli(model_name, prompt_for_trace, resp, steps, g0, finish_reason=finish)
+    _log_run_cli(model_name, prompt_for_trace, resp, steps, g0, finish_reason=finish, port=port)
     return resp
 
 
-def _log_run_cli(model_name, prompt, resp, steps, started, finish_reason=None):
+# identity block per engine port, fetched once per process (the /health hit is cheap but there is no
+# reason to repeat it every REPL turn; the engine's model_sha256 is fixed for the process lifetime).
+_IDENTITY_BY_PORT: dict = {}
+
+
+def _identity_for_port(port):
+    """The run-record `identity` block for the engine on `port` (clozn.runs.identity), from the engine's
+    own /health (which carries model path + the boot-time model_sha256) + a canonical /apply_template
+    rendering for the template fingerprint. Mirrors the gateway wiring (server/substrates.identity_meta)
+    so CLI runs stop being the audit's 'narrower journal record'. Never raises; {} when anything is
+    unavailable -- absence stays visible, never faked."""
+    if port in _IDENTITY_BY_PORT:
+        return _IDENTITY_BY_PORT[port]
+    ident: dict = {}
+    try:
+        import clozn.runs.identity as rid
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as r:
+            health = json.loads(r.read())
+
+        def _apply(messages):
+            body = json.dumps({"messages": list(messages), "add_assistant": True}).encode()
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/apply_template", data=body,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as rr:
+                return json.loads(rr.read()).get("prompt", "")
+
+        ident = rid.runtime_identity(model_path=health.get("model"),
+                                     model_sha256_hint=health.get("model_sha256"),
+                                     apply_template_fn=_apply, engine_health=health)
+    except Exception:
+        ident = {}
+    _IDENTITY_BY_PORT[port] = ident
+    return ident
+
+
+def _log_run_cli(model_name, prompt, resp, steps, started, finish_reason=None, port=None):
     """Write this CLI turn to the Run Log so `clozn run`/REPL turns show up in the Studio alongside chats.
     runlog.py lives in clozn.runs (a sibling of this stdlib-only CLI) and is itself stdlib-only, so we
     import it directly. Logging must NEVER break a run -- swallow everything."""
@@ -173,9 +208,10 @@ def _log_run_cli(model_name, prompt, resp, steps, started, finish_reason=None):
         # stream_ar hands us per-token steps ({piece, conf, alts}); runlog owns the steps->trace mapping so
         # the on-disk trace schema stays one contract shared with the engine-chat capture (issue B3).
         trace = runlog.steps_to_trace(steps)
+        identity = _identity_for_port(port) if port else {}
         runlog.record(source="cli", client="cli", model=model_name, substrate="engine",
                       messages=[{"role": "user", "content": prompt}], response=resp,
-                      trace=trace, started=started, finish_reason=finish_reason)
+                      trace=trace, started=started, finish_reason=finish_reason, identity=identity)
     except Exception:
         pass
 

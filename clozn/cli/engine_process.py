@@ -144,6 +144,12 @@ def _launch_args(exe: str, model: str, port: int, flags: dict, gpu: bool) -> lis
         args += ["--jlens", str(flags["jlens"])]
     if flags.get("_model_sha256"):
         args += ["--model-sha256", str(flags["_model_sha256"])]
+    # Generic passthrough for engine flags this mapping has no key for (first user:
+    # --no-flash-attn, which the provenance/attn-knockout mode requires -- flash attention fuses
+    # the softmax, so the weights never materialize). A list of literal argv tokens, appended
+    # verbatim; the engine itself rejects anything it doesn't understand.
+    if flags.get("extra_args"):
+        args += [str(a) for a in flags["extra_args"]]
     return args
 
 

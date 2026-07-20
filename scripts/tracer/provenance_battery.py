@@ -73,10 +73,31 @@ def _expect(*ok_verdicts, require_answer=None, forbid_answer=None):
                 return "ungradeable"
             if not req:
                 if forb:
-                    return "agree" if verdict in {"PARAMETRIC", "MIXED"} else "disagree"
+                    # The model RESISTED the override and answered from weights. The 2nd-family
+                    # run (Llama-3.1-8B) showed the old expectation here -- "then the verdict must
+                    # be PARAMETRIC/MIXED" -- is MIS-SPECIFIED: cutting the QUESTION tokens still
+                    # kills the parametric answer (you cannot answer 'the capital of France is'
+                    # without reading ' France'), so total-context dependence is legitimately high
+                    # even when the OVERRIDE went unused. Total dependence conflates "used the
+                    # override" with "used the question"; separating them needs focus-span
+                    # dependence (cut only the override/document region) -- a provenance feature,
+                    # not a grading rule. Until then this branch is DESCRIPTIVE, not graded.
+                    return "descriptive"
                 return "ungradeable"
         return "agree" if verdict in ok else "disagree"
 
+    return grade
+
+
+def _descriptive(**_ignored):
+    """For cases with NO model-independent expected verdict. The distractor_parametric category
+    is the measured example (2nd-family run): the same prompt honestly reads MIXED/PARAMETRIC on
+    Qwen2.5-7B (which retains 'Tokyo' even with context access cut) and CONTEXT_CARRIED on
+    Llama-3.1-8B (whose 'Tokyo' dies without reading ' Japan') -- a REAL cross-model difference in
+    parametric retention, correctly measured both times, so neither verdict is 'wrong'. These
+    cases are reported descriptively and excluded from the agreement score."""
+    def grade(answer: str, verdict: str) -> str:
+        return "descriptive"
     return grade
 
 
@@ -158,19 +179,19 @@ CASES = [
          prompt="Kyoto was the capital of Japan for over a thousand years. Since the Meiji era, "
                 "however, the government has been located elsewhere. The modern capital of Japan "
                 "is",
-         grade=_expect("MIXED", "PARAMETRIC", require_answer=("tokyo",))),
+         grade=_descriptive()),
     dict(id="dis_istanbul", category="distractor_parametric",
          prompt="Constantinople was for centuries the seat of empires. Today the city bears a "
                 "different name. The largest city in Turkey is",
-         grade=_expect("MIXED", "PARAMETRIC", require_answer=("istanbul",))),
+         grade=_descriptive()),
     dict(id="dis_rio", category="distractor_parametric",
          prompt="Rio de Janeiro served as Brazil's capital for nearly two centuries and remains "
                 "its most famous city. The current capital of Brazil is",
-         grade=_expect("MIXED", "PARAMETRIC", require_answer=("bras",))),
+         grade=_descriptive()),
     dict(id="dis_edison", category="distractor_parametric",
          prompt="Many people credit Thomas Edison with inventing the telephone, since he invented "
                 "so many devices. In fact, the telephone was invented by Alexander Graham",
-         grade=_expect("MIXED", "PARAMETRIC", require_answer=("bell", " bell"))),
+         grade=_descriptive()),
     # -- bare factual: the question's own content words are the only context -----------------------
     dict(id="fact_paris", category="bare_factual",
          prompt="The capital of France is",
@@ -266,6 +287,7 @@ def run_battery(engine: str, tag: str, budget: ProvenanceBudget, out_dir: str) -
     agree = [r for r in graded if r["outcome"] == "agree"]
     ungradeable = [r for r in results if r.get("ok") and r["outcome"] == "ungradeable"]
     inconclusive = [r for r in results if r.get("ok") and r["outcome"] == "inconclusive"]
+    descriptive = [r for r in results if r.get("ok") and r["outcome"] == "descriptive"]
     blocked = [r for r in results if not r.get("ok")]
 
     by_cat: dict = {}
@@ -282,6 +304,9 @@ def run_battery(engine: str, tag: str, budget: ProvenanceBudget, out_dir: str) -
         "ungradeable_ids": [r["id"] for r in ungradeable],
         "n_inconclusive": len(inconclusive),
         "inconclusive_ids": [r["id"] for r in inconclusive],
+        "n_descriptive": len(descriptive),
+        "descriptive": [{"id": r["id"], "verdict": r["verdict"], "dependence": r["dependence"]}
+                        for r in descriptive],
         "n_blocked": len(blocked),
         "disagreements": [{"id": r["id"], "answer": r["answer"], "verdict": r["verdict"],
                            "dependence": r["dependence"], "ratio": r["best_control_ratio"],
@@ -307,6 +332,10 @@ def run_battery(engine: str, tag: str, budget: ProvenanceBudget, out_dir: str) -
           f" ({summary['agreement']})   ungradeable(model failed the task): "
           f"{summary['n_ungradeable']} {summary['ungradeable_ids']}")
     print(f"INCONCLUSIVE: {summary['n_inconclusive']} {summary['inconclusive_ids']}")
+    if summary["n_descriptive"]:
+        print("descriptive (no model-independent expectation; see _descriptive's docstring):")
+        for d in summary["descriptive"]:
+            print(f"  {d['id']}: verdict={d['verdict']} dep={d['dependence']}")
     print(f"by category: {summary['by_category']}")
     for d in summary["disagreements"]:
         print(f"  DISAGREE {d['id']}: answer={d['answer']!r} verdict={d['verdict']} "

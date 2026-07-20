@@ -101,11 +101,36 @@ def available(engine_url: str = DEFAULT_ENGINE) -> bool:
 # ==================================================================================== the API
 
 def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAULT_ENGINE,
-                     budget: Optional[ProvenanceBudget] = None, seed: int = 0) -> dict:
+                     budget: Optional[ProvenanceBudget] = None, seed: int = 0,
+                     focus: Optional[tuple] = None) -> dict:
     """Which context positions carry this answer, and is it context-carried or parametric?
 
     `continuation` defaults to whatever the model generates greedily (so we never grade it on an
-    answer it did not give). Returns a receipt dict; {"ok": False, "blocked": ...} on failure."""
+    answer it did not give). Returns a receipt dict; {"ok": False, "blocked": ...} on failure.
+
+    `focus=(start, end)` (token indices, end exclusive) scopes the question to ONE REGION of the
+    prompt -- the RAG question in its honest form: "did the answer use THIS document?" rather than
+    "did it use any context at all?". Measured motivation (R1 battery, 2nd family): total-context
+    dependence CONFLATES "used the override/document" with "used the question" -- a model that
+    IGNORED a counterfactual override and answered from weights still shows dependence ~1.0,
+    because cutting the question tokens ('the capital of France is') kills any answer. With focus,
+    the span search and its matched random controls are both restricted: candidate cut positions
+    come only from [start, end), and control sets are drawn from OUTSIDE the focus region (same
+    set size), so the ratio asks "is cutting inside the document worse than cutting the same
+    number of positions elsewhere?". The verdict then speaks about the focus region specifically:
+    PARAMETRIC now honestly means "the answer did not need this region", even when the question
+    itself is load-bearing.
+
+    FOCUS MODE IS EXPERIMENTAL -- one measured control caveat (Llama-3.1-8B live, 2026-07-20):
+    when the prompt's question tokens sit OUTSIDE the focus region, the outside-focus control
+    draws include them, and their cuts are devastating -- so the control bar is very hard to
+    clear and small focus regions tend to INCONCLUSIVE even at meaningful dependence (measured:
+    a resisted override value read dep 0.49 -- the model plausibly using the override
+    CONTRASTIVELY, reading it in order to contradict it -- but the ratio fell below 3 against
+    question-containing controls). A better focus-mode null (matched spans of comparable,
+    non-question content) is an open design item; until then read a focused INCONCLUSIVE as
+    "dependence measured, control not separable", never as absence of signal. The
+    followed-override contrast case cleanly clears the bar (dep 0.85, ratio 12x)."""
     import numpy as np
     budget = budget or ProvenanceBudget()
     rng = np.random.default_rng(seed)
@@ -139,7 +164,26 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
             lp = float(r["tokens"][0]["logprob"])
             return base_lp - lp, lp, r
 
-        singles = sorted(((cut([p])[0], p) for p in range(final)), key=lambda x: -x[0])
+        # Candidate pool + control pool. Default: every prompt position may be cut, controls drawn
+        # from the not-yet-cut remainder. With `focus`, candidates come ONLY from the focus region
+        # and controls ONLY from outside it (see the docstring for why that is the honest RAG
+        # question). Focus bounds are clamped to the prompt; an empty/degenerate focus is refused.
+        if focus is not None:
+            f0, f1 = max(0, int(focus[0])), min(final, int(focus[1]))
+            if f1 <= f0:
+                return {"ok": False, "blocked": f"focus region ({focus}) is empty after clamping "
+                                                f"to the prompt's {final} cuttable positions"}
+            cand_pool = list(range(f0, f1))
+            ctl_pool_base = [p for p in range(final) if p < f0 or p >= f1]
+            if len(ctl_pool_base) < 2:
+                return {"ok": False, "blocked": "focus covers (nearly) the whole prompt -- no "
+                                                "outside-focus positions left to draw controls "
+                                                "from; use the unfocused mode instead"}
+        else:
+            cand_pool = list(range(final))
+            ctl_pool_base = None   # controls drawn from all non-span positions (original behavior)
+
+        singles = sorted(((cut([p])[0], p) for p in cand_pool), key=lambda x: -x[0])
         span, trace, cur = [], [], 0.0
         remaining = [p for _, p in singles]
 
@@ -154,14 +198,15 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
         # normally from that seed.
         seeded_bigram = None
         if not singles or singles[0][0] <= budget.min_gain:
-            bigrams = sorted((((cut([p, p + 1])[0]), p) for p in range(final - 1)),
+            bigrams = sorted((((cut([p, p + 1])[0]), p) for p in cand_pool[:-1]),
                              key=lambda x: -x[0])
             if bigrams and bigrams[0][0] > budget.min_gain:
                 d2, p2 = bigrams[0]
                 span = [p2, p2 + 1]
                 cur = d2
                 remaining = [p for p in remaining if p not in span]
-                pool = [p for p in range(final) if p not in span]
+                pool = ([p for p in ctl_pool_base if p not in span] if ctl_pool_base is not None
+                        else [p for p in range(final) if p not in span])
                 ctl = (max(cut(rng.choice(pool, size=2, replace=False).tolist())[0]
                            for _ in range(budget.n_controls))
                        if len(pool) >= 2 else float("nan"))
@@ -184,7 +229,8 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
             cur, add = best
             span.append(add)
             remaining.remove(add)
-            pool = [p for p in range(final) if p not in span]
+            pool = ([p for p in ctl_pool_base if p not in span] if ctl_pool_base is not None
+                    else [p for p in range(final) if p not in span])
             ctl = (max(cut(rng.choice(pool, size=len(span), replace=False).tolist())[0]
                        for _ in range(budget.n_controls))
                    if len(pool) >= len(span) else float("nan"))
@@ -195,7 +241,11 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
 
         if not span:
             return {"ok": True, "answer": answer, "span": [], "dependence": 0.0,
-                    "verdict": "PARAMETRIC", "note": "no context position changed the answer",
+                    "verdict": "PARAMETRIC",
+                    "note": ("no focus-region position changed the answer -- the answer did not "
+                             "need this region" if focus is not None
+                             else "no context position changed the answer"),
+                    "focus": list(focus) if focus is not None else None,
                     "baseline_logprob": base_lp}
         d_final, lp_cut, r_final = cut(span, topk=3)
         dep = context_dependence(base_lp, lp_cut)
@@ -214,8 +264,11 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
             "best_single": {"pos": int(singles[0][1]), "token": toks[singles[0][1]],
                             "delta": singles[0][0]},
             "trace": trace,
+            "focus": list(focus) if focus is not None else None,
             "config": {"renormalize": budget.renormalize, "n_layer": n_layer, "seed": seed,
-                       "units": "delta = logprob(baseline) - logprob(context access cut)"},
+                       "units": "delta = logprob(baseline) - logprob(context access cut)",
+                       "control_pool": ("outside-focus positions" if focus is not None
+                                        else "all non-span positions")},
         }
     except Exception as e:
         return {"ok": False, "blocked": f"{type(e).__name__}: {e}"}
