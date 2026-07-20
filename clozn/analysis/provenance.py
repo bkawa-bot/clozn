@@ -142,6 +142,37 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
         singles = sorted(((cut([p])[0], p) for p in range(final)), key=lambda x: -x[0])
         span, trace, cur = [], [], 0.0
         remaining = [p for _, p in singles]
+
+        # ADJACENT-BIGRAM SEEDING (found by the R1 battery, case kv_late): greedy accumulation
+        # cannot START when no SINGLE position clears min_gain -- and a multi-token entity whose
+        # pieces are individually redundant (a passcode split into two digit tokens, a name split
+        # across BPE pieces) is exactly that case: cut either piece alone and the sibling re-
+        # supplies it, so every single scores ~0 and the old code returned an empty span --
+        # "PARAMETRIC" -- for an answer that exists ONLY in the prompt. Entities are contiguous,
+        # so before giving up we scan ADJACENT PAIRS (n-2 extra arms) and, if the best pair
+        # clears min_gain, seed the span with both positions at once; greedy then continues
+        # normally from that seed.
+        seeded_bigram = None
+        if not singles or singles[0][0] <= budget.min_gain:
+            bigrams = sorted((((cut([p, p + 1])[0]), p) for p in range(final - 1)),
+                             key=lambda x: -x[0])
+            if bigrams and bigrams[0][0] > budget.min_gain:
+                d2, p2 = bigrams[0]
+                span = [p2, p2 + 1]
+                cur = d2
+                remaining = [p for p in remaining if p not in span]
+                pool = [p for p in range(final) if p not in span]
+                ctl = (max(cut(rng.choice(pool, size=2, replace=False).tolist())[0]
+                           for _ in range(budget.n_controls))
+                       if len(pool) >= 2 else float("nan"))
+                seeded_bigram = {"step": 1, "added": [int(p2), int(p2 + 1)],
+                                 "token": [toks[p2], toks[p2 + 1]], "joint": cur, "control": ctl,
+                                 "ratio": (abs(cur) / abs(ctl)) if ctl and ctl == ctl
+                                          and abs(ctl) > 1e-9 else None,
+                                 "seeded": "adjacent_bigram"}
+                trace.append(seeded_bigram)
+
+        step_base = 1 if seeded_bigram else 0
         for step in range(budget.max_span):
             best = None
             for p in remaining[:budget.candidates]:
@@ -157,7 +188,7 @@ def trace_provenance(prompt: str, continuation=None, *, engine_url: str = DEFAUL
             ctl = (max(cut(rng.choice(pool, size=len(span), replace=False).tolist())[0]
                        for _ in range(budget.n_controls))
                    if len(pool) >= len(span) else float("nan"))
-            trace.append({"step": step + 1, "added": int(add), "token": toks[add],
+            trace.append({"step": step_base + step + 1, "added": int(add), "token": toks[add],
                           "joint": cur, "control": ctl,
                           "ratio": (abs(cur) / abs(ctl)) if ctl and ctl == ctl and abs(ctl) > 1e-9
                                    else None})
