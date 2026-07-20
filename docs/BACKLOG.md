@@ -88,8 +88,14 @@ possible and make the white-box readouts fast enough to watch live.
    tiers now shipped per node), median legibility **~24%** (most causal mass is unnameable),
    interaction gap median **−60%** (solo attribution overcounts ~2.5x, universally), and
    `FAILED_CONTROLS` has **never fired on a real prompt** — the STOP check is unexercised in the
-   wild. REMAINING: run-journal input mode, studio click-a-token panel, a genuine screen-null
-   (replace the target concept, don't dilute it), 2nd model family.
+   wild. ⚠️ **The disable-and-watch demo (§5c) found the scorecard's scope limit: a next-token flip
+   is NOT loss of the answer** — ablating one strong node flipped the token and the model still
+   said "Tokyo" one token later. 91.7% is accuracy at predicting *token flips*, never "predicts
+   when the model loses the fact". Also: both strong nodes landed on the FINAL prompt token, so at
+   this node granularity the graph reads more as "where in depth the answer commits" than "which
+   context supplied it" (finer units — attention-head / per-source-position — would be needed).
+   REMAINING: run-journal input mode, studio click-a-token panel, a genuine screen-null (replace
+   the target concept, don't dilute it), finer node units, 2nd model family.
    *Why:* clozn can inspect and intervene but can't yet *produce and prove* how an input caused an output.
    *Payoff:* **the north-star feature.** Click "Tokyo" in an answer → a compact causal path through named
    internal features to the output logit → disable it → watch the prediction move.
