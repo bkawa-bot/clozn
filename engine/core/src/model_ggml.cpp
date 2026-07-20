@@ -115,7 +115,9 @@ bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
     const char* nm = ggml_get_name(t);
     const bool lout = std::strncmp(nm, "l_out-", 6) == 0;    // a per-layer residual tensor
     const bool read = emit_activations_ && tap_layer_ > 0 && tap_name_ == nm;   // the read tap
-    const bool write = have_write_ && write_layer_ > 0 && write_name_ == nm;    // the state-WRITE
+    bool write = false;                                       // the state-WRITE (any spec at this layer)
+    if (lout && !writes_.empty())
+        for (const WriteSpec& w : writes_) if (w.name == nm) { write = true; break; }
     // layer-summary mode: match EVERY per-layer residual "l_out-<il>" (prefix) for per-layer norms in one pass
     const bool summary = emit_layer_summary_ && lout;
     // capture plane (Phase 2.3): snapshot every layer in the capture set, one D2H per layer
@@ -157,15 +159,19 @@ bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
     // WRITE side (GAP #1): overwrite each marked position's row (row = board position - this segment's
     // `from`), AFTER the read (so the tap reports the PRE-edit state) and before downstream layers consume
     // t — the activation-patch propagates forward. Rows outside [0, ne1) (e.g. a frozen-prefix decode) are
-    // skipped, so the write lands only on the active block's decode.
-    if (write && ne0 == n_embd_ &&
-        write_buf_.size() == write_positions_.size() * static_cast<size_t>(n_embd_)) {
-        for (size_t i = 0; i < write_positions_.size(); ++i) {
-            const int row = write_positions_[i] - write_from_;
-            if (row >= 0 && row < ne1) {
-                ggml_backend_tensor_set(t, write_buf_.data() + i * static_cast<size_t>(n_embd_),
-                                        static_cast<size_t>(row) * n_embd_ * sizeof(float),
-                                        static_cast<size_t>(n_embd_) * sizeof(float));
+    // skipped, so the write lands only on the active block's decode. Every spec matching this layer
+    // applies (a joint intervention may carry several specs, possibly across layers).
+    if (write && ne0 == n_embd_) {
+        for (const WriteSpec& w : writes_) {
+            if (w.name != nm) continue;
+            if (w.buf.size() != w.positions.size() * static_cast<size_t>(n_embd_)) continue;
+            for (size_t i = 0; i < w.positions.size(); ++i) {
+                const int row = w.positions[i] - write_from_;
+                if (row >= 0 && row < ne1) {
+                    ggml_backend_tensor_set(t, w.buf.data() + i * static_cast<size_t>(n_embd_),
+                                            static_cast<size_t>(row) * n_embd_ * sizeof(float),
+                                            static_cast<size_t>(n_embd_) * sizeof(float));
+                }
             }
         }
     }
@@ -185,21 +191,26 @@ void GgmlAdapter::clear_steer() {
 
 bool GgmlAdapter::write_state(int il, const std::vector<int>& positions,
                               const std::vector<float>& values) {
+    writes_.clear();  // REPLACE semantics (the original single-write contract)
+    return add_write_state(il, positions, values);
+}
+
+bool GgmlAdapter::add_write_state(int il, const std::vector<int>& positions,
+                                  const std::vector<float>& values) {
     if (il <= 0 || il >= n_layer_) return false;   // 0 = final (no l_out name); writable mids are [1, n_layer)
     if (n_embd_ <= 0) return false;
     if (values.size() != positions.size() * static_cast<size_t>(n_embd_)) return false;
-    write_layer_ = il;
-    write_name_ = "l_out-" + std::to_string(il);
-    write_positions_ = positions;
-    write_buf_ = values;
-    have_write_ = true;
+    WriteSpec w;
+    w.layer = il;
+    w.name = "l_out-" + std::to_string(il);
+    w.positions = positions;
+    w.buf = values;
+    writes_.push_back(std::move(w));
     return true;
 }
 
 void GgmlAdapter::clear_write() {
-    have_write_ = false;
-    write_positions_.clear();
-    write_buf_.clear();
+    writes_.clear();
 }
 
 void GgmlAdapter::set_causal(bool on) {

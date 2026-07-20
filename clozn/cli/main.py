@@ -59,6 +59,7 @@ from clozn.cli.commands.quant_check import cmd_quant_check, add_subparser as _ad
 from clozn.cli.commands.eval import cmd_eval, add_subparser as _add_eval                       # noqa: E402,F401
 from clozn.cli.commands.test_model import cmd_test_model, add_subparser as _add_test_model      # noqa: E402,F401
 from clozn.cli.commands.qualify import cmd_qualify, add_subparser as _add_qualify              # noqa: E402,F401
+from clozn.cli.commands.trace_circuit import cmd_trace_circuit, add_subparser as _add_trace_circuit  # noqa: E402,F401
 from clozn.cli.commands.migrate import cmd_migrate_runs                                        # noqa: E402
 from clozn.cli.commands.migrate import add_subparser as _add_migrate                            # noqa: E402
 from clozn.cli.commands.lab import cmd_lab                                                      # noqa: E402
@@ -186,6 +187,7 @@ def build_parser():
     _add_eval(sub)          # `clozn eval` — outcome-grounded calibration (Brier/ECE/risk-coverage)
     _add_test_model(sub)    # `clozn test-model` — the model's own CI: pinned probes vs. a golden fixture
     _add_qualify(sub)       # `clozn qualify-whitebox <gguf>` — honest per-feature capability matrix
+    _add_trace_circuit(sub)  # `clozn trace-circuit` — intervention-validated causal circuit trace
     sub.add_parser("version", help="print the installed clozn version (+ git commit if available)"
                    ).set_defaults(fn=cmd_version)
     pdoc = sub.add_parser("doctor", help="diagnose this install: engine binary, models, studio assets, "

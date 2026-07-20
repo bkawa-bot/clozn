@@ -161,8 +161,13 @@ public:
     // applied on EVERY subsequent forward via the SAME eval callback as the tap (ggml_backend_tensor_set,
     // no llama patch) until clear_write(). The causal inverse of the tap: read state out
     // (ForwardResult.activations) -> edit -> write_state -> observe the next forward. Returns true if armed.
+    // write_state REPLACES the write set with this one spec (the original single-write semantics);
+    // add_write_state APPENDS, so a joint intervention can patch several layers in ONE forward — the
+    // circuit tracer's Δ_total arm ("all candidate nodes jointly ablated") needs exactly that.
     bool write_state(int il, const std::vector<int>& positions,
                      const std::vector<float>& values) override;
+    bool add_write_state(int il, const std::vector<int>& positions,
+                         const std::vector<float>& values);
     void clear_write();
     int n_layer() const { return n_layer_; }
     int n_embd() const { return n_embd_; }  // hidden size (e.g. the --sae dim check at startup)
@@ -311,13 +316,16 @@ private:
     int tap_rows_ = 0;               // token rows in tap_buf_ (= the last decode segment's length)
     bool emit_layer_summary_ = false;              // when on, eval_cb folds EVERY l_out-<il> into layer_norms_
     std::vector<std::vector<float>> layer_norms_;  // [n_layer][rows]: per-token |residual| per layer (summary)
-    // White-box state-WRITE (GAP #1): the mirror of the tap — eval_cb overwrites these positions' rows
-    // at write_name_ during decode (ggml_backend_tensor_set), applied until clear_write().
-    bool have_write_ = false;
-    int write_layer_ = 0;
-    std::string write_name_;             // "l_out-<write_layer_>"
-    std::vector<int> write_positions_;   // board positions to overwrite
-    std::vector<float> write_buf_;       // [write_positions_.size()*n_embd] new residual rows
+    // White-box state-WRITE (GAP #1): the mirror of the tap — eval_cb overwrites each spec's
+    // positions' rows at its layer during decode (ggml_backend_tensor_set), applied until
+    // clear_write(). A vector so a joint intervention can hit several layers in one forward.
+    struct WriteSpec {
+        int layer = 0;
+        std::string name;             // "l_out-<layer>"
+        std::vector<int> positions;   // board positions to overwrite
+        std::vector<float> buf;       // [positions.size()*n_embd] new residual rows
+    };
+    std::vector<WriteSpec> writes_;
     int write_from_ = 0;                 // current decode segment's `from` (board position -> tensor row)
     std::vector<float> diff_prefix_;     // [diff_m_ * n_embd] diffusion soft prefix, laid as a frozen block [0,diff_m_)
     int diff_m_ = 0;                     // diffusion prefix length (0 = none)

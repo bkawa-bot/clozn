@@ -65,14 +65,23 @@ possible and make the white-box readouts fast enough to watch live.
    drops** (measured on the 9B Q4, 96-token runs; naive per-token CPU readout was 48%). Honest-coverage
    `readout_stats` frame (observed/dropped/skipped). SAE observer: seam noted, not yet folded in
    (`with_sae_readout` path unchanged).
-9. **Intervention-validated circuit tracer** *(headline — needs 6 + 7 first)* — attribution graph with an
-   explicit unexplained-mass term; every path patch/inhibit/ablate-testable at the exact token+layer;
-   predicted-vs-observed logit movement against random-node / direction / shuffled-edge controls.
-   `clozn/analysis/microscope.py` is the correlational precursor.
-   *Why:* clozn can inspect and intervene but can't yet *produce and prove* how an input caused an output —
-   the architecture marks this unbuilt. *Payoff:* **the north-star feature.** Click "Tokyo" in an answer →
-   a compact causal path through named internal features to the output logit → disable it → watch the
-   prediction move. The whole thesis made tangible: *what computation caused this, proven by changing only that.*
+9. **Intervention-validated circuit tracer** *(headline)* — 🔄 S0–S2 LIVE 2026-07-19 (design:
+   notes/CIRCUIT_TRACER_DESIGN.md). Slice 1 (engine): `/score` + `write` (single or ARRAY — joint
+   cross-layer patches in one forward) + `capture` keys; verified bit-exact vs /harvest + /state.
+   Slice 2 (product): `clozn/analysis/tracer.py` (screen via client-side dir(c) projections on
+   captured rows — exact alignment, no retokenize; mean-ablation solo arms + random-direction +
+   random-site controls + noise floor + marginal flags; joint arm + interaction gap; PASS /
+   NO_CAUSAL_NODES / FAILED_CONTROLS verdicts) + `clozn trace-circuit` CLI + fixture tests.
+   **STOP-check PASSED live on the 9B**: real nodes 80–200x above the noise floor on two factual
+   prompts; ~3 s wall for 116 screened sites / ~60 arms. First findings: heavy sub-additivity
+   (interaction gap ≈ −50% of Σsolo — self-repair is real), the biggest causal node can be ~0%
+   legible via the screened direction (unexplained-but-causal, kept in the graph), Kyoto-distractor
+   sites appear as small suppressive nodes. REMAINING: S3 path patching (edges + shuffled-edge
+   control), S4 margin-test generation arms (predicted-vs-observed scorecard), run-journal input
+   mode, studio click-a-token panel.
+   *Why:* clozn can inspect and intervene but can't yet *produce and prove* how an input caused an output.
+   *Payoff:* **the north-star feature.** Click "Tokyo" in an answer → a compact causal path through named
+   internal features to the output logit → disable it → watch the prediction move.
 
 ## Phase 3 — research lanes
 

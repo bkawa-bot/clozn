@@ -281,30 +281,44 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
         // SAME forward — under the patch, if one is armed (at the write layer itself the captured row
         // is the PRE-edit state, same convention as the read tap). Together they are the tracer's two
         // primitives: "score with node ablated" and "patch A, capture at B" in one call each.
-        int write_layer = 0;
-        std::vector<int> write_positions;
-        std::vector<float> write_values;
-        if (body.contains("write") && body["write"].is_object()) {
-            const json& wb = body["write"];
-            write_layer = wb.value("layer", 0);
-            if (wb.contains("positions") && wb["positions"].is_array())
-                write_positions = wb["positions"].get<std::vector<int>>();
-            if (wb.contains("values") && wb["values"].is_array())
-                write_values = wb["values"].get<std::vector<float>>();
-            if (write_layer < 1 || write_positions.empty() || write_values.empty()) {
-                res.status = 400;
-                res.set_content(json{{"error",
-                    "write needs {layer >= 1, positions:[int], values:[float] = positions*n_embd}"}}.dump(),
-                    "application/json");
-                return;
-            }
-            for (int p : write_positions) {
-                if (p < 0 || p >= n_total) {
+        // `write` may be ONE spec {layer, positions, values} or an ARRAY of them — the array form is
+        // the tracer's joint arm (all candidate nodes ablated simultaneously, across layers, in one
+        // forward — GgmlAdapter::add_write_state per spec).
+        struct WriteReq { int layer; std::vector<int> positions; std::vector<float> values; };
+        std::vector<WriteReq> write_reqs;
+        if (body.contains("write")) {
+            json specs = json::array();
+            if (body["write"].is_object()) specs.push_back(body["write"]);
+            else if (body["write"].is_array()) specs = body["write"];
+            for (const json& wb : specs) {
+                WriteReq w{};
+                w.layer = wb.is_object() ? wb.value("layer", 0) : 0;
+                if (wb.is_object() && wb.contains("positions") && wb["positions"].is_array())
+                    w.positions = wb["positions"].get<std::vector<int>>();
+                if (wb.is_object() && wb.contains("values") && wb["values"].is_array())
+                    w.values = wb["values"].get<std::vector<float>>();
+                if (w.layer < 1 || w.positions.empty() || w.values.empty()) {
                     res.status = 400;
-                    res.set_content(json{{"error", "write position out of range"}, {"position", p},
-                                         {"n_tokens", n_total}}.dump(), "application/json");
+                    res.set_content(json{{"error",
+                        "each write spec needs {layer >= 1, positions:[int], values:[float] = positions*n_embd}"}}.dump(),
+                        "application/json");
                     return;
                 }
+                for (int p : w.positions) {
+                    if (p < 0 || p >= n_total) {
+                        res.status = 400;
+                        res.set_content(json{{"error", "write position out of range"}, {"position", p},
+                                             {"n_tokens", n_total}}.dump(), "application/json");
+                        return;
+                    }
+                }
+                write_reqs.push_back(std::move(w));
+            }
+            if (write_reqs.empty()) {
+                res.status = 400;
+                res.set_content(json{{"error", "write must be an object or non-empty array of specs"}}.dump(),
+                                "application/json");
+                return;
             }
         }
         std::vector<int> capture_layers, capture_positions;
@@ -339,7 +353,7 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                 GgmlAdapter& ad = *lease;
                 const bool steering = !steer_concept.empty() && steer_coef != 0.0 && steer_probes.ready();
                 const bool raw_steer = !steer_vec.empty();
-                const bool writing = write_layer >= 1;
+                const bool writing = !write_reqs.empty();
                 const bool capturing = !capture_layers.empty();
                 auto cleanup = [&]() {
                     if (steering || raw_steer) ad.clear_steer();
@@ -369,10 +383,16 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                             ad.set_steer(cvec, lo, hi);
                         }
                     }
-                    if (writing && !ad.write_state(write_layer, write_positions, write_values)) {
-                        throw std::invalid_argument(
-                            "write rejected: layer must be in [1, n_layer) and values.size must equal "
-                            "positions.size * n_embd (n_embd " + std::to_string(ad.n_embd()) + ")");
+                    if (writing) {
+                        ad.clear_write();
+                        for (const WriteReq& w : write_reqs) {
+                            if (!ad.add_write_state(w.layer, w.positions, w.values)) {
+                                throw std::invalid_argument(
+                                    "write rejected: layer must be in [1, n_layer) and values.size must "
+                                    "equal positions.size * n_embd (n_embd " + std::to_string(ad.n_embd()) +
+                                    ", layer " + std::to_string(w.layer) + ")");
+                            }
+                        }
                     }
                     if (capturing) {
                         ad.set_capture_layers(capture_layers);
@@ -427,7 +447,10 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                 {"tokens", tok_json}, {"sum_logprob", sum_logprob},
             };
             if (boundary_approximate) resp["boundary_approximate"] = true;
-            if (write_layer >= 1) resp["write_applied"] = true;
+            if (!write_reqs.empty()) {
+                resp["write_applied"] = true;
+                resp["n_writes"] = static_cast<int>(write_reqs.size());
+            }
             if (!capture_layers.empty()) {
                 // captured: {"<layer>": {"<pos>": [n_embd floats], ...}, ...} — the residual rows the
                 // tracer keeps for computing edited values (mean-/directional-ablate) client-side.
