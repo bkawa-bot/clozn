@@ -359,6 +359,10 @@ ForwardResult GgmlAdapter::ar_forward_score(const std::vector<int>& tokens,
         std::memcpy(out.logits.data() + static_cast<size_t>(r) * vocab, row,
                     static_cast<size_t>(vocab) * sizeof(float));
     }
+    // Capture plane: the score decode is ONE batch over [0, len) (n_ubatch == n_ctx), so a captured
+    // frame carries every position's residual at each armed layer — the tracer's S0 screen and its
+    // "patch A, capture at B" path-patching read both ride this. Synchronous sink, same as ar_forward.
+    fire_capture(0, len);
     return out;
 }
 

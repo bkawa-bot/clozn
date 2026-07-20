@@ -271,15 +271,81 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
         tokens.insert(tokens.end(), cont_ids.begin(), cont_ids.end());
         std::vector<int> logits_for(static_cast<size_t>(n_a));
         for (int i = 0; i < n_a; ++i) logits_for[static_cast<size_t>(i)] = n_p - 1 + i;
+        const int n_total = n_p + n_a;
+
+        // Circuit-tracer slice 1 (notes/CIRCUIT_TRACER_DESIGN.md): teacher-forced score UNDER an
+        // intervention. write:{layer, positions:[absolute seq pos], values:[positions*n_embd rows]}
+        // overwrites those residual rows at `layer` during this ONE forward (GgmlAdapter::write_state
+        // — the /state activation patch, leak-free clear on every exit). capture:{layers, positions}
+        // returns those positions' residual rows from the multi-layer capture plane, read off the
+        // SAME forward — under the patch, if one is armed (at the write layer itself the captured row
+        // is the PRE-edit state, same convention as the read tap). Together they are the tracer's two
+        // primitives: "score with node ablated" and "patch A, capture at B" in one call each.
+        int write_layer = 0;
+        std::vector<int> write_positions;
+        std::vector<float> write_values;
+        if (body.contains("write") && body["write"].is_object()) {
+            const json& wb = body["write"];
+            write_layer = wb.value("layer", 0);
+            if (wb.contains("positions") && wb["positions"].is_array())
+                write_positions = wb["positions"].get<std::vector<int>>();
+            if (wb.contains("values") && wb["values"].is_array())
+                write_values = wb["values"].get<std::vector<float>>();
+            if (write_layer < 1 || write_positions.empty() || write_values.empty()) {
+                res.status = 400;
+                res.set_content(json{{"error",
+                    "write needs {layer >= 1, positions:[int], values:[float] = positions*n_embd}"}}.dump(),
+                    "application/json");
+                return;
+            }
+            for (int p : write_positions) {
+                if (p < 0 || p >= n_total) {
+                    res.status = 400;
+                    res.set_content(json{{"error", "write position out of range"}, {"position", p},
+                                         {"n_tokens", n_total}}.dump(), "application/json");
+                    return;
+                }
+            }
+        }
+        std::vector<int> capture_layers, capture_positions;
+        if (body.contains("capture") && body["capture"].is_object()) {
+            const json& cb = body["capture"];
+            if (cb.contains("layers") && cb["layers"].is_array())
+                capture_layers = cb["layers"].get<std::vector<int>>();
+            if (cb.contains("positions") && cb["positions"].is_array())
+                capture_positions = cb["positions"].get<std::vector<int>>();
+            if (capture_layers.empty() || capture_positions.empty()) {
+                res.status = 400;
+                res.set_content(json{{"error", "capture needs {layers:[int], positions:[int]}"}}.dump(),
+                                "application/json");
+                return;
+            }
+            for (int p : capture_positions) {
+                if (p < 0 || p >= n_total) {
+                    res.status = 400;
+                    res.set_content(json{{"error", "capture position out of range"}, {"position", p},
+                                         {"n_tokens", n_total}}.dump(), "application/json");
+                    return;
+                }
+            }
+        }
 
         try {
             ForwardResult fwd;
+            CaptureFrame cap_frame;             // filled synchronously by the capture sink (if armed)
+            std::vector<int> cap_layers_armed;  // layers that survived set_capture_layers validation
             {
                 ContextPool::Lease lease = pool.acquire();
                 GgmlAdapter& ad = *lease;
                 const bool steering = !steer_concept.empty() && steer_coef != 0.0 && steer_probes.ready();
                 const bool raw_steer = !steer_vec.empty();
-                auto cleanup = [&]() { if (steering || raw_steer) ad.clear_steer(); };
+                const bool writing = write_layer >= 1;
+                const bool capturing = !capture_layers.empty();
+                auto cleanup = [&]() {
+                    if (steering || raw_steer) ad.clear_steer();
+                    if (writing) ad.clear_write();
+                    if (capturing) { ad.set_capture_sink({}); ad.set_capture_layers({}); }
+                };
                 try {
                     ad.set_causal(true);  // the AR forward needs causal attention (also => a clean KV)
                     if (steering || raw_steer) {
@@ -302,6 +368,18 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                             }
                             ad.set_steer(cvec, lo, hi);
                         }
+                    }
+                    if (writing && !ad.write_state(write_layer, write_positions, write_values)) {
+                        throw std::invalid_argument(
+                            "write rejected: layer must be in [1, n_layer) and values.size must equal "
+                            "positions.size * n_embd (n_embd " + std::to_string(ad.n_embd()) + ")");
+                    }
+                    if (capturing) {
+                        ad.set_capture_layers(capture_layers);
+                        cap_layers_armed = ad.capture_layers();  // invalid layers were dropped
+                        if (cap_layers_armed.empty())
+                            throw std::invalid_argument("capture layers all out of range (1..n_layer-1)");
+                        ad.set_capture_sink([&cap_frame](CaptureFrame&& f) { cap_frame = std::move(f); });
                     }
                     fwd = ad.ar_forward_score(tokens, logits_for);
                     cleanup();
@@ -349,6 +427,23 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                 {"tokens", tok_json}, {"sum_logprob", sum_logprob},
             };
             if (boundary_approximate) resp["boundary_approximate"] = true;
+            if (write_layer >= 1) resp["write_applied"] = true;
+            if (!capture_layers.empty()) {
+                // captured: {"<layer>": {"<pos>": [n_embd floats], ...}, ...} — the residual rows the
+                // tracer keeps for computing edited values (mean-/directional-ablate) client-side.
+                json cap_json = json::object();
+                for (const auto& lv : cap_frame.layers) {
+                    json rows = json::object();
+                    for (int p : capture_positions) {
+                        if (p < 0 || p >= cap_frame.rows) continue;
+                        const float* row = lv.second.data() + static_cast<size_t>(p) * cap_frame.n_embd;
+                        rows[std::to_string(p)] = std::vector<float>(row, row + cap_frame.n_embd);
+                    }
+                    cap_json[std::to_string(lv.first)] = std::move(rows);
+                }
+                resp["captured"] = std::move(cap_json);
+                resp["n_embd"] = cap_frame.n_embd;
+            }
             res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
