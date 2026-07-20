@@ -8,8 +8,17 @@ torch checkpoint. This one-shot exporter writes them next to the models dir conv
 Layout choice that matters: W_enc is stored TRANSPOSED, [d_sae, d_in] fp16 row-major (feature-major),
 so each feature's encoder weights are contiguous -- the engine GEMV walks one feature per warp over a
 contiguous 7KB row. (The .pt stores [d_in, d_sae]; a JumpReLU SAE's W_enc is NOT W_dec^T, so the
-transpose has to happen here.) W_dec is NOT exported: the engine only encodes; reconstruction and
-Neuronpedia feature names stay host/Python side (research/brain_readout.py).
+transpose has to happen here.)
+
+W_dec IS exported (added 2026-07-20), already [d_sae, d_in] in the .pt so no transpose. The engine
+itself still only encodes -- but CAUSAL work on the host needs the decoder, and its absence blocked
+the first feature-level tracing attempt outright:
+  * canonical feature ablation is  h' = h - a_f * d_dec[f]  (remove the feature's CONTRIBUTION).
+    Ablating along the ENCODER direction instead removes what the feature *reads*, which is a
+    different vector and measurably different results (see notes/CIRCUIT_TRACER_DESIGN.md 5e).
+  * SAE reconstruction  h_hat = b_dec + sum_f a_f * d_dec[f]  is what the
+    substitute-and-rescore fidelity test needs.
+Decoder rows are unit-norm in this parameterisation, which the loader can use as a receipt.
 
 meta.txt carries shapes + fp32 L2 norms of every blob -- the loader recomputes and refuses to serve
 silently-corrupt weights (the stage-1 receipt for wiring sae_topk into the engine).
@@ -23,6 +32,7 @@ import torch
 BLOBS = [
     # meta key      pt key       transpose  out dtype       filename
     ("w_enc_t",     "W_enc",     True,      torch.float16,  "w_enc_t.f16.bin"),
+    ("w_dec",       "W_dec",     False,     torch.float16,  "w_dec.f16.bin"),   # already [d_sae, d_in]
     ("b_enc",       "b_enc",     False,     torch.float16,  "b_enc.f16.bin"),
     ("b_dec",       "b_dec",     False,     torch.float16,  "b_dec.f16.bin"),
     ("threshold",   "threshold", False,     torch.float32,  "threshold.f32.bin"),

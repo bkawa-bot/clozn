@@ -94,8 +94,19 @@ possible and make the white-box readouts fast enough to watch live.
    when the model loses the fact". Also: both strong nodes landed on the FINAL prompt token, so at
    this node granularity the graph reads more as "where in depth the answer commits" than "which
    context supplied it" (finer units — attention-head / per-source-position — would be needed).
+   **RENAMED `clozn causal-trace` 2026-07-20** (`trace-circuit` kept as a hidden alias): what
+   shipped is ROME-style causal tracing over (layer, position) LOCATIONS — not circuit discovery
+   in the features-and-components sense. The rename is earned by the **SAE feature-level study**
+   (§5e): with canonical feature ablation (`W_dec` extracted from the original checkpoint) on
+   andyrdt_l15 / Qwen2.5-7B, **no individual feature is load-bearing (~0.5% of a site each, ~47
+   active)**, though top-8/16 **jointly** carry 10–45% vs 0–6% for matched random-k — real
+   feature-level structure, but not sparse. Bonus result: the SAE reconstruction preserves
+   **~99.9% of causal content while capturing only 57% of variance** — variance and function
+   dissociate, so reconstruction loss is a misleading proxy for causal relevance.
    REMAINING: run-journal input mode, studio click-a-token panel, a genuine screen-null (replace
-   the target concept, don't dilute it), finer node units, 2nd model family.
+   the target concept, don't dilute it), attention-head node units, 2nd model family, and the
+   attention-heatmap-vs-causal-rank head-to-head (needs a no-flash-attn path to materialize
+   `kq_soft_max`).
    *Why:* clozn can inspect and intervene but can't yet *produce and prove* how an input caused an output.
    *Payoff:* **the north-star feature.** Click "Tokyo" in an answer → a compact causal path through named
    internal features to the output logit → disable it → watch the prediction move.
