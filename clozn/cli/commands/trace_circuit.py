@@ -75,6 +75,25 @@ def cmd_trace_circuit(args):
             print(f"\n  joint (all survivors ablated at once): delta_total {acct['delta_total']:+.4f}"
                   f" | sum of solos {acct['sum_solo']:+.4f}"
                   f" | interaction gap {acct['interaction_gap']:+.4f}")
+        if r.get("edges"):
+            print("\n  edges (path patching: A's effect routed through B alone):")
+            for e in r["edges"]:
+                frac = f"{e['routed_fraction']:.0%}" if e["routed_fraction"] is not None else "n/a"
+                shuf = f"{e['delta_shuffled']:+.4f}" if e["delta_shuffled"] is not None else "n/a"
+                tag = "CLAIMED" if e["claimed"] else "not claimed"
+                print(f"    L{e['from'][0]}@{e['from'][1]} -> L{e['to'][0]}@{e['to'][1]}: "
+                      f"delta {e['delta_edge']:+.4f} (routed {frac}) | shuffled-ctl {shuf} | {tag}")
+        sc = r["prediction_scorecard"]
+        gen = sc.get("generation_tier") or {}
+        if gen.get("ran"):
+            if gen.get("baseline_greedy") is False:
+                print("\n  prediction scorecard: baseline reply is not greedy-reproducible -- "
+                      "behavioral tier inapplicable (reported, not fudged)")
+            else:
+                print(f"\n  prediction scorecard (patch + greedy decode, observed vs predicted): "
+                      f"{sc['correct_predictions']} correct, {sc['wrong_predictions']} wrong, "
+                      f"{sc['diverged_early']} diverged early | flips predicted "
+                      f"{sc['predicted_flips']}, observed {sc['observed_flips']}")
     else:
         print("\n  no nodes beat the noise floor -- either a distributed circuit (many small "
               "contributions) or nothing screenable at these layers. That is the finding.")

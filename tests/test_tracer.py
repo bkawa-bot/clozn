@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 
 from clozn.analysis.tracer import (accounting, controls_verdict, directional_ablate,
-                                   group_joint_writes, noise_floor, screen_candidates)
+                                   edge_candidates, group_joint_writes, noise_floor,
+                                   screen_candidates)
 
 
 # ------------------------------------------------------------------------- directional_ablate
@@ -106,6 +107,28 @@ def test_accounting_interaction_gap_signs():
     assert sup["interaction_gap"] == pytest.approx(1.0)
     empty = accounting([], delta_total=0.5)
     assert empty["sum_solo"] == 0.0
+
+
+# -------------------------------------------------------------------------- edge_candidates
+
+def test_edge_candidates_respect_causal_reachability():
+    nodes = [{"layer": 16, "pos": 5, "delta_full": 2.0},
+             {"layer": 24, "pos": 5, "delta_full": 1.0},   # same pos, later layer: reachable
+             {"layer": 24, "pos": 3, "delta_full": 3.0}]   # EARLIER pos at later layer: unreachable from pos 5
+    pairs = edge_candidates(nodes, max_edges=10)
+    assert [( (a["layer"], a["pos"]), (b["layer"], b["pos"]) ) for a, b in pairs] == \
+           [((16, 5), (24, 5))]                            # only the causally-possible pair
+
+
+def test_edge_candidates_order_and_cap():
+    nodes = [{"layer": 16, "pos": 0, "delta_full": 1.0},
+             {"layer": 24, "pos": 1, "delta_full": 5.0},
+             {"layer": 24, "pos": 2, "delta_full": 0.1}]
+    pairs = edge_candidates(nodes, max_edges=1)
+    assert len(pairs) == 1
+    assert (pairs[0][1]["layer"], pairs[0][1]["pos"]) == (24, 1)   # strongest |dA*dB| pair kept
+    with pytest.raises(ValueError):
+        edge_candidates(nodes, max_edges=-1)
 
 
 # ------------------------------------------------------------------------ group_joint_writes

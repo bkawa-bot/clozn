@@ -460,6 +460,46 @@ int main(int argc, char** argv) {
             plane = std::make_shared<ReadoutPlane>(rc, &jlens, &concept_probes, model.get());
         }
 
+        // Circuit-tracer S4 (notes/CIRCUIT_TRACER_DESIGN.md): GENERATE with an activation patch
+        // armed — "disable this node and watch the answer change". `write` is one
+        // {layer, positions, values} spec or an array of them (same contract as /score's write;
+        // GgmlAdapter::add_write_state per spec, leak-free clear on every exit). Positions are
+        // absolute board positions: prompt sites apply during the prefill (the KV then carries the
+        // patched state through the whole generation); a generated position's patch applies when
+        // that row is decoded. Composes with reference_tokens for the margin-test observation arm
+        // (patch + greedy decode + stop at first divergence from the baseline reply).
+        struct WriteReq { int layer; std::vector<int> positions; std::vector<float> values; };
+        std::vector<WriteReq> write_reqs;
+        if (body.contains("write")) {
+            json wspecs = json::array();
+            if (body["write"].is_object()) wspecs.push_back(body["write"]);
+            else if (body["write"].is_array()) wspecs = body["write"];
+            for (const json& wb : wspecs) {
+                WriteReq w{};
+                w.layer = wb.is_object() ? wb.value("layer", 0) : 0;
+                if (wb.is_object() && wb.contains("positions") && wb["positions"].is_array())
+                    w.positions = wb["positions"].get<std::vector<int>>();
+                if (wb.is_object() && wb.contains("values") && wb["values"].is_array())
+                    w.values = wb["values"].get<std::vector<float>>();
+                if (w.layer < 1 || w.positions.empty() || w.values.empty()) {
+                    res.status = 400;
+                    res.set_content(json{{"error",
+                        "each write spec needs {layer >= 1, positions:[int], values:[float] = positions*n_embd}"}}.dump(),
+                        "application/json");
+                    return;
+                }
+                for (int p : w.positions) {
+                    if (p < 0 || p >= n_ctx) {
+                        res.status = 400;
+                        res.set_content(json{{"error", "write position out of range"}, {"position", p},
+                                             {"n_ctx", n_ctx}}.dump(), "application/json");
+                        return;
+                    }
+                }
+                write_reqs.push_back(std::move(w));
+            }
+        }
+
         // Encode inputs via the model's vocab (no context needed — fully concurrent).
         std::vector<int> prompt_ids, suffix_ids;
         int gap = 0;
@@ -498,7 +538,7 @@ int main(int argc, char** argv) {
 
         // One call into the runtime on a POOLED context (acquire blocks until one is free, so N
         // workers run N requests concurrently; the Lease releases it on any exit).
-        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens, lens_on, lens_layer, plane, readout_layers](
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens, lens_on, lens_layer, plane, readout_layers, write_reqs](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             // white-box tap on for this request (off by default); the live lens implies it — the
@@ -511,6 +551,18 @@ int main(int argc, char** argv) {
                 (*lease).set_capture_layers(readout_layers);
                 std::shared_ptr<ReadoutPlane> pl = plane;
                 (*lease).set_capture_sink([pl](CaptureFrame&& f) { pl->push(std::move(f)); });
+            }
+            // Tracer S4: arm the activation patch(es) for this whole generation (cleared below).
+            if (!write_reqs.empty()) {
+                (*lease).clear_write();
+                for (const auto& w : write_reqs) {
+                    if (!(*lease).add_write_state(w.layer, w.positions, w.values)) {
+                        (*lease).clear_write();
+                        throw std::invalid_argument(
+                            "write rejected: layer must be in [1, n_layer) and values.size must equal "
+                            "positions.size * n_embd (n_embd " + std::to_string((*lease).n_embd()) + ")");
+                    }
+                }
             }
             // --sae: read at the SAE's own layer and ride each pass's top-k features on the stream.
             const bool sae_on = features && sae_serve.on;
@@ -563,6 +615,7 @@ int main(int argc, char** argv) {
                     (*lease).set_capture_sink({});
                     (*lease).set_capture_layers({});
                 }
+                if (!write_reqs.empty()) (*lease).clear_write();  // never leak a patch into the pool
                 (*lease).set_emit_activations(false);  // reset before returning the pooled context
             };
             try {

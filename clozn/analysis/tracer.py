@@ -65,7 +65,7 @@ DEFAULT_ENGINE = "http://127.0.0.1:8080"
 
 @dataclass
 class TraceBudget:
-    """Arm-count knobs. Defaults give ~60-110 forwards (~30-60 s on the 9B)."""
+    """Arm-count knobs. Defaults give ~80-150 forwards (a few seconds on the 9B)."""
     max_candidates: int = 24     # sites the screen may nominate (cap, reported)
     capture_chunk: int = 48      # positions per /score capture call (payload control)
     n_random_dir: int = 8        # random-equal-norm-direction control arms
@@ -73,6 +73,8 @@ class TraceBudget:
     topk: int = 5                # baseline top-k (for the margin)
     layers: Optional[list] = None  # lens layers to trace at (default: every fitted sidecar layer)
     extra_concepts: list = field(default_factory=list)  # words beyond the target token itself
+    max_edges: int = 8           # S3 path-patching pairs (4 arms each; 0 = skip S3)
+    run_s4: bool = True          # S4 generation arms (patch + greedy decode + divergence check)
 
 
 # ====================================================================== pure math (fixture-tested)
@@ -159,6 +161,18 @@ def controls_verdict(survivor_full_deltas: list, control_deltas: list) -> str:
     return "PASS"
 
 
+def edge_candidates(nodes: list, max_edges: int) -> list:
+    """S3 path-patching pairs (A, B): layer_A < layer_B AND pos_A <= pos_B (under causal attention
+    a later position never feeds an earlier one, and within a position information only flows
+    upward through layers). Ordered by |delta_A * delta_B| (strongest joint mass first), capped."""
+    if max_edges < 0:
+        raise ValueError("max_edges must be >= 0")
+    pairs = [(A, B) for A in nodes for B in nodes
+             if A["layer"] < B["layer"] and A["pos"] <= B["pos"]]
+    pairs.sort(key=lambda ab: -abs(ab[0]["delta_full"] * ab[1]["delta_full"]))
+    return pairs[:max_edges]
+
+
 def group_joint_writes(nodes: list, mean_rows: dict) -> list:
     """The S2 joint-arm write specs: one {layer, positions, values} per layer, every surviving
     node's position mean-ablated simultaneously (values = that layer's mean row per position)."""
@@ -200,6 +214,18 @@ def _score(engine_url: str, prompt: str, cont, *, topk: int = 0, write=None, cap
 
 def _target_logprob(resp: dict, target_idx: int) -> float:
     return float(resp["tokens"][target_idx]["logprob"])
+
+
+def _complete(engine_url: str, prompt: str, max_tokens: int, *, reference=None, write=None) -> dict:
+    """One GREEDY generation arm via /v1/completions — the S4 observation: patch armed (`write`),
+    decode, stop at the first token that diverges from `reference` (the 2.1 early-stop; the
+    response carries diverged/diverged_at)."""
+    body = {"prompt": prompt, "max_tokens": int(max_tokens), "temperature": 0}
+    if reference is not None:
+        body["reference_tokens"] = list(reference)
+    if write is not None:
+        body["write"] = write
+    return _post(engine_url, "/v1/completions", body)
 
 
 def _resolve_concept(engine_url: str, word: str):
@@ -347,11 +373,87 @@ def trace(prompt: str, continuation, target_idx: int, *,
             acct = accounting([c["delta_full"] for c in survivors], arm(joint))
         verdict = controls_verdict([c["delta_full"] for c in survivors], ctl_deltas)
 
+        # ---- S3: path patching (edges among the SOLID survivors; marginal parents give
+        # meaningless routed fractions) --------------------------------------------------------
+        solid = [c for c in survivors if not c.get("marginal")]
+        edges = []
+        for A, B in edge_candidates(solid, budget.max_edges):
+            lA, pA, lB, pB = A["layer"], A["pos"], B["layer"], B["pos"]
+            # arm 1: ablate A, capture B's state under do(A)
+            r = _score(engine_url, prompt, cont_ids,
+                       write={"layer": lA, "positions": [pA], "values": mean_rows[lA].tolist()},
+                       capture={"layers": [lB], "positions": [pB]})
+            h_doA = ((r.get("captured") or {}).get(str(lB)) or {}).get(str(pB))
+            if h_doA is None:
+                continue
+            # arm 2: patch ONLY B to that state — A's effect routed exclusively through B
+            delta_edge = arm({"layer": lB, "positions": [pB], "values": h_doA})
+            # shuffled-edge control: B's state under an UNRELATED same-layer ablation A' (a random
+            # site that can still reach B, i.e. pos <= pB). The routed fraction should collapse.
+            pS = pA
+            for _try in range(20):
+                cand_p = int(rng.integers(pB + 1))
+                if cand_p != pA and (lA, cand_p) not in {(c["layer"], c["pos"]) for c in solid}:
+                    pS = cand_p
+                    break
+            rs = _score(engine_url, prompt, cont_ids,
+                        write={"layer": lA, "positions": [pS], "values": mean_rows[lA].tolist()},
+                        capture={"layers": [lB], "positions": [pB]})
+            h_doS = ((rs.get("captured") or {}).get(str(lB)) or {}).get(str(pB))
+            delta_shuf = arm({"layer": lB, "positions": [pB], "values": h_doS}) if h_doS else None
+            frac = delta_edge / A["delta_full"] if abs(A["delta_full"]) > 1e-9 else None
+            edges.append({
+                "from": [lA, pA], "to": [lB, pB],
+                "delta_edge": delta_edge, "routed_fraction": frac,
+                "shuffled_site": [lA, pS], "delta_shuffled": delta_shuf,
+                # claimed: the routed effect beats the noise floor AND at least doubles the
+                # shuffled control — otherwise it is reported but NOT claimed as a real edge.
+                "claimed": bool(abs(delta_edge) > floor and delta_shuf is not None
+                                and abs(delta_edge) >= 2.0 * abs(delta_shuf)),
+            })
+
+        # ---- S4: margin-test generation arms (predicted-vs-OBSERVED) -------------------------
+        # The graph PREDICTED (from two published numbers: delta_full and the baseline margin)
+        # which node ablations flip the actually-generated token. Now we run the generations and
+        # score the prediction. Baseline must itself be greedy-reproducible or the behavioral
+        # tier is inapplicable (reported, not fudged).
+        gen_tier = {"ran": False, "baseline_greedy": None}
+        if budget.run_s4 and solid:
+            b = _complete(engine_url, prompt, target_idx + 1, reference=cont_ids)
+            base_ok = not bool(b.get("diverged"))
+            gen_tier = {"ran": True, "baseline_greedy": base_ok}
+            if base_ok:
+                for c in solid:
+                    g = _complete(engine_url, prompt, target_idx + 1, reference=cont_ids,
+                                  write={"layer": c["layer"], "positions": [c["pos"]],
+                                         "values": mean_rows[c["layer"]].tolist()})
+                    if g.get("diverged") and int(g.get("diverged_at", -1)) == target_idx:
+                        c["margin_flip_observed"] = True          # flipped exactly at the target
+                    elif g.get("diverged"):
+                        c["margin_flip_observed"] = "diverged_early"  # upstream token changed first
+                    else:
+                        c["margin_flip_observed"] = False
+
+        # the 2x2 the graph gets judged on: predictions were published BEFORE the generations ran
+        observed = [c for c in solid if isinstance(c.get("margin_flip_observed"), bool)]
+        scorecard = {
+            "predicted_flips": sum(1 for c in candidates if c["margin_flip_predicted"]),
+            "observed_flips": sum(1 for c in observed if c["margin_flip_observed"]) if gen_tier["ran"] else None,
+            "correct_predictions": sum(1 for c in observed
+                                       if c["margin_flip_predicted"] == c["margin_flip_observed"]),
+            "wrong_predictions": sum(1 for c in observed
+                                     if c["margin_flip_predicted"] != c["margin_flip_observed"]),
+            "diverged_early": sum(1 for c in solid
+                                  if c.get("margin_flip_observed") == "diverged_early"),
+            "generation_tier": gen_tier,
+        }
+
         return {
             "ok": True,
             "target": {"pos": target_idx, "abs_pos": t_abs, "id": y_id, "piece": y_piece,
                        "baseline_logprob": base_lp, "margin": None if np.isnan(margin) else margin},
             "nodes": [c for c in candidates if c["survived"]],
+            "edges": edges,
             "all_candidates": candidates,          # dead ones too: the screen's over-nomination, published
             "accounting": {**acct,
                            "screened_sites": sites_end * len(layers),
@@ -359,14 +461,13 @@ def trace(prompt: str, continuation, target_idx: int, *,
             "controls": {"arms": controls, "noise_floor": floor,
                          "median_abs": float(np.median(np.abs(ctl_deltas))),
                          "max_abs": float(np.max(np.abs(ctl_deltas))), "verdict": verdict},
-            "prediction_scorecard": {
-                "predicted_flips": sum(1 for c in candidates if c["margin_flip_predicted"]),
-                "observed_flips": None},           # S4
+            "prediction_scorecard": scorecard,
             "config": {"layers": layers, "concepts": list(concept_ids),
                        "concept_notes": concept_notes, "seed": seed,
                        "budget": {"max_candidates": budget.max_candidates,
                                   "n_random_dir": budget.n_random_dir,
-                                  "n_random_site": budget.n_random_site},
+                                  "n_random_site": budget.n_random_site,
+                                  "max_edges": budget.max_edges, "run_s4": budget.run_s4},
                        "units": "delta = logprob_y(baseline) - logprob_y(ablated), teacher-forced",
                        "boundary_approximate": bool(base.get("boundary_approximate", False))},
         }
