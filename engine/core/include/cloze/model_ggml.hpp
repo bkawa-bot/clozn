@@ -18,6 +18,8 @@
 // active_start = min{q : mask(q, n-1)} (0 when whole-sequence / fully bidirectional).
 #pragma once
 
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -78,6 +80,26 @@ struct LayerSummary {
     int n_layer = 0;
     int n_tokens = 0;
     std::vector<std::vector<float>> norms;   // [n_layer][n_tokens]: |residual| per token per layer
+};
+
+// Serializable generation state: the KV cache for sequence 0 + enough metadata to resume
+// bit-exactly. checkpoint() captures it; restore() reinstates it. The KV blob is opaque
+// (llama_state_seq_get/set_data); the token list + n_past let the caller resume generate_ar
+// from the right position. Greedy suffix after save->restore is the correctness bar.
+struct EngineCheckpoint {
+    std::vector<uint8_t> kv_data;   // serialized KV cache (seq 0) via llama_state_seq_get_data
+    std::vector<int> tokens;         // full token sequence fed into the KV (prompt + generated so far)
+    int n_past = 0;                  // positions covered by the KV cache
+    bool causal = true;              // attention mode at checkpoint time
+};
+
+// One decode's multi-layer residual snapshot (Phase 2.3 readout plane). Produced by ar_forward
+// when the capture set is armed; consumed by the serve-side ReadoutPlane's worker thread.
+struct CaptureFrame {
+    int from = 0;    // first board position of the decoded segment
+    int rows = 0;    // segment length (1 per token during AR generation; prompt length on prefill)
+    int n_embd = 0;
+    std::vector<std::pair<int, std::vector<float>>> layers;  // (layer, [rows*n_embd] residuals, row-major)
 };
 
 class GgmlAdapter : public ModelAdapter {
@@ -206,6 +228,45 @@ public:
     long long device_forwards() const { return device_forwards_; }
     void reset_device_forwards() { device_forwards_ = 0; }
 
+    // --- Checkpointing + branching (Phase 2.1) -----------------------------------------------
+    // Save the current KV cache state for seq 0 as a serializable blob. `tokens` is the full
+    // sequence fed so far (prompt + generated); `n_past` is how many positions the KV covers.
+    // The caller owns these (generate_ar tracks them); the adapter just serializes the KV.
+    EngineCheckpoint save_checkpoint(const std::vector<int>& tokens, int n_past) const;
+    // Restore a previously saved checkpoint: clear the KV, load the blob, reset internal
+    // bookkeeping (frozen_end_, boundary_row_). After this, ar_forward({next_tok}, ckpt.n_past)
+    // resumes generation bit-exactly (greedy). Throws on size mismatch or restore failure.
+    void load_checkpoint(const EngineCheckpoint& ckpt);
+
+    // --- Batched multi-sequence decode (Phase 2.2) -------------------------------------------
+    // Copy seq 0's KV to seq 1..n-1 (shared-prefix branching). Requires the KV to be populated
+    // for seq 0 first (via ar_forward). After this, each seq_id has an independent copy of the
+    // KV entries and can diverge freely.
+    void branch_kv(int n_branches);
+    // Decode one token per sequence in a single llama_decode call. `tokens_per_seq[i]` is the
+    // token for seq i, decoded at position `n_past` with seq_id = i. Returns per-sequence logits
+    // as a vector of ForwardResult (one per active sequence). The logits[i] field has the
+    // next-token distribution for sequence i. `active` marks which sequences are still live
+    // (not yet EOS/length-stopped); inactive sequences are skipped in the batch.
+    std::vector<ForwardResult> ar_forward_batch(
+        const std::vector<int>& tokens_per_seq, int n_past,
+        const std::vector<bool>& active);
+    // Remove seq 1..n-1 from the KV, keeping only seq 0. Call after batched decode is done to
+    // return the context to single-sequence state.
+    void cleanup_seqs(int n_branches);
+
+    // --- Multi-observer capture plane (Phase 2.3) --------------------------------------------
+    // One forward, N observers: when the capture set is non-empty, eval_cb snapshots EVERY listed
+    // layer's residual ("l_out-<il>", one D2H per layer per decode) and ar_forward hands the
+    // completed CaptureFrame to the capture sink. The sink runs on the DECODE thread — it must
+    // only queue the frame (observer compute belongs on the consumer's own worker thread; see
+    // serve/readout_plane.hpp). Independent of the single-layer tap (tap_layer_/emit_activations),
+    // which stays untouched for the existing /jlens + SAE + probes paths. Layers outside
+    // (0, n_layer) are dropped (the "l_out-<il>" residual names exist only for mid layers).
+    void set_capture_layers(const std::vector<int>& layers);
+    const std::vector<int>& capture_layers() const { return capture_layers_; }
+    void set_capture_sink(std::function<void(CaptureFrame&&)> sink);
+
     // Logits floats that crossed PCIe device->host (llama's decode-time D2H). The §4.3 metric:
     // the zero-copy path drives this toward zero (only the kernel's ~2*n_masked outputs cross),
     // vs n_outputs*vocab per pass on the host path. Structural data movement, not wall-clock.
@@ -260,6 +321,13 @@ private:
     int write_from_ = 0;                 // current decode segment's `from` (board position -> tensor row)
     std::vector<float> diff_prefix_;     // [diff_m_ * n_embd] diffusion soft prefix, laid as a frozen block [0,diff_m_)
     int diff_m_ = 0;                     // diffusion prefix length (0 = none)
+    // Multi-observer capture plane (Phase 2.3): eval_cb fills cap_bufs_ for every layer in the
+    // capture set; fire_capture (end of ar_forward) moves them into a CaptureFrame for the sink.
+    std::vector<int> capture_layers_;                 // layers to snapshot (empty = off)
+    std::map<int, std::vector<float>> cap_bufs_;      // layer -> [rows*n_embd] last-decode residuals
+    int cap_rows_ = 0;                                // rows in the last capture (= segment length)
+    std::function<void(CaptureFrame&&)> capture_sink_;
+    void fire_capture(int from, int rows);            // hand the completed frame to the sink (if armed)
     int pos_offset_ = 0;                 // = diff_m_ when a prefix is active: shifts the board's physical KV positions
     // ggml scheduler eval callback: grabs the mid-layer residual during llama_decode (no source patch).
     static bool eval_cb_thunk(struct ggml_tensor* t, bool ask, void* user_data);

@@ -44,24 +44,27 @@ Not new features — the trust gate before we build more. Payoff = confidence th
 Build the two foundations before the headline. 6–8 are infrastructure whose payoff is that they make #9
 possible and make the white-box readouts fast enough to watch live.
 
-6. **Native exact-state checkpointing + token-exact branching** — serializable/clonable `EngineState` (KV +
-   token ids + gen pos + sampler/RNG + interventions + hashes), snapshot/clone/restore in C++, plus
-   copy-on-write / paged KV so branches share a prefix (today `clozn/replay/timetravel.py` is
-   descriptor-only). Bar: bit-exact greedy suffix after save→restore.
-   *Why:* today's time-travel re-prefills a transcript (replay, not exact) and can cross tokenizer
-   boundaries. *Payoff:* "rr/gdb for an LLM" — pause at a token, fork 100 branches from one shared state,
-   patch a feature, resume bit-exactly. The studio's branching/Experiment flow becomes exact and cheap.
-7. **Batched multi-sequence decode** — the shared-prefix batch primitive; also unlocks **batched causal
-   credit** (coalition / Shapley over teacher-forced arms — `clozn/receipts/core.py` is sequential
-   leave-one-out + pairwise-only today).
-   *Why:* receipts are computed one-arm-at-a-time (slow) and miss higher-order interactions. *Payoff:*
-   receipts return much faster (less spinner) **and** a richer "why did it say this" that catches
-   influences which only matter *together*, not just individually.
-8. **Device-resident multi-observer readout plane** — keep layer activations device-resident, fan out to
-   J-lens / SAE / probes / norms on an async stream. Bar: all observers together at <5–10% overhead,
-   measured under concurrent load.
-   *Why:* live readouts are single-owner and CPU-transported — one lens at a time, slowly. *Payoff:* the
-   "watch it think" experience becomes rich and real-time — several lenses at once during generation.
+6. ~~**Native exact-state checkpointing + token-exact branching**~~ ✅ DONE 2026-07-19 (first slice):
+   `EngineCheckpoint` (KV blob + tokens + n_past) + `save_checkpoint`/`load_checkpoint` on the adapter,
+   `POST /v1/checkpoint` / `/v1/restore` / `/v1/branch` routes (in-memory store, cap 16). **Bar met:
+   bit-exact greedy suffix after save→restore, and all greedy branches match baseline.** Restore
+   currently re-prefills from saved tokens (correct; KV-blob fast-restore is the deferred optimization);
+   sampler/RNG state + interventions in the snapshot also deferred.
+7. ~~**Batched multi-sequence decode**~~ ✅ DONE 2026-07-19 (engine primitive): `branch_kv` /
+   `ar_forward_batch` (one `llama_decode` for N seqs) / `cleanup_seqs` (n_seq_max 16) +
+   `generate_ar_branched` loop; `/v1/branch` now prefills the shared prompt ONCE and decodes all
+   branches per-step in one batch. Bit-exact vs the sequential path. REMAINING: wire batched causal
+   credit (coalition/Shapley over teacher-forced arms) in `clozn/receipts/core.py` on top of it.
+8. ~~**Device-resident multi-observer readout plane**~~ ✅ DONE 2026-07-19: multi-layer capture set in
+   `eval_cb` (one forward, N layers) → `CaptureFrame` sink → serve-side `ReadoutPlane` worker (observer
+   math OFF the decode thread) fanning out to J-lens + norms + probes; J-lens weights uploaded once to
+   the GPU (`init_device`), whole batches + all layers share ONE head read per graph (`readout_multi`),
+   adaptive token batching (≤16/graph, ≤140 ms lag) to amortize WDDM syncs. `readout:{...}` on
+   `/v1/completions` (SSE), `readout` capability + handshake fixture. **Bar met: 4.8% single-stream /
+   9.4% two-concurrent-streams overhead with jlens(L16+L24)+norms at every=1, full coverage, zero
+   drops** (measured on the 9B Q4, 96-token runs; naive per-token CPU readout was 48%). Honest-coverage
+   `readout_stats` frame (observed/dropped/skipped). SAE observer: seam noted, not yet folded in
+   (`with_sae_readout` path unchanged).
 9. **Intervention-validated circuit tracer** *(headline — needs 6 + 7 first)* — attribution graph with an
    explicit unexplained-mass term; every path patch/inhibit/ablate-testable at the exact token+layer;
    predicted-vs-observed logit movement against random-node / direction / shuffled-edge controls.

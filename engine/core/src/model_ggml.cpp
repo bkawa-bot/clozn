@@ -62,6 +62,7 @@ void GgmlAdapter::init_context(int n_ctx) {
     cp.n_ctx = n_ctx_;
     cp.n_batch = n_ctx_;
     cp.n_ubatch = n_ctx_;  // single ubatch: a whole segment decodes in one pass
+    cp.n_seq_max = 16;     // Phase 2.2: batched multi-sequence decode (up to 16 branches)
     cp.cb_eval = &GgmlAdapter::eval_cb_thunk;  // observe the mid-layer residual (white-box tap, no patch)
     cp.cb_eval_user_data = this;
     ctx_ = llama_init_from_model(model_, cp);
@@ -112,11 +113,18 @@ bool GgmlAdapter::eval_cb_thunk(struct ggml_tensor* t, bool ask, void* user_data
 
 bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
     const char* nm = ggml_get_name(t);
+    const bool lout = std::strncmp(nm, "l_out-", 6) == 0;    // a per-layer residual tensor
     const bool read = emit_activations_ && tap_layer_ > 0 && tap_name_ == nm;   // the read tap
     const bool write = have_write_ && write_layer_ > 0 && write_name_ == nm;    // the state-WRITE
     // layer-summary mode: match EVERY per-layer residual "l_out-<il>" (prefix) for per-layer norms in one pass
-    const bool summary = emit_layer_summary_ && std::strncmp(nm, "l_out-", 6) == 0;
-    if (!read && !write && !summary) return false;           // not a residual tensor we read or write
+    const bool summary = emit_layer_summary_ && lout;
+    // capture plane (Phase 2.3): snapshot every layer in the capture set, one D2H per layer
+    int cap_il = -1;
+    if (lout && !capture_layers_.empty()) {
+        const int il = std::atoi(nm + 6);
+        for (int want : capture_layers_) if (want == il) { cap_il = il; break; }
+    }
+    if (!read && !write && !summary && cap_il < 0) return false;  // not a tensor we read or write
     if (ask) return true;                                     // yes — hand me its data after it computes
     const int ne0 = static_cast<int>(t->ne[0]);  // n_embd
     const int ne1 = static_cast<int>(t->ne[1]);  // token rows (the decode segment)
@@ -124,6 +132,12 @@ bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
         tap_rows_ = ne1;
         tap_buf_.resize(static_cast<size_t>(ne0) * ne1);
         ggml_backend_tensor_get(t, tap_buf_.data(), 0, tap_buf_.size() * sizeof(float));
+    }
+    if (cap_il >= 0 && ne0 == n_embd_ && ne1 > 0) {
+        std::vector<float>& buf = cap_bufs_[cap_il];
+        buf.resize(static_cast<size_t>(ne0) * ne1);
+        ggml_backend_tensor_get(t, buf.data(), 0, buf.size() * sizeof(float));
+        cap_rows_ = ne1;
     }
     if (summary && ne0 == n_embd_ && ne1 > 0) {
         const int il = std::atoi(nm + 6);                    // "l_out-<il>" -> il
@@ -251,6 +265,10 @@ ForwardResult GgmlAdapter::ar_forward(const std::vector<int>& tokens, int n_past
             if (e) std::memcpy(out.activations.data(), e, static_cast<size_t>(n_embd_) * sizeof(float));
         }
     }
+    // Capture plane (Phase 2.3): hand this decode's multi-layer snapshot to the sink. The sink only
+    // queues (the ReadoutPlane worker does the observer math), so the decode thread's cost here is a
+    // move + a queue push.
+    fire_capture(n_past, len);
     return out;
 }
 
@@ -650,6 +668,125 @@ ForwardResult GgmlAdapter::forward(const std::vector<int>& board,
                     static_cast<size_t>(vocab) * sizeof(float));
     }
     return out;
+}
+
+EngineCheckpoint GgmlAdapter::save_checkpoint(const std::vector<int>& tokens, int n_past) const {
+    EngineCheckpoint ckpt;
+    ckpt.tokens = tokens;
+    ckpt.n_past = n_past;
+    ckpt.causal = causal_;
+    const size_t sz = llama_state_seq_get_size(ctx_, 0);
+    ckpt.kv_data.resize(sz);
+    const size_t written = llama_state_seq_get_data(ctx_, ckpt.kv_data.data(), ckpt.kv_data.size(), 0);
+    if (written == 0)
+        throw std::runtime_error("save_checkpoint: llama_state_seq_get_data returned 0");
+    ckpt.kv_data.resize(written);
+    return ckpt;
+}
+
+void GgmlAdapter::load_checkpoint(const EngineCheckpoint& ckpt) {
+    if (causal_ != ckpt.causal) set_causal(ckpt.causal);
+    llama_memory_clear(llama_get_memory(ctx_), true);
+    frozen_end_ = 0;
+    boundary_row_.clear();
+    const size_t read = llama_state_seq_set_data(ctx_, ckpt.kv_data.data(), ckpt.kv_data.size(), 0);
+    if (read == 0)
+        throw std::runtime_error("load_checkpoint: llama_state_seq_set_data returned 0");
+}
+
+// --- Batched multi-sequence decode (Phase 2.2) -------------------------------------------
+
+void GgmlAdapter::branch_kv(int n_branches) {
+    if (n_branches < 2) return;
+    llama_memory_t mem = llama_get_memory(ctx_);
+    for (int i = 1; i < n_branches; ++i) {
+        llama_memory_seq_cp(mem, 0, static_cast<llama_seq_id>(i), -1, -1);
+    }
+}
+
+std::vector<ForwardResult> GgmlAdapter::ar_forward_batch(
+        const std::vector<int>& tokens_per_seq, int n_past,
+        const std::vector<bool>& active) {
+    const int n = static_cast<int>(tokens_per_seq.size());
+    if (n <= 0) throw std::invalid_argument("ar_forward_batch: empty tokens_per_seq");
+    if (static_cast<int>(active.size()) != n)
+        throw std::invalid_argument("ar_forward_batch: active size mismatch");
+
+    int n_active = 0;
+    for (int i = 0; i < n; ++i) if (active[i]) ++n_active;
+    if (n_active == 0) return std::vector<ForwardResult>(n);
+
+    write_from_ = n_past;
+    llama_batch batch = llama_batch_init(n_active, 0, 1);
+    batch.n_tokens = n_active;
+    int slot = 0;
+    std::vector<int> batch_to_seq(n_active);
+    for (int i = 0; i < n; ++i) {
+        if (!active[i]) continue;
+        batch.token[slot] = static_cast<llama_token>(tokens_per_seq[i]);
+        batch.pos[slot] = n_past;
+        batch.n_seq_id[slot] = 1;
+        batch.seq_id[slot][0] = static_cast<llama_seq_id>(i);
+        batch.logits[slot] = 1;
+        batch_to_seq[slot] = i;
+        ++slot;
+    }
+    decoded_tokens_ += n_active;
+    const int rc = llama_decode(ctx_, batch);
+    llama_batch_free(batch);
+    if (rc != 0) throw std::runtime_error("ar_forward_batch: llama_decode failed (rc=" +
+                                          std::to_string(rc) + ")");
+
+    const int vocab = cfg_.vocab_size;
+    std::vector<ForwardResult> results(n);
+    for (int s = 0; s < n_active; ++s) {
+        const float* logits = llama_get_logits_ith(ctx_, s);
+        if (!logits) throw std::runtime_error("ar_forward_batch: null logits for slot " +
+                                              std::to_string(s));
+        int seq_i = batch_to_seq[s];
+        ForwardResult& out = results[seq_i];
+        out.n_requested = 1;
+        out.vocab = vocab;
+        out.kv = std::make_shared<GgmlKV>(n_past + 1);
+        out.logits.assign(logits, logits + vocab);
+    }
+    return results;
+}
+
+void GgmlAdapter::cleanup_seqs(int n_branches) {
+    if (n_branches < 2) return;
+    llama_memory_t mem = llama_get_memory(ctx_);
+    for (int i = 1; i < n_branches; ++i) {
+        llama_memory_seq_rm(mem, static_cast<llama_seq_id>(i), -1, -1);
+    }
+}
+
+void GgmlAdapter::set_capture_layers(const std::vector<int>& layers) {
+    capture_layers_.clear();
+    for (int il : layers)
+        if (il > 0 && il < n_layer_) capture_layers_.push_back(il);  // "l_out-<il>" mid layers only
+    cap_bufs_.clear();
+    cap_rows_ = 0;
+}
+
+void GgmlAdapter::set_capture_sink(std::function<void(CaptureFrame&&)> sink) {
+    capture_sink_ = std::move(sink);
+}
+
+void GgmlAdapter::fire_capture(int from, int rows) {
+    if (!capture_sink_ || capture_layers_.empty()) return;
+    CaptureFrame f;
+    f.from = from;
+    f.rows = rows;
+    f.n_embd = n_embd_;
+    for (int il : capture_layers_) {
+        auto it = cap_bufs_.find(il);
+        if (it == cap_bufs_.end() ||
+            it->second.size() != static_cast<size_t>(rows) * n_embd_) continue;  // stale/missing capture
+        f.layers.emplace_back(il, std::move(it->second));
+        it->second.clear();  // moved-from: force a fresh alloc + fresh D2H next decode
+    }
+    if (!f.layers.empty()) capture_sink_(std::move(f));
 }
 
 std::vector<int> GgmlModel::encode(const std::string& text) const {

@@ -912,10 +912,31 @@ struct JlensServe {
     std::map<int, struct ggml_tensor*> Jl;      // layer -> F16 [d_model, d_model] (ggml layout Jl(k,m)=J[m,k])
     std::mutex mtx;                             // a readout builds a transient graph; serialize (on-demand)
 
+    // Device-resident compute path (Phase 2.3 readout plane). The CPU readout is a ~2 GFLOP
+    // full-vocab GEMV per layer per token; run at every=1 it saturates every core and STARVES the
+    // decode thread's CPU side (measured: 48% tok/s loss with the math on a worker thread — the
+    // contention is the cores, not the thread). On the GPU the same GEMV is sub-ms and rides
+    // beside the decode kernels. Weights are uploaded ONCE here; each readout is a tiny graph on
+    // dev_backend + one [vocab x n] logits D2H + a CPU top-k. Null backend => CPU fallback
+    // (thread-capped so it can never starve the decode feed).
+    ggml_backend_t dev_backend = nullptr;
+    struct ggml_context* dev_wctx = nullptr;       // device weight tensor metadata (no_alloc)
+    ggml_backend_buffer_t dev_wbuf = nullptr;      // the device weight buffer
+    struct ggml_tensor* dev_norm = nullptr;
+    struct ggml_tensor* dev_head = nullptr;
+    std::map<int, struct ggml_tensor*> dev_Jl;
+    ggml_gallocr_t dev_galloc = nullptr;           // compute-buffer allocator (sized by chunking)
+
     JlensServe() = default;
     JlensServe(const JlensServe&) = delete;
     JlensServe& operator=(const JlensServe&) = delete;
-    ~JlensServe() { if (wctx) ggml_free(wctx); }
+    ~JlensServe() {
+        if (dev_galloc) ggml_gallocr_free(dev_galloc);
+        if (dev_wbuf) ggml_backend_buffer_free(dev_wbuf);
+        if (dev_wctx) ggml_free(dev_wctx);
+        if (dev_backend) ggml_backend_free(dev_backend);
+        if (wctx) ggml_free(wctx);
+    }
 
     std::vector<int> layers() const {
         std::vector<int> v;
@@ -1003,22 +1024,116 @@ struct JlensServe {
             if (static_cast<size_t>(jf.gcount()) != j_bytes) { err = "short read on " + path; return false; }
             Jl[L] = J;
         }
+        init_device();  // best-effort: a failure leaves dev_backend null => CPU fallback, still correct
         on = true;
         return true;
     }
 
+    // Upload the lens weights to the first GPU backend device (once). Every failure path cleans up
+    // and leaves dev_backend null — the CPU readout stays fully functional, just slower.
+    void init_device() {
+        ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+        if (!dev) return;
+        dev_backend = ggml_backend_dev_init(dev, nullptr);
+        if (!dev_backend) return;
+        struct ggml_init_params ip;
+        ip.mem_size = (Jl.size() + 4) * ggml_tensor_overhead();
+        ip.mem_buffer = nullptr;
+        ip.no_alloc = true;  // metadata only; the data lives in the device buffer below
+        dev_wctx = ggml_init(ip);
+        if (!dev_wctx) { ggml_backend_free(dev_backend); dev_backend = nullptr; return; }
+        dev_head = ggml_new_tensor_2d(dev_wctx, out_head->type, out_head->ne[0], out_head->ne[1]);
+        dev_norm = ggml_new_tensor_1d(dev_wctx, out_norm->type, out_norm->ne[0]);
+        for (const auto& kv : Jl)
+            dev_Jl[kv.first] = ggml_new_tensor_2d(dev_wctx, GGML_TYPE_F16, d_model, d_model);
+        dev_wbuf = ggml_backend_alloc_ctx_tensors(dev_wctx, dev_backend);
+        if (!dev_wbuf) {  // e.g. VRAM exhausted: fall back to CPU
+            dev_Jl.clear(); ggml_free(dev_wctx); dev_wctx = nullptr;
+            ggml_backend_free(dev_backend); dev_backend = nullptr;
+            return;
+        }
+        ggml_backend_tensor_set(dev_head, out_head->data, 0, ggml_nbytes(out_head));
+        ggml_backend_tensor_set(dev_norm, out_norm->data, 0, ggml_nbytes(out_norm));
+        for (const auto& kv : Jl)
+            ggml_backend_tensor_set(dev_Jl[kv.first], kv.second->data, 0, ggml_nbytes(kv.second));
+        dev_galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(dev_backend));
+        if (!dev_galloc) {
+            dev_Jl.clear();
+            ggml_backend_buffer_free(dev_wbuf); dev_wbuf = nullptr;
+            ggml_free(dev_wctx); dev_wctx = nullptr;
+            ggml_backend_free(dev_backend); dev_backend = nullptr;
+        }
+    }
+
+    // Per-row top-k over a [vocab x n] logits block (column p = logits + p*vocab).
+    void topk_rows(const float* Lg, int n_rows, int topk,
+                   std::vector<std::vector<std::pair<int, float>>>& out, size_t out_base) const {
+        const int k = std::min(topk, vocab);
+        std::vector<int> idx(static_cast<size_t>(vocab));
+        for (int p = 0; p < n_rows; ++p) {
+            const float* row = Lg + static_cast<size_t>(p) * vocab;
+            for (int v = 0; v < vocab; ++v) idx[static_cast<size_t>(v)] = v;
+            std::partial_sort(idx.begin(), idx.begin() + k, idx.end(),
+                              [&](int a, int b) { return row[a] > row[b]; });
+            auto& dst = out[out_base + static_cast<size_t>(p)];
+            dst.reserve(static_cast<size_t>(k));
+            for (int j = 0; j < k; ++j) dst.emplace_back(idx[static_cast<size_t>(j)], row[idx[static_cast<size_t>(j)]]);
+        }
+    }
+
     // Per-position top-k of lens_l(h). h = [n_tokens * d_model] host f32 (harvest layout, position-major).
     // Fills out[pos] = up to `topk` (token_id, logit) descending. Serialized (transient graph per call).
+    // Takes the device path when init_device() succeeded (weights already resident; per-call cost is a
+    // [n x d_model] H2D, a sub-ms GEMV graph, and a [vocab x n] logits D2H) — chunked so the device
+    // compute buffer stays ~20 MB even for whole-prompt readouts. CPU fallback is thread-capped: it
+    // must never saturate the cores the decode thread needs (that starvation, not queue blocking, was
+    // the measured 48% readout overhead).
     bool readout(const float* h, int n_tokens, int layer, int topk,
                  std::vector<std::vector<std::pair<int, float>>>& out, std::string& e) {
         if (!on) { e = "jlens not loaded"; return false; }
         auto it = Jl.find(layer);
         if (it == Jl.end()) { e = "no J-lens sidecar for layer " + std::to_string(layer); return false; }
         if (n_tokens <= 0) { e = "no tokens"; return false; }
-        struct ggml_tensor* J = it->second;
         std::lock_guard<std::mutex> lk(mtx);
 
-        // Transient CPU graph context: leaves (h) + intermediates (hJ, normed, logits) + work buffer.
+        if (dev_backend) {
+            out.assign(static_cast<size_t>(n_tokens), {});
+            const int chunk = 16;  // caps the gallocr compute buffer at ~chunk*vocab*4 (~16 MB)
+            std::vector<float> lg;
+            for (int base = 0; base < n_tokens; base += chunk) {
+                const int n = std::min(chunk, n_tokens - base);
+                struct ggml_init_params gp;
+                gp.mem_size = 16 * ggml_tensor_overhead() + ggml_graph_overhead();
+                gp.mem_buffer = nullptr;
+                gp.no_alloc = true;  // gallocr places every tensor in the device compute buffer
+                struct ggml_context* gctx = ggml_init(gp);
+                if (!gctx) { e = "ggml_init(jlens device graph) failed"; return false; }
+                struct ggml_tensor* h_t = ggml_new_tensor_2d(gctx, GGML_TYPE_F32, d_model, n);
+                struct ggml_tensor* hJ = ggml_mul_mat(gctx, dev_Jl[layer], h_t);
+                struct ggml_tensor* nm = ggml_rms_norm(gctx, hJ, eps);
+                nm = ggml_mul(gctx, nm, dev_norm);
+                struct ggml_tensor* logits = ggml_mul_mat(gctx, dev_head, nm);
+                struct ggml_cgraph* gf = ggml_new_graph(gctx);
+                ggml_build_forward_expand(gf, logits);
+                bool ok = ggml_gallocr_alloc_graph(dev_galloc, gf);
+                if (ok) {
+                    ggml_backend_tensor_set(h_t, h + static_cast<size_t>(base) * d_model, 0,
+                                            static_cast<size_t>(n) * d_model * sizeof(float));
+                    ok = ggml_backend_graph_compute(dev_backend, gf) == GGML_STATUS_SUCCESS;
+                }
+                if (ok) {
+                    lg.resize(static_cast<size_t>(vocab) * n);
+                    ggml_backend_tensor_get(logits, lg.data(), 0, lg.size() * sizeof(float));
+                }
+                ggml_free(gctx);
+                if (!ok) { e = "jlens device graph failed"; return false; }
+                topk_rows(lg.data(), n, topk, out, static_cast<size_t>(base));
+            }
+            return true;
+        }
+
+        // CPU fallback. Transient graph context: leaves (h) + intermediates (hJ, normed, logits) + work buffer.
+        struct ggml_tensor* J = it->second;
         const size_t tens = static_cast<size_t>((3 * d_model) + vocab) * n_tokens * sizeof(float);
         const size_t mem = tens + tens / 2 + ggml_graph_overhead() + 32 * ggml_tensor_overhead() + (128ULL << 20);
         struct ggml_init_params ip; ip.mem_size = mem; ip.mem_buffer = nullptr; ip.no_alloc = false;
@@ -1034,26 +1149,86 @@ struct JlensServe {
 
         struct ggml_cgraph* gf = ggml_new_graph(ctx);
         ggml_build_forward_expand(gf, logits);
-        int nthreads = static_cast<int>(std::thread::hardware_concurrency());
-        if (nthreads < 1) nthreads = 4;
-        if (nthreads > 16) nthreads = 16;
+        // Half the cores, max 4: a live-readout fallback must leave the decode thread's CPU side
+        // (graph feed + sampling) breathing room, or the observer throttles generation itself.
+        int nthreads = static_cast<int>(std::thread::hardware_concurrency()) / 2;
+        if (nthreads < 1) nthreads = 1;
+        if (nthreads > 4) nthreads = 4;
         const enum ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, nthreads);
         if (st != GGML_STATUS_SUCCESS) { ggml_free(ctx); e = "jlens graph compute failed"; return false; }
 
-        const float* Lg = static_cast<const float*>(logits->data);   // column p = Lg + p*vocab
-        const int k = std::min(topk, vocab);
         out.assign(static_cast<size_t>(n_tokens), {});
-        std::vector<int> idx(static_cast<size_t>(vocab));
-        for (int p = 0; p < n_tokens; ++p) {
-            const float* row = Lg + static_cast<size_t>(p) * vocab;
-            for (int v = 0; v < vocab; ++v) idx[static_cast<size_t>(v)] = v;
-            std::partial_sort(idx.begin(), idx.begin() + k, idx.end(),
-                              [&](int a, int b) { return row[a] > row[b]; });
-            auto& dst = out[static_cast<size_t>(p)];
-            dst.reserve(static_cast<size_t>(k));
-            for (int j = 0; j < k; ++j) dst.emplace_back(idx[static_cast<size_t>(j)], row[idx[static_cast<size_t>(j)]]);
-        }
+        topk_rows(static_cast<const float*>(logits->data), n_tokens, topk, out, 0);
         ggml_free(ctx);
+        return true;
+    }
+
+    // Multi-layer readout: transport EVERY requested layer, then hit the head ONCE for all of them
+    // (concat the transported+normed columns into one [d_model, n*L] block, one head mul_mat). The
+    // head is the traffic (~vocab*d_model quantized bytes per read, ~25x a J_l); per-layer readout()
+    // reads it L times per token, this reads it once — measured as the difference between halving
+    // decode throughput and a modest overhead at 2 layers. h_by_layer: (layer, [n_tokens*d_model]
+    // host f32); layers without a sidecar are skipped (absent from `out`). Device path only — on the
+    // CPU fallback it just loops readout() (the CPU cost is compute-bound, not head-read-bound).
+    bool readout_multi(const std::vector<std::pair<int, const float*>>& h_by_layer, int n_tokens,
+                       int topk,
+                       std::map<int, std::vector<std::vector<std::pair<int, float>>>>& out,
+                       std::string& e) {
+        if (!on) { e = "jlens not loaded"; return false; }
+        if (n_tokens <= 0) { e = "no tokens"; return false; }
+        std::vector<std::pair<int, const float*>> want;
+        for (const auto& lv : h_by_layer) if (has(lv.first)) want.push_back(lv);
+        if (want.empty()) return true;  // nothing observable: not an error, just no output
+
+        if (!dev_backend) {  // CPU fallback: loop the single-layer path (already thread-capped)
+            for (const auto& lv : want)
+                if (!readout(lv.second, n_tokens, lv.first, topk, out[lv.first], e)) return false;
+            return true;
+        }
+
+        std::lock_guard<std::mutex> lk(mtx);
+        const int L = static_cast<int>(want.size());
+        for (const auto& lv : want) out[lv.first].assign(static_cast<size_t>(n_tokens), {});
+        const int chunk = 16;  // caps the compute buffer at ~chunk*L*vocab*4
+        std::vector<float> lg;
+        for (int base = 0; base < n_tokens; base += chunk) {
+            const int n = std::min(chunk, n_tokens - base);
+            struct ggml_init_params gp;
+            gp.mem_size = static_cast<size_t>(8 * L + 8) * ggml_tensor_overhead() + ggml_graph_overhead();
+            gp.mem_buffer = nullptr;
+            gp.no_alloc = true;
+            struct ggml_context* gctx = ggml_init(gp);
+            if (!gctx) { e = "ggml_init(jlens multi graph) failed"; return false; }
+            std::vector<struct ggml_tensor*> inputs(want.size());
+            struct ggml_tensor* stacked = nullptr;  // [d_model, n*L], layer-major columns
+            for (int l = 0; l < L; ++l) {
+                inputs[l] = ggml_new_tensor_2d(gctx, GGML_TYPE_F32, d_model, n);
+                struct ggml_tensor* hJ = ggml_mul_mat(gctx, dev_Jl[want[l].first], inputs[l]);
+                struct ggml_tensor* nm = ggml_rms_norm(gctx, hJ, eps);
+                nm = ggml_mul(gctx, nm, dev_norm);
+                stacked = stacked ? ggml_concat(gctx, stacked, nm, 1) : nm;
+            }
+            struct ggml_tensor* logits = ggml_mul_mat(gctx, dev_head, stacked);  // ONE head read for all layers
+            struct ggml_cgraph* gf = ggml_new_graph(gctx);
+            ggml_build_forward_expand(gf, logits);
+            bool ok = ggml_gallocr_alloc_graph(dev_galloc, gf);
+            if (ok) {
+                for (int l = 0; l < L; ++l)
+                    ggml_backend_tensor_set(inputs[l],
+                                            want[l].second + static_cast<size_t>(base) * d_model, 0,
+                                            static_cast<size_t>(n) * d_model * sizeof(float));
+                ok = ggml_backend_graph_compute(dev_backend, gf) == GGML_STATUS_SUCCESS;
+            }
+            if (ok) {
+                lg.resize(static_cast<size_t>(vocab) * n * L);
+                ggml_backend_tensor_get(logits, lg.data(), 0, lg.size() * sizeof(float));
+            }
+            ggml_free(gctx);
+            if (!ok) { e = "jlens multi device graph failed"; return false; }
+            for (int l = 0; l < L; ++l)  // columns [l*n, l*n + n) = layer l's tokens for this chunk
+                topk_rows(lg.data() + static_cast<size_t>(l) * n * vocab, n, topk,
+                          out[want[l].first], static_cast<size_t>(base));
+        }
         return true;
     }
 

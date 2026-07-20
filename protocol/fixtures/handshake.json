@@ -17,7 +17,8 @@
     "infill",
     "revise",
     "sae",
-    "jlens"
+    "jlens",
+    "readout"
   ],
   "stream_frame_envelope": [
     "req",

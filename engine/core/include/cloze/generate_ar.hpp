@@ -23,6 +23,13 @@
 
 namespace cloze {
 
+struct BranchResult {
+    std::vector<int> generated;
+    std::string text;
+    std::string reason;  // "eos" | "length"
+    int new_tokens = 0;
+};
+
 // Greedy by default (SampleConfig: temperature 0). Stops at config.max_new tokens or EOS
 // (config.steps / block_len / topk are ignored — AR commits exactly one token per pass).
 // `read_probes` (optional) supplies the concept directions for the per-token StepFeatures; calibrate
@@ -46,5 +53,17 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
                            // termination check, so greedy determinism holds (the reply is what full generation
                            // would produce, truncated). nullptr/empty = no reference (full generation, default).
                            const std::vector<int>* reference = nullptr);
+
+// Batched multi-sequence branching: prefill a shared prompt once, then decode N independent
+// continuations in parallel using a single llama_decode per step. Each branch gets its own
+// KV sequence (via branch_kv) and its own RNG (base_sample.seed + branch_index). Greedy
+// branches from the same prompt produce identical output (the correctness bar). Returns one
+// BranchResult per branch. Cleans up branch sequences before returning.
+std::vector<BranchResult> generate_ar_branched(
+    GgmlAdapter& adapter,
+    const std::vector<int>& prompt_ids,
+    int n_branches,
+    int max_tokens,
+    const SampleConfig& base_sample = {});
 
 }  // namespace cloze

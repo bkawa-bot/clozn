@@ -24,6 +24,7 @@
 #ifdef CLOZE_SAE
 #include "cloze/sae.hpp"  // on-device SAE feature readout (--sae; built with CLOZE_BUILD_SAE)
 #endif
+#include "readout_plane.hpp"  // Phase 2.3: multi-observer readout plane (includes server_shared.hpp)
 #include "viz_html.hpp"
 
 #include "ggml.h"       // J-lens: standalone CPU ggml graph (J_l @ h -> rms_norm -> head)
@@ -190,7 +191,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "[cloze-server] J-lens ready: d_model %d, vocab %d, eps %.1e, layers",
                          jlens.d_model, jlens.vocab, jlens.eps);
             for (int L : jlens.layers()) std::fprintf(stderr, " %d", L);
-            std::fprintf(stderr, " (default %d) from %s\n", jlens.default_layer, jlens_dir.c_str());
+            std::fprintf(stderr, " (default %d), compute %s, from %s\n", jlens.default_layer,
+                         jlens.dev_backend ? "DEVICE (weights resident)" : "cpu (thread-capped fallback)",
+                         jlens_dir.c_str());
         } else {
             std::fprintf(stderr, "[cloze-server] J-lens off: %s\n", jlens.err.c_str());
         }
@@ -213,6 +216,13 @@ int main(int argc, char** argv) {
                        n_ctx, mask_token, ar_mode, gpu_layers, model_path};
 
     httplib::Server svr;
+
+    // Checkpoint store: named snapshots of the KV cache + token sequence, keyed by a server-assigned
+    // id. Saved via POST /v1/checkpoint, restored via POST /v1/restore, forked via POST /v1/branch.
+    // In-memory only (no persistence across restarts); a cap prevents unbounded growth.
+    std::mutex ckpt_mtx;
+    std::map<std::string, EngineCheckpoint> checkpoints;
+    static constexpr int kMaxCheckpoints = 16;
 
     // Cooperative cancellation (see server_shared.hpp's CancelRegistry docstring): shared by every
     // SSE streaming route below so POST /cancel can reach a generation running on another worker
@@ -251,6 +261,7 @@ int main(int argc, char** argv) {
             {"revise", !ar_mode},         // /v1/revise -- diffusion only
             {"sae", sae_on},              // on-device SAE feature readout (--sae build)
             {"jlens", jlens.on},          // live Jacobian-lens "disposed to say" readout
+            {"readout", true},            // Phase 2.3 multi-observer readout plane (readout:{...})
         };
         json h{{"status", "ok"},
                {"protocol_version", PROTOCOL_VERSION},        // worker <-> supervisor wire contract
@@ -380,6 +391,75 @@ int main(int argc, char** argv) {
             lens_on = true;
         }
 
+        // Phase 2.3 readout plane: {"readout": {layers?, jlens?, norms?, probes?, topk?, every?,
+        // include_prompt?}} captures N layers' residuals in ONE forward and fans them out to every
+        // requested observer on a worker thread — the decode thread never runs observer math (the
+        // structural fix for jlens_live's decode-thread GEMV, and for the single-owner tap). Emits a
+        // `readout` frame per observed token + a final `readout_stats` frame with honest coverage
+        // (observed / dropped / skipped — no silent caps). Stream-only.
+        std::shared_ptr<ReadoutPlane> plane;
+        std::vector<int> readout_layers;
+        if (body.contains("readout") &&
+            ((body["readout"].is_boolean() && body["readout"].get<bool>()) || body["readout"].is_object())) {
+            const json rb = body["readout"].is_object() ? body["readout"] : json::object();
+            if (!stream) {
+                res.status = 400;
+                res.set_content(json{{"error", "readout rides the SSE stream only; set stream:true"}}.dump(),
+                                "application/json");
+                return;
+            }
+            if (lens_on) {
+                res.status = 400;
+                res.set_content(json{{"error",
+                    "readout supersedes lens (it computes the same jlens readout, plus more, off the decode "
+                    "thread); drop the lens param"}}.dump(), "application/json");
+                return;
+            }
+            ReadoutObserverConfig rc;
+            rc.jlens = rb.value("jlens", true);
+            rc.norms = rb.value("norms", true);
+            rc.probes = rb.value("probes", false);
+            rc.topk = std::max(1, std::min(rb.value("topk", 8), 20));
+            rc.every = std::max(1, rb.value("every", 1));
+            rc.include_prompt = rb.value("include_prompt", false);
+            if (rb.contains("layers") && rb["layers"].is_array())
+                for (const auto& l : rb["layers"])
+                    if (l.is_number_integer()) readout_layers.push_back(l.get<int>());
+            // Default layer set: every J-lens sidecar layer when the lens is loaded (the observers
+            // people actually want), else the 2/3-depth mid layer (norms-only still works there).
+            if (readout_layers.empty()) {
+                if (jlens.on) readout_layers = jlens.layers();
+                else readout_layers = {model_n_layer * 2 / 3};
+            }
+            for (int L : readout_layers) {
+                if (L < 1 || L >= model_n_layer) {
+                    res.status = 400;
+                    res.set_content(json{{"error", "readout layer out of range (1..n_layer-1)"},
+                                         {"layer", L}, {"n_layer", model_n_layer}}.dump(),
+                                    "application/json");
+                    return;
+                }
+            }
+            if (rc.jlens && !jlens.on && !rc.norms && !rc.probes) {
+                res.status = 400;
+                res.set_content(json{{"error",
+                    "readout.jlens requested but J-lens not loaded (start with --jlens <dir>), and no "
+                    "other observer is on"}}.dump(), "application/json");
+                return;
+            }
+            // Concept probes are calibrated at the 2/3-depth mid layer (the same convention the
+            // steering paths use); capture it if the probes observer needs it and it isn't listed.
+            rc.probe_layer = rb.value("probe_layer", model_n_layer * 2 / 3);
+            if (rc.probes) {
+                bool have = false;
+                for (int L : readout_layers) if (L == rc.probe_layer) { have = true; break; }
+                if (!have && rc.probe_layer >= 1 && rc.probe_layer < model_n_layer)
+                    readout_layers.push_back(rc.probe_layer);
+            }
+            rc.layers = readout_layers;
+            plane = std::make_shared<ReadoutPlane>(rc, &jlens, &concept_probes, model.get());
+        }
+
         // Encode inputs via the model's vocab (no context needed — fully concurrent).
         std::vector<int> prompt_ids, suffix_ids;
         int gap = 0;
@@ -418,12 +498,20 @@ int main(int argc, char** argv) {
 
         // One call into the runtime on a POOLED context (acquire blocks until one is free, so N
         // workers run N requests concurrently; the Lease releases it on any exit).
-        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens, lens_on, lens_layer](
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens, lens_on, lens_layer, plane, readout_layers](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             // white-box tap on for this request (off by default); the live lens implies it — the
             // per-token StepActivations events ARE its input (consumed into jlens_live frames downstream).
             (*lease).set_emit_activations(features || lens_on);
+            // Phase 2.3 readout plane: arm the multi-layer capture set + sink. The sink body runs on
+            // the decode thread but only queues (ReadoutPlane::push is bounded + non-blocking); the
+            // observer math runs on the plane's own worker thread.
+            if (plane) {
+                (*lease).set_capture_layers(readout_layers);
+                std::shared_ptr<ReadoutPlane> pl = plane;
+                (*lease).set_capture_sink([pl](CaptureFrame&& f) { pl->push(std::move(f)); });
+            }
             // --sae: read at the SAE's own layer and ride each pass's top-k features on the stream.
             const bool sae_on = features && sae_serve.on;
             const int default_tap = (*lease).tap_layer();
@@ -471,6 +559,10 @@ int main(int argc, char** argv) {
                 if (diff_prefix) (*lease).clear_diffusion_prefix();
                 if (steering || raw_steer) (*lease).clear_steer();
                 if (sae_on || lens_on) (*lease).set_tap_layer(default_tap);
+                if (plane) {  // disarm the capture plane before returning the pooled context
+                    (*lease).set_capture_sink({});
+                    (*lease).set_capture_layers({});
+                }
                 (*lease).set_emit_activations(false);  // reset before returning the pooled context
             };
             try {
@@ -497,7 +589,7 @@ int main(int argc, char** argv) {
             res.set_chunked_content_provider(
                 "text/event-stream",
                 [run, id, object, model, prompt_ids, suffix_ids, protocol, state_full, substrate, mask_token,
-                 &jlens, lens_on, lens_layer, lens_topk, lens_every, &cancel_registry]
+                 &jlens, lens_on, lens_layer, lens_topk, lens_every, &cancel_registry, plane]
                 (size_t, httplib::DataSink& sink) {
                     auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
                     StreamEnvelope env{id, write};        // stamps req + monotonic seq on every frame
@@ -509,9 +601,16 @@ int main(int argc, char** argv) {
                         // State-stream protocol: fold the §5.1 events into StateStep frames.
                         StateStepBuilder builder(*model, substrate, state_full,
                                                  [&](json f) { env.frame(std::move(f)); });
-                        auto on_event = [&](const Event& e) { env.check_cancelled(); builder.on_event(e); };
+                        auto on_event = [&](const Event& e) {
+                            env.check_cancelled();
+                            builder.on_event(e);
+                            // readout plane: interleave completed observer frames (all sink writes
+                            // stay on THIS thread; the worker only computes)
+                            if (plane) for (auto& fr : plane->drain()) env.frame(std::move(fr));
+                        };
                         GenerateResult r = run(on_event);
                         builder.finish();
+                        if (plane) for (auto& fr : plane->finish()) env.frame(std::move(fr));
                         // Final summary frame: the canonical snapshot (board + text + layout) the
                         // consumer restores via /v1/board (meta.kind="final").
                         json final_frame = {{"kind", "final"}, {"id", id}, {"object", object},
@@ -562,8 +661,12 @@ int main(int argc, char** argv) {
                             }
                         }
                         env.frame_str(sse_data(e, *model, prompt_ids, suffix_ids));
+                        // readout plane: interleave completed observer frames (all sink writes stay
+                        // on THIS thread; the worker only computes)
+                        if (plane) for (auto& fr : plane->drain()) env.frame(std::move(fr));
                     };
                     GenerateResult r = run(on_event);
+                    if (plane) for (auto& fr : plane->finish()) env.frame(std::move(fr));
                     // A final OpenAI-style frame carrying the assembled text, then [DONE].
                     json final_frame = {{"id", id}, {"object", object},
                                         {"choices", json::array({{{"text", r.text}, {"index", 0},
@@ -638,6 +741,141 @@ int main(int argc, char** argv) {
     register_state_routes(svr, ctx);
 
 
+
+    // --- Checkpointing + branching (Phase 2.1) -----------------------------------------------
+    // POST /v1/checkpoint — save the current KV state for a running or completed generation.
+    // {tokens: [int], n_past: int} → {checkpoint_id, n_past, size_bytes}
+    svr.Post("/v1/checkpoint", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, false);
+        if (body.is_discarded() || !body.is_object()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON body"}}.dump(), "application/json");
+            return;
+        }
+        if (!body.contains("tokens") || !body["tokens"].is_array() || body["tokens"].empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "'tokens' must be a non-empty array of token ids"}}.dump(), "application/json");
+            return;
+        }
+        std::vector<int> tokens = body["tokens"].get<std::vector<int>>();
+        const int n_past = body.value("n_past", static_cast<int>(tokens.size()));
+        try {
+            ContextPool::Lease lease = pool.acquire();
+            (*lease).set_causal(true);
+            (*lease).ar_forward(tokens, 0);
+            EngineCheckpoint ckpt = (*lease).save_checkpoint(tokens, n_past);
+            const std::string id = make_id("ckpt-");
+            const size_t sz = ckpt.kv_data.size();
+            {
+                std::lock_guard<std::mutex> lk(ckpt_mtx);
+                if (static_cast<int>(checkpoints.size()) >= kMaxCheckpoints) {
+                    checkpoints.erase(checkpoints.begin());
+                }
+                checkpoints[id] = std::move(ckpt);
+            }
+            res.set_content(json{{"checkpoint_id", id}, {"n_past", n_past},
+                                 {"n_tokens", static_cast<int>(tokens.size())},
+                                 {"size_bytes", sz}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", std::string("checkpoint failed: ") + e.what()}}.dump(), "application/json");
+        }
+    });
+
+    // POST /v1/restore — restore a saved checkpoint and optionally continue generation.
+    // {checkpoint_id, max_tokens?, temperature?, ...} → {text, tokens, finish_reason}
+    svr.Post("/v1/restore", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, false);
+        if (body.is_discarded() || !body.is_object()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON body"}}.dump(), "application/json");
+            return;
+        }
+        const std::string ckpt_id = body.value("checkpoint_id", std::string());
+        if (ckpt_id.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "need checkpoint_id"}}.dump(), "application/json");
+            return;
+        }
+        EngineCheckpoint ckpt;
+        {
+            std::lock_guard<std::mutex> lk(ckpt_mtx);
+            auto it = checkpoints.find(ckpt_id);
+            if (it == checkpoints.end()) {
+                res.status = 404;
+                res.set_content(json{{"error", "unknown checkpoint_id"}}.dump(), "application/json");
+                return;
+            }
+            ckpt = it->second;
+        }
+        const int max_tokens = body.value("max_tokens", 64);
+        const SampleConfig sample = sample_from(body);
+        try {
+            ContextPool::Lease lease = pool.acquire();
+            // First slice: re-prefill from the saved tokens (correct, no KV-blob restore yet).
+            // Phase 2 optimization: load_checkpoint + resume without re-prefill.
+            GenerateConfig cfg;
+            cfg.max_new = max_tokens < 1 ? 1 : max_tokens;
+            GenerateResult r = generate_ar(*lease, ckpt.tokens, cfg, {}, sample, nullptr,
+                                           nullptr, 0, nullptr);
+            json resp{{"checkpoint_id", ckpt_id}, {"text", r.text},
+                      {"finish_reason", finish_reason(r.reason)},
+                      {"generated_tokens", r.new_tokens},
+                      {"total_tokens", static_cast<int>(r.board.size())}};
+            res.set_content(dump_json(resp), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", std::string("restore failed: ") + e.what()}}.dump(), "application/json");
+        }
+    });
+
+    // POST /v1/branch — fork N independent continuations from a checkpoint.
+    // {checkpoint_id, n: int, max_tokens?, temperature?, seed?} → {branches: [{text, finish_reason}]}
+    svr.Post("/v1/branch", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, false);
+        if (body.is_discarded() || !body.is_object()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON body"}}.dump(), "application/json");
+            return;
+        }
+        const std::string ckpt_id = body.value("checkpoint_id", std::string());
+        if (ckpt_id.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "need checkpoint_id"}}.dump(), "application/json");
+            return;
+        }
+        EngineCheckpoint ckpt;
+        {
+            std::lock_guard<std::mutex> lk(ckpt_mtx);
+            auto it = checkpoints.find(ckpt_id);
+            if (it == checkpoints.end()) {
+                res.status = 404;
+                res.set_content(json{{"error", "unknown checkpoint_id"}}.dump(), "application/json");
+                return;
+            }
+            ckpt = it->second;
+        }
+        const int n = std::min(body.value("n", 4), 16);
+        const int max_tokens = body.value("max_tokens", 64);
+        SampleConfig base_sample = sample_from(body);
+        try {
+            ContextPool::Lease lease = pool.acquire();
+            auto results = generate_ar_branched(*lease, ckpt.tokens, n,
+                                                max_tokens < 1 ? 1 : max_tokens,
+                                                base_sample);
+            json branches = json::array();
+            for (int i = 0; i < static_cast<int>(results.size()); ++i) {
+                branches.push_back({{"index", i}, {"text", results[i].text},
+                                    {"finish_reason", finish_reason(results[i].reason)},
+                                    {"generated_tokens", results[i].new_tokens}});
+            }
+            res.set_content(json{{"checkpoint_id", ckpt_id}, {"n", n},
+                                 {"branches", branches}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", std::string("branch failed: ") + e.what()}}.dump(), "application/json");
+        }
+    });
 
     svr.Post("/v1/completions",
              [&](const httplib::Request& req, httplib::Response& res) { handle(req, res, false); });

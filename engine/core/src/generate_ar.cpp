@@ -152,4 +152,101 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     return result;
 }
 
+std::vector<BranchResult> generate_ar_branched(
+    GgmlAdapter& adapter,
+    const std::vector<int>& prompt_ids,
+    int n_branches,
+    int max_tokens,
+    const SampleConfig& base_sample) {
+
+    if (prompt_ids.empty()) throw std::invalid_argument("prompt_ids must be non-empty");
+    if (n_branches < 1) throw std::invalid_argument("n_branches must be >= 1");
+    if (max_tokens < 1) throw std::invalid_argument("max_tokens must be >= 1");
+
+    const ModelConfig& mcfg = adapter.config();
+    const int eos = mcfg.eos_token_id;
+    const int n_ctx = adapter.n_ctx();
+    const int p = static_cast<int>(prompt_ids.size());
+
+    adapter.set_causal(true);
+
+    if (p > n_ctx)
+        throw std::invalid_argument("prompt exceeds context window");
+
+    ForwardResult shared_fwd = adapter.ar_forward(prompt_ids, 0);
+    int n_past = p;
+
+    if (n_past >= n_ctx) {
+        std::vector<BranchResult> results(n_branches);
+        for (auto& r : results) r.reason = "length";
+        return results;
+    }
+
+    adapter.branch_kv(n_branches);
+
+    std::vector<std::vector<int>> seqs(n_branches, prompt_ids);
+    std::vector<std::vector<int>> gen(n_branches);
+    std::vector<std::string> reasons(n_branches, "length");
+    std::vector<bool> active(n_branches, true);
+    std::vector<std::mt19937_64> rngs;
+    for (int i = 0; i < n_branches; ++i)
+        rngs.emplace_back(base_sample.seed + static_cast<uint64_t>(i));
+
+    std::vector<ForwardResult> batch_fwd;
+
+    for (int k = 0; k < max_tokens; ++k) {
+        if (n_past >= n_ctx) break;
+
+        bool any_active = false;
+        for (int i = 0; i < n_branches; ++i) if (active[i]) any_active = true;
+        if (!any_active) break;
+
+        std::vector<int> next_tokens(n_branches, 0);
+        for (int i = 0; i < n_branches; ++i) {
+            if (!active[i]) continue;
+            SampleOpts sopts;
+            sopts.temperature = base_sample.temperature;
+            sopts.rep_penalty = base_sample.rep_penalty;
+            sopts.top_k = base_sample.top_k;
+            sopts.top_p = base_sample.top_p;
+            sopts.mask_token = mcfg.mask_token_id;
+            if (base_sample.rep_penalty != 1.0) sopts.board = &seqs[i];
+            if (base_sample.temperature > 0.0) sopts.rng = &rngs[i];
+
+            const ForwardResult& cur = (k == 0) ? shared_fwd : batch_fwd[i];
+            auto cand = sample_candidates(cur, {n_past}, sopts);
+            if (cand.empty()) { active[i] = false; continue; }
+            int tok = cand[0].token_id;
+            next_tokens[i] = tok;
+            gen[i].push_back(tok);
+            seqs[i].push_back(tok);
+            if (eos >= 0 && tok == eos) {
+                reasons[i] = "eos";
+                active[i] = false;
+            }
+        }
+
+        any_active = false;
+        for (int i = 0; i < n_branches; ++i) if (active[i]) any_active = true;
+        if (!any_active || k + 1 >= max_tokens) break;
+
+        batch_fwd = adapter.ar_forward_batch(next_tokens, n_past, active);
+        ++n_past;
+    }
+
+    adapter.cleanup_seqs(n_branches);
+
+    std::vector<BranchResult> results(n_branches);
+    for (int i = 0; i < n_branches; ++i) {
+        auto& r = results[i];
+        std::vector<int> kept = gen[i];
+        if (reasons[i] == "eos" && !kept.empty()) kept.pop_back();
+        r.generated = gen[i];
+        r.text = adapter.decode(kept);
+        r.reason = reasons[i];
+        r.new_tokens = static_cast<int>(kept.size());
+    }
+    return results;
+}
+
 }  // namespace cloze
