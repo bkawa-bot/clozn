@@ -98,6 +98,21 @@ def test_verdict_failed_when_controls_match_real():
         controls_verdict([1.0], [])
 
 
+# ------------------------------------------------------------------- strength tiering contract
+
+def test_strength_tiers_match_the_documented_thresholds():
+    """The tiering the CLI prints and the receipt stores: strong >= 3x the strongest control,
+    weak 1-3x, marginal <= 1x. Pinned because a 16-prompt battery found single traces spanning
+    1.3x to 218x -- the tail is nearly indistinguishable from a random intervention and callers
+    must be able to tell those apart."""
+    ctl_max = 0.02
+    for delta, want in [(10.0, "strong"), (0.06, "strong"), (0.059, "weak"),
+                        (0.021, "weak"), (0.02, "marginal"), (0.001, "marginal")]:
+        ratio = abs(delta) / ctl_max
+        tier = "strong" if ratio >= 3.0 else "weak" if ratio > 1.0 else "marginal"
+        assert tier == want, f"delta {delta} (ratio {ratio:.2f}) -> {tier}, expected {want}"
+
+
 # ------------------------------------------------------------------------------- accounting
 
 def test_accounting_interaction_gap_signs():

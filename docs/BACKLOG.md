@@ -80,9 +80,16 @@ possible and make the white-box readouts fast enough to watch live.
    control; same-column edges route ~100% — the structural correctness check passes; off-column
    discovery edge L16@3(France)→L24@4 routes 45%, shuffled ctl 34x smaller) + generation arms via
    `/v1/completions` write (patch + greedy + reference early-stop). **Predicted-vs-observed
-   scorecards PERFECT on both pilot prompts (Tokyo 2/2, Paris 7 correct / 0 wrong).** Full S0–S4
-   trace ~4.4 s. REMAINING: run-journal input mode, studio click-a-token panel, more-prompt
-   validation battery (2 prompts is a pilot, not a claim).
+   scorecards PERFECT on both pilot prompts.** Full S0–S4 trace ~2.7–4.4 s.
+   **16-prompt / 7-category validation battery 2026-07-20** (notes/CIRCUIT_TRACER_DESIGN.md §5b):
+   S4 accuracy **88/96 = 91.7%** (3 false-positive / 3 false-negative, 5 of 6 within ±40% of the
+   decision boundary — threshold noise on a real signal); 16/16 PASS. Constraints found: only
+   **45% of surviving nodes are `strong`** (≥3x strongest control — `control_ratio`/`strength`
+   tiers now shipped per node), median legibility **~24%** (most causal mass is unnameable),
+   interaction gap median **−60%** (solo attribution overcounts ~2.5x, universally), and
+   `FAILED_CONTROLS` has **never fired on a real prompt** — the STOP check is unexercised in the
+   wild. REMAINING: run-journal input mode, studio click-a-token panel, a genuine screen-null
+   (replace the target concept, don't dilute it), 2nd model family.
    *Why:* clozn can inspect and intervene but can't yet *produce and prove* how an input caused an output.
    *Payoff:* **the north-star feature.** Click "Tokyo" in an answer → a compact causal path through named
    internal features to the output logit → disable it → watch the prediction move.

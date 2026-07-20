@@ -64,13 +64,16 @@ def cmd_trace_circuit(args):
     print(f"screened {acct['screened_sites']} sites -> {acct['candidates']} candidates -> "
           f"{acct['survivors']} survivors")
     if r["nodes"]:
-        print(f"\n  {'layer':>5} {'pos':>4}  {'d_full':>8} {'d_dir':>8}  {'legible':>7}  {'flip?':>5}  name")
+        print(f"\n  {'layer':>5} {'pos':>4}  {'d_full':>8} {'d_dir':>8}  {'legible':>7}  "
+              f"{'vs ctl':>7}  {'flip?':>5}  name")
         for n in sorted(r["nodes"], key=lambda x: -abs(x["delta_full"])):
             leg = f"{n['legibility']:.0%}" if n["legibility"] is not None else "n/a"
             flip = "YES" if n["margin_flip_predicted"] else "no"
-            marginal = "  (marginal: <= strongest control arm)" if n.get("marginal") else ""
+            ratio = f"{n['control_ratio']:.1f}x" if n.get("control_ratio") is not None else "n/a"
+            tier = "" if n.get("strength") == "strong" else f"  [{n.get('strength')}]"
             print(f"  {n['layer']:>5} {n['pos']:>4}  {n['delta_full']:>+8.4f} {n['delta_dir']:>+8.4f}"
-                  f"  {leg:>7}  {flip:>5}  {n['name']}{marginal}")
+                  f"  {leg:>7}  {ratio:>7}  {flip:>5}  {n['name']}{tier}")
+        print("  (vs ctl = |delta| / strongest control arm; strong >= 3x, weak 1-3x, marginal <= 1x)")
         if acct["delta_total"] is not None:
             print(f"\n  joint (all survivors ablated at once): delta_total {acct['delta_total']:+.4f}"
                   f" | sum of solos {acct['sum_solo']:+.4f}"

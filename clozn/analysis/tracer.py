@@ -358,10 +358,16 @@ def trace(prompt: str, continuation, target_idx: int, *,
         survivors = [c for c in candidates if abs(c["delta_full"]) > floor]
         for c in candidates:
             c["survived"] = abs(c["delta_full"]) > floor
-            # marginal: beat the (median-based) floor but NOT the strongest single control arm —
-            # a node this size is indistinguishable from the best random intervention; keep it in
-            # the graph (it did survive the stated bar) but say so.
-            c["marginal"] = c["survived"] and abs(c["delta_full"]) <= ctl_max
+            # Per-node separation from the STRONGEST control arm — the number that says how much
+            # to trust this node, published so nobody has to take "survived" on faith. A 16-prompt
+            # battery found real traces spanning 1.3x to 218x on the SAME trace: the strong nodes
+            # are overwhelming, the tail is barely distinguishable from a random intervention.
+            # Tiers (documented, not silently applied): strong >= 3x, weak 1-3x, marginal <= 1x.
+            c["control_ratio"] = (abs(c["delta_full"]) / ctl_max) if ctl_max > 1e-12 else None
+            r_ = c["control_ratio"]
+            c["strength"] = ("strong" if (r_ is not None and r_ >= 3.0)
+                             else "weak" if (r_ is not None and r_ > 1.0) else "marginal")
+            c["marginal"] = c["survived"] and c["strength"] == "marginal"
             ok_margin = not np.isnan(margin) and margin > 0
             c["margin_flip_predicted"] = bool(ok_margin and c["delta_full"] > margin)
             c["margin_flip_observed"] = None      # S4 (generation arms) fills this in
