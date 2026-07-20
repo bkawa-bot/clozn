@@ -464,8 +464,34 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                     }
                     cap_json[std::to_string(lv.first)] = std::move(rows);
                 }
+                // NO SILENT EMPTIES. A layer can pass the [1, n_layer) range check and still yield
+                // nothing. The known case is the LAST layer (n_layer-1): llama.cpp applies the
+                // inp_out_ids optimization there, materializing ONLY the rows that produce logits
+                // (one row for a single-target /score) instead of all positions -- so `l_out-<last>`
+                // fires but is the wrong shape for a whole-sequence capture, and fire_capture drops
+                // it. Returning {} would read as "captured, all zeros" to a caller. Report the gap;
+                // a request where NOTHING landed is an outright 400.
+                //
+                // This also BOUNDS cross-position path patching: the last layer cannot be held, so a
+                // source whose influence is re-imported by final-layer attention cannot be measured
+                // by patching a destination column (measured: 0% routed at every held depth for a
+                // late-layer source -- notes/CIRCUIT_TRACER_DESIGN.md 5f).
+                json missing = json::array();
+                for (int L : cap_layers_armed)
+                    if (!cap_json.contains(std::to_string(L))) missing.push_back(L);
+                if (cap_json.empty()) {
+                    res.status = 400;
+                    res.set_content(json{{"error", "capture produced no rows for any requested layer; "
+                                                   "the last layer (n_layer-1) materializes only the "
+                                                   "logit rows (inp_out_ids), so whole-sequence capture "
+                                                   "needs layer <= n_layer-2"},
+                                         {"requested", capture_layers},
+                                         {"armed", cap_layers_armed}}.dump(), "application/json");
+                    return;
+                }
                 resp["captured"] = std::move(cap_json);
                 resp["n_embd"] = cap_frame.n_embd;
+                if (!missing.empty()) resp["capture_missing"] = std::move(missing);
             }
             res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {

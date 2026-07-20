@@ -408,9 +408,22 @@ def trace(prompt: str, continuation, target_idx: int, *,
             h_doS = ((rs.get("captured") or {}).get(str(lB)) or {}).get(str(pB))
             delta_shuf = arm({"layer": lB, "positions": [pB], "values": h_doS}) if h_doS else None
             frac = delta_edge / A["delta_full"] if abs(A["delta_full"]) > 1e-9 else None
+            # A cross-position routed_fraction is a LOWER BOUND, not a measurement (see
+            # notes/CIRCUIT_TRACER_DESIGN.md §5f): patching ONE destination site leaves the source
+            # position un-ablated at later layers, so the network re-imports the information
+            # downstream and the effect collapses. Holding the whole destination column does not
+            # rescue it either, because llama.cpp materializes only the logit rows at the last
+            # layer (inp_out_ids), leaving one unpatchable layer to re-supply the effect. Measured:
+            # 0.0% routed at every held depth for a late-layer cross-position source, which is
+            # physically impossible as a true effect size. SAME-COLUMN edges are unaffected (and
+            # close to structural — patching a position at a later layer does hold everything
+            # flowing through it), which is why every edge claimed so far is same-column.
+            same_column = (pA == pB)
             edges.append({
                 "from": [lA, pA], "to": [lB, pB],
                 "delta_edge": delta_edge, "routed_fraction": frac,
+                "same_column": same_column,
+                "fraction_is_lower_bound": not same_column,
                 "shuffled_site": [lA, pS], "delta_shuffled": delta_shuf,
                 # claimed: the routed effect beats the noise floor AND at least doubles the
                 # shuffled control — otherwise it is reported but NOT claimed as a real edge.

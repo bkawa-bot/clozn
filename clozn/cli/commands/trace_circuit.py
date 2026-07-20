@@ -97,12 +97,21 @@ def cmd_trace_circuit(args):
                   f" | interaction gap {acct['interaction_gap']:+.4f}")
         if r.get("edges"):
             print("\n  edges (path patching: A's effect routed through B alone):")
+            any_cross = False
             for e in r["edges"]:
                 frac = f"{e['routed_fraction']:.0%}" if e["routed_fraction"] is not None else "n/a"
                 shuf = f"{e['delta_shuffled']:+.4f}" if e["delta_shuffled"] is not None else "n/a"
                 tag = "CLAIMED" if e["claimed"] else "not claimed"
-                print(f"    L{e['from'][0]}@{e['from'][1]} -> L{e['to'][0]}@{e['to'][1]}: "
+                kind = "same-col" if e.get("same_column") else "CROSS-POS"
+                if not e.get("same_column"):
+                    any_cross = True
+                print(f"    L{e['from'][0]}@{e['from'][1]} -> L{e['to'][0]}@{e['to'][1]} [{kind}]: "
                       f"delta {e['delta_edge']:+.4f} (routed {frac}) | shuffled-ctl {shuf} | {tag}")
+            if any_cross:
+                print("    NOTE: a CROSS-POS routed fraction is a LOWER BOUND, not a measurement --")
+                print("    single-site patching cannot hold a cross-position path (the source keeps")
+                print("    re-supplying it downstream, and the last layer is unpatchable). Same-col")
+                print("    fractions are close to structural. See CIRCUIT_TRACER_DESIGN.md 5f.")
         sc = r["prediction_scorecard"]
         gen = sc.get("generation_tier") or {}
         if gen.get("ran"):
