@@ -7,6 +7,7 @@ engine-internal event types.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import os
 import time
@@ -15,6 +16,67 @@ import urllib.request
 
 from clozn.server import app as ctx
 from clozn.server.http_policy import send_cors_headers
+
+
+@dataclass
+class InstrumentedChatResult:
+    """One compatibility request after it has crossed Clozn's instrumented substrate.
+
+    Compatibility routes own their wire formats, but they must not each grow a second
+    inference path.  This result is the shared seam: memory assembly, steering, trace
+    capture, finish-reason capture, and run journaling have already happened by the
+    time a route turns it into OpenAI- or Ollama-shaped JSON.
+    """
+
+    reply: str
+    trace_steps: list
+    memory: dict
+    finish_reason: str | None
+    public_finish_reason: str
+    run_id: str | None
+
+
+def instrumented_chat(handler, messages: list, *, model: str, max_tokens: int = 256,
+                      sample=True, source: str, extra_meta: dict | None = None) -> InstrumentedChatResult:
+    """Run chat through the active substrate and persist the resulting evidence.
+
+    This is deliberately below every compatibility serializer.  The active substrate
+    is where Clozn applies prompt-card memory, tone steering, anchored memory, and the
+    traced engine call; ``handler._log_run`` is where that evidence becomes a receipt.
+    A route calling ``ENGINE.complete`` directly skips all of those layers.
+
+    Generation errors are journaled before being re-raised so callers can preserve
+    their protocol-specific error envelope without losing the failed experiment.
+    """
+    sub = ctx.active_sub(handler)
+    if not (sub and getattr(sub, "chat", None)):
+        raise RuntimeError("model worker unavailable")
+
+    started = time.time()
+    trace_steps = []
+    memout = {}
+    chat_kw = {"trace_out": trace_steps, "mem_out": memout}
+    if isinstance(sub, ctx.EngineSubstrate):
+        # Live compatibility traffic gets the same anchored-memory behavior as the
+        # OpenAI route. Receipt/replay callers remain explicitly deterministic.
+        chat_kw["apply_anchored"] = True
+    try:
+        reply = sub.chat(messages, int(max_tokens), sample, **chat_kw)
+    except Exception as exc:
+        handler._log_run(source, messages, "", model, started, error=str(exc),
+                         mem_out=memout, extra_meta=extra_meta)
+        raise
+
+    finish = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
+    public_finish = ctx._openai_finish_reason(finish)
+    rid = handler._log_run(source, messages, reply, model, started,
+                           trace=trace_steps, mem_out=memout, finish_reason=finish,
+                           finish_reason_fallback=None if finish else public_finish,
+                           extra_meta=extra_meta)
+    return InstrumentedChatResult(
+        reply=str(reply), trace_steps=trace_steps, memory=memout,
+        finish_reason=finish, public_finish_reason=public_finish, run_id=rid,
+    )
 
 
 def model_id() -> str:

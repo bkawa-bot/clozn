@@ -700,6 +700,7 @@ from clozn.server.routes import timetravel as _timetravel_routes      # noqa: E4
 from clozn.server.routes import profiles as _profiles_routes          # noqa: E402
 from clozn.server.routes import preferences as _preferences_routes    # noqa: E402
 from clozn.server.routes import feedback as _feedback_routes          # noqa: E402
+from clozn.server.routes import ollama as _ollama_routes              # noqa: E402
 from clozn.server.routes import openai as _openai_routes              # noqa: E402
 from clozn.server.routes import engine as _engine_routes              # noqa: E402
 from clozn.server.routes import rewrite as _rewrite_routes            # noqa: E402 (edit Route D: AR rewrite)
@@ -717,12 +718,12 @@ from clozn.server.routes import receipt_link as _receipt_link_routes   # noqa: E
 _runs_fallback_routes = _types.SimpleNamespace(try_get=_runs_routes.try_get_fallback)
 
 _GET_ROUTES = [_static_routes, _health_routes, _runs_routes, _memory_routes, _receipts_routes,
-              _timetravel_routes, _profiles_routes, _openai_routes, _engine_routes,
+              _timetravel_routes, _profiles_routes, _ollama_routes, _openai_routes, _engine_routes,
               _journal_routes, _card_routes, _anchored_routes, _diff_routes, _receipt_link_routes,
               _runs_fallback_routes]
 _POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes, _replay_routes,
                _timetravel_routes, _profiles_routes, _preferences_routes, _feedback_routes,
-               _openai_routes, _engine_routes, _rewrite_routes, _readouts_routes,
+               _ollama_routes, _openai_routes, _engine_routes, _rewrite_routes, _readouts_routes,
                _span_receipt_routes, _fork_routes, _journal_routes, _anchored_routes, _diff_routes,
                _receipt_link_routes]
 
@@ -940,7 +941,8 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                 # so the Run Inspector shows them. Fully guarded; never breaks logging or the reply.
                 try:
                     import clozn.memory.facts_mode as facts_mode
-                    if facts_mode.enabled() and source in ("studio_chat", "openai_api", "engine_chat"):
+                    if facts_mode.enabled() and source in ("studio_chat", "openai_api", "ollama_api",
+                                                           "engine_chat"):
                         box = _slots_box()
                         if box is not None and not error:
                             wrote = box.auto_write(messages, response)

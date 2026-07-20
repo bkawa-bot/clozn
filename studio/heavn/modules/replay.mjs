@@ -13,27 +13,142 @@ export function ReplayModule(){
   const rec = useStore(x => x.rec);
   const live = useStore(x => x.live);
   usePlayEngine();
-  if(!rec) return html`<div class="replay-grid"><div class="col">
-      <${Monitor} rec=${null}/>
-      <div class="mod"><div class="empty">Nothing has spoken yet${live ? " — say something into the monitor above" : ""}.</div></div>
-    </div><div class="col"></div></div>`;
-  return html`<div class="replay-grid">
-    <div class="col">
-      <div class="monrow"><${Monitor} rec=${rec}/><${Logs} rec=${rec}/></div>
-      <${Cfg} rec=${rec}/>
-      <${TapeMod} rec=${rec}/>
+  if(!rec) return html`<div class="replay-workbench replay-empty">
+    <div class="workbench-titlebar">
+      <div><span class="workbench-kicker">run workbench</span><h1>Observe a local run as it lands.</h1>
+        <p>The model-state scope, replay tape, and intervention tools will bind to the next journal record.</p></div>
+      <span class=${"workbench-live " + (live ? "on" : "off")}>${live ? "READY" : "OFFLINE"}</span>
+    </div>
+    <${Monitor} rec=${null}/>
+  </div>`;
+  return html`<div class="replay-workbench">
+    <${WorkbenchHeader} rec=${rec}/>
+    <${SignalRibbon} rec=${rec}/>
+
+    <div class="workbench-stage">
       <${ScopeMod} rec=${rec}/>
+      <aside class="workbench-live-rail">
+        <${SignalReadout} rec=${rec}/>
+        <${Meters} rec=${rec}/>
+        <${QuickRepair} rec=${rec}/>
+      </aside>
     </div>
-    <div class="col">
-      <${Meters} rec=${rec}/>
-      <${ExplainPanel} rec=${rec}/>
-      <${ReceiptsPanel} rec=${rec}/>
-      <${SpanForensics} rec=${rec}/>
-      <${LieDetector} rec=${rec}/>
-      <${QuickRepair} rec=${rec}/>
-      <${Steer} rec=${rec}/>
-      <${Minfl} rec=${rec}/>
+
+    <${TapeMod} rec=${rec}/>
+    <div class="workbench-output"><${Monitor} rec=${rec}/><${Logs} rec=${rec}/></div>
+
+    <div class="workbench-analysis-head">
+      <div><span class="workbench-kicker">analysis rack</span><h2>Inspect, prove, and intervene</h2></div>
+      <p>Cheap recorded signals stay visible. Generative and causal work remains explicit and on demand.</p>
     </div>
+    <div class="workbench-analysis">
+      <div class="col">
+        <${ExplainPanel} rec=${rec}/>
+        <${ReceiptsPanel} rec=${rec}/>
+        <${SpanForensics} rec=${rec}/>
+        <${LieDetector} rec=${rec}/>
+      </div>
+      <div class="col">
+        <${Steer} rec=${rec}/>
+        <${Minfl} rec=${rec}/>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* The first screen is a run instrument, not an output-first chat shell. Every field here comes from
+   either the selected journal record or /readyz; an absent worker field stays visibly absent. */
+function WorkbenchHeader({ rec }){
+  const s = useStore(x => ({ worker: x.worker, P: x.P, playing: x.playing }));
+  const steps = normSteps(rec), d = (rec.meta && rec.meta.decode) || {};
+  const worker = s.worker || {};
+  const runtime = worker.device || worker.architecture || rec.substrate || null;
+  const stage = s.playing ? "PLAYING" : s.P >= steps.length && steps.length ? "AT END" : s.P ? "PAUSED" : "READY";
+  const fact = (label, value) => html`<div class="workbench-fact"><span>${label}</span><b>${value == null || value === "" ? "—" : value}</b></div>`;
+  return html`<header class="workbench-titlebar">
+    <div class="workbench-titlecopy">
+      <span class="workbench-kicker">run workbench · recorded model state</span>
+      <h1>${firstLine(rec)}</h1>
+      <p>${rec.id || "—"} · ${shortTime(rec.created_at) || "time unavailable"}</p>
+    </div>
+    <div class="workbench-facts">
+      ${fact("model", rec.model)}${fact("runtime", runtime)}${fact("decode", d.mode)}
+      ${fact("finish", rec.finish_reason)}${fact("tokens", steps.length)}
+    </div>
+    <div class="workbench-status"><span class=${"workbench-live " + (rec._sample ? "sample" : "on")}>${rec._sample ? "SAMPLE" : stage}</span>
+      <span>${s.P} / ${steps.length}</span></div>
+  </header>`;
+}
+
+function signalBuckets(steps, limit = 160){
+  if(!steps.length) return [];
+  const size = Math.max(1, Math.ceil(steps.length / limit)), out = [];
+  for(let start = 0; start < steps.length; start += size){
+    const slice = steps.slice(start, Math.min(steps.length, start + size));
+    const conf = slice.map(x => x.conf).filter(x => x != null);
+    const ent = slice.map(x => x.ent).filter(x => x != null);
+    out.push({ start, end: start + slice.length,
+      conf: conf.length ? conf.reduce((a,b) => a+b, 0) / conf.length : null,
+      ent: ent.length ? Math.max(...ent) : null,
+      piece: slice.map(x => x.piece || "").join("").trim() || "·" });
+  }
+  return out;
+}
+
+/* A compact tape is always above the fold. It is linked to the full arrangement and monitor through
+   the existing global playhead P, so a click here updates every readout without inventing a signal. */
+function SignalRibbon({ rec }){
+  const P = useStore(x => x.P);
+  const playing = useStore(x => x.playing);
+  const steps = normSteps(rec), buckets = signalBuckets(steps);
+  const conf = steps.map(x => x.conf).filter(x => x != null);
+  const shaky = steps.reduce((n,x) => n + (x.conf != null && x.conf < .55 ? 1 : 0), 0);
+  const mean = conf.length ? conf.reduce((a,b) => a+b, 0) / conf.length : null;
+  const current = P ? steps[Math.min(P - 1, steps.length - 1)] : null;
+  return html`<section class="signal-ribbon mod" aria-label="linked replay tape">
+    <div class="signal-ribbon-head">
+      <div><span class="workbench-kicker">linked replay tape</span>
+        <b>${current ? `#${P} · ${(current.piece || "").trim() || "·"}` : "playhead at start"}</b></div>
+      <div class="signal-ribbon-stats"><span>mean confidence <b>${mean == null ? "—" : mean.toFixed(2)}</b></span>
+        <span>low-confidence tokens <b>${shaky}</b></span><span class="tag cap-t">CAPTURED</span></div>
+    </div>
+    <div class="signal-ribbon-row">
+      <button class="ribbon-play" aria-label=${playing ? "Pause replay" : "Play replay"} onClick=${() => {
+        if(playing) store.set({ playing: false });
+        else store.set({ P: P >= steps.length ? 0 : P, playing: true });
+      }}>${playing ? "❚❚" : "▶"}</button>
+      <div class="signal-ribbon-track" style=${"grid-template-columns:repeat(" + Math.max(1,buckets.length) + ",minmax(2px,1fr))"}>
+        ${buckets.map((b,i) => html`<button key=${b.start}
+          class=${"signal-bar" + (P > b.start && P <= b.end ? " on" : "") + (b.conf != null && b.conf < .55 ? " weak" : "")}
+          style=${"--signal:" + (b.conf == null ? .18 : b.conf).toFixed(3) + ";--entropy:" + Math.min(1, (b.ent || 0) / 4).toFixed(3)}
+          title=${`tokens ${b.start + 1}–${b.end} · ${b.piece.slice(0, 42)} · confidence ${b.conf == null ? "unavailable" : b.conf.toFixed(3)}`}
+          aria-label=${`Jump to token ${b.end}`}
+          onClick=${() => store.set({ P: b.end, playing: false })}></button>`)}
+      </div>
+    </div>
+    <div class="signal-ribbon-scale"><span>START</span><span>click any signal block to inspect that position</span><span>END · ${steps.length}</span></div>
+  </section>`;
+}
+
+function SignalReadout({ rec }){
+  const P = useStore(x => x.P);
+  const steps = normSteps(rec), i = steps.length ? Math.max(0, Math.min(steps.length - 1, P ? P - 1 : 0)) : -1;
+  const step = i >= 0 ? steps[i] : null;
+  const low = steps.reduce((best, x, j) => x.conf != null && (best < 0 || x.conf < steps[best].conf) ? j : best, -1);
+  const alts = step ? (step.alts || []).slice(0, 3) : [];
+  return html`<div class="mod signal-readout">
+    <div class="mod-h"><span class="led coral"></span><span class="cap">token position</span>
+      <span class="tail">${step ? `${i + 1} / ${steps.length}` : "—"}</span></div>
+    <div class="signal-readout-token">${step ? ((step.piece || "").trim() || "·") : "no token trace"}</div>
+    <div class="signal-readout-grid">
+      <div><span>confidence</span><b>${step && step.conf != null ? step.conf.toFixed(3) : "—"}</b></div>
+      <div><span>entropy</span><b>${step && step.ent != null ? step.ent.toFixed(3) : "—"}</b></div>
+    </div>
+    <div class="signal-alts"><span>recorded alternatives</span>
+      ${alts.length ? alts.map(a => html`<b>${String(a.piece || "·").trim() || "·"}<i>${a.prob != null ? (+a.prob).toFixed(3) : "—"}</i></b>`)
+        : html`<em>none captured at this position</em>`}</div>
+    <div class="signal-readout-foot"><span>confidence is token probability, not correctness</span>
+      <button class="spd" disabled=${low < 0} onClick=${() => low >= 0 && store.set({ P: low + 1, playing: false })}>JUMP TO LOWEST</button></div>
   </div>`;
 }
 
@@ -1108,11 +1223,14 @@ function ScopeMod({ rec }){
 }
 
 /* ───────────────────────── right column ───────────────────────── */
-function AreaChart({ vals, rgb }){
+function AreaChart({ vals, rgb, cursor = 0 }){
   const ref = useRef(null);
   useEffect(() => {
     const cv = ref.current; if(!cv) return;
-    const W = cv.parentElement.clientWidth, H = 70, dpr = Math.min(2, devicePixelRatio || 1);
+    /* CSS width:100% resolves against meterbody's CONTENT box; parent.clientWidth includes its
+       horizontal padding and used to make the canvas leak 13px out of the narrow workbench. */
+    const W = Math.max(1, cv.getBoundingClientRect().width || cv.parentElement.clientWidth), H = 70;
+    const dpr = Math.min(2, devicePixelRatio || 1);
     cv.width = W*dpr; cv.style.width = W + "px"; cv.height = H*dpr; cv.style.height = H + "px";
     const g = cv.getContext("2d"); g.scale(dpr, dpr);
     g.clearRect(0,0,W,H);
@@ -1127,23 +1245,33 @@ function AreaChart({ vals, rgb }){
     g.fillStyle = gr; g.fill();
     g.beginPath(); pts.forEach((p,i) => i ? g.lineTo(p[0],p[1]) : g.moveTo(p[0],p[1]));
     g.strokeStyle = `rgba(${rgb},.9)`; g.lineWidth = 1.4; g.stroke();
-    const e = pts[pts.length-1];
-    g.fillStyle = `rgba(${rgb},1)`; g.beginPath(); g.arc(e[0], e[1], 2.6, 0, 7); g.fill();
-  }, [vals, rgb]);
+    const ci = Math.max(0, Math.min(pts.length - 1, cursor ? cursor - 1 : 0));
+    const e = pts[ci];
+    g.strokeStyle = "rgba(242,109,79,.72)"; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(e[0], 3); g.lineTo(e[0], H - 2); g.stroke();
+    g.fillStyle = `rgba(${rgb},1)`; g.beginPath(); g.arc(e[0], e[1], 3, 0, 7); g.fill();
+    g.strokeStyle = "rgba(255,255,255,.95)"; g.lineWidth = 1.5; g.stroke();
+  }, [vals, rgb, cursor]);
   return html`<canvas ref=${ref} height="70"></canvas>`;
 }
 function Meters({ rec }){
+  const P = useStore(x => x.P);
   const steps = normSteps(rec);
+  const conf = steps.map(s => s.conf).filter(x => x != null);
+  const ent = steps.map(s => s.ent).filter(x => x != null);
+  const avg = conf.length ? conf.reduce((a,b) => a+b, 0) / conf.length : null;
+  const peak = ent.length ? Math.max(...ent) : null;
   return html`<div class="mod">
     <span class="screw" style="top:5px;right:5px"></span>
     <div class="mod-h"><span class="led blue"></span><span class="cap">multi-meter</span>
       <span class="tag cap-t">CAPTURED</span></div>
     <div class="meterbody">
-      <div class="mcap"><span><i style="background:var(--blue)"></i>confidence</span></div>
-      <${AreaChart} vals=${steps.map(s => s.conf ?? 0)} rgb="44,191,232"/>
+      <div class="mcap"><span><i style="background:var(--blue)"></i>confidence</span><b>${avg == null ? "—" : avg.toFixed(2)} AVG</b></div>
+      <${AreaChart} vals=${steps.map(s => s.conf ?? 0)} rgb="44,191,232" cursor=${P}/>
       <div class="mcap" style="margin-top:8px"><span><i style="background:var(--lilac2)"></i>entropy</span>
-        <span class="tag der-t" style="margin-left:auto">DERIVED</span></div>
-      <${AreaChart} vals=${steps.map(s => s.ent ?? 0)} rgb="154,146,200"/>
+        <b>${peak == null ? "NOT RECORDED" : peak.toFixed(2) + " PEAK"}</b><span class=${"tag " + (peak == null ? "smp-t" : "der-t")}>${peak == null ? "UNAVAILABLE" : "DERIVED"}</span></div>
+      ${peak == null ? html`<div class="meter-unavailable">This run did not capture entropy; no zero line is implied.</div>`
+        : html`<${AreaChart} vals=${steps.map(s => s.ent ?? 0)} rgb="154,146,200" cursor=${P}/>`}
     </div>
   </div>`;
 }

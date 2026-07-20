@@ -199,3 +199,15 @@ def test_run_parser_has_heat_flag_defaulting_off():
     p = cli.build_parser()
     assert p.parse_args(["run", "qwen", "hello"]).heat is False          # default: unchanged, plain stream
     assert p.parse_args(["run", "qwen", "hello", "--heat"]).heat is True  # opt in to the live heatmap
+
+
+def test_run_and_serve_parsers_accept_only_positive_context_windows():
+    p = cli.build_parser()
+    assert p.parse_args(["run", "qwen", "hello"]).ctx is None
+    assert p.parse_args(["serve", "qwen"]).ctx is None
+    assert p.parse_args(["run", "qwen", "hello", "--ctx", "2048"]).ctx == 2048
+    assert p.parse_args(["serve", "qwen", "--ctx", "3072"]).ctx == 3072
+    with pytest.raises(SystemExit):
+        p.parse_args(["run", "qwen", "hello", "--ctx", "0"])
+    with pytest.raises(SystemExit):
+        p.parse_args(["serve", "qwen", "--ctx", "not-a-number"])

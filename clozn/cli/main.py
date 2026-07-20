@@ -31,6 +31,17 @@ class CloznError(Exception):
     """A clean, user-facing failure -- printed as one line, no traceback."""
 
 
+def _positive_context(value: str) -> int:
+    """argparse type for a real, non-zero worker context window."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("context size must be a positive integer") from None
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("context size must be a positive integer")
+    return parsed
+
+
 # Imported after HOME/CloznError are defined: every module below reaches back into this one (`from
 # clozn.cli import main as ctx` for HOME, `from clozn.cli.main import CloznError`), so this file must
 # finish defining both before triggering those imports -- see engine_process.py's module docstring for the
@@ -76,6 +87,8 @@ def build_parser():
     pr = sub.add_parser("run", help="one-shot: stream a completion to the terminal")
     pr.add_argument("model"); pr.add_argument("prompt", nargs="?", default=None)
     pr.add_argument("--max", type=int, default=256, help="max new tokens (default 256)")
+    pr.add_argument("--ctx", type=_positive_context, default=None,
+                    help="worker context window in tokens (default 4096; reduce on tight unified memory)")
     pr.add_argument("--cpu", action="store_true", help="force the CPU build")
     pr.add_argument("--port", type=int, default=0); pr.add_argument("--mask", type=int, default=None)
     pr.add_argument("--eos", type=int, default=None)
@@ -85,6 +98,8 @@ def build_parser():
 
     ps = sub.add_parser("serve", help="bring up the OpenAI-compatible endpoint")
     ps.add_argument("model"); ps.add_argument("--port", type=int, default=0)
+    ps.add_argument("--ctx", type=_positive_context, default=None,
+                    help="worker context window in tokens (default 4096; reduce on tight unified memory)")
     ps.add_argument("--cpu", action="store_true"); ps.add_argument("--mask", type=int, default=None)
     ps.add_argument("--eos", type=int, default=None)
     ps.add_argument("--sae", default=None, help="on-device SAE readout dir (dims must match the model; "

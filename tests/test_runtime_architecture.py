@@ -135,6 +135,22 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertIn("--diffusion", diffusion)
         self.assertIn("--mask-token", diffusion)
 
+    def test_context_override_reaches_the_private_worker(self):
+        args = engine_process._launch_args(
+            "worker", "qwen35.gguf", 9000, {"chat": True, "ctx": 2048}, True
+        )
+        self.assertIn("--gpu-layers", args)
+        self.assertEqual(args[args.index("--ctx") + 1], "2048")
+
+    def test_explicit_context_does_not_reuse_a_mismatched_warm_runtime(self):
+        registry = {"8080": {"model": "qwen35.gguf", "gpu": True, "mode": "autoregressive"}}
+        health = {"status": "ok", "mode": "autoregressive", "worker": {"n_ctx": 4096}}
+        with mock.patch.object(engine_process, "_reg_read", return_value=registry), \
+             mock.patch.object(runtime_process, "gateway_health", return_value=health):
+            self.assertIsNone(engine_process._find_warm("qwen35.gguf", 2048))
+            self.assertEqual(engine_process._find_warm("qwen35.gguf", 4096),
+                             (8080, True, "autoregressive"))
+
     def test_force_cpu_refuses_a_gpu_only_build(self):
         with tempfile.TemporaryDirectory(prefix="clozn-engine-select-") as root:
             gpu_root = os.path.join(root, "build-gpu")
