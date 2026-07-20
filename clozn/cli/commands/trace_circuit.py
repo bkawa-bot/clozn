@@ -1,9 +1,17 @@
-"""commands.trace_circuit -- `clozn trace-circuit`: the intervention-validated circuit tracer CLI
-(S0-S2; notes/CIRCUIT_TRACER_DESIGN.md). Drives clozn.analysis.tracer against a live cloze-server:
-screen -> solo ablations + controls -> joint -> receipt JSON + a terminal rendering of the graph
-with its honesty accounting front and center (verdict, noise floor, interaction gap, dead
-candidates). Direct prompt/continuation mode in this slice; run-journal mode arrives with the
-Studio panel (slice 4).
+"""commands.trace_circuit -- `clozn causal-trace`: intervention-validated CAUSAL tracing
+(S0-S4; notes/CIRCUIT_TRACER_DESIGN.md). Drives clozn.analysis.tracer against a live cloze-server:
+screen -> solo ablations + controls -> joint -> path patching -> generation arms, then a receipt
+JSON + a terminal rendering with the honesty accounting front and center (verdict, noise floor,
+interaction gap, per-node control ratio, dead candidates).
+
+NAMING (deliberate, see notes/CIRCUIT_TRACER_DESIGN.md section 5e). This is **causal tracing** --
+ROME-style (layer, position) activation patching -- NOT circuit discovery in the
+features-and-components sense. Its nodes are LOCATIONS in the residual stream, not features with
+functional roles, and a trace does not generalize beyond its prompt. The measured legibility
+(~24% median) and the SAE study in section 5e are what forced the honest name: at these sites no
+individual dictionary feature is load-bearing, so there is no sparse circuit to report. The
+original `trace-circuit` spelling stays registered as a hidden alias so nothing that already calls
+it breaks.
 
 Registration in clozn/cli/main.py mirrors quant-check exactly: import `cmd_trace_circuit,
 add_subparser as _add_trace_circuit` alongside the other commands.* imports, and call
@@ -16,10 +24,19 @@ import sys
 
 
 def add_subparser(sub):
-    """Register `clozn trace-circuit` (own function so wiring is testable without dispatching)."""
-    pt = sub.add_parser("trace-circuit",
-                        help="causal circuit trace: which internal components caused continuation "
-                             "token N? (needs a running cloze-server with a J-lens sidecar)")
+    """Register `clozn causal-trace` + the legacy `trace-circuit` alias (own function so wiring is
+    testable without dispatching; mirrors commands.quant_check.add_subparser)."""
+    pt = _build("causal-trace", sub,
+                help="causal trace: which (layer, position) sites causally support continuation "
+                     "token N? measured by ablation, not attention (needs a running cloze-server "
+                     "with a J-lens sidecar)")
+    _build("trace-circuit", sub, help=None)   # legacy alias, hidden from --help
+    return pt
+
+
+def _build(name, sub, help):
+    kw = {"help": help} if help else {}
+    pt = sub.add_parser(name, **kw)
     pt.add_argument("--prompt", required=True, help="the prompt text (teacher-forced context)")
     pt.add_argument("--continuation", required=True,
                     help="the continuation text whose token --pos is being traced")
