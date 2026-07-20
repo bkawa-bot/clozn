@@ -18,7 +18,8 @@
     "revise",
     "sae",
     "jlens",
-    "readout"
+    "readout",
+    "attn_knockout"
   ],
   "stream_frame_envelope": [
     "req",

@@ -1285,9 +1285,12 @@ struct JlensServe {
 // while the weights (the bulk of VRAM) are loaded once. RAII Lease guarantees release on any exit.
 class ContextPool {
 public:
-    ContextPool(std::shared_ptr<GgmlModel> model, int workers, int n_ctx) {
+    // flash_attn=false materializes the attention weights (kq_soft_max) so /score's attn_knockout
+    // can cut individual query->key edges; costs some decode speed, hence opt-in via
+    // --no-flash-attn rather than the default.
+    ContextPool(std::shared_ptr<GgmlModel> model, int workers, int n_ctx, bool flash_attn = true) {
         for (int i = 0; i < workers; ++i) {
-            adapters_.push_back(std::make_unique<GgmlAdapter>(model, n_ctx));
+            adapters_.push_back(std::make_unique<GgmlAdapter>(model, n_ctx, false, flash_attn));
             free_.push(adapters_.back().get());
         }
     }

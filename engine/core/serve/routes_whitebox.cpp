@@ -321,6 +321,44 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                 return;
             }
         }
+        // attn_knockout: [{layer, head?, queries:[int], keys:[int], renormalize?}] — sever
+        // "query position reads key position" at a layer/head. This is the cross-position
+        // primitive residual patching could not provide (notes/CIRCUIT_TRACER_DESIGN.md §5f):
+        // cutting the EDGE dodges both the re-supply problem and the unpatchable last layer.
+        // Needs the server started with --no-flash-attn (else the softmax is fused and never
+        // materializes) — refused cleanly rather than silently ignored.
+        std::vector<GgmlAdapter::AttnKnockout> knockouts;
+        if (body.contains("attn_knockout")) {
+            json ks = json::array();
+            if (body["attn_knockout"].is_object()) ks.push_back(body["attn_knockout"]);
+            else if (body["attn_knockout"].is_array()) ks = body["attn_knockout"];
+            for (const json& kb : ks) {
+                GgmlAdapter::AttnKnockout k;
+                if (!kb.is_object()) continue;
+                k.layer = kb.value("layer", -1);
+                k.head = kb.value("head", -1);
+                k.renormalize = kb.value("renormalize", false);
+                if (kb.contains("queries") && kb["queries"].is_array())
+                    k.queries = kb["queries"].get<std::vector<int>>();
+                if (kb.contains("keys") && kb["keys"].is_array())
+                    k.keys = kb["keys"].get<std::vector<int>>();
+                if (k.layer < 0 || k.queries.empty() || k.keys.empty()) {
+                    res.status = 400;
+                    res.set_content(json{{"error", "each attn_knockout needs {layer >= 0, "
+                                                   "queries:[int], keys:[int]}"}}.dump(),
+                                    "application/json");
+                    return;
+                }
+                knockouts.push_back(std::move(k));
+            }
+            if (knockouts.empty()) {
+                res.status = 400;
+                res.set_content(json{{"error", "attn_knockout must be an object or non-empty array"}}.dump(),
+                                "application/json");
+                return;
+            }
+        }
+
         std::vector<int> capture_layers, capture_positions;
         if (body.contains("capture") && body["capture"].is_object()) {
             const json& cb = body["capture"];
@@ -355,10 +393,12 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                 const bool raw_steer = !steer_vec.empty();
                 const bool writing = !write_reqs.empty();
                 const bool capturing = !capture_layers.empty();
+                const bool knocking = !knockouts.empty();
                 auto cleanup = [&]() {
                     if (steering || raw_steer) ad.clear_steer();
                     if (writing) ad.clear_write();
                     if (capturing) { ad.set_capture_sink({}); ad.set_capture_layers({}); }
+                    if (knocking) ad.clear_attn_knockouts();
                 };
                 try {
                     ad.set_causal(true);  // the AR forward needs causal attention (also => a clean KV)
@@ -393,6 +433,22 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                                     ", layer " + std::to_string(w.layer) + ")");
                             }
                         }
+                    }
+                    if (knocking) {
+                        // Refuse rather than silently no-op: with flash attention the softmax is
+                        // fused and the weights we would zero never exist as a tensor.
+                        if (!ad.knockout_available())
+                            throw std::invalid_argument(
+                                "attn_knockout requires the server to be started with --no-flash-attn "
+                                "(flash attention fuses the softmax, so the attention weights never "
+                                "materialize and the knockout would be silently ignored)");
+                        for (const auto& k : knockouts) {
+                            if (k.layer >= ad.n_layer())
+                                throw std::invalid_argument("attn_knockout layer out of range [0, n_layer)");
+                            if (k.head >= ad.n_head())
+                                throw std::invalid_argument("attn_knockout head out of range [0, n_head)");
+                        }
+                        ad.set_attn_knockouts(knockouts);
                     }
                     if (capturing) {
                         ad.set_capture_layers(capture_layers);
@@ -450,6 +506,10 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
             if (!write_reqs.empty()) {
                 resp["write_applied"] = true;
                 resp["n_writes"] = static_cast<int>(write_reqs.size());
+            }
+            if (!knockouts.empty()) {
+                resp["knockout_applied"] = true;
+                resp["n_knockouts"] = static_cast<int>(knockouts.size());
             }
             if (!capture_layers.empty()) {
                 // captured: {"<layer>": {"<pos>": [n_embd floats], ...}, ...} — the residual rows the

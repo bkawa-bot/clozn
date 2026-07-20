@@ -104,6 +104,28 @@ struct CaptureFrame {
 
 class GgmlAdapter : public ModelAdapter {
 public:
+    // --- Attention knockout (Phase 2.4b) -----------------------------------------------------
+    // Zero individual attention weights A[head, query, key] at a layer, i.e. STOP one position
+    // from reading another. This is the primitive residual-site path patching could not provide:
+    // §5f measured 0.0% routed at every depth for cross-position edges because patching a
+    // destination site leaves the SOURCE free to re-supply the information downstream, and the
+    // last layer is unpatchable (inp_out_ids). Cutting the edge itself sidesteps both.
+    //
+    // Requires flash attention OFF (`--no-flash-attn`): with FA the softmax is fused inside the
+    // kernel and `kq_soft_max-<il>` never materializes. knockout_available() reports this, so a
+    // caller gets a clean refusal instead of a silently-ignored intervention.
+    struct AttnKnockout {
+        int layer = 0;
+        int head = -1;                 // -1 = every head at this layer
+        std::vector<int> queries;      // reading positions
+        std::vector<int> keys;         // positions being read (zeroed for each query)
+        bool renormalize = false;      // rescale the surviving row to sum 1 (else mass is dropped)
+    };
+    void set_attn_knockouts(const std::vector<AttnKnockout>& ks);
+    void clear_attn_knockouts();
+    bool knockout_available() const { return !flash_attn_; }
+    int n_head() const { return n_head_; }
+
     // Standalone: load a fresh model + create a context over it (the original API).
     // device_logits_passthrough: when set AND the active-block logits land in a device buffer
     // AND no frozen boundary row is needed this pass, forward() returns the device-resident
@@ -111,11 +133,13 @@ public:
     // to the host path. Requires a GGML_CUDA llama + n_gpu_layers offload to actually trigger.
     GgmlAdapter(const std::string& model_path, int mask_token_id,
                 int eos_token_id = -1, int n_ctx = 4096,
-                int n_gpu_layers = 0, bool device_logits_passthrough = false);
+                int n_gpu_layers = 0, bool device_logits_passthrough = false,
+                bool flash_attn = true);
     // Shared model: create a private context over an already-loaded GgmlModel (for a server pool
-    // of concurrent contexts that share one copy of the weights).
+    // of concurrent contexts that share one copy of the weights). flash_attn=false materializes
+    // the attention weights so knockout works (costs some decode speed).
     explicit GgmlAdapter(std::shared_ptr<GgmlModel> model, int n_ctx = 4096,
-                         bool device_logits_passthrough = false);
+                         bool device_logits_passthrough = false, bool flash_attn = true);
     ~GgmlAdapter() override;
 
     GgmlAdapter(const GgmlAdapter&) = delete;
@@ -327,6 +351,11 @@ private:
     };
     std::vector<WriteSpec> writes_;
     int write_from_ = 0;                 // current decode segment's `from` (board position -> tensor row)
+    // Attention knockout: eval_cb zeroes the listed A[head, query, key] entries of
+    // "kq_soft_max-<il>" (shape [n_kv, n_tokens, n_head]) before kqv consumes them.
+    std::vector<AttnKnockout> knockouts_;
+    bool flash_attn_ = true;             // false => kq_soft_max materializes => knockout possible
+    int n_head_ = 0;
     std::vector<float> diff_prefix_;     // [diff_m_ * n_embd] diffusion soft prefix, laid as a frozen block [0,diff_m_)
     int diff_m_ = 0;                     // diffusion prefix length (0 = none)
     // Multi-observer capture plane (Phase 2.3): eval_cb fills cap_bufs_ for every layer in the

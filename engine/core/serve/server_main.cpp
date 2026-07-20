@@ -63,7 +63,8 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <model.gguf> [--port N] [--host H] [--gpu-layers N] "
                              "[--ar | --diffusion] [--mask-token ID] [--eos ID] [--ctx N] [--workers N] "
-                             "[--sae <dir>] [--sae-k N] [--jlens <dir>] [--model-sha256 HEX]\n", argv[0]);
+                             "[--sae <dir>] [--sae-k N] [--jlens <dir>] [--model-sha256 HEX] "
+                             "[--no-flash-attn]\n", argv[0]);
         return 1;
     }
     const std::string model_path = argv[1];
@@ -75,6 +76,10 @@ int main(int argc, char** argv) {
     std::string model_sha256;
     bool force_ar = false;
     bool force_diffusion = false;
+    // --no-flash-attn: build contexts with FA disabled so "kq_soft_max-<il>" materializes and
+    // /score's attn_knockout can cut individual query->key attention edges. Costs decode speed,
+    // so it stays opt-in; the /health capability reports which mode is live.
+    bool flash_attn = true;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() { return (i + 1 < argc) ? argv[++i] : ""; };
@@ -91,6 +96,7 @@ int main(int argc, char** argv) {
         else if (a == "--model-sha256") model_sha256 = next();
         else if (a == "--ar") force_ar = true;
         else if (a == "--diffusion") force_diffusion = true;
+        else if (a == "--no-flash-attn") flash_attn = false;
     }
     if (force_ar && force_diffusion) {
         std::fprintf(stderr, "--ar and --diffusion are mutually exclusive\n");
@@ -101,7 +107,10 @@ int main(int argc, char** argv) {
     llama_log_set(quiet_log, nullptr);
     // One copy of the weights, N contexts over it — concurrent requests, one model in (V)RAM.
     auto model = std::make_shared<GgmlModel>(model_path, mask_token, eos, gpu_layers);
-    ContextPool pool(model, workers, n_ctx);
+    ContextPool pool(model, workers, n_ctx, flash_attn);
+    if (!flash_attn)
+        std::fprintf(stderr, "[cloze-server] flash attention DISABLED: attention weights "
+                             "materialize, /score attn_knockout available (slower decode)\n");
 
     // --sae: load the on-device SAE encoder BEFORE probe calibration (the read tap must move to the
     // SAE's layer so the probes calibrate in the space they'll project). Refusals are hard errors —
@@ -262,6 +271,7 @@ int main(int argc, char** argv) {
             {"sae", sae_on},              // on-device SAE feature readout (--sae build)
             {"jlens", jlens.on},          // live Jacobian-lens "disposed to say" readout
             {"readout", true},            // Phase 2.3 multi-observer readout plane (readout:{...})
+            {"attn_knockout", !flash_attn},  // /score attn_knockout (needs --no-flash-attn)
         };
         json h{{"status", "ok"},
                {"protocol_version", PROTOCOL_VERSION},        // worker <-> supervisor wire contract

@@ -55,6 +55,7 @@ void GgmlAdapter::init_context(int n_ctx) {
     cfg_ = model_owner_->config();
     n_embd_ = llama_model_n_embd(model_);    // hidden size for the white-box activation tap
     n_layer_ = llama_model_n_layer(model_);  // layer count for control-vector steering
+    n_head_ = llama_model_n_head(model_);    // attention heads (knockout indexes A[head, q, k])
     tap_layer_ = n_layer_ > 3 ? 2 : 0;  // layer 2: best per-token probe separation (sweep-validated)
     tap_name_ = "l_out-" + std::to_string(tap_layer_);   // per-layer residual name (llama-context.cpp "%s-%d")
 
@@ -63,6 +64,11 @@ void GgmlAdapter::init_context(int n_ctx) {
     cp.n_batch = n_ctx_;
     cp.n_ubatch = n_ctx_;  // single ubatch: a whole segment decodes in one pass
     cp.n_seq_max = 16;     // Phase 2.2: batched multi-sequence decode (up to 16 branches)
+    // Flash attention fuses the softmax inside the kernel, so "kq_soft_max-<il>" never
+    // materializes and attention KNOCKOUT is impossible. Default stays AUTO (fast); a server
+    // started with --no-flash-attn gets the explicit materialized path instead.
+    cp.flash_attn_type = flash_attn_ ? LLAMA_FLASH_ATTN_TYPE_AUTO
+                                     : LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cp.cb_eval = &GgmlAdapter::eval_cb_thunk;  // observe the mid-layer residual (white-box tap, no patch)
     cp.cb_eval_user_data = this;
     ctx_ = llama_init_from_model(model_, cp);
@@ -72,17 +78,28 @@ void GgmlAdapter::init_context(int n_ctx) {
 
 GgmlAdapter::GgmlAdapter(const std::string& model_path, int mask_token_id,
                          int eos_token_id, int n_ctx,
-                         int n_gpu_layers, bool device_logits_passthrough)
+                         int n_gpu_layers, bool device_logits_passthrough, bool flash_attn)
     : model_owner_(std::make_shared<GgmlModel>(model_path, mask_token_id, eos_token_id, n_gpu_layers)),
-      device_passthrough_(device_logits_passthrough) {
+      device_passthrough_(device_logits_passthrough), flash_attn_(flash_attn) {
     init_context(n_ctx);
 }
 
-GgmlAdapter::GgmlAdapter(std::shared_ptr<GgmlModel> model, int n_ctx, bool device_logits_passthrough)
-    : model_owner_(std::move(model)), device_passthrough_(device_logits_passthrough) {
+GgmlAdapter::GgmlAdapter(std::shared_ptr<GgmlModel> model, int n_ctx, bool device_logits_passthrough,
+                         bool flash_attn)
+    : model_owner_(std::move(model)), device_passthrough_(device_logits_passthrough),
+      flash_attn_(flash_attn) {
     if (!model_owner_) throw std::invalid_argument("GgmlAdapter: null GgmlModel");
     init_context(n_ctx);
 }
+
+void GgmlAdapter::set_attn_knockouts(const std::vector<AttnKnockout>& ks) {
+    knockouts_.clear();
+    for (const AttnKnockout& k : ks)
+        if (k.layer >= 0 && k.layer < n_layer_ && !k.queries.empty() && !k.keys.empty())
+            knockouts_.push_back(k);
+}
+
+void GgmlAdapter::clear_attn_knockouts() { knockouts_.clear(); }
 
 GgmlAdapter::~GgmlAdapter() {
     if (ctx_) llama_free(ctx_);  // the model is freed by GgmlModel when the last adapter releases it
@@ -113,6 +130,49 @@ bool GgmlAdapter::eval_cb_thunk(struct ggml_tensor* t, bool ask, void* user_data
 
 bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
     const char* nm = ggml_get_name(t);
+    // Attention knockout: "kq_soft_max-<il>" is the post-softmax weight matrix, laid out
+    // [n_kv, n_tokens, n_head] (ne0 = keys, ne1 = queries, ne2 = heads). Zeroing A[h, q, k]
+    // severs "query position q reads key position k at head h" -- the edge itself, rather than
+    // the residual either end of it. Only exists with flash attention DISABLED.
+    int ko_il = -1;
+    if (!knockouts_.empty() && std::strncmp(nm, "kq_soft_max-", 12) == 0)
+        ko_il = std::atoi(nm + 12);
+    if (ko_il >= 0) {
+        bool want = false;
+        for (const AttnKnockout& k : knockouts_) if (k.layer == ko_il) { want = true; break; }
+        if (want) {
+            if (ask) return true;
+            const int n_kv = static_cast<int>(t->ne[0]);
+            const int n_q  = static_cast<int>(t->ne[1]);
+            const int n_h  = static_cast<int>(t->ne[2]);
+            std::vector<float> row(static_cast<size_t>(n_kv));
+            for (const AttnKnockout& k : knockouts_) {
+                if (k.layer != ko_il) continue;
+                for (int h = 0; h < n_h; ++h) {
+                    if (k.head >= 0 && h != k.head) continue;
+                    for (int q : k.queries) {
+                        if (q < 0 || q >= n_q) continue;
+                        const size_t off = ((static_cast<size_t>(h) * n_q) + q) * n_kv;
+                        ggml_backend_tensor_get(t, row.data(), off * sizeof(float),
+                                                row.size() * sizeof(float));
+                        double removed = 0.0;
+                        for (int key : k.keys) {
+                            if (key < 0 || key >= n_kv) continue;
+                            removed += row[static_cast<size_t>(key)];
+                            row[static_cast<size_t>(key)] = 0.0f;
+                        }
+                        if (k.renormalize && removed > 0.0 && removed < 1.0) {
+                            const float s = static_cast<float>(1.0 / (1.0 - removed));
+                            for (int i = 0; i < n_kv; ++i) row[static_cast<size_t>(i)] *= s;
+                        }
+                        ggml_backend_tensor_set(t, row.data(), off * sizeof(float),
+                                                row.size() * sizeof(float));
+                    }
+                }
+            }
+            return true;
+        }
+    }
     const bool lout = std::strncmp(nm, "l_out-", 6) == 0;    // a per-layer residual tensor
     const bool read = emit_activations_ && tap_layer_ > 0 && tap_name_ == nm;   // the read tap
     bool write = false;                                       // the state-WRITE (any spec at this layer)
