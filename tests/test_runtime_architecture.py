@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -153,6 +154,101 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 executable, _dlls, gpu = engine_process.find_engine(prefer_gpu=False)
             self.assertFalse(gpu)
             self.assertIn("build-serve", executable)
+
+    # ---- task #103: cloze-server.exe's own llama.dll/ggml-*.dll dir must land on a spawned child's PATH,
+    # derived from the exe's own location -- never a hardcoded absolute path, never a mutation of the
+    # parent's os.environ. See engine_process._dll_dirs_for / _env_with_dlls.
+
+    def test_dll_dirs_for_derives_the_sibling_bin_dir_from_the_exes_own_path(self):
+        with tempfile.TemporaryDirectory(prefix="clozn-dll-dirs-") as root:
+            build_root = os.path.join(root, "build-gpu")
+            bin_dir = os.path.join(build_root, "bin")
+            os.makedirs(bin_dir)
+            exe = os.path.join(build_root, "cloze-server.exe")
+            open(exe, "wb").close()
+            open(os.path.join(bin_dir, "llama.dll"), "wb").close()
+            open(os.path.join(bin_dir, "ggml.dll"), "wb").close()
+
+            dirs = engine_process._dll_dirs_for(exe)
+
+        self.assertIn(build_root, dirs)
+        self.assertIn(bin_dir, dirs)
+        # No hardcoded absolute path leaked in -- every returned dir sits under this exe's own temp root.
+        self.assertTrue(all(d == build_root or d.startswith(build_root) for d in dirs))
+
+    def test_dll_dirs_for_ignores_a_bin_dir_with_no_engine_dll_in_it(self):
+        """A directory NAMED `bin` that happens to exist but holds none of the engine's own DLLs must not
+        be trusted just because the name matches -- this is the "check where they actually are, don't
+        hardcode" contract _dll_dirs_for exists to enforce."""
+        with tempfile.TemporaryDirectory(prefix="clozn-dll-dirs-") as root:
+            build_root = os.path.join(root, "build-gpu")
+            empty_bin = os.path.join(build_root, "bin")
+            os.makedirs(empty_bin)
+            exe = os.path.join(build_root, "cloze-server.exe")
+            open(exe, "wb").close()
+            open(os.path.join(empty_bin, "unrelated.txt"), "wb").close()
+
+            dirs = engine_process._dll_dirs_for(exe)
+
+        self.assertEqual(dirs, [build_root])   # only the exe's own dir -- the empty `bin` never qualifies
+
+    def test_env_with_dlls_prepends_the_dll_dir_without_mutating_os_environ(self):
+        before = dict(os.environ)
+        fake_dir = os.path.join("Z:", "not-a-real-path", "build-gpu", "bin")
+
+        env = engine_process._env_with_dlls([fake_dir], gpu=False)
+
+        self.assertTrue(env["PATH"].startswith(fake_dir + os.pathsep))
+        self.assertEqual(dict(os.environ), before, "must build a child env dict, never mutate os.environ")
+
+    @unittest.skipUnless(os.name == "nt", "STATUS_DLL_NOT_FOUND / PATH-based DLL search is Windows-specific")
+    def test_scrubbed_path_reproduces_dll_not_found_and_the_fix_resolves_it(self):
+        """Live probe for task #103, run with NO model argument so cloze-server.exe prints its usage line
+        and exits immediately (argc<2 in server_main.cpp) -- never loads a model, never touches the GPU.
+        Skips cleanly when no engine build is present, mirroring test_engine_ctx_overflow.py's own
+        find_engine-missing skip.
+        """
+        try:
+            exe, dll_dirs, gpu = engine_process.find_engine(prefer_gpu=True)
+        except Exception as exc:
+            self.skipTest(f"no engine build available: {exc}")
+
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        scrubbed_path = os.pathsep.join([os.path.join(system_root, "System32"), system_root])
+
+        def run(env, timeout=15):
+            proc = subprocess.Popen([exe], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                out, err = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                self.fail("cloze-server.exe (no model arg) did not exit on its own -- killed the probe")
+            return proc.returncode, out, err
+
+        # Repro: a fresh-shell-like PATH with no build-gpu/bin (or CUDA toolkit) on it hits
+        # STATUS_DLL_NOT_FOUND (0xC0000135). subprocess reports this as the raw unsigned NTSTATUS on some
+        # Python builds and as its signed 32-bit twin on others -- mask to 32 bits either way.
+        STATUS_DLL_NOT_FOUND = 0xC0000135
+        bare_env = dict(os.environ)
+        bare_env["PATH"] = scrubbed_path
+        code, _out, _err = run(bare_env)
+        self.assertEqual(code & 0xFFFFFFFF, STATUS_DLL_NOT_FOUND,
+                         f"expected STATUS_DLL_NOT_FOUND (0xC0000135), got {code!r} -- "
+                         "the exe's own DLL layout may have changed")
+
+        # Fix: the SAME scrubbed PATH as the process's own os.environ, then _env_with_dlls (the actual
+        # function spawn_engine calls) builds the child env from that -- proving the fix works even when
+        # the parent shell's PATH is the scrubbed one, not just when the dev machine's real PATH leaks in.
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = scrubbed_path
+        try:
+            fixed_env = engine_process._env_with_dlls(dll_dirs, gpu)
+        finally:
+            os.environ["PATH"] = old_path
+        code, out, err = run(fixed_env)
+        self.assertEqual(code, 1, f"expected the no-model-arg usage exit (1), got {code!r}")
+        self.assertIn(b"usage:", (out + err).lower())
 
     def test_runtime_config_copies_and_freezes_flags(self):
         flags = {"mask": 7}

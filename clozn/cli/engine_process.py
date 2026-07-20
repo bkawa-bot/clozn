@@ -28,6 +28,39 @@ ENGINE_CORE = os.path.join(REPO, "engine", "core")
 BUILDS = [("build-gpu", True), ("build-cuda", True),
           ("build-ggml-cpu", False), ("build-serve", False), ("build-cpu", False)]
 
+# cloze-server.exe's own shared libraries (llama.cpp's split build: ggml*.dll + llama*.dll). Used as
+# existence markers below -- a candidate directory only counts as a "DLL dir" if one of these is actually
+# in it, not merely because a plausibly-named subfolder happens to exist (see _dll_dirs_for).
+_ENGINE_DLL_MARKERS = ("llama.dll", "ggml.dll")
+
+
+def _dll_dirs_for(exe: str) -> list[str]:
+    """Directories to prepend to a spawned cloze-server's PATH so Windows can resolve its llama.dll /
+    ggml-*.dll imports (STATUS_DLL_NOT_FOUND otherwise -- these DLLs live in a `bin` sibling, not next to
+    the exe, so the OS's automatic "search the app directory first" behavior never finds them; PATH is
+    the mechanism that does).
+
+    Derived from `exe`'s OWN location on disk -- never a hardcoded absolute path -- so this keeps working
+    whichever build layout produced it: single-config CMake (DLLs in ``<build>/bin``, the exe directly in
+    ``<build>/``) and multi-config/Visual-Studio-style generators (exe in ``<build>/Release/``, DLLs in
+    ``<build>/bin`` or ``<build>/bin/Release``). Every candidate except the exe's own directory is checked
+    for an ACTUAL marker DLL before being trusted -- "check where they actually are relative to the binary
+    before hardcoding," not "assume a subfolder name is right because it exists." The exe's own directory
+    is always included even when empty: harmless, and preserves the pre-existing behavior of never handing
+    back zero directories for an otherwise-found exe.
+    """
+    exe_dir = os.path.dirname(exe)
+    build_root = os.path.dirname(exe_dir) if os.path.basename(exe_dir).lower() == "release" else exe_dir
+    candidates = [os.path.join(exe_dir, "bin"), os.path.join(build_root, "bin"),
+                  os.path.join(build_root, "bin", "Release"), os.path.join(build_root, "Release")]
+    dirs = [exe_dir]
+    for d in candidates:
+        d = os.path.normpath(d)
+        if d not in dirs and os.path.isdir(d) and any(
+                os.path.isfile(os.path.join(d, marker)) for marker in _ENGINE_DLL_MARKERS):
+            dirs.append(d)
+    return dirs
+
 
 def find_engine(prefer_gpu=True) -> tuple[str, list[str], bool]:
     """-> (exe_path, dll_dirs, is_gpu).
@@ -42,8 +75,7 @@ def find_engine(prefer_gpu=True) -> tuple[str, list[str], bool]:
         exe = os.path.abspath(os.path.expanduser(override))
         if not os.path.isfile(exe):
             raise ctx.CloznError(f"CLOZN_ENGINE_BIN does not point to a file: {exe}")
-        root = os.path.dirname(exe)
-        bins = [path for path in (root, os.path.join(root, "bin")) if os.path.isdir(path)]
+        bins = _dll_dirs_for(exe)
         gpu = os.environ.get("CLOZN_ENGINE_GPU", "").strip().lower() in ("1", "true", "yes", "on")
         if not prefer_gpu and gpu:
             raise ctx.CloznError(
@@ -58,10 +90,7 @@ def find_engine(prefer_gpu=True) -> tuple[str, list[str], bool]:
                     os.path.join(root, "Release", "cloze-server.exe"),
                     os.path.join(root, "cloze-server")):       # posix
             if os.path.isfile(exe):
-                bins = [d for d in (root, os.path.join(root, "Release"),
-                                    os.path.join(root, "bin"), os.path.join(root, "bin", "Release"))
-                        if os.path.isdir(d)]
-                cands.append((exe, bins, gpu))
+                cands.append((exe, _dll_dirs_for(exe), gpu))
                 break
     if not cands:
         raise ctx.CloznError("no engine found. See docs/DEVELOPMENT.md, or set CLOZN_ENGINE_BIN.")

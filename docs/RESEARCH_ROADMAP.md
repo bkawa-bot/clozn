@@ -27,7 +27,7 @@ All run against the currently-loaded engine. Each is a standalone script hitting
 
 | # | Verdict | Headline |
 |---|---|---|
-| A1.1 | **INCONCLUSIVE (intervention LIVES, prediction weak)** | Catch 100% (10/10), FP 5% (1/20), mostly coherent — the guardrail WORKS. But lens lead-time was positive on only 4/10 detections (bar: >50%); 6/10 flagged concurrent with the word, not before. Up to 27-token lead exists but is a minority. Repeated re-steers in one gen caused localized repetition once. |
+| A1.1 | **INTERVENTION LIVES + prediction RESCUED at L24 (A1.1b)** | Catch 100% (10/10), FP 5% (1/20), mostly coherent. L16 lead-time missed the bar (4/10 positive) — but A1.1b's paired replay (same generations, deterministic /jlens at both layers) shows **L24: 90% strictly-positive lead, median 2 tokens, max 27** (bar: >50%) at +5% clean-prompt false-flag cost (one plausible war-adjacent noise hit). Caveats: n=10; part of the gain may be "closer to the LM head reads more like next-token prediction" rather than deep foresight. Product: poll L24 (already served) for detection, keep L16 as OR-rescue. The "present-tense only" thesis gains a footnote: deeper taps buy a small (~2-token median) forward window. |
 | A1.2 | **KILLED** | Live-jitter diversity 0.42 ≈ null-jitter 0.47 — perturbation direction inside vs outside J's live subspace makes no difference. Coherence half passed (live-jitter −0.69 vs temp −1.60 mean logprob) but the mechanism claim is dead. |
 | A1.3 | **KILLED** | Prospective (pre-onset-only) AUC 0.64, detection 1/9. The retrospective live-energy gap replicates but is explained by content type, not a pre-collapse signature. |
 | A1.5 | **LIVES** (with caveat) | Content-only pooled ρ=0.336 (p=0.0002), creative-vs-technical d=1.70. Raw pooled ρ=0.16 — diluted by `<think>` scaffold tokens (highest live-energy, near-zero surprisal). EEG strip must mask `<think>` spans. |
@@ -38,6 +38,7 @@ All run against the currently-loaded engine. Each is a standalone script hitting
 | A1.6 | **KILLED** | Doubt-point fork win-rate 18.8% (bar: >20%) — and RANDOM high-confidence positions won MORE (28.9%). Permutation p=0.94 for doubt>random. Entropy spikes carry no information about where extra compute helps; stitched completions beat greedy only 13.6% of the time. |
 | A1.9 (verify-then-branch, BK) | **KILLED** (with a precise autopsy) | Score-gated best-of-4 (80.0%) ≈ random-gated (77.2%), p=0.14. Two independent causes: (1) the branching ceiling is tiny — always-branch only buys +4.4 pts (75.6→80.0; HARD 40→46.7%); (2) the gate is band-dependent exactly as A1.7b predicted — MEDIUM gate AUC 0.96-1.0 (but only n_wrong=2, fragile), HARD gate AUC 0.41 = blind on the tail where the wrong answers live (n_wrong=9). Same-model resampling + self-scoring can't rescue hard items: wrong answers are confident AND resampling regenerates them. |
 | A1.10 (did-you-write-this, BK) | **RECEIPT_LIVES / verbal dead** | Statistical receipt: AUC=1.00 self-vs-human (perm p=0.0002) — perfect separation on verbatim text. Verbal "did you write this?": AUC=0.46 = chance (p=0.66) — the model's yes/no carries zero authorship information. Receipt−verbal gap 0.54, CI [0.36, 0.73]. Confabulation-gap prediction confirmed. HARD BOUNDARY: paraphrase kills the receipt completely (AUC 0.51 vs paraphrased-self) — the signal is verbatim-only. Product: a "native-to-this-model" receipt is real but must state the paraphrase limitation; never a verdict tool. |
+| A1.12 + A1.12b (dir(c) vs diff-of-means, BK) | **dir(c) surfaces the WORD; contrastive carries the REGISTER — loops were mostly a greedy artifact** | GREEDY: dir(c) loops (4-gram 81%/97% vs contrastive 42%/72%); lexicon metrics reward the pathology; mean-logprob can't see loops. SAMPLED (shipped settings, 3 seeds): repetition dissolves — dir(c) 1.9%/0.9%; ablation splits credit (sampling 81%→30%, rep-penalty 30%→2%); **the random control fell too (86%→0.9%), so much of it was greedy itself, not the dial** → "attractor" claim narrowed. WHAT SURVIVES: anchor-word surfacing — dir(c) emits the literal word 80%/99% vs contrastive 32%/22%; dir("formal") says the word, contrastive writes "undersigned parties hereby agree". STATS HONESTY: sampled behavioural cell favours contrastive directionally (6.86 vs 3.97 high) but n.s. at n=18 (p=0.06 Wilcoxon) — unproven, needs power. dir(c) sampled retains its effect in 4 cells, loses most of it in 4 (loops had been carrying the score), 4 mixed; low strength survives better. Authoring: 80ms/word vs ~90min/6-concept battery. Product: tone library stays contrastive; dir(c) = low-strength topic nudge + logprob receipts (A1.4 unaffected) + seeds. |
 | A1.11 (steering-by-domain) | **DOMAIN_GAP, direction reversed + measure dissociation** | Raw Δlogprob: code/math get MORE push (+10.6 vs +7.9 nats, d=1.81, p=6e-14); live-energy anti-correlates with push per-prompt (r=−0.80) — crowded channels resist injection. BUT behavioral appearance flips it: concept word surfaces in 100% of prose/dialogue continuations vs 25% of code/math — peaked baseline distributions in code/math absorb a big nat-gain without unseating argmax. Product: strength 0.4 visibly works in natural language; code/math need stronger dials for visible effect. Caveats: 0% syntax damage at this strength, but semantic derailment and one repetition-loop observed — "syntax survived" ≠ "side-effect free". |
 
 #### A1.1 — Closed-loop disposition guardrails ★ flagship
@@ -166,7 +167,7 @@ Can the model identify "which J-lens readout stream is mine" above chance?
 | A3.1 | **FAIL — three diagnosed bugs in fit_lens_fast.py** | (1) dead power-iteration loop (`--n-power` is a literal `pass`); (2) JVP finite-difference eps 1000x too small (1e-3 → pure noise, 50% sign agreement; 0.1 works); (3) UNFIXED operator mismatch — fast fitter estimates J at the last-token position only, dense fitter averages all valid positions with causal-sum reduction: genuinely different linear operators, no hyperparameter reconciles them. Containment 0.08 vs 0.9 bar across three independent runs even with (1)+(2) fixed. **Production unaffected**: qualify-whitebox and shipped artifacts never call this fitter (lab-only). The prior "97.9% offline containment" claim is not reproducible from anything runnable — treat as UNVERIFIED pending re-audit. |
 | A3.2 | **Speed PASS (15.7 min), fidelity FAIL** | Llama-3.1-8B pilot fit with the patched fitter met the 20-min target. Functional smoke: fire +2.26 and ocean +1.55 vs random controls, but rain −1.33 (wrong direction); paired p=0.25 n.s. → cross-family port SKIPPED per pre-registered bar. Artifact kept at `~/.clozn/artifacts/jlens/llama3.1-8b-pilot/`, labeled PILOT with limitations in manifest. |
 
-**Path forward (A3.3, future):** fix the operator mismatch — average sketched JVPs over all valid positions like the dense fitter (more compute per prompt, possibly still inside the 20-min envelope). Only then re-attempt the cross-family port. Until then, qualify-whitebox's white-box promise stays gated.
+**A3.3 ran same day (results: `runs/experiments/a3_3_validation_results.json`):** the position-averaged operator fix is **VALIDATED** — containment 0.08 → **0.798**, singular values match dense (22.83 vs 22.97), rank50-vs-rank50 transported dirs cosine 0.82. Honest fit time: **86 min**, not 20. And a decisive new finding: the 0.95 dir-cosine gate was unpassable by construction — even a PERFECT rank-50 truncation of the dense J agrees with the full-rank transport at only 0.28, because **dir(c) draws ~92% of its mass from J's spectral tail**. Consequence: rank-50 compact lenses suffice for subspace features (live-energy/EEG) but **cannot author concept dials** — dial authoring needs the dense J. The k=50 Llama port is therefore moot (not a failure — mathematically out of reach). Cross-family port path: overnight dense-class Llama fit, then re-run. Fast-J's product niche narrows to subspace features; sweep n_power/n_prompts for the cost/quality curve (checkpoint each power round in one fit to get the curve free).
 
 **Incidental infra bug found:** `cloze-server.exe` requires `engine/core/build-gpu/bin` on PATH for its `llama.dll`/`ggml-*` dependencies — any fresh shell hits STATUS_DLL_NOT_FOUND. Fix belongs in `clozn/cli/engine_process.py` (set the DLL path when spawning).
 
@@ -191,17 +192,35 @@ Pick a model we DON'T have any J for (Llama-3.1-8B or Gemma-4). Fit from scratch
 
 ### Wave A4 — VRAM-blocked (need ~13GB: co-resident models)
 
-Parked until VRAM frees. When it does, these become the next expand wave.
+**RUN 2026-07-19 (evening session, 23 min — capture stages ran in seconds, not the projected minutes). Verdicts (results: `runs/experiments/a4_*_results.json`, timeline: `a4_progress.log`):**
+
+| # | Verdict | Headline |
+|---|---|---|
+| A4.2 (H7) | **MIXED** | Commit-order legibility LIVE: Dream's commit order correlates with final position at mean ρ=0.47, 7/10 prompts outside the shuffled null — real partial global-negotiation structure, neither sequential nor random. Content divergence INCONCLUSIVE: with R3's decode-regime floor applied, sampled-AR-vs-Dream contradiction rate (0.10) exactly equals the greedy-vs-sampled floor (0.10) — no substrate-attributable divergence at n=10. |
+| A4.3 (H3) | **SPLIT, kill bar doesn't fire** | Dream infill beats AR prefix-only overall (0.53 vs 0.20), clears suffix-swap null. Clean wins: code 0.8-vs-0.2, structured 0.8-vs-0.4. Prose: three-way 0.0 miss (partly a fixed-gold scoring artifact on open-ended text). The one repetition loop found was on the AR arm. |
+| A4.1 Tier-0 | **LIVE** | Key discovery: the streaming lens on /v1/completions taps Dream's REAL bidirectional residuals (standalone /jlens forces causal — code-read confirmed). Predictive readout-before-commit hit-rate 24.3% vs corrected null [12.7–15.7]; rises smoothly toward commit (~29% near, ~0% at lead-15): "the plan crystallizes progressively." Subspace claim only per R4. |
+| A4.5 | **LIVE, self-corrected** | Qwen2.5-7B-authored dir(c) injected DIRECTLY into Dream (shared d_model/vocab — no bridge needed): coherent concept surfacing 36% vs 0% random vs 0% baseline. Headline self-corrected from a raw 69% that was inflated by short word-spam ("fire fire fire") invisible to the ≥8-word 4-gram check — new `word_spam` flag added. Distinct failure mode: concept directions over-inject into spam; matched-norm random never does. |
+| A4.4 (H2) | NOT RUN (correctly) | No harness exists; half-day build per runbook. Ceiling-first design (R2) + degeneration veto (R1) recorded for whenever it's built. |
+
+Session integrity: runbook's A4.1 null design was corrected pre-run (row-shuffled-J is INVALID per the project's own J1 finding — shuffled-pairing used instead; runbook fixed in place). Engine restored + verified. Third instance today of "metric blind to short repetition" (A4.5's word-spam) — R0's degeneration-flag rule now extends to text-match metrics with a length-aware spam check.
 
 | # | Experiment | Question | Kill condition |
 |---|---|---|---|
 | A4.1 | **J-E5: Dream denoise J-lens** | Does corpus-averaged Jacobian transport survive bidirectional attention + mask tokens? | Fitted J has no live/null separation |
 | A4.2 | **H7: Divergence atlas** | Same prompt → AR vs diffusion. Where does generation order change content? | Outputs converge on >90% of prompts |
 | A4.3 | **H3: Substrate routing** | Does bidirectional infill beat AR FIM on real editing tasks? | Dream infill ≤ AR FIM on coherence |
-| A4.4 | **H2: Score-gated self-repair** | AR generates + confidence-masks shaky spans + Dream re-solves + /score accepts. Net improvement? | Repairs score worse >50% of the time |
+| A4.4 | **H2: Score-gated self-repair** | AR generates + confidence-masks shaky spans + Dream re-solves + /score accepts. Net improvement? | Repairs score worse >50% of the time — **REVISED (R1/R2)**: mean-logprob accept gate is BROKEN (A1.12: can't see repetition loops) → add degeneration veto; and measure the UNCONDITIONAL repair ceiling first (A1.9 died of a tiny ceiling as much as a blind gate) |
 | A4.5 | **9.9: Cross-model disposition transfer** | Dispositions are word-distributions; inject A's read into B. Coherent steer? | Transferred direction = random on model B |
 
 **Parallel plan:** A4.1 (fit-only) and A4.2 (generation) are independent. A4.3/A4.4 depend on A4.2 verdict.
+
+**MANDATORY design revisions from the 2026-07-19 expand wave** — full text in `notes/A4_RUNBOOK.md` §0b, they supersede the original specs:
+- **R0 (all cards):** every generation at product decode settings; every quality metric carries a degeneration flag. Greedy-only + fluency-only metrics rewarded pathology twice today (A1.11, A1.12).
+- **R1 (A4.4):** mean-logprob accept gate cannot see repetition loops → add an n-gram degeneration veto to every /score-based judgement.
+- **R2 (A4.4):** run the unconditional-repair ceiling BEFORE the gated arm (A1.9's double failure mode).
+- **R3 (A4.2):** AR-vs-diffusion confounds substrate with decode regime → match sampling, keep AR-greedy as reference, treat the AR-greedy-vs-AR-sampled gap as the floor.
+- **R4 (A4.1):** subspace questions only — no Dream dials from a compact fit (A3.3: dir(c) is ~92% spectral tail); use the v3 position-averaged fitter, budget ~86 min.
+- **R5 (A4.5):** evaluate transported dispositions at logprob AND behavioural level w/ degeneration flags; prefer contrastive-authored sources (A1.12: register lives in distributed directions).
 
 ---
 
@@ -215,6 +234,27 @@ Parked until VRAM frees. When it does, these become the next expand wave.
 | A5.4 | X5: Convergence archaeology | No product tie. Time-sensitive. No GPU needed. Run when curious. |
 | A5.5 | H5: Counterfactual patches | Needs /v1/revise ablated-context spike. Park until A4 wave lands. |
 | A5.6 | Multi-feature composition quality | Finding #6 validated stability. Does quality (not just stability) improve with 3–4 composed features? Needs a tighter scorer. |
+
+---
+
+### Wave A6 — Intervention-validated circuit tracing (the north star; gated behind B2)
+
+**Promoted 2026-07-19** out of "B2 item 4", where it was misfiled as an engineering deliverable. The *engineering* is B2; the *research question is open, unanswered, and the largest one left in the project.* Wave A4 is the last research that runs on today's engine — this is the research beyond it.
+
+**The question:** can we produce a circuit trace in which **every claimed edge is validated by intervention** — not "these activations correlate with that behaviour" but "ablate this component and the downstream thing provably changes, here is the receipt"? Published attribution graphs are largely correlational. An intervention-validated tracer would be the strongest possible statement of this project's thesis: no circuit claim without a receipt.
+
+**Why it's a Phase-A-style bet, not a build task:** nobody knows whether the intervention-validated version is tractable at useful granularity. Plausible failure modes, each of which is a real finding: (a) combinatorics — validating every edge needs more ablation runs than batching can buy; (b) polysemanticity — no clean component boundaries to ablate; (c) the effects are real but so distributed that traces are unreadable; (d) validated traces exist but tell you nothing a simpler receipt didn't.
+
+**Prerequisites (B2 items 1-3).** Checkpoint/branch + batched decode are load-bearing: the tracer's cost model is "many ablated forward passes sharing a prefix", which is exactly what B2.1+B2.2 make cheap. Do not attempt before them.
+
+**Design constraints carried from the 2026-07-19 wave** (learn these for free rather than rediscovering them):
+- **Present-tense only.** Every predictive interior signal died today (A1.3, A1.6, A1.9, A1.7b, guardrail lead-time); every present-tense read/write lived. Scope the tracer to explaining what *is* happening, never to forecasting.
+- **Degeneration flags on every quality judgement.** "The output got more probable" is exactly the metric that failed to see repetition loops (A1.12). An edge validated by logprob shift alone is not validated.
+- **Product decode settings.** Greedy-only evaluation distorted two experiments today before we caught it (A1.11, A1.12/A1.12b).
+- **Null controls are mandatory per edge** — random-equal-norm ablation is the floor every claimed edge must clear, exactly as dir(c) had to beat a random bag.
+- **A1.1 is the miniature.** Read at a layer → intervene → measure downstream effect, with 100% catch / 5% FP, is a one-edge tracer that already works. Scale that shape.
+
+**Cheapest-decisive first slice (when B2 lands):** take a single behaviour we can already produce and kill on demand (the A1.1 banned-concept drift, or the X8 eval-recognition direction), and try to trace *just that one behaviour* end-to-end with every edge intervention-validated. If one behaviour can't be traced honestly, the general tracer is not close.
 
 ---
 
@@ -240,12 +280,11 @@ Start after A1–A3 land verdicts. What survives determines what gets built.
 
 ### B2 — Engine infrastructure (big C++ arc)
 
-From BACKLOG.md Phase 2. Start only after expand phase settles.
+From BACKLOG.md Phase 2. Start only after expand phase settles. **These three are prerequisites for Wave A6 (below), not features in themselves** — build them to unlock the tracer, and ship the incidental wins (faster receipts, cheaper multi-lens readout) along the way.
 
 1. **Native exact-state checkpointing + branching** — pause, fork, resume bit-exactly.
 2. **Batched multi-sequence decode** — faster receipts + higher-order causal credit.
 3. **Device-resident multi-observer readout plane** — multiple lenses at once, <5-10% overhead.
-4. **Intervention-validated circuit tracer** — the north-star feature. Needs 1+2.
 
 ### B3 — Polish + test + ship
 

@@ -154,7 +154,10 @@ def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, h
         print(resp); n = len(resp.split())
     dt = time.time() - g0
     rate = f", ~{n/dt:.0f} tok/s" if dt > 0 and mode == "autoregressive" else ""
-    print(f"{fmt.DIM}- {n} tok in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{fmt.RST}", file=sys.stderr)
+    # A "length" finish means the engine stopped because it hit --max, not because the model was done:
+    # say so, or the reply just appears to end mid-sentence for no visible reason.
+    cut = f" - cut off at --max {max_tokens}; rerun with --max {max_tokens * 4}" if finish == "length" else ""
+    print(f"{fmt.DIM}- {n} tok in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{cut}{fmt.RST}", file=sys.stderr)
     # every CLI turn becomes an inspectable run -- finish_reason mirrors Studio's chat path (the engine's
     # real stop cause: "stop" on eos, "length" on truncation), not left null like before this fix.
     _log_run_cli(model_name, prompt_for_trace, resp, steps, g0, finish_reason=finish)
@@ -246,8 +249,8 @@ def cmd_run(args):
             text = _chat_wrap(args.prompt, fam) if is_chat else args.prompt
             _run_turn(port, mode, text, args.max, gpu, _friendly(model), args.prompt, heat=args.heat)
             if mode == "autoregressive":
-                print(f"{fmt.DIM}  clozn trace   inspect where it was uncertain + what it almost said{fmt.RST}",
-                      file=sys.stderr)
+                print(f"{fmt.DIM}  next: run `clozn trace` to inspect where it was uncertain + "
+                      f"what it almost said{fmt.RST}", file=sys.stderr)
         else:                                                  # interactive REPL (Ollama-style)
             _repl(port, mode, flags, fam, gpu, model, args.max, heat=args.heat)
     finally:
