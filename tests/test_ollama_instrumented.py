@@ -71,8 +71,26 @@ class InstrumentedSub:
             ])
         return "Observed reply."
 
+    def chat_stream(self, messages, max_new=256, mem_out=None, sample=True):
+        """Streaming twin of chat() above -- a real generator, so gen.close()/GeneratorExit semantics
+        match the product substrate (clozn.server.ndjson relies on that, same as clozn.server.sse
+        already does for /v1/chat/completions). Kept minimal here: this file's job is the instrumented-
+        substrate contract for both the streaming and non-streaming shapes; the NDJSON wire details,
+        field-rejection policy, and disconnect/cancellation coverage live in test_ollama_streaming.py."""
+        self.calls.append({"messages": [dict(m) for m in messages],
+                           "max_new": max_new, "sample": sample})
+        self._meta.update(max_tokens=int(max_new), stream=True)
+        if self.fail:
+            raise RuntimeError("synthetic decode failure")
+        for piece in ("Observed", " reply."):
+            yield piece
+
     def last_finish_reason(self):
         return "stop"
+
+    def last_stream_trace(self):
+        return [{"pos": 0, "token_id": 41, "piece": "Observed", "prob": 0.93},
+                {"pos": 1, "token_id": 43, "piece": " reply.", "prob": 0.47}]
 
     def run_meta(self):
         return dict(self._meta)
@@ -190,10 +208,23 @@ def test_ollama_generation_failure_is_still_an_inspectable_run(iso):
     assert logged["meta"]["compatibility_api"] == "ollama"
 
 
-def test_ollama_streaming_remains_an_explicit_unsupported_operation(iso):
-    out = _payload(_dispatch("POST", "/api/chat", {
-        "messages": [{"role": "user", "content": "hello"}], "stream": True,
-    }))
-    assert out == {"error": "streaming not yet supported for /api/chat"}
-    assert iso.calls == []
-    assert runlog.list_runs(1) == []
+def test_ollama_chat_streams_by_default_when_stream_is_omitted(iso):
+    """DEFAULT-STREAM SEMANTICS (roadmap PRODUCT_ROADMAP.md Phase 2 item 1): upstream Ollama streams
+    unless the caller explicitly opts out with `stream: false` -- https://docs.ollama.com/api/streaming.
+    Before this shipped, an omitted `stream` took clozn's own non-stream path (and an explicit `stream:
+    true` was a clean 501); omitting it now must match upstream and stream instead. Wire-shape depth
+    (chunk fields, done_reason, disconnect handling, ...) lives in test_ollama_streaming.py -- this is
+    just the smoke check that the DEFAULT actually flipped."""
+    raw = _dispatch("POST", "/api/chat", {
+        "model": "qwen3.5:9b", "messages": [{"role": "user", "content": "hello"}],
+    })
+    header, _, body = raw.partition(b"\r\n\r\n")
+    assert b"application/x-ndjson" in header
+    lines = [json.loads(chunk) for chunk in body.decode("utf-8").splitlines() if chunk.strip()]
+    assert lines[-1]["done"] is True
+    assert "".join(c["message"]["content"] for c in lines if not c["done"]) == "Observed reply."
+    assert iso.calls == [{"messages": [{"role": "user", "content": "hello"}],
+                         "max_new": 256, "sample": True}]
+    logged = runlog.get_run(runlog.list_runs(1)[0]["id"])
+    assert logged["response"] == "Observed reply."
+    assert logged["meta"]["ollama_operation"] == "chat"

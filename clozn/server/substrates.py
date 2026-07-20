@@ -528,6 +528,11 @@ class EngineSubstrate(Substrate):
         req = getattr(self, "_request", None)
         return req.trace if req is not None else []
 
+    @property
+    def _last_prompt_tokens(self):
+        req = getattr(self, "_request", None)
+        return req.prompt_tokens if req is not None else None
+
     def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None,
              reference_tokens=None, apply_anchored=False):
         """One stateless chat completion on the engine with memory (prompt-mode card block) + tone dials
@@ -699,6 +704,14 @@ class EngineSubstrate(Substrate):
         stash-and-read contract as last_stream_trace: the handler reads it AFTER generation, so the run
         logs WHY the engine stopped instead of a hard-coded 'stop'."""
         return getattr(self, "_last_finish_reason", None)
+
+    def last_prompt_tokens(self):
+        """The prompt token count the engine's own `gen_started` frame reported for the most recent
+        chat_stream, or None (a non-streaming chat() call, an engine build too old to send the field, or
+        nothing streamed yet). Same stash-and-read contract as last_stream_trace/last_finish_reason --
+        read by clozn.server.ndjson to fill an honest `prompt_eval_count` on the Ollama NDJSON shim's
+        final chunk (roadmap Phase 2 #1); never guessed when absent."""
+        return getattr(self, "_last_prompt_tokens", None)
 
     def run_meta(self):
         """Reproducibility metadata -- WHAT produced a run -- for the run record. Fetched once from
@@ -883,6 +896,14 @@ class EngineSubstrate(Substrate):
                     engine_req = obj.get("req")
                     if engine_req:
                         req.engine_req = str(engine_req)
+                if req.prompt_tokens is None and obj.get("type") == "gen_started":
+                    # roadmap Phase 2 #1 (Ollama NDJSON streaming): the engine's own accounting of how
+                    # many prompt tokens this generation evaluated (engine/core/include/cloze/events.hpp),
+                    # captured once off the first gen_started frame -- honest source for the Ollama shim's
+                    # `prompt_eval_count` (clozn.server.ndjson), never derived/guessed elsewhere.
+                    prompt_tokens = obj.get("prompt_tokens")
+                    if isinstance(prompt_tokens, int):
+                        req.prompt_tokens = prompt_tokens
                 if obj.get("type") == "jlens_live":     # F1: side-channel to the SSE relay, never yielded
                     if on_frame is not None:
                         try:

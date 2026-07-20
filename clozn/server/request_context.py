@@ -77,6 +77,12 @@ class RequestContext:
                               POST /cancel resolves a gateway `req_` id to this field before proxying to
                               EngineClient.cancel(), so a cancel request never has to already know the
                               worker's own id scheme.
+      prompt_tokens         -- the engine's own `gen_started` frame reports `prompt_tokens` verbatim
+                              (engine/core/include/cloze/events.hpp); chat_stream() captures it off the
+                              first such frame it parses, the same way it already captures `engine_req`.
+                              None until that frame arrives (or on a substrate/test double whose stream
+                              never emits one) -- read by clozn.server.ndjson (the Ollama NDJSON shim,
+                              roadmap Phase 2 #1) to fill an honest `prompt_eval_count`, never fabricated.
       cancelled             -- a threading.Event; see cancel()/is_cancelled().
     """
 
@@ -90,6 +96,7 @@ class RequestContext:
     diverged: bool | None = None
     diverged_at: int | None = None
     engine_req: str | None = None
+    prompt_tokens: int | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
 
     def cancel(self) -> None:
