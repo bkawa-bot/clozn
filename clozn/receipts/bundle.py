@@ -6,6 +6,11 @@ still belongs to receipts.py and requires an explicit substrate-backed endpoint.
 """
 from __future__ import annotations
 
+# SCHEMA_VERSION stays "v1" for the roadmap S4.3 `identity` addition below: every prior field this
+# module has grown (finish_reason, per-card relevance, workspace_readouts, tiny_tests, ...) landed the
+# same way -- a new, independently-optional top-level key that an older consumer simply never looks at.
+# Nothing existing is renamed, removed, or repurposed, so there is no breaking change to version. A
+# version bump is reserved for the day an EXISTING key's meaning or shape changes.
 SCHEMA_VERSION = "receipt_bundle.v1"
 
 REPRO_META_KEYS = (
@@ -96,6 +101,16 @@ def _tiny_tests(run: dict):
     return list(tests) if isinstance(tests, list) else None
 
 
+def _identity(run: dict) -> dict:
+    """roadmap S4.3: the run's immutable reproduction-identity block (model_sha256,
+    template_fingerprint, engine_build, clozn_version, captured_at), if the run captured one. Mirrors
+    `memory`/`trace` (an empty dict, not None, when the run predates this field or its substrate never
+    populated one) rather than `receipts`/`concepts` (None when inapplicable) -- there is always exactly
+    one identity SHAPE for a run, just sometimes an empty one."""
+    ident = run.get("identity")
+    return dict(ident) if isinstance(ident, dict) else {}
+
+
 def build(run: dict | None, explain: dict | None = None, receipts=None) -> dict:
     """Build the versioned export bundle from existing run/explain data."""
     run = run if isinstance(run, dict) else {}
@@ -111,6 +126,7 @@ def build(run: dict | None, explain: dict | None = None, receipts=None) -> dict:
         "schema_version": SCHEMA_VERSION,
         "run": run,
         "repro": _repro(run),
+        "identity": _identity(run),
         "trace": trace,
         "memory": memory,
         "explain": explain,
@@ -126,6 +142,7 @@ def to_markdown(bundle: dict | None) -> str:
     bundle = bundle if isinstance(bundle, dict) else build(None)
     run = _dict(bundle.get("run"))
     repro = _dict(bundle.get("repro"))
+    identity = _dict(bundle.get("identity"))
     xr = _dict(bundle.get("explain"))
     mem = _dict(bundle.get("memory"))
 
@@ -146,6 +163,20 @@ def to_markdown(bundle: dict | None) -> str:
     if finish_reason:
         suffix = " - WARNING: truncated (hit the token cap)" if finish_reason == "length" else ""
         lines.append(f"\n**stop:** {finish_reason}{suffix}")
+
+    if identity:
+        lines.append("\n## Artifact identity")
+        for key, label in (
+            ("model_sha256", "model_sha256"),
+            ("model_path", "model_path"),
+            ("model_size_bytes", "model_size_bytes"),
+            ("template_fingerprint", "template_fingerprint"),
+            ("engine_build", "engine_build"),
+            ("clozn_version", "clozn_version"),
+            ("captured_at", "captured_at"),
+        ):
+            if identity.get(key) is not None:
+                lines.append(f"- {label}: {identity[key]}")
 
     lines.append("\n## Conversation")
     msgs = run.get("messages") or []

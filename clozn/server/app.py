@@ -993,12 +993,23 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                 # on the engine chat paths). Captured in ANY memory mode -- the internalized/engine path
                 # still renders a prompt even without a block. None -> consumers fall back to assembled_messages.
                 final_prompt = mo.get("final_prompt")
+                # roadmap S4.3: immutable reproduction identity (model_sha256, template_fingerprint,
+                # engine_build, clozn_version) -- see clozn.runs.identity's module docstring for why this
+                # never adds a file hash or a network round trip to THIS request (EngineSubstrate.
+                # identity_meta() piggybacks run_meta()'s single cached /health fetch). Substrates that
+                # don't implement identity_meta() (the Torch lab adapters) simply log no identity block.
+                identity = None
+                try:
+                    if _sub() is not None and hasattr(_sub(), "identity_meta"):
+                        identity = _sub().identity_meta() or None
+                except Exception:
+                    identity = None
                 rid = runlog.record(source=source, client=self._client(self.headers.get("User-Agent", "")),
                                     model=str(model), substrate=_subname(), messages=messages, response=response,
                                     memory=memd, behavior={"active_dials": dials}, started=started, error=error,
                                     trace=trace, finish_reason=finish_reason, meta=meta,
                                     assembled_messages=assembled_messages, final_prompt=final_prompt,
-                                    workspace_provider=workspace_provider)
+                                    workspace_provider=workspace_provider, identity=identity)
                 self._maybe_snapshot_turn(rid, messages, trace, error)
                 return rid                        # M5 bridge: the run id, for callers that want to surface it
             except Exception:

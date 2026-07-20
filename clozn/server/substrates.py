@@ -711,6 +711,8 @@ class EngineSubstrate(Substrate):
         health_meta = getattr(self, "_run_meta", None)
         if health_meta is None:
             health_meta = {}
+            h: dict = {}
+            mp = ""
             try:
                 h = self.engine.health() if (self.engine and hasattr(self.engine, "health")) else {}
                 mp = str((h or {}).get("model", ""))
@@ -734,11 +736,42 @@ class EngineSubstrate(Substrate):
                         health_meta[k] = v
             except Exception:
                 pass
+            # roadmap S4.3: immutable reproduction identity, assembled from the SAME /health fetch above --
+            # never a second round trip, never a fresh file hash on the request path. Prefers the engine's
+            # own reported model_sha256 (computed once at boot, see clozn.runs.identity's module
+            # docstring); only falls back to hashing model_path itself when the engine didn't report one,
+            # and even that fallback is cached process-wide by _identity_meta_val (below) plus
+            # clozn.runs.identity's own on-disk cache. A failure here must not cost the health_meta this
+            # call already earned, so it gets its own try/except rather than sharing the one above.
+            try:
+                from clozn.runs import identity as run_identity
+                self._identity_meta_val = run_identity.runtime_identity(
+                    model_path=mp or None,
+                    model_sha256_hint=(h or {}).get("model_sha256"),
+                    apply_template_fn=getattr(self.engine, "apply_template", None),
+                    engine_health=h if isinstance(h, dict) else None,
+                )
+            except Exception:
+                self._identity_meta_val = {}
             self._run_meta = dict(health_meta)
         meta = ctx._engine_generation_meta()
         meta.update(dict(health_meta))
         meta.update(getattr(self, "_last_generation_meta", None) or {})
         return dict(meta)
+
+    def identity_meta(self) -> dict:
+        """The run record's top-level `identity` block (roadmap S4.3): model_sha256, model_path,
+        model_size_bytes, template_fingerprint, engine_build, clozn_version, captured_at -- whichever of
+        those this process could actually establish. Computed once per process inside run_meta()'s single
+        /health fetch (see its comment) and cached in self._identity_meta_val, so calling this never adds
+        a network round trip or a file read beyond what run_meta() already pays for. Calls run_meta()
+        first if it hasn't run yet this process; never raises."""
+        if getattr(self, "_identity_meta_val", None) is None:
+            try:
+                self.run_meta()
+            except Exception:
+                pass
+        return dict(getattr(self, "_identity_meta_val", None) or {})
 
     def chat_stream(self, messages, max_new=256, mem_out=None, lens=None, on_frame=None, sample=True):
         """Streaming twin of chat(): the SAME memory-block + tone-dial + anchored-memory construction
