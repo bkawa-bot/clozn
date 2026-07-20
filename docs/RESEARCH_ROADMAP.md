@@ -12,6 +12,18 @@
 - **Latent recurrence / peek-ahead steering** — 3 null results; no product path on capable models.
 - **J-space trajectory as rumination detector** — p=0.156, wrong base rate; strong models don't ruminate.
 - **White-box risk controller advantage** — token-probability wins; internal state adds nothing (probe is a topic detector).
+  Full autopsy (moved from the retired BACKLOG #10): the deployed "white-box" score is bit-identical to `exp(min(logprob))`
+  across all 362 items — the same number any OpenAI-compatible API returns. The signal itself WORKS for selective
+  generation (TEST n=182: AUROC 0.822 [0.760, 0.879]; 0% error at 50% coverage; survives a length control) and
+  self-reported confidence is degenerate (358/362 claim 1.0; AUROC 0.510). Internal candidates: best residual probe
+  looks like a win on the mixed set (0.900) but a 1-bit `is_hard_arith` topic flag matches the baseline exactly (0.822)
+  and corr(probe, topic) = −0.85; on the hard-arithmetic subset the baseline BEATS the probe 0.937 vs 0.799 (paired
+  bootstrap −0.138 [−0.265, −0.029]). Scope: Qwen3.5-9B Q4_K_M, greedy, error set dominated by 4–6-digit
+  multiplication; well-powered for arithmetic slips only. Harness/data: `scratchpad/wb_analyze.py`, `wb_results.json`,
+  `wb_raw*.jsonl`, `wb_harvest.py`, `wb_live_energy.py`, `wb_probe_analyze.py`, `wb_probe_results.json`.
+  Ship path (a): selective generation labeled token-probability-based → `docs/PRODUCT_ROADMAP.md` Phase 3.6.
+  Known end-to-end gaps when wiring: `:8080` is the raw engine (not the gateway), and `~/.clozn/eval_report.json` is
+  stale for this model (would be refused by `classify_run`'s exact-model provenance gate).
 - **J-transport steering quality improvement** — doesn't beat raw directions. Value of J is authoring speed (instant dials), not better directions.
 - **Null-space covert channel (Qwen2.5-7B)** — dead (RMSNorm makes the model isotropically sensitive).
 

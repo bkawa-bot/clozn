@@ -1,0 +1,312 @@
+# Clozn Product Roadmap — 2026-07-20
+
+**The ordering authority for product work.** Synthesized from four inputs: the two independent
+positioning audits of 2026-07-20 (`notes/PRODUCT_POSITIONING_2026-07.md` = market research per
+persona; `notes/POSITIONING_AUDIT_B_2026-07.md` = repo/capability audit + feature matrices), the
+open-work tracker (`docs/BACKLOG.md`), and the research ledger (`docs/RESEARCH_ROADMAP.md` +
+`notes/FRONTIER_BETS.md`). Where the audits disagreed on sequencing, §2 records the resolution.
+`docs/BACKLOG.md` is retired to a stub (its working detail moved to `scripts/tracer/README.md`,
+`docs/RESEARCH_ROADMAP.md`, and §8 here); §12 maps its items and corrects two stale entries.
+The forward-looking half of `docs/ROADMAP.md` is superseded by this file.
+(§ numbers cited in the body refer to this file's sections unless a filename is given.)
+
+Effort bands: **S** ≤ ~2 days · **M** ≤ ~2 weeks · **L** weeks-to-months · **R** gated on a
+research result. Bands are planning aids, not commitments.
+
+---
+
+## 0. Positioning
+
+> **Clozn makes local-model behavior inspectable, correctable, and reproducible — inside the
+> tools people already use.**
+
+| Persona | Promise | The wedge, per the market research |
+|---|---|---|
+| Model developers | "What improved, what broke, and can I prove it?" | **Model CI** — their #1 documented need (regression/forgetting detection) has *no incumbent*, and clozn's primitives already cover most of it |
+| Model users | "What happened, and what should I try?" | The trustworthy runtime **under** their current apps, at the exact moment the Ollama trust crisis has them shopping |
+| Model researchers | "What mechanism does the evidence support, under what controls?" | Causal interventions over HTTP on any GGUF, on the GPU they own — a verifiably unclaimed niche (category-creation bet) |
+
+Both audits independently concluded: the gap is **not capabilities** — it is product composition,
+compatibility, and discoverability. Do not lead with "AI MRI"; it is the deepest drill-down, not
+the front door.
+
+## 1. What the market research changed (decisions, not vibes)
+
+1. **Uncertainty display is demoted everywhere.** No named demand in any persona, and our own gate
+   result proved the deployed signal is bit-identical to black-box logprobs. Chips stay as
+   texture; never the pitch. (Demotes BACKLOG #18 ambient channel-3 — see §8.)
+2. **Model CI is promoted to the lead wedge.** "Evaluation is vibes" is a *named* failure mode;
+   silent no-op LoRAs and undetected forgetting are the top developer pains; nobody owns the gate.
+3. **The J-lens is no longer unique** (Neuronpedia shipped a Jacobian Lens 2026-07-17, verified).
+   Ours differentiates by *where it runs* (inside the llama.cpp serving path, <10% overhead, on
+   quantized models), not by existing.
+4. **Steering-vector sharing is a bet, not a plan** — strong adoption-gap evidence, weak voiced
+   demand. Test cheaply (§8 R4) before building any UI.
+5. **The GGUF-interp niche is real but inferred** — two serious teams built "interp bolted onto a
+   fast inference engine" on vLLM this year; nobody has claimed the consumer/GGUF substrate. Treat
+   as credibility moat, not revenue.
+
+## 2. Sequencing rationale (where the two audits disagreed)
+
+Audit B ordered: compatibility → receipts/repair → Model CI → researcher lab, on the logic that
+compatibility is the adoption contract. The market research ranked Model CI the strongest wedge.
+Both are right; the resolution is a dependency observation: **Model CI v1 does not need the
+compatibility chain** — `test-model`/`quant-check`/model-diff run on GGUFs and fixture suites with
+no client attached — while Model CI v2's killer feature (promote real captured runs into
+regression suites) *does* need real apps flowing through clozn. So:
+
+- **Phase 1 = Model CI v1**: cheapest path to a public, differentiated, receipts-backed story.
+- **Phase 2 = the no-switch runtime**: streaming + conformance; the adoption contract.
+- **Phase 3 = daily-trust loop**: receipts/repair during normal use, and Model CI v2 where the
+  two tracks join.
+- **Phase 4 = the qualified researcher lab**: smallest audience, deepest moat, feeds credibility
+  to everything above.
+
+Research lanes (§8) run alongside, GPU-serialized. Phases are sequential in *focus*, not strictly
+in time — an agent can carry a Phase-2 M-item while Phase 1 integrates.
+
+## 3. Gate 0 — the standing product contract (binding on all phases)
+
+1. Every accepted request runs on **one instrumented path** and gets a stable run ID + receipt.
+   (Today's violations: legacy `/v1/completions` journals nothing; `clozn run` stores the raw
+   prompt, not the rendered template.)
+2. **No silent field-ignoring.** Unsupported behavior-bearing fields are rejected with typed
+   errors (the knockout-vs-flash-attn refusal is the house pattern). The Ollama shim's currently
+   ignored fields must become explicit before any compatibility claim.
+3. **Label vocabulary is fixed**: delivered / survived / influenced / supported / probable /
+   calibrated are distinct and never conflated in UI or copy.
+4. **White-box features are artifact-qualified** — never implied by model family. `qualify-whitebox`
+   is the gate.
+5. **Every steering action is reversible** and records a before/after comparison.
+6. **Research visuals carry method, artifact, controls, and limits** beside the picture.
+7. **Banned claims** (measured, not stylistic): uncertainty as a white-box advantage; "explains
+   WHY in words" (24% legibility); model self-report as ground truth (X1/X3); "silent influence"
+   badges (filler-null); circuit discovery (it's causal tracing over locations); perf promises
+   built on KV-prefix reuse.
+8. **Receipt integrity outranks everything.** One overclaiming receipt burns the trust the whole
+   product is about. The killed-ideas list (§11) is part of this contract.
+
+## 4. Phase 1 — Model CI v1 (the developer wedge)
+
+*Public story when it lands: "CI for your fine-tune — did it break something? Here's the
+per-token receipt." Shippable as an HF/HN post backed by a real LoRA case study.*
+
+1. **`clozn diff-model` (base vs fine-tune/merge receipts)** — generalize the quant-check
+   machinery: teacher-force the SAME answers under both models, per-token diff, honesty-labeled.
+   Same-tokenizer constraint stated plainly. **S–M.**
+   *Why:* catches the two named disasters — silent no-op LoRA (diff ≈ 0 when it shouldn't be) and
+   forgetting (diff ≫ 0 where it shouldn't be). *Payoff:* the wedge feature, from shipped code.
+   *Gate:* validate on one real LoRA pair before the public story (needs a download + GPU smoke).
+2. **Experiment object v0** — one versioned manifest: named cases × variants (base / tuned /
+   quant / prompt / dial) × seeds, target suite + guard suite, per-case drill-down; subsumes the
+   currently separate `test` / `eval` / `test-model` / `quant-check` outputs. **M.**
+   *Why:* audit B's core diagnosis — primitives exist, the composition doesn't. *Payoff:* one
+   command answers "what improved, what regressed" with paired evidence.
+3. **Reproduction receipt completion** — immutable identity on every run: model SHA-256,
+   tokenizer/template hash, sampling, seeds, build; bundle export. **M.**
+   *Why:* HF's own analysis: 96.5% of 50k+ eval records lack minimal reproduction fields.
+   *Payoff:* "reproducible" becomes checkable, and it's the substrate for #4 and later HF export.
+4. **Headless CI gate** — `clozn ci check <experiment>`: deterministic exit code, allowed-delta
+   budgets, baseline artifact, machine-readable report. **M.**
+   *Why:* "CI" isn't CI until a pipeline can fail on it. *Payoff:* GitHub-Actions-ready gate.
+5. **Deployment-equivalence check v0** — template/tokenizer/BOS-EOS/vocab + known-answer diff
+   across an HF-trainer export → GGUF. **M.**
+   *Why:* garbled-GGUF export bugs are a documented, recurring developer disaster. *Payoff:* the
+   trainer-to-runtime gap gets a gate; also fixes our own CLI-vs-gateway template divergence.
+6. **Positioning collateral** — README/story refresh for the wedge, one worked case study. **S.**
+   (Docs polish stays cycle-end per standing preference, but the wedge story is product, not polish.)
+
+Deferred within this wedge: adapter hot-swap in the C++ engine (**L**, after the loop is
+coherent); LightEval/Inspect/Promptfoo adapters + HF Community-Evals/EEE export (**M**, Phase 3);
+merge-recipe/registry anything (non-goal §10).
+
+## 5. Phase 2 — the no-switch runtime (persona-1 adoption contract)
+
+*Public story: "Point Open WebUI (or your Ollama app) at clozn. Everything works — and every run
+becomes inspectable." No broad compatibility claim until the conformance matrix is green.*
+
+1. **Ollama NDJSON streaming** through the instrumented path, with correct default-stream
+   semantics, finish reasons, cancellation, and single coherent run finalization. **M.**
+   *Why:* release-blocker; clients stream by default. *Payoff:* the drop-in story becomes true.
+2. **Explicit-or-rejected shim fields** — stop silently ignoring `raw`/`format`/`keep_alive`/
+   `options`/`think`/etc.; honest `/api/tags` metadata (no placeholder digests). **S–M.** (Gate-0.)
+3. **Instrument or retire legacy `/v1/completions`**; unify `clozn run` onto the rendered-template
+   journal record. **S–M.** (Gate-0 violations, found by audit B.)
+4. **Truncation + context receipts** — loud warning on context capping/truncation in API + Replay;
+   `clozn context last` with delivered/survived sections. **S–M.**
+   *Why:* silent context mishandling is persona-1's top named pain; we already record the truth.
+5. **Think-tag hygiene** — strip/manage per client so think-blocks never corrupt history or tool
+   parsing; journal the stripped reasoning as inspectable trace material. **S–M.**
+6. **Stable run-ID side-channel** — `X-Clozn-Run-ID` header + latest-by-client/session lookup +
+   `clozn watch`. **S–M.**
+   *Why:* third-party clients drop custom body fields; the sidecar needs a reliable hook.
+7. **Real-client conformance matrix** — Ollama Python/JS SDKs, OpenAI SDK, Open WebUI, one coding
+   agent; streaming/cancel/tools cases; published as a compatibility report. **M, recurring.**
+8. **Tools/function calls + structured output** for a deliberately small qualified model set —
+   parser/renderer qualification per model, malformed-output recovery explicit. **L.**
+   *Why:* agent clients are the growth segment; tool failures are routinely misblamed on models.
+9. **`clozn connect <app>`** setup helper with config backup. **M.**
+10. **Real-browser pass over Studio** (BACKLOG #2, still open) as the phase quality gate. **S.**
+
+Explicitly later: Anthropic-Messages compat, vision, embeddings sidecar, broad lifecycle API —
+sequencing deferrals, not non-goals.
+
+## 6. Phase 3 — the daily-trust loop (receipts, repair, and Model CI v2)
+
+*Public story: "The runtime that shows you what your model actually saw — and lets you fix it."*
+
+1. **Corrective retries** — `retry last --less-verbose / --more-concrete / --use-context /
+   --ask-before-guessing`; prompt/sampling interventions first, dial-backed only where qualified;
+   scope once/session/profile; compare + undo mandatory. **M.**
+2. **Why-slow / why-cut-off diagnosis** — plain-language decomposition (load, prefill, generation,
+   context/KV allocation, CPU spill, client auxiliary calls). **M.**
+3. **Memory receipts** — `memory used last` (selected/injected/omitted + token cost), app/project
+   scoping, and **markdown import/export of cards** (meet the folk 12KB-memory-file practice). **S–M.**
+4. **Model CI v2: run promotion** — `suite create --from-runs` with redact/edit/freeze; captured
+   real-app runs become regression cases. **M.** *(The join point of the two tracks.)*
+5. **Trust plumbing** — local-only flag + outbound ledger + `doctor --verify-offline`; run-journal
+   redact/retention/delete UX; OTel/OpenInference export with prompt-privacy defaults. **M.**
+6. **Calibrated ask/abstain** — ship the selective-generation last-mile honestly labeled as
+   token-probability-based (BACKLOG #10 path (a)); per-model/task calibration wizard; band
+   limitations printed. **M.**
+7. **Provenance chip** — CONTEXT_CARRIED / MIXED / PARAMETRIC on any answer, CLI first, Studio
+   chip second. **R → M** — gated on lane R1 (battery + second family + screen-null + the
+   no-flash-attn mode story). *This is persona-1's only genuinely-new-capability feature; do not
+   ship the chip before the science gate passes.*
+8. **Studio IA: three home views** over one object model (run / experiment / evidence), per
+   audit B §6 — Replay is the run view; the experiment matrix becomes the developer home; evidence
+   view carries method/control labels. Console re-skin (`notes/CLOZN_UX.md`) folds in here only if
+   pursued. **L.**
+9. **HF Community-Evals/EEE export + eval-tool adapters** (from Phase 1 deferral). **M.**
+
+## 7. Phase 4 — the qualified researcher lab (credibility moat)
+
+*Public story: "Causal experiments at llama.cpp speed, on the GPU you own — pip install, three
+worked examples, an honest benchmark." Smallest audience; shapes architecture and credibility,
+not revenue.*
+
+1. **`pip install clozn-client`** + three worked notebook examples (patch sweep, knockout scan,
+   provenance) + an honest speed benchmark vs TransformerLens on the same experiments. **M.**
+   *Why:* researchers script; the HTTP API isn't real to them without this. The field's loudest
+   complaint is patching speed — we should measure ours in their terms, honestly.
+2. **Versioned hook/capture + intervention contracts** — named hook vocabulary with exact
+   semantics (pre/post norm, pre/post residual add, position, step), capture budgets + stats,
+   a serialized intervention manifest replayable across an experiment. **L.**
+3. **One rigorous qualified path before any breadth** — Qwen3.5-9B reference checkpoint + the
+   shipped GGUF: quantized-vs-reference activation qualification; import + validate one external
+   SAE (audit B reports a Qwen-Scope Qwen3.5-9B artifact — verify) and a pre-fitted J-lens;
+   publish our J-fitting recipe so researchers can produce sidecars. **L.**
+   *Why:* "can you trust interp on a quantized model?" is the objection that decides this persona
+   — and quant receipts make the objection itself a use case.
+4. **Statistical rigor + evidence labels as product** — replicates/CIs/controls in one experiment
+   report; replay honesty labels (bit-identical vs re-prefilled vs stochastic); every panel names
+   method/artifact/controls. **M.**
+5. **Open export** — manifest + tensor bundles + a generated notebook that reproduces a receipt. **M.**
+
+Then breadth, in this order: head/source-position tracing (lane R5), TransformerLens/NNsight
+bridges, Neuronpedia/HF publish flows. Deprioritized: J-lens fitting inside the fast runtime, SAE
+training, native circuit-tracer reimplementation.
+
+## 8. Research lanes (parallel, GPU-serialized; each has a gate and a product hook)
+
+- **R1 — Provenance hardening.** Multi-prompt battery (≥30 across categories), second model
+  family (Llama-3.1-8B GGUF already on disk — no lens needed), a genuine screen-null (replace the
+  target concept, don't dilute), attention-heatmap-vs-causal-rank head-to-head (~1 day; needs the
+  no-flash-attn path that already exists). *Gates:* Phase-3 provenance chip; any RAG-receipt
+  marketing. *Also resolves:* FAILED_CONTROLS has never fired on a real prompt.
+- **R2 — Model-diff transplants** (BACKLOG #11). Cross-model residual alignment + A→B transplant
+  at token+layer. *Hook:* upgrades Model CI from "shows the regression" to "localizes it, proven
+  by transplant." **L/R.**
+- **R3 — Mid-gen guardrails productization** (A1.1 LIVES: 100% catch / 5% FP). Receipt per firing,
+  re-steer cap, honest copy ("catches and corrects during generation," never "reads intent
+  early"). *Hook:* the headline steering feature for developers. **M.**
+- **R4 — Steering-pack demand test.** Publish ~3 verified dial packs (contrastive for register,
+  dir(c) low-strength topic nudges) with swap receipts + A1.4 portable specs on HF; watch 60–90
+  days. *Gate:* any sharing UI. Cost: days, mostly authoring. **S–M.**
+- **R5 — Tracer credibility + granularity.** Second-family battery; exercise FAILED_CONTROLS;
+  then head-level node units (`kqv_out` is named and materialized at all positions — dodges the
+  last-layer `inp_out_ids` blocker). *Hook:* the researcher story graduates from "causal trace"
+  toward something deserving "circuit." **L/R.**
+- **R6 — Memory that changes the answer.** Two-tier legible memory scale-up (X7, n=6 today) +
+  native fast-weight fact memory (BACKLOG #12) with with/without/null receipts. *Hook:* the
+  persona-1/2 memory story beyond prompt cards. **L/R.**
+- **R7 — AR×diffusion.** H2 ceiling-first with degeneration veto (per the A4 runbook §0b
+  revisions — not this file's R1/R2 lanes), H5 counterfactual patches,
+  Route C free-text edit instructions. VRAM-gated (co-residency); park until ~10 GB frees. **R.**
+- **R8 — Cross-family dials.** Dense Llama-3.1-8B J fit (deferred #109, overnight) → A1.4 spec
+  ports with floors/ceilings; Fast-J stays scoped to subspace features (dial authoring needs the
+  dense J — measured, not a preference). *Hook:* "author a dial once, run it on any qualified
+  model." **R.**
+- **Engine debt, scheduled opportunistically:** batched causal credit (coalition/Shapley over
+  teacher-forced arms — the seam is in `clozn/receipts/core.py`, on top of the `/v1/branch`
+  batched-decode primitive); KV-blob fast restore (restore currently re-prefills from saved
+  tokens — correct, just slower); sampler/RNG + intervention state in checkpoints.
+
+*Execution constraint (from the retired BACKLOG header): VRAM, not compute, is the live limit —
+one 0.5B engine ≈ 2.7 GB fits the current ~3 GB headroom; anything needing Qwen-7B + Dream
+co-resident (~13 GB) queues until ~10 GB frees. GPU work serializes; lanes are parallel only in
+the CPU/desk portions.*
+
+## 9. Demotions and parked items (explicit changes vs BACKLOG.md)
+
+*(References below: §6.8 = Phase-3 Studio IA item.)*
+
+- **Ambient channel-3** (inline confidence shading in Cursor/ChatGPT web; BACKLOG #18): demoted
+  from "endgame" to **parked**. Both audits found no demand for uncertainty display; the honest
+  signal isn't white-box; highest effort of the ambient tier. Revisit only behind a run-ID
+  sidecar with real users.
+- **J5 lens extensions** (Dream lens, chat-vs-web lens, stream top-k): research lane, low.
+- **Design-agent mock pack (D1–D5)**: only if the §6.8 Studio IA work is pursued.
+- **Killed features stay killed** (§11) — including branch-on-doubt and paraphrase-brittleness
+  from BACKLOG #17's "assembled-but-unconnected" list.
+- **SAE consumer features**: research surface only (our own study: no sparse load-bearing
+  features at product granularity).
+
+## 10. Non-goals (merged from both audits; stable)
+
+No model hosting/registry/marketplace; no training stack (trainers, labeling, synthetic data); no
+cloud offering or multi-tenant serving; no general chat/RAG/agent application (we sit *under*
+those); no proxying an external Ollama as the primary architecture (deep evidence requires running
+the model); no replacing HF/W&B/LightEval/Inspect/TransformerLens/NNsight/SAELens/Neuronpedia —
+integrate; no frontier-scale SAE/CLT training or NDIF-like remote GPU fabric; no closed-model
+internals; Studio never mandatory for core value; no benchmark leaderboard.
+
+## 11. Killed — do not revive without new evidence
+
+Semantic temperature · prospective collapse gauge · branch-on-doubt · paraphrase-brittleness
+receipt · same-model verify-then-branch · null-space watermarking · scalar self-reported
+confidence · internal probe as general correctness detector · J-transport as steering-*quality*
+(it's authoring/stability infrastructure) · "model authorship" as a verdict (verbatim-only
+receipt survives) · white-box uncertainty advantage · silent-influence badges · KV-prefix reuse
+perf promises. Full autopsies: `docs/RESEARCH_ROADMAP.md` (Killed + wave verdicts),
+`notes/POSITIONING_AUDIT_B_2026-07.md` §1.10/§7.4.
+
+## 12. Reconciliation with docs/BACKLOG.md
+
+| BACKLOG item | Status / new home |
+|---|---|
+| #2 real-browser Studio pass | open → Phase 2 quality gate (§5.10) |
+| #5 H7+H3 captures "blocked on VRAM" | **stale** — ran 2026-07-19 (A4.2 MIXED, A4.3 SPLIT); remaining diffusion work → lane R7 |
+| #7 batched causal credit | engine debt (§8 tail) |
+| #9 tracer REMAINING list | split: journal input mode + click-a-token → Phase 3/4 UI; screen-null + 2nd family + attention head-to-head → R1/R5; head units → R5 |
+| #10 risk controller last-mile | Phase 3.6 (path (a), honest label) |
+| #11 model diffing/transplants | lane R2 (v1 wrapper ships in Phase 1.1) |
+| #12 fact memory · #13 guardrails | R6 · R3 |
+| #14 H2/H5 · #15 Route C | R7 (VRAM-gated) |
+| #16 J5 · #17 leftovers | demoted (§9) |
+| #18 ambient channel-3 | **demoted/parked** (§9) |
+| #20 design mocks | conditional (§9) |
+| Parked "Ollama drop-in? NOT registered" | **stale** — shim registered + live (BK's merge c56e320); full contract → Phase 2 |
+| Task #44 docs polish | cycle-end, unchanged; Phase-1.6 wedge story is exempt (product, not polish) |
+| Task #109 Llama dense J fit | lane R8 |
+
+## 13. Success signals (trimmed to what one person can actually watch)
+
+- **Phase 1:** one real LoRA case study where `diff-model`/`test-model` catches a genuine
+  regression or no-op; CI gate running in a real (even our own) pipeline.
+- **Phase 2:** conformance matrix green for Open WebUI + both Ollama SDKs + one coding agent;
+  zero silent-field incidents; a stranger's app works by changing one base URL.
+- **Phase 3:** time from "odd response" to diagnosis measured in one command; retries kept vs
+  undone; run promotion used on real captured traffic.
+- **Phase 4 / lanes:** a pip-client notebook reproduces a receipt end-to-end; R1 battery passes
+  (or honestly fails and the chip stays gated); R4 gives a real adoption number for dial packs.
