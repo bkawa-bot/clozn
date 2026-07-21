@@ -18,14 +18,21 @@ construction: no src/href attributes, no webfonts, no images, no JS; system font
 from __future__ import annotations
 
 import html
+import math
 
 
 # Cap the phosphor token stream so a pathological trace can't blow the ~150KB budget. Typical replies
 # are <=256 tokens; the cap only ever bites on something abnormal, and it says so on the card.
 MAX_TOKENS = 4000
+MAX_INFLUENCE_CONTEXT_SPANS = 8
+MAX_INFLUENCE_CONTEXT_CHARS = 1600
+MAX_INFLUENCE_ANSWER_SPANS = 256
+MAX_INFLUENCE_ANSWER_CHARS = 16000
 LOW_CONF = 0.5   # matches clozn.receipts.explain.LOW_CONF — ONE "unsure" convention
 
 _ABSENT_RECEIPTS = "no receipts computed for this run — receipts are measured on demand, never assumed"
+_ABSENT_INFLUENCE = ("no context-answer influence map computed for this run — "
+                     "the map is measured on demand, never inferred")
 _ABSENT_LENS = ("no lens readout recorded on this run — the lens reads on demand from the engine "
                 "substrate, and none was captured here")
 _FOOTER_CREDO = ("measured, not asserted — every number above comes from a recorded run or an "
@@ -146,6 +153,41 @@ body{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;color:#2A3252;f
 .bar i{display:block;height:100%;background:linear-gradient(90deg,#4C8DF0,#5FC8BC)}
 .bar.neg i{background:linear-gradient(90deg,#B6B0DA,#9A92C8)}
 .small-note{font-size:9px;color:#8290AC;padding-top:5px;line-height:1.6}
+.imap-intro{font-size:10px;color:#4A5878;padding:0 0 9px;line-height:1.65}
+.imap-legend{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:0 0 10px;
+ font-family:"Segoe UI",system-ui,sans-serif;font-size:9px;color:#8290AC}
+.imap-key{display:inline-block;width:12px;height:9px;border-radius:3px;border:1px solid transparent}
+.imap-key.sel{background:#4C8DF0;border-color:#3975CE}.imap-key.sup{background:#B9EDDF;border-color:#5FC8BC}
+.imap-key.suppress{background:#DDD7F1;border-color:#9A92C8}
+.imap-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.imap-side{min-width:0;border:1px solid rgba(128,142,190,.16);border-radius:10px;padding:9px 10px;
+ background:rgba(255,255,255,.42)}
+.imap-side-h{font-family:"Segoe UI",system-ui,sans-serif;font-size:8.5px;letter-spacing:.16em;
+ text-transform:uppercase;color:#4A5878;padding-bottom:7px}
+.imap-source{border-top:1px solid rgba(128,142,190,.13);padding:7px 0}
+.imap-source:first-of-type{border-top:none;padding-top:0}
+.imap-source-k{font-family:"Segoe UI",system-ui,sans-serif;font-size:8px;letter-spacing:.1em;
+ text-transform:uppercase;color:#8290AC;padding-bottom:3px}
+.im-answer{font-size:13px;line-height:1.75;color:#2A3252;white-space:pre-wrap;word-break:break-word}
+.im-span{border-radius:3px;transition:background-color .1s,color .1s,box-shadow .1s;
+ cursor:help;outline:none}
+.im-p{display:block;white-space:pre-wrap;word-break:break-word;padding:2px 3px;margin:0 -3px}
+.im-a{display:inline;border-bottom:1px solid transparent}
+.im-no-clear{border-bottom:1px dotted #9EA8BD}
+.im-pin{display:none}
+.im-pin:checked+.im-span{background:#4C8DF0!important;color:#fff!important;
+ box-shadow:0 0 0 2px rgba(76,141,240,.22);border-bottom-color:transparent}
+.imap-clear{display:inline-block;margin:0 0 9px;padding:2px 7px;border-radius:7px;
+ border:1px solid rgba(128,142,190,.28);font-family:"Segoe UI",system-ui,sans-serif;
+ font-size:8.5px;color:#4A5878;cursor:pointer}
+.imap-clear:hover,.imap-clear:focus{border-color:#4C8DF0;outline:none;color:#285EAE}
+.imap:has(#ic:checked) .im-span:is(:hover,:focus){background:#4C8DF0!important;color:#fff!important;
+ box-shadow:0 0 0 2px rgba(76,141,240,.22);border-bottom-color:transparent}
+.imap-state{margin-top:9px;padding:7px 9px;border-left:3px solid #B6B0DA;
+ background:rgba(182,176,218,.09);font-size:9.5px;color:#4A5878}
+.imap-cut{color:#8290AC;font-style:italic}
+@media(max-width:620px){.imap-grid{grid-template-columns:1fr}}
+@media print{.imap-clear{display:none}}
 .active-line{font-size:10.5px;color:#4A5878;padding:2px 0 8px}
 .jgroup{padding:7px 0 3px;border-top:1px solid rgba(128,142,190,.16)}
 .jgroup:first-child{border-top:none}
@@ -267,6 +309,243 @@ def _exchange(run: dict, trace: dict, rid: str) -> str:
     parts.append(crt)
     tag = '<span class="tag cap-t">captured</span>'
     return _mod("blue", "the exchange", tag, "".join(parts))
+
+
+def _influence_delta(link: dict):
+    delta = _float(link.get("delta_nats"))
+    return delta if delta is not None and math.isfinite(delta) else None
+
+
+def _influence_sign(link: dict, delta: float) -> str:
+    if delta > 0:
+        return "s"
+    if delta < 0:
+        return "x"
+    effect = link.get("effect")
+    if effect == "supports":
+        return "s"
+    if effect == "suppresses":
+        return "x"
+    return "n"
+
+
+def _influence_title(relations: list) -> str:
+    if not relations:
+        return "hover, focus, or click to pin; no linked span cleared the measurement floor"
+    delta = relations[0][2]
+    return (f"hover, focus, or click to pin; strongest clear link {delta:+.3f} nats "
+            "under matched context replacement")
+
+
+def _influence_css(prompt_relations: list[list], answer_relations: list[list]) -> str:
+    """Generate selectors from bounded numeric display indices only.
+
+    Artifact IDs and text never enter CSS.  ``:has`` makes the two panes react to
+    hover and keyboard focus without script, network access, or active content.
+    """
+    colors = {
+        "s": ("#B9EDDF", "#174E48"),
+        "x": ("#DDD7F1", "#514879"),
+        "n": ("#E4E8F1", "#4A5878"),
+    }
+    rules = []
+    for prefix, relations in (("p", prompt_relations), ("a", answer_relations)):
+        for index, linked in enumerate(relations):
+            for sign in sorted({item[1] for item in linked}):
+                bg, fg = colors[sign]
+                rules.append(
+                    f'.imap:has(#ic:checked):has(.im-{prefix}{index}:is(:hover,:focus)) '
+                    f'.from-{prefix}{index}-{sign},'
+                    f'.imap:has(#i{prefix}{index}:checked) .from-{prefix}{index}-{sign}'
+                    f'{{background:{bg};color:{fg}}}'
+                )
+    return "".join(rules)
+
+
+def _influence_section(bundle: dict) -> tuple[str, str]:
+    influence = _dict(bundle.get("influence_map"))
+    tag = '<span class="tag der-t">derived &middot; on demand</span>'
+    if not influence:
+        return (_mod("blue", "context ↔ answer influence", tag,
+                     f'<div class="absent">{_esc(_ABSENT_INFLUENCE)}</div>'), "")
+    if influence.get("schema") != "clozn.context_answer_influence.v1":
+        body = ('<div class="absent">no compatible context-answer influence map is included in '
+                'this receipt</div>')
+        return _mod("blue", "context ↔ answer influence", tag, body), ""
+    if influence.get("status") != "ok" or influence.get("available") is not True:
+        error = _dict(influence.get("error"))
+        code = str(error.get("code") or influence.get("status") or "unavailable")[:80]
+        message = str(error.get("message") or "the measurement did not complete")[:500]
+        body = (f'<div class="absent">map unavailable — {_esc(code)}: '
+                f'{_esc(message)}</div>')
+        return _mod("blue", "context ↔ answer influence", tag, body), ""
+
+    prompt_items = []
+    prompt_truncated = False
+    seen_prompt_ids = set()
+    for span in _list(influence.get("prompt_spans"))[:MAX_INFLUENCE_CONTEXT_SPANS]:
+        if not isinstance(span, dict):
+            continue
+        span_id = str(span.get("id") or "")
+        text = str(span.get("text") or "")
+        if not span_id or not text or span_id in seen_prompt_ids:
+            continue
+        seen_prompt_ids.add(span_id)
+        shown = text[:MAX_INFLUENCE_CONTEXT_CHARS]
+        cut = len(shown) < len(text)
+        prompt_truncated = prompt_truncated or cut
+        prompt_items.append({"id": span_id, "span": span, "text": shown, "cut": cut})
+
+    answer_items = []
+    answer_truncated = False
+    answer_chars = 0
+    seen_answer_ids = set()
+    raw_answer_spans = _list(influence.get("answer_spans"))
+    for span in raw_answer_spans:
+        if len(answer_items) >= MAX_INFLUENCE_ANSWER_SPANS:
+            answer_truncated = True
+            break
+        if not isinstance(span, dict):
+            continue
+        span_id = str(span.get("id") or "")
+        text = str(span.get("text") or "")
+        if not span_id or not text or span_id in seen_answer_ids:
+            continue
+        remaining = MAX_INFLUENCE_ANSWER_CHARS - answer_chars
+        if remaining <= 0:
+            answer_truncated = True
+            break
+        shown = text[:remaining]
+        cut = len(shown) < len(text)
+        seen_answer_ids.add(span_id)
+        answer_items.append({"id": span_id, "span": span, "text": shown, "cut": cut})
+        answer_chars += len(shown)
+        if cut:
+            answer_truncated = True
+            break
+
+    if not prompt_items or not answer_items:
+        body = ('<div class="absent">the influence artifact contains no renderable measured '
+                'context and answer spans</div>')
+        return _mod("blue", "context ↔ answer influence", tag, body), ""
+
+    prompt_index = {item["id"]: index for index, item in enumerate(prompt_items)}
+    answer_index = {item["id"]: index for index, item in enumerate(answer_items)}
+    # One strongest record per visible pair.  The schema normally has exactly
+    # one; this also keeps malformed imported artifacts bounded and deterministic.
+    pairs = {}
+    link_limit = MAX_INFLUENCE_CONTEXT_SPANS * MAX_INFLUENCE_ANSWER_SPANS * 2
+    for link in _list(influence.get("links"))[:link_limit]:
+        if not isinstance(link, dict) or link.get("clears_floor") is not True:
+            continue
+        pi = prompt_index.get(str(link.get("context_span_id") or ""))
+        ai = answer_index.get(str(link.get("answer_span_id") or ""))
+        delta = _influence_delta(link)
+        if pi is None or ai is None or delta is None:
+            continue
+        candidate = (pi, ai, _influence_sign(link, delta), delta)
+        previous = pairs.get((pi, ai))
+        if previous is None or abs(delta) > abs(previous[3]):
+            pairs[(pi, ai)] = candidate
+
+    prompt_relations = [[] for _ in prompt_items]
+    answer_relations = [[] for _ in answer_items]
+    for pi in range(len(prompt_items)):
+        found = sorted((item for item in pairs.values() if item[0] == pi),
+                       key=lambda item: (-abs(item[3]), item[1]))[:5]
+        prompt_relations[pi] = [(item[1], item[2], item[3]) for item in found]
+    for ai in range(len(answer_items)):
+        found = sorted((item for item in pairs.values() if item[1] == ai),
+                       key=lambda item: (-abs(item[3]), item[0]))[:3]
+        answer_relations[ai] = [(item[0], item[2], item[3]) for item in found]
+
+    prompt_backlinks = [[] for _ in prompt_items]
+    answer_backlinks = [[] for _ in answer_items]
+    for pi, linked in enumerate(prompt_relations):
+        for ai, sign, _delta in linked:
+            answer_backlinks[ai].append(f"from-p{pi}-{sign}")
+    for ai, linked in enumerate(answer_relations):
+        for pi, sign, _delta in linked:
+            prompt_backlinks[pi].append(f"from-a{ai}-{sign}")
+
+    prompt_html = []
+    for index, item in enumerate(prompt_items):
+        span = item["span"]
+        role = str(span.get("role") or "context")[:50]
+        source_kind = str(span.get("source_kind") or "recorded prompt")[:80]
+        classes = ["im-span", "im-p", f"im-p{index}", *prompt_backlinks[index]]
+        if not prompt_relations[index]:
+            classes.append("im-no-clear")
+        text = _esc(item["text"]) + ('<span class="imap-cut">...</span>' if item["cut"] else "")
+        prompt_html.append(
+            '<div class="imap-source">'
+            f'<div class="imap-source-k">context {index + 1} &middot; {_esc(role)} '
+            f'&middot; {_esc(source_kind)}</div>'
+            f'<input class="im-pin" type="radio" name="i" id="ip{index}">'
+            f'<label for="ip{index}" class="{" ".join(classes)}" tabindex="0" '
+            f'title="{_esc(_influence_title(prompt_relations[index]))}">{text}</label></div>'
+        )
+
+    answer_html = []
+    for index, item in enumerate(answer_items):
+        classes = ["im-span", "im-a", f"im-a{index}", *answer_backlinks[index]]
+        if not answer_relations[index]:
+            classes.append("im-no-clear")
+        text = _esc(item["text"]) + ('<span class="imap-cut">...</span>' if item["cut"] else "")
+        answer_html.append(
+            f'<input class="im-pin" type="radio" name="i" id="ia{index}">'
+            f'<label for="ia{index}" class="{" ".join(classes)}" tabindex="0" '
+            f'title="{_esc(_influence_title(answer_relations[index]))}">{text}</label>'
+        )
+
+    thresholds = _dict(influence.get("thresholds"))
+    floor = _float(thresholds.get("cell_abs_delta_nats"))
+    floor = floor if floor is not None and math.isfinite(floor) and floor >= 0 else None
+    floor_copy = f"{floor:.3f} nats" if floor is not None else "the recorded measurement floor"
+    intro = (
+        '<div class="imap-intro">Hover or keyboard-focus either side, or click a span to pin it. '
+        'The selected span turns blue; '
+        'its strongest clear links turn mint when the context supported the recorded answer and lilac '
+        'when it suppressed it. These are signed teacher-forced log-probability deltas under matched '
+        'context replacement, not percentages, attention weights, or a circuit trace.</div>'
+        '<div class="imap-legend"><span class="imap-key sel"></span> selected '
+        '<span class="imap-key sup"></span> supports '
+        '<span class="imap-key suppress"></span> suppresses '
+        f'<span>measurement floor: {_esc(floor_copy)}</span></div>'
+    )
+    grid = (
+        '<div class="imap"><input class="im-pin" type="radio" name="i" id="ic" checked>'
+        '<label for="ic" class="imap-clear" tabindex="0">clear pinned highlight</label>'
+        '<div class="imap-grid">'
+        '<div class="imap-side"><div class="imap-side-h">measured recorded context</div>'
+        f'{"".join(prompt_html)}</div>'
+        '<div class="imap-side"><div class="imap-side-h">recorded answer</div>'
+        f'<div class="im-answer">{"".join(answer_html)}</div></div></div>'
+    )
+    notes = []
+    if not pairs:
+        notes.append(f"No clear source found: no visible context-answer link cleared {floor_copy}.")
+    else:
+        no_answer = sum(not linked for linked in answer_relations)
+        no_context = sum(not linked for linked in prompt_relations)
+        if no_answer:
+            notes.append(f"{no_answer} visible answer span(s) have no clear source above the floor; "
+                         "their dotted underline is an honest no-clear-source state.")
+        if no_context:
+            notes.append(f"{no_context} visible context span(s) have no clear answer effect above the floor.")
+    selection = _dict(influence.get("selection"))
+    omitted = len(_list(selection.get("omitted_source_ids")))
+    if omitted:
+        notes.append(f"{omitted} recorded prompt source(s) were outside the bounded measurement; "
+                     "the card makes no influence claim for them.")
+    if prompt_truncated or answer_truncated or len(raw_answer_spans) > len(answer_items):
+        notes.append("The interactive view was truncated for receipt size; the complete measured "
+                     "artifact remains in the JSON export.")
+    state = "".join(f'<div class="imap-state">{_esc(note)}</div>' for note in notes)
+    measured_tag = '<span class="tag der-t">derived &middot; matched replacement</span>'
+    body = intro + grid + state + "</div>"
+    return (_mod("blue", "context ↔ answer influence", measured_tag, body),
+            _influence_css(prompt_relations, answer_relations))
 
 
 def _influence_label(inf) -> str:
@@ -453,6 +732,7 @@ def render_card(bundle: dict) -> str:
     run = _dict(bundle.get("run"))
     trace = _dict(bundle.get("trace")) or _dict(run.get("trace"))
     rid = str(run.get("id") or "unknown-run")
+    influence_html, influence_css = _influence_section(bundle)
     parts = [
         "<!doctype html>",
         '<html lang="en">',
@@ -460,12 +740,13 @@ def render_card(bundle: dict) -> str:
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>clozn — run receipt · {_esc(rid)}</title>",
-        f"<style>{_CSS}</style>",
+        f"<style>{_CSS}{influence_css}</style>",
         "</head>",
         "<body>",
         '<main class="card">',
         _masthead(run, rid),
         _exchange(run, trace, rid),
+        influence_html,
         _receipts_section(bundle),
         _lens_section(bundle),
         _lineage_section(bundle, run, rid),

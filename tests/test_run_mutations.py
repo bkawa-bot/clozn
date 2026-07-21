@@ -47,6 +47,13 @@ def _raw(run_id):
 
 def test_redact_replaces_content_with_tombstone_and_cleans_trace(isolated):
     run_id = _record()
+    source = store.get_run(run_id)
+    source["influence_map"] = {
+        "schema": "clozn.context_answer_influence.v1",
+        "prompt_spans": [{"text": "private influence context"}],
+        "answer_spans": [{"text": "private influence answer"}],
+    }
+    assert store.replace_run(source)
     _, raw = _raw(run_id)
     digest = raw["trace_ref"]["sha256"]
     path = store._blob_path(digest)
@@ -62,11 +69,13 @@ def test_redact_replaces_content_with_tombstone_and_cleans_trace(isolated):
     assert redacted["reasoning"] == {} and redacted["output_contract"] == {}
     assert redacted["trace"] == {}
     assert "model_path" not in redacted["identity"]
+    assert "influence_map" not in redacted
     encoded = json.dumps(redacted)
     for secret in ("private prompt", "private response", "private reasoning", "private tool",
                    "private memory", "private preference", "client_opaque", "session_opaque",
                    "project_opaque", "private meta", "private-name"):
         assert secret not in encoded
+    assert "private influence" not in encoded
     row, _ = _raw(run_id)
     assert row["client_key"] is None and row["session_key"] is None
     assert row["prompt_summary"] == "" and row["response_summary"] == ""

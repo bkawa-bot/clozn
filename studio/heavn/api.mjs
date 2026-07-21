@@ -90,6 +90,8 @@ export const api = {
                                       { position, token }, 300000),            // F3: child run back
   spanReceipt: (id, find) => postE("/runs/" + enc(id) + "/span_receipt",
                                    { find }, 600000),                          // F4: ablate a phrase
+  influenceMap: (id, body = {}) => postE("/runs/" + enc(id) + "/influence-map",
+                                          body, 600000),                       // context <-> answer forced map
   diffRuns: (a, b) => post("/diff/runs", { a, b }, 60000),                     // F8
   anchoredList: () => j("/memory/anchored/list", null, 15000),                 // F6
   anchoredFit: (card_id, k) => post("/memory/anchored/fit",

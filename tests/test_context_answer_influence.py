@@ -1,0 +1,241 @@
+"""Model-free tests for the context <-> answer influence evidence core."""
+from __future__ import annotations
+
+from copy import deepcopy
+
+from clozn.receipts.context_answer_influence import (
+    SCHEMA,
+    context_answer_influence,
+    segment_context,
+)
+
+
+TOKENS = [
+    {"id": 101, "piece": "Blue", "logprob": -0.1},
+    {"id": 102, "piece": " grass", "logprob": -0.2},
+]
+
+
+class FakeScoreSub:
+    def __init__(self, score_fn=None, fail_after=None):
+        self.calls = []
+        self.score_fn = score_fn or (lambda _messages, _block: [-0.1, -0.2])
+        self.fail_after = fail_after
+
+    def score_tokens(self, messages, continuation_ids, *, continuation=None, block=None,
+                     steer_strengths=None, steer_vec=None, topk=0):
+        self.calls.append({
+            "messages": deepcopy(messages),
+            "continuation_ids": deepcopy(continuation_ids),
+            "continuation": continuation,
+            "block": block,
+            "steer_strengths": deepcopy(steer_strengths),
+        })
+        if self.fail_after is not None and len(self.calls) > self.fail_after:
+            raise RuntimeError("controlled arm failure")
+        logprobs = self.score_fn(messages, block)
+        return [
+            {**token, "logprob": logprob}
+            for token, logprob in zip(TOKENS, logprobs)
+        ]
+
+
+class NoScoreSub:
+    pass
+
+
+class StepClock:
+    def __init__(self):
+        self.value = 10.0
+
+    def __call__(self):
+        value = self.value
+        self.value += 0.001
+        return value
+
+
+def _run():
+    return {
+        "id": "run-map-1",
+        "model": "qwen-test",
+        "substrate": "FakeScoreSub",
+        "messages": [{"role": "user", "content": "RAW_ONLY"}],
+        "assembled_messages": [
+            {"role": "system", "content": "Policy."},
+            {"role": "user", "name": "retrieval", "source_id": "doc-7",
+             "content": "The sky is blue. Grass is green."},
+        ],
+        "response": "Blue grass",
+        "trace": {"token_ids": [101, 102]},
+        "behavior": {"active_dials": {"careful": 0.5}},
+        "identity": {"model_sha256": "abc", "template_fingerprint": "tpl"},
+        "final_prompt": "<rendered exact prompt>",
+    }
+
+
+def _influence_scores(messages, _block):
+    text = "\n".join(message.get("content", "") for message in messages)
+    if "Policy." not in text:
+        return [-0.2, -0.25]
+    if "The sky is blue." not in text:
+        return [-1.1, -0.1]
+    if "Grass is green." not in text:
+        return [-0.1, -1.2]
+    return [-0.1, -0.2]
+
+
+def test_source_aware_segmentation_is_bounded_deterministic_and_exact():
+    messages = [{"role": "system", "content": "Policy."}]
+    messages.extend(
+        {"role": "user", "content": f"Message {index}."}
+        for index in range(1, 10)
+    )
+    first = segment_context(messages, max_spans=8)
+    second = segment_context(messages, max_spans=8)
+
+    assert first == second
+    assert len(first["spans"]) == 8
+    assert first["selection"]["selected_source_ids"] == [
+        "p.m000", "p.m003", "p.m004", "p.m005", "p.m006", "p.m007", "p.m008", "p.m009",
+    ]
+    assert first["selection"]["omitted_source_ids"] == ["p.m001", "p.m002"]
+    for span in first["spans"]:
+        message = messages[span["message_index"]]
+        assert span["role"] == message["role"]
+        assert message["content"][span["start"]:span["end"]] == span["text"]
+        assert span["id"].startswith(span["parent_id"] + ".c")
+
+    one = segment_context(messages, max_spans=1)
+    assert [span["parent_id"] for span in one["spans"]] == ["p.m000"]
+
+
+def test_one_baseline_exact_continuation_assembled_preference_and_bidirectional_links():
+    run = _run()
+    sub = FakeScoreSub(_influence_scores)
+    out = context_answer_influence(run, sub, clock=StepClock())
+
+    assert out["schema"] == SCHEMA
+    assert out["status"] == "ok" and out["available"] is True
+    assert out["identity"]["prompt_view"] == "assembled_messages"
+    assert out["method"]["generation_used"] is False
+    assert out["matrix_shape"] == [3, 2]
+    assert out["matrix"] == [[0.1, 0.05], [1.0, -0.1], [0.0, 1.0]]
+
+    # One baseline plus one matched-control score per selected prompt span.
+    assert len(sub.calls) == 1 + len(out["prompt_spans"])
+    assert out["timing"]["score_calls"] == len(sub.calls)
+    assert all(call["continuation_ids"] == [101, 102] for call in sub.calls)
+    assert all(call["continuation"] is None for call in sub.calls)
+    assert all("RAW_ONLY" not in str(call["messages"]) for call in sub.calls)
+    assert sub.calls[0]["messages"] == run["assembled_messages"]
+    assert all(call["steer_strengths"] == {"careful": 0.5} for call in sub.calls)
+
+    # Every matrix cell is retained as one signed link.  The same link IDs drive
+    # answer -> context and context -> answer reads without a second attribution.
+    assert len(out["links"]) == 3 * 2
+    blue = out["summary"]["answer_to_context"][0]
+    sky_id = next(span["id"] for span in out["prompt_spans"] if "sky" in span["text"])
+    assert blue["top_context_span_ids"][0] == sky_id
+    sky_read = next(
+        row for row in out["summary"]["context_to_answer"]
+        if row["context_span_id"] == sky_id
+    )
+    assert sky_read["top_answer_span_ids"][0] == out["answer_spans"][0]["id"]
+    link = next(
+        item for item in out["links"]
+        if item["context_span_id"] == sky_id
+        and item["answer_span_id"] == out["answer_spans"][0]["id"]
+    )
+    assert link["delta_nats"] == 1.0 and link["effect"] == "supports"
+    assert out["controls"][1]["length_preserved"] is True
+
+
+def test_below_floor_is_explicitly_no_clear_source():
+    run = _run()
+    run["assembled_messages"] = [{"role": "user", "content": "A weak source."}]
+    sub = FakeScoreSub(lambda messages, block: (
+        [-0.1, -0.2] if "A weak source." in str(messages) else [-0.11, -0.21]
+    ))
+    out = context_answer_influence(run, sub, clock=StepClock())
+
+    assert out["matrix"] == [[0.01, 0.01]]
+    assert all(link["clears_floor"] is False for link in out["links"])
+    assert out["summary"]["has_any_clear_source"] is False
+    assert out["summary"]["no_clear_source"] is True
+    assert out["summary"]["answer_span_ids_without_clear_source"] == ["a.t0000", "a.t0001"]
+    assert out["thresholds"]["calibration"] == "fixed_default_not_model_calibrated"
+
+
+def test_run_is_not_mutated_and_evidence_is_stable():
+    run = _run()
+    before = deepcopy(run)
+    first = context_answer_influence(run, FakeScoreSub(_influence_scores), clock=StepClock())
+    second = context_answer_influence(run, FakeScoreSub(_influence_scores), clock=StepClock())
+
+    assert run == before
+    assert first == second
+    assert len(first["artifact_sha256"]) == 64
+    assert first["answer"] == {
+        "recorded_text": "Blue grass",
+        "scored_text": "Blue grass",
+        "scored_text_matches_recorded": True,
+        "offset_basis": "scored_text",
+    }
+    assert first["answer_spans"][1]["start"] == 4
+
+
+def test_response_text_fallback_reuses_the_exact_recorded_continuation():
+    run = _run()
+    run["trace"] = {}
+    sub = FakeScoreSub(_influence_scores)
+    out = context_answer_influence(run, sub, clock=StepClock())
+
+    assert out["status"] == "ok"
+    assert out["continuation"] == {
+        "text_exact": True,
+        "token_ids_exact": False,
+        "retokenized": True,
+        "kind": "recorded_response_text",
+    }
+    assert all(call["continuation_ids"] is None for call in sub.calls)
+    assert all(call["continuation"] == "Blue grass" for call in sub.calls)
+
+
+def test_missing_score_surface_is_an_honest_unavailable_shape():
+    out = context_answer_influence(_run(), NoScoreSub(), clock=StepClock())
+    assert out["schema"] == SCHEMA
+    assert out["status"] == "unavailable"
+    assert out["available"] is False
+    assert out["error"]["code"] == "scoring_unavailable"
+    assert out["method"]["generation_used"] is False
+    assert "matrix" not in out
+
+
+def test_failed_intervention_does_not_masquerade_as_a_complete_map():
+    out = context_answer_influence(_run(), FakeScoreSub(_influence_scores, fail_after=1),
+                                   clock=StepClock())
+    assert out["status"] == "error"
+    assert out["available"] is False
+    assert out["error"]["code"] == "intervention_score_failed"
+    assert out["failed_context_span_id"] == "p.m000.c000"
+    assert out["completed_context_span_ids"] == []
+    assert "matrix" not in out and "links" not in out
+
+
+def test_legacy_prompt_block_is_a_real_replaceable_source():
+    run = _run()
+    run.pop("assembled_messages")
+    run["messages"] = [{"role": "user", "content": "Question."}]
+    run["memory"] = {"prompt_block": "Remember the sky is blue."}
+
+    def scores(_messages, block):
+        return [-0.1, -0.2] if block and "sky is blue" in block else [-1.0, -0.2]
+
+    out = context_answer_influence(run, FakeScoreSub(scores), clock=StepClock())
+    assert out["status"] == "ok"
+    assert out["identity"]["prompt_view"] == "messages_plus_prompt_block"
+    block_source = next(source for source in out["prompt_sources"] if source["id"] == "p.b000")
+    assert block_source["source_kind"] == "prompt_block"
+    block_span = next(span for span in out["prompt_spans"] if span["parent_id"] == "p.b000")
+    row = out["matrix"][out["prompt_spans"].index(block_span)]
+    assert row == [0.9, 0.0]

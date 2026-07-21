@@ -724,6 +724,7 @@ from clozn.server.routes import card as _card_routes                   # noqa: E
 from clozn.server.routes import anchored as _anchored_routes           # noqa: E402
 from clozn.server.routes import diff as _diff_routes                   # noqa: E402
 from clozn.server.routes import receipt_link as _receipt_link_routes   # noqa: E402 (ambient delivery ch.1)
+from clozn.server.routes import influence_map as _influence_map_routes # noqa: E402
 
 _runs_fallback_routes = _types.SimpleNamespace(try_get=_runs_routes.try_get_fallback)
 
@@ -736,7 +737,7 @@ _POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes,
                _timetravel_routes, _profiles_routes, _preferences_routes, _feedback_routes,
                _ollama_routes, _openai_routes, _engine_routes, _rewrite_routes, _readouts_routes,
                _span_receipt_routes, _fork_routes, _journal_routes, _anchored_routes, _diff_routes,
-               _receipt_link_routes]
+               _receipt_link_routes, _influence_map_routes]
 
 
 def active_sub(h):

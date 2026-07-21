@@ -199,6 +199,7 @@ def test_receipt_bundle_unknowns_are_null_or_empty():
     assert bundle["workspace_readouts"] is None
     assert bundle["concepts"] is None
     assert bundle["tiny_tests"] is None
+    assert bundle["influence_map"] is None
 
 
 def test_receipt_bundle_omits_local_association_fingerprints():
@@ -253,3 +254,20 @@ def test_receipt_bundle_preserves_actual_stored_receipts_and_tiny_tests():
     assert bundle["receipts"]["run_id"] == "r2"
     assert bundle["receipts"]["receipts"] == [rec]
     assert bundle["tiny_tests"] == tiny
+
+
+def test_receipt_bundle_preserves_precomputed_context_answer_influence_map():
+    influence_map = {
+        "schema": "clozn.context_answer_influence.v1",
+        "run_id": "r_map",
+        "prompt_spans": [{"id": "p0", "text": "Use the account context"}],
+        "answer_spans": [{"id": "a0", "text": "Your account is active."}],
+        "links": [{"prompt_span_id": "p0", "answer_span_id": "a0", "score_nats": 0.8}],
+    }
+    source = {"id": "r_map", "influence_map": influence_map}
+
+    bundle = receipt_bundle.build(source)
+
+    assert bundle["influence_map"] == influence_map
+    assert bundle["influence_map"] is not influence_map
+    assert "influence_map" not in bundle["run"]

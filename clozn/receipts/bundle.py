@@ -101,6 +101,17 @@ def _tiny_tests(run: dict):
     return list(tests) if isinstance(tests, list) else None
 
 
+def _influence_map(run: dict) -> dict | None:
+    """Copy a previously-computed context↔answer map into portable exports.
+
+    Computing the map is deliberately an explicit, model-backed action.  Bundle
+    rendering remains a pure read and never turns downloading a receipt into a
+    surprise scoring job.
+    """
+    value = run.get("influence_map")
+    return dict(value) if isinstance(value, dict) else None
+
+
 def _identity(run: dict) -> dict:
     """roadmap S4.3: the run's immutable reproduction-identity block (model_sha256,
     template_fingerprint, engine_build, clozn_version, captured_at), if the run captured one. Mirrors
@@ -114,10 +125,11 @@ def _identity(run: dict) -> dict:
 def build(run: dict | None, explain: dict | None = None, receipts=None) -> dict:
     """Build the versioned export bundle from existing run/explain data."""
     run = run if isinstance(run, dict) else {}
-    # Association fingerprints are intentionally local-only. They help a sidecar find the right run,
-    # but add no reproduction evidence and must not become portable cross-install identifiers.
+    # Association fingerprints are intentionally local-only. The influence map is promoted below so
+    # its potentially-large complete matrix appears exactly once in a portable receipt.
     portable_run = {k: v for k, v in run.items()
-                    if k not in {"client_key", "client_key_source", "session_key", "project_key"}}
+                    if k not in {"client_key", "client_key_source", "session_key", "project_key",
+                                 "influence_map"}}
     # output_contract is already part of the stored run evidence, so the JSON receipt retains one
     # object-shaped copy under bundle["run"] rather than promoting/duplicating its raw model output at
     # another top-level export key.  A malformed legacy value degrades to {}.  Association fingerprints
@@ -146,6 +158,7 @@ def build(run: dict | None, explain: dict | None = None, receipts=None) -> dict:
         "workspace_readouts": workspace_readouts or None,
         "concepts": _concepts(run, trace, explain),
         "tiny_tests": _tiny_tests(run),
+        "influence_map": _influence_map(run),
     }
 
 

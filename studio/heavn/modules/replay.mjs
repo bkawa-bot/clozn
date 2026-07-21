@@ -45,6 +45,7 @@ export function ReplayModule(){
     <div class="workbench-analysis">
       <div class="col">
         <${ExplainPanel} rec=${rec}/>
+        <${InfluenceMap} rec=${rec}/>
         <${ReceiptsPanel} rec=${rec}/>
         <${SpanForensics} rec=${rec}/>
         <${LieDetector} rec=${rec}/>
@@ -1666,6 +1667,257 @@ function LineageTree({ rec }){
         : fam ? roots.map(r => html`<${Node} r=${r} depth=${0}/>`) : null}
     </div>
   </details>`;
+}
+
+/* Context <-> answer influence map. The answer is held fixed while each bounded context span is
+   replaced with a matched neutral control. This surface renders those behavioral-dependence scores;
+   it deliberately does not relabel them as attention, internal mediation, or a circuit explanation. */
+const influenceArray = (...values) => values.find(Array.isArray) || [];
+const influenceNumber = value => value != null && Number.isFinite(+value) ? +value : null;
+const influenceId = (value, fallback) => value == null ? fallback : String(value);
+
+function influenceArtifact(value){
+  if(!value || typeof value !== "object") return null;
+  const candidates = [
+    value.influence_map, value.context_answer_influence, value.artifact, value.result, value.receipt,
+    value.data, value.receipts && value.receipts.influence_map,
+    value.receipts && value.receipts.context_answer_influence, value,
+  ];
+  return candidates.find(candidate => candidate && typeof candidate === "object" && (
+    candidate.schema === "clozn.context_answer_influence.v1" ||
+    ((Array.isArray(candidate.prompt_spans) || Array.isArray(candidate.context_spans)) &&
+      (Array.isArray(candidate.answer_spans) || Array.isArray(candidate.response_spans))) ||
+    (candidate.error && (candidate.status === "unavailable" || candidate.status === "error"))
+  )) || null;
+}
+
+function normalizeInfluenceMap(raw){
+  const artifact = influenceArtifact(raw);
+  if(!artifact) return null;
+  const promptRaw = influenceArray(
+    artifact.prompt_spans, artifact.context_spans, artifact.prompt && artifact.prompt.spans,
+    artifact.context && artifact.context.spans,
+  );
+  const sourceFallback = !promptRaw.length
+    ? influenceArray(artifact.prompt_sources, artifact.sources).filter(source => source && source.selected !== false)
+    : [];
+  const answerRaw = influenceArray(
+    artifact.answer_spans, artifact.response_spans, artifact.answer && artifact.answer.spans,
+    artifact.response && artifact.response.spans,
+  );
+  const fallbackAnswer = !answerRaw.length && artifact.answer &&
+    (artifact.answer.scored_text ?? artifact.answer.text ?? artifact.answer.recorded_text);
+  const normalizeSpan = (span, index, prefix) => {
+    const item = span && typeof span === "object" ? span : { text: span };
+    return {
+      ...item,
+      id: influenceId(item.id ?? item.span_id ?? item[`${prefix}_span_id`], `${prefix}.${index}`),
+      text: String(item.text ?? item.piece ?? item.content ?? item.value ?? ""),
+      index,
+    };
+  };
+  const prompts = (promptRaw.length ? promptRaw : sourceFallback)
+    .map((span, index) => normalizeSpan(span, index, "context"));
+  const answers = (answerRaw.length ? answerRaw : fallbackAnswer != null ? [{ text: fallbackAnswer }] : [])
+    .map((span, index) => normalizeSpan(span, index, "answer"));
+  const thresholdValue = (artifact.thresholds &&
+    (artifact.thresholds.cell_abs_delta_nats ?? artifact.thresholds.abs_delta_nats));
+  const floor = influenceNumber(thresholdValue ?? artifact.evidence_floor ?? artifact.floor);
+  const promptById = new Map(prompts.map(span => [span.id, span]));
+  const answerById = new Map(answers.map(span => [span.id, span]));
+  const linksByPair = new Map();
+  const addLink = (link, contextIndex = null, answerIndex = null) => {
+    const item = link && typeof link === "object" ? link : { delta_nats: link };
+    const cIndex = influenceNumber(item.context_index ?? item.prompt_index ?? contextIndex);
+    const aIndex = influenceNumber(item.answer_index ?? item.response_index ?? answerIndex);
+    const contextId = influenceId(
+      item.context_span_id ?? item.prompt_span_id ?? item.source_span_id,
+      cIndex != null && prompts[cIndex] ? prompts[cIndex].id : null,
+    );
+    const answerId = influenceId(
+      item.answer_span_id ?? item.response_span_id ?? item.target_span_id,
+      aIndex != null && answers[aIndex] ? answers[aIndex].id : null,
+    );
+    if(!promptById.has(contextId) || !answerById.has(answerId)) return;
+    const delta = influenceNumber(item.delta_nats ?? item.signed_delta_nats ?? item.delta ?? item.score ?? item.value);
+    const magnitude = influenceNumber(item.abs_delta_nats ?? item.absolute_delta_nats ?? item.magnitude ?? item.weight)
+      ?? (delta == null ? 0 : Math.abs(delta));
+    const explicitClear = item.clears_floor ?? item.above_floor ?? item.clear ?? item.significant;
+    const clearsFloor = explicitClear != null ? explicitClear === true
+      : floor != null ? magnitude >= floor : magnitude > 0;
+    const effect = String(item.effect || (delta > 0 ? "supports" : delta < 0 ? "suppresses" : "neutral"));
+    const normalized = { contextId, answerId, delta, magnitude, clearsFloor, effect };
+    linksByPair.set(`${contextId}\u0000${answerId}`, normalized);
+  };
+  influenceArray(artifact.links, artifact.edges, artifact.relationships).forEach(link => addLink(link));
+  influenceArray(artifact.matrix, artifact.score_matrix, artifact.scores).forEach((row, contextIndex) => {
+    if(!Array.isArray(row)) return;
+    row.forEach((cell, answerIndex) => {
+      const context = prompts[contextIndex], answer = answers[answerIndex];
+      if(context && answer && !linksByPair.has(`${context.id}\u0000${answer.id}`))
+        addLink(cell, contextIndex, answerIndex);
+    });
+  });
+  const links = [...linksByPair.values()];
+  const noSourceIds = new Set(influenceArray(
+    artifact.summary && artifact.summary.answer_span_ids_without_clear_source,
+    artifact.answer_span_ids_without_clear_source,
+  ).map(String));
+  answers.forEach(answer => {
+    if(!links.some(link => link.answerId === answer.id && link.clearsFloor)) noSourceIds.add(answer.id);
+  });
+  return {
+    artifact, prompts, answers, links, floor, noSourceIds,
+    available: artifact.available !== false && artifact.status !== "unavailable" && artifact.status !== "error",
+    message: String((artifact.error && (artifact.error.message || artifact.error.code)) || artifact.message || ""),
+  };
+}
+
+function InfluenceMap({ rec }){
+  const [out, setOut] = useState(() => normalizeInfluenceMap(rec));
+  const [busy, setBusyLocal] = useState(false);
+  const [error, setError] = useState("");
+  const [hovered, setHovered] = useState(null);
+  const [focused, setFocused] = useState(null);
+  const [pinned, setPinned] = useState(null);
+  const request = useRef(0);
+  useEffect(() => {
+    request.current += 1;
+    setOut(normalizeInfluenceMap(rec)); setBusyLocal(false); setError("");
+    setHovered(null); setFocused(null); setPinned(null);
+  }, [rec.id]);
+
+  const run = async (refresh = false) => {
+    if(guardSample(rec) || busy) return;
+    const nonce = ++request.current;
+    setBusyLocal(true); setError(""); setHovered(null); setFocused(null); setPinned(null);
+    toast("mapping context to the recorded answer - forced scoring only, no generation...");
+    const response = await api.influenceMap(rec.id, refresh ? { refresh: true } : {});
+    if(nonce !== request.current) return;
+    setBusyLocal(false);
+    if(!response){ setError("No influence map came back. This measurement needs a ready scoring worker."); return; }
+    const mapped = normalizeInfluenceMap(response);
+    if(!mapped){
+      setError(response.error || `The influence-map route returned an unreadable artifact${response.__status ? ` (${response.__status})` : ""}.`);
+      return;
+    }
+    setOut(mapped);
+    if(!mapped.available) setError(mapped.message || "This run does not contain enough recorded context and answer evidence to map.");
+  };
+
+  // A click is a real pin: pointer movement and incidental focus changes must not replace it until
+  // the user clicks that span again (or pins another one). Hover/focus drive the transient state only.
+  const active = pinned || hovered || focused;
+  const activeLinks = !active || !out ? [] : out.links
+    .filter(link => active.kind === "context" ? link.contextId === active.id : link.answerId === active.id)
+    .sort((a, b) => b.magnitude - a.magnitude || a.contextId.localeCompare(b.contextId) || a.answerId.localeCompare(b.answerId));
+  const clearLinks = activeLinks.filter(link => link.clearsFloor);
+  const shownLinks = clearLinks.length ? clearLinks : activeLinks.slice(0, active && active.kind === "answer" ? 3 : 5);
+  const strongest = shownLinks[0] || null;
+  const maxMagnitude = strongest ? strongest.magnitude || 1 : 1;
+  const linkFor = (kind, id) => shownLinks.find(link => kind === "context" ? link.contextId === id : link.answerId === id);
+  const spanState = (kind, id) => {
+    const selected = !!active && active.kind === kind && active.id === id;
+    const link = !selected && active && active.kind !== kind ? linkFor(kind, id) : null;
+    return {
+      selected,
+      link,
+      strength: selected ? 1 : link ? Math.max(.12, link.magnitude / maxMagnitude) : 0,
+      strongest: !!link && link === strongest,
+    };
+  };
+  const sourceLabel = span => [span.role, span.name, span.source_kind]
+    .filter(Boolean).map(value => String(value).replaceAll("_", " ")).filter((value, index, all) => all.indexOf(value) === index).join(" · ") || "recorded context";
+  const activeStatus = () => {
+    if(!active) return "Hover, focus, or click a span on either side to reveal its strongest measured links.";
+    if(!activeLinks.length) return "No measured relationship is available for this span.";
+    if(!clearLinks.length) return active.kind === "answer"
+      ? "No context span clears the evidence floor for this answer span; the strongest below-floor measurements remain subdued."
+      : "No answer span clears the evidence floor for this context span; the strongest below-floor measurements remain subdued.";
+    const noun = active.kind === "answer" ? "context span" : "answer span";
+    const amount = strongest && strongest.magnitude != null ? ` Strongest measured change: ${strongest.magnitude.toFixed(3)} nats.` : "";
+    return `${clearLinks.length} ${noun}${clearLinks.length === 1 ? "" : "s"} clear the evidence floor.${amount}`;
+  };
+  const togglePin = (kind, id) => setPinned(current =>
+    current && current.kind === kind && current.id === id ? null : { kind, id });
+
+  const artifact = out && out.artifact;
+  const empty = out && out.available && (!out.prompts.length || !out.answers.length);
+  return html`<div class="mod influence-map" data-testid="influence-map">
+    <div class="mod-h"><span class="led lilac"></span><span class="cap">context ↔ answer influence</span>
+      <span class="tail">${busy ? "scoring matched controls..." : out && out.available ? "hover · focus · pin · trace both ways" : "on demand · no generation"}</span></div>
+    <div class="influence-map-body">
+      <div class="influence-map-rule">Hold the recorded answer fixed, replace one context span at a time,
+        and measure how its token likelihood moves. This is controlled behavioral dependence, not an attention path or circuit explanation.</div>
+      ${!out && !busy && html`<div class="influence-map-empty">
+        <span class="none">Build a bounded map from the exact assembled context to this recorded answer.</span>
+        <button class="spd" disabled=${!!rec._sample} onClick=${() => run(false)}>MAP CONTEXT TO ANSWER</button>
+        ${rec._sample && html`<span class="none">Live recorded runs only - sample reels have no scorable continuation.</span>`}
+      </div>`}
+      ${busy && html`<div class="influence-map-empty"><span class="none">Scoring the recorded continuation once, then one matched control per context span...</span></div>`}
+      ${(error || (out && !out.available)) && !busy && html`<div class="influence-map-message" role="status">
+        <span>${error || out.message || "Influence evidence is unavailable for this run."}</span>
+        <button class="spd" disabled=${!!rec._sample} onClick=${() => run(false)}>TRY AGAIN</button>
+      </div>`}
+      ${empty && html`<div class="influence-map-message" role="status">The map returned without displayable span coordinates.</div>`}
+      ${out && out.available && !empty && html`
+        <div class="influence-map-grid">
+          <section class="influence-map-pane" aria-labelledby="influence-context-title">
+            <div class="influence-map-pane-head"><b id="influence-context-title">recorded context</b><span>${out.prompts.length} measured spans</span></div>
+            <div class="influence-context-list">
+              ${out.prompts.map((span, index) => {
+                const state = spanState("context", span.id);
+                return html`<button type="button" class="influence-span influence-context-span"
+                  data-span-id=${span.id} data-active=${String(state.selected)} data-linked=${String(!!state.link)}
+                  data-clears-floor=${String(!!(state.link && state.link.clearsFloor))}
+                  data-effect=${state.link ? state.link.effect : "neutral"} data-strongest=${String(state.strongest)}
+                  style=${`--influence-strength:${state.strength};--influence-alpha:${(.08 + state.strength * .48).toFixed(3)}`}
+                  aria-pressed=${!!pinned && pinned.kind === "context" && pinned.id === span.id} aria-describedby="influence-map-status"
+                  aria-label=${`Context span ${index + 1}, ${sourceLabel(span)}: ${span.text}`}
+                  onClick=${() => togglePin("context", span.id)}
+                  onMouseEnter=${() => setHovered({ kind: "context", id: span.id })} onMouseLeave=${() => setHovered(null)}
+                  onFocus=${() => setFocused({ kind: "context", id: span.id })} onBlur=${() => setFocused(null)}>
+                  <span class="influence-source">${sourceLabel(span)}</span><span>${span.text || "[empty span]"}</span>
+                </button>`;
+              })}
+            </div>
+          </section>
+          <section class="influence-map-pane" aria-labelledby="influence-answer-title">
+            <div class="influence-map-pane-head"><b id="influence-answer-title">recorded answer</b><span>${out.answers.length} scored spans</span></div>
+            <div class="influence-answer-text">
+              ${out.answers.map((span, index) => {
+                const state = spanState("answer", span.id), noSource = out.noSourceIds.has(span.id);
+                return html`<button type="button" class="influence-span influence-answer-span"
+                  data-span-id=${span.id} data-active=${String(state.selected)} data-linked=${String(!!state.link)}
+                  data-clears-floor=${String(!!(state.link && state.link.clearsFloor))}
+                  data-effect=${state.link ? state.link.effect : "neutral"} data-strongest=${String(state.strongest)}
+                  data-no-clear-source=${String(noSource)}
+                  style=${`--influence-strength:${state.strength};--influence-alpha:${(.08 + state.strength * .48).toFixed(3)}`}
+                  aria-pressed=${!!pinned && pinned.kind === "answer" && pinned.id === span.id} aria-describedby="influence-map-status"
+                  aria-label=${`Answer span ${index + 1}: ${span.text.trim() || "whitespace"}${noSource ? "; no context span clears the evidence floor" : ""}`}
+                  onClick=${() => togglePin("answer", span.id)}
+                  onMouseEnter=${() => setHovered({ kind: "answer", id: span.id })} onMouseLeave=${() => setHovered(null)}
+                  onFocus=${() => setFocused({ kind: "answer", id: span.id })} onBlur=${() => setFocused(null)}>${span.text || " "}</button>`;
+              })}
+            </div>
+          </section>
+        </div>
+        <div class="influence-map-status" id="influence-map-status" aria-live="polite">${activeStatus()}</div>
+        <div class="influence-map-legend" aria-label="influence legend">
+          <span><i class="supports"></i>supports under replacement</span>
+          <span><i class="suppresses"></i>suppresses under replacement</span>
+          <span><i class="below"></i>below evidence floor</span>
+          <span><i class="unclear"></i>no clear source</span>
+        </div>
+        <div class="influence-map-foot">
+          <span>Forced scoring · recorded continuation · ${artifact && artifact.timing && artifact.timing.score_calls != null ? artifact.timing.score_calls + " score calls" : "bounded matched controls"}</span>
+          ${artifact && artifact.selection && (artifact.selection.omitted_source_ids || []).length
+            ? html`<span>${artifact.selection.omitted_source_ids.length} older source(s) outside the bounded map</span>` : null}
+          <button class="spd" disabled=${busy || !!rec._sample} onClick=${() => run(true)}>RECOMPUTE</button>
+        </div>
+      `}
+    </div>
+  </div>`;
 }
 
 /* ── F4: span forensics — ablate a phrase from the prompt, attribute the change causally ── */

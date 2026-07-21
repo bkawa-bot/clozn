@@ -70,6 +70,44 @@ def _bundle(run=None, receipts=None) -> dict:
     return receipt_bundle.build(run if run is not None else _run(), explain=None, receipts=receipts)
 
 
+def _influence_map(*, clear=True) -> dict:
+    return {
+        "schema": "clozn.context_answer_influence.v1",
+        "status": "ok",
+        "available": True,
+        "prompt_spans": [
+            {"id": "p.m000.c000", "role": "system", "source_kind": "assembled_message",
+             "text": "Answer with the capital only."},
+            {"id": "p.m001.c000", "role": "user", "source_kind": "assembled_message",
+             "text": "What is the capital of France?"},
+        ],
+        "answer_spans": [
+            {"id": "a.t0000", "text": "Paris"},
+            {"id": "a.t0001", "text": "."},
+            {"id": "a.t0002", "text": " Done"},
+        ],
+        "links": [
+            {"context_span_id": "p.m000.c000", "answer_span_id": "a.t0000",
+             "delta_nats": 0.72, "abs_delta_nats": 0.72, "effect": "supports",
+             "clears_floor": clear},
+            {"context_span_id": "p.m001.c000", "answer_span_id": "a.t0000",
+             "delta_nats": -0.41, "abs_delta_nats": 0.41, "effect": "suppresses",
+             "clears_floor": clear},
+            {"context_span_id": "p.m001.c000", "answer_span_id": "a.t0001",
+             "delta_nats": 0.16, "abs_delta_nats": 0.16, "effect": "supports",
+             "clears_floor": clear},
+        ],
+        "thresholds": {"cell_abs_delta_nats": 0.05},
+        "selection": {"omitted_source_ids": ["p.m002"]},
+    }
+
+
+def _bundle_with_influence(influence=None) -> dict:
+    bundle = _bundle()
+    bundle["influence_map"] = influence if influence is not None else _influence_map()
+    return bundle
+
+
 # --------------------------------------------------------------- receipts present: numbers, escaped
 def test_receipts_render_with_numbers_and_escaping():
     out = render_card(_bundle(receipts=_RECEIPTS))
@@ -114,6 +152,65 @@ def test_no_external_urls_in_src_or_href_attributes():
     for a in attrs:
         assert "http://" not in a and "https://" not in a, a
     assert "@import" not in out and "url(" not in out    # CSS can't fetch either
+
+
+# ------------------------------------------------------- linked context <-> answer influence map
+def test_influence_map_links_both_directions_with_css_only_hover_and_focus():
+    out = render_card(_bundle_with_influence())
+    assert "context ↔ answer influence" in out
+    assert "Answer with the capital only." in out and "Paris" in out
+    assert out.count('tabindex="0"') == 6
+    # Context -> answer and answer -> context selectors are generated only from
+    # bounded numeric display indices; no artifact text or IDs enter CSS.
+    assert ".imap:has(#ic:checked):has(.im-p0:is(:hover,:focus)) .from-p0-s" in out
+    assert ".imap:has(#ia0:checked) .from-a0-s" in out
+    assert ".imap:has(#ia0:checked) .from-a0-x" in out
+    # A non-clear pin suppresses transient hover/focus, so two relationships
+    # cannot visually union.  The clear radio is the explicit hover-mode gate.
+    assert ".imap:has(#ic:checked) .im-span:is(:hover,:focus)" in out
+    assert ".imap:has(.im-p0:is(:hover,:focus))" not in out
+    assert 'type="radio" name="i" id="ip0"' in out
+    assert 'for="ic"' in out and "clear pinned highlight" in out
+    assert "not percentages, attention weights, or a circuit trace" in out
+    assert "measurement floor: 0.050 nats" in out
+    assert "1 visible answer span(s) have no clear source" in out
+    assert "1 recorded prompt source(s) were outside the bounded measurement" in out
+    assert "<script" not in out
+
+
+def test_influence_map_escapes_span_payloads_and_keeps_them_out_of_css():
+    influence = _influence_map()
+    influence["prompt_spans"][0]["text"] = '</style><script>alert("prompt")</script>'
+    influence["answer_spans"][0]["text"] = '<img src="https://attacker.invalid/x">'
+    out = render_card(_bundle_with_influence(influence))
+    assert "<script" not in out and "<img" not in out and "</style><script" not in out
+    assert "&lt;script&gt;" in out and "&lt;img src=&quot;https://attacker.invalid/x&quot;&gt;" in out
+    assert "attacker.invalid" not in re.findall(r"<style>(.*?)</style>", out, re.DOTALL)[0]
+
+
+def test_influence_map_below_floor_and_unavailable_states_are_explicit():
+    out = render_card(_bundle_with_influence(_influence_map(clear=False)))
+    assert "No clear source found: no visible context-answer link cleared 0.050 nats." in out
+    assert ".from-p0-s{" not in out
+
+    unavailable = {
+        "schema": "clozn.context_answer_influence.v1", "status": "unavailable", "available": False,
+        "error": {"code": "scoring_unavailable", "message": "teacher-forced scoring was not available"},
+    }
+    unavailable_out = render_card(_bundle_with_influence(unavailable))
+    assert "map unavailable — scoring_unavailable" in unavailable_out
+    assert "teacher-forced scoring was not available" in unavailable_out
+
+
+def test_influence_map_answer_surface_is_bounded_and_says_when_truncated():
+    influence = _influence_map(clear=False)
+    influence["answer_spans"] = [
+        {"id": f"a.t{i:04d}", "text": "x"} for i in range(300)
+    ]
+    influence["links"] = []
+    out = render_card(_bundle_with_influence(influence))
+    assert "im-a255" in out and "im-a256" not in out
+    assert "interactive view was truncated for receipt size" in out
 
 
 # ------------------------------------------------------------------------------- structure smoke
