@@ -42,7 +42,7 @@ below are still queued/not started. Commit IDs are included so this snapshot can
 | Phase 3.3 — memory receipts | **IN PROGRESS** | Run records capture selected/injected/omitted card evidence and the causal receipt backend exists. `memory used last`, token-cost/scoping UX, and Markdown card import/export remain open. |
 | Phase 3.5 — trust/privacy plumbing | **IN PROGRESS** | The local SQLite journal has migrations and blob GC/retention primitives. Offline verification, outbound ledger, user-facing redact/delete policy, and OTel/OpenInference export remain open. |
 | Phase 3.6 — calibrated ask/abstain | **IN PROGRESS** | `clozn eval --save` fits outcome-grounded bands and live OpenAI/SSE replies can surface model-matched ask/abstain policy metadata. The per-model/task calibration wizard and complete user flow remain open. |
-| Phase 3.7 / R1 — provenance | **IN PROGRESS; product chip still gated** | A 30-case/9-category battery, Qwen + Llama second-family validation, focus-span dependence, trimmed controls, and a null rank test shipped (`985c961`, `04af391`, `b5a089b`). The attention-heatmap-vs-causal-rank head-to-head and final product-label gate remain open. |
+| Phase 3.7 / R1 — context ↔ answer influence map + provenance | **IN PROGRESS; automatic map and product labels remain open** | Arbitrary context-span receipts, exact-answer teacher-forced token deltas, matched filler controls, attention knockout, and a self-contained HTML receipt renderer already exist. A 30-case/9-category battery, Qwen + Llama second-family validation, focus-span dependence, trimmed controls, and a null rank test also shipped (`985c961`, `04af391`, `b5a089b`). Automatic source-aware segmentation, baseline-reusing multi-span scoring, linked highlighting in Studio and the saved HTML receipt, persistence/export of the versioned influence matrix, the attention-vs-causal head-to-head, and the final provenance-label gate remain open. |
 | Phase 4.2 — hook/intervention contracts | **IN PROGRESS** | Engine capture/write seams, checkpoints, batched branching, multi-observer readouts, and attention knockout exist. A stable public hook vocabulary plus a versioned replayable intervention manifest remain open. |
 | R5 — tracer credibility/granularity | **IN PROGRESS** | S0–S4 causal tracing, controls, attention knockout, and the location-level CLI exist. The R5 second-family battery, reliable `FAILED_CONTROLS` exercise, and head-level node units remain open. |
 | Engine debt tail | **IN PROGRESS** | Checkpoints, batched branch execution, and the readout plane shipped. Coalition/Shapley causal credit, KV-blob fast restore, and sampler/RNG + intervention checkpoint state remain open. |
@@ -238,6 +238,11 @@ sequencing deferrals, not non-goals.
 
 *Public story: "The runtime that shows you what your model actually saw — and lets you fix it."*
 
+**Phase-3 priority override (2026-07-21):** after the current trust-plumbing checkpoint (#5), ship
+the #7 context ↔ answer influence-map MVP before the remaining #6 wizard and #8/#9 composition work.
+The broadly available forced-score tier does not wait on R1; R1 gates the stronger internally-confirmed
+labels and the provenance summary chip.
+
 1. **Corrective retries** — `retry last --less-verbose / --more-concrete / --use-context /
    --ask-before-guessing`; prompt/sampling interventions first, dial-backed only where qualified;
    scope once/session/profile; compare + undo mandatory. **M.**
@@ -252,10 +257,38 @@ sequencing deferrals, not non-goals.
 6. **Calibrated ask/abstain** — ship the selective-generation last-mile honestly labeled as
    token-probability-based (BACKLOG #10 path (a)); per-model/task calibration wizard; band
    limitations printed. **M.**
-7. **Provenance chip** — CONTEXT_CARRIED / MIXED / PARAMETRIC on any answer, CLI first, Studio
-   chip second. **R → M** — gated on lane R1 (battery + second family + screen-null + the
-   no-flash-attn mode story). *This is persona-1's only genuinely-new-capability feature; do not
-   ship the chip before the science gate passes.*
+7. **Context ↔ answer influence map + provenance summary** — make the exact survived prompt and the
+   recorded answer one linked evidence surface. Hover or focus an answer word/clause and the context
+   spans that most influenced it light up; hover a prompt/document/memory span and the answer spans most
+   dependent on it light up in return. Click pins the selection for touch, keyboard use, and inspection.
+   The same signed influence matrix drives both directions; it never invents percentages or implies that
+   interacting/redundant causes add to 100%. Ship the interaction in Studio and in the existing
+   self-contained, offline HTML receipt so the evidence remains explorable after the model and gateway
+   stop. The HTML is only a rendering of stored evidence and should preserve the receipt renderer's
+   no-network, injection-safe contract. **M; Phase-3 headline surface.**
+
+   The fast broadly available tier teacher-forces the run's exact answer and reuses one baseline while
+   ablating/replacing source-aware context spans; it reports per-answer-token signed deltas against
+   matched controls, automatically works coarse-to-fine, checks the strongest redundant pairs, and says
+   "no clear source" when nothing clears the floor. Persist the complete versioned
+   `clozn.context_answer_influence.v1` evidence object with prompt/answer span boundaries, method,
+   model/template identity, raw deltas, controls, thresholds, timing, and artifact hash. The interactive
+   receipt may render a sparse top-link view for size, but the portable evidence must retain the complete
+   measured matrix.
+
+   A stricter **internally confirmed** tier uses qualified attention/residual interventions to show that
+   preventing answer positions from accessing a context region also reduced support, without editing the
+   visible prompt. That badge and the CONTEXT_CARRIED / MIXED / PARAMETRIC summary remain **R → M**, gated
+   on lane R1 (attention-vs-causal head-to-head plus the no-flash-attn mode/performance story). Never call
+   either tier a circuit explanation. *Performance gate:* benchmark an 8-source coarse map over a normal
+   recorded answer on the reference 7B/GPU; first useful links must feel interactive and the receipt must
+   print its measured latency. If the controlled map cannot complete within a documented low-single-digit
+   second budget, stream progressive coarse results rather than making a blanket "instant" claim.
+
+   *Why:* this is the one surface that makes Clozn's value legible to all three personas at once: users
+   see which supplied context supported which words, developers get a debuggable prompt/RAG receipt, and
+   researchers can drill from a behavioral link into qualified internal mediation evidence. The summary
+   chip is subordinate to this map, not the product by itself.
 8. **Studio IA: three home views** over one object model (run / experiment / evidence), per
    audit B §6 — Replay is the run view; the experiment matrix becomes the developer home; evidence
    view carries method/control labels. Console re-skin (`notes/CLOZN_UX.md`) folds in here only if
@@ -390,6 +423,8 @@ perf promises. Full autopsies: `docs/RESEARCH_ROADMAP.md` (Killed + wave verdict
 - **Phase 2:** conformance matrix green for Open WebUI + both Ollama SDKs + one coding agent;
   zero silent-field incidents; a stranger's app works by changing one base URL.
 - **Phase 3:** time from "odd response" to diagnosis measured in one command; retries kept vs
-  undone; run promotion used on real captured traffic.
+  undone; run promotion used on real captured traffic; a saved offline HTML receipt lets a person hover
+  either side of a real context ↔ answer link and inspect the measured reciprocal highlighting, controls,
+  method, and latency without a running model.
 - **Phase 4 / lanes:** a pip-client notebook reproduces a receipt end-to-end; R1 battery passes
   (or honestly fails and the chip stays gated); R4 gives a real adoption number for dial packs.

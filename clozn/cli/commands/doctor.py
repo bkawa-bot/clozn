@@ -141,8 +141,43 @@ def _check_engine() -> dict:
     return _check("engine binary", _OK, detail)
 
 
-def _run_all() -> list:
-    return [
+def _check_offline() -> dict:
+    """Explicit trust check: local-only must be active and its guarded ledger window clean."""
+    try:
+        from clozn import network_policy
+        report = network_policy.verify_offline()
+    except Exception as error:
+        return _check("offline enforcement", _FAIL, f"verification could not run: {error}")
+    if report.get("verified"):
+        blocked = int(report.get("blocked_external_attempt_count") or 0)
+        detail = f"active; {blocked} external attempt(s) blocked"
+        since = report.get("since")
+        if since:
+            detail += f" since {since}"
+        result = _check("offline enforcement", _OK, detail)
+    else:
+        reasons = []
+        if report.get("local_only") is False:
+            reasons.append("local-only is off")
+        if report.get("guard_installed") is False:
+            reasons.append("urllib guard is not installed")
+        if report.get("probe_blocked") is False:
+            reasons.append("external probe was not blocked before transport")
+        elif report.get("probe_recorded") is False:
+            reasons.append("blocked probe was not durably recorded")
+        violations = report.get("violations") or []
+        if violations:
+            reasons.append(f"{len(violations)} unblocked external attempt(s) in the ledger window")
+        result = _check("offline enforcement", _FAIL,
+                        "; ".join(reasons) or str(report.get("reason") or "verification failed"))
+    # Machine-readable doctor output retains the exact evidence without exposing request content
+    # (network_policy's ledger contract stores destination metadata only).
+    result["evidence"] = report
+    return result
+
+
+def _run_all(*, verify_offline: bool = False) -> list:
+    checks = [
         _check_python(),
         _check_protocol(),
         _check_studio(),
@@ -150,10 +185,13 @@ def _run_all() -> list:
         _check_registry(),
         _check_engine(),
     ]
+    if verify_offline:
+        checks.append(_check_offline())
+    return checks
 
 
 def cmd_doctor(args) -> int:
-    results = _run_all()
+    results = _run_all(verify_offline=bool(getattr(args, "verify_offline", False)))
     as_json = getattr(args, "json", False)
     if as_json:
         worst = _FAIL if any(r["status"] == _FAIL for r in results) else \

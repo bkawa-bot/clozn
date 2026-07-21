@@ -89,6 +89,8 @@ from clozn.cli.commands.retry import add_subparser as _add_retry                
 from clozn.cli.commands.diagnose import add_subparser as _add_diagnose                           # noqa: E402
 from clozn.cli.commands.memory import add_subparser as _add_memory                               # noqa: E402
 from clozn.cli.commands.regression_suite import add_subparser as _add_regression_suite            # noqa: E402
+from clozn.cli.commands.runs_privacy import add_subparser as _add_runs_privacy                    # noqa: E402
+from clozn.cli.commands.privacy import add_subparser as _add_privacy                              # noqa: E402
 
 
 def build_parser():
@@ -227,11 +229,15 @@ def build_parser():
     _add_diagnose(sub)          # `clozn diagnose last` — evidence-only latency/cutoff diagnosis
     _add_memory(sub)            # `clozn memory used last` — evidence-only memory usage receipt
     _add_regression_suite(sub)  # `clozn suite create` — promote captured app runs into Model CI cases
+    _add_runs_privacy(sub)      # `clozn runs` — local journal privacy controls and telemetry export
+    _add_privacy(sub)           # `clozn privacy` — local-only enforcement and outbound-attempt ledger
     sub.add_parser("version", help="print the installed clozn version (+ git commit if available)"
                    ).set_defaults(fn=cmd_version)
-    pdoc = sub.add_parser("doctor", help="diagnose this install: engine binary, models, studio assets, "
-                          "registry, protocol version -- exits nonzero only on a genuinely broken install")
+    pdoc = sub.add_parser("doctor", help="diagnose this install; --verify-offline adds a strict "
+                          "local-only enforcement gate")
     pdoc.add_argument("--json", action="store_true", help="print a machine-readable report")
+    pdoc.add_argument("--verify-offline", action="store_true",
+                      help="fail unless local-only enforcement is active and its ledger window is clean")
     pdoc.set_defaults(fn=cmd_doctor)
     return p
 
