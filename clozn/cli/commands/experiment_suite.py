@@ -2,6 +2,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+from pathlib import Path
+import shutil
+import tempfile
+import uuid
 
 from clozn._io import atomic_write_json
 from clozn.cli.main import CloznError
@@ -29,11 +35,33 @@ def add_subparser(sub):
     show.add_argument("--seed", type=int, default=None)
     show.add_argument("--json", action="store_true")
     show.set_defaults(fn=cmd_show)
+
+    export = commands.add_parser("export", help="export a completed experiment to EEE/HF or an eval runner")
+    export.add_argument("result", help="clozn.experiment.result.v0 JSON artifact")
+    export.add_argument("--format", choices=("eee", "hf-community", "promptfoo", "inspect", "lighteval"),
+                        default="eee", help="destination format (default: eee)")
+    export.add_argument("--out", required=True, help="new local output directory")
+    export.add_argument("--organization", help="organization/person reporting the eval (required for EEE/HF)")
+    export.add_argument("--relationship", choices=("first_party", "third_party", "collaborative", "other"),
+                        help="evaluator's relationship to the model (required for EEE/HF)")
+    export.add_argument("--model-id", action="append", default=[], metavar="VARIANT=OWNER/REPO",
+                        help="explicit public model identity; repeat for multiple variants")
+    export.add_argument("--hf-dataset", metavar="OWNER/DATASET",
+                        help="registered HF Benchmark dataset (required for hf-community)")
+    export.add_argument("--target-task", help="HF Benchmark task_id for the target suite")
+    export.add_argument("--guard-task", help="HF Benchmark task_id for the guard suite")
+    export.add_argument("--provider", help="Promptfoo provider id; omitted configs carry a blocking issue")
+    export.add_argument("--dataset-uri", help="LightEval dataset URI to place in the task skeleton")
+    export.add_argument("--retrieved-timestamp", type=float,
+                        help="override EEE record creation time with a Unix epoch")
+    export.add_argument("--force", action="store_true", help="replace the exact existing output path")
+    export.add_argument("--json", action="store_true", help="print the machine-readable export receipt")
+    export.set_defaults(fn=cmd_export)
     return parser
 
 
 def _no_command(_args):
-    print("clozn experiment: use `clozn experiment run <manifest.json>` or `clozn experiment show <result.json>`")
+    print("clozn experiment: use `clozn experiment run`, `show`, or `export`")
     return 2
 
 
@@ -67,4 +95,144 @@ def cmd_show(args):
                                                     variant=args.variant, seed=args.seed)))
     else:
         print(suite.format_summary(result))
+    return 0
+
+
+def _model_id_map(values: list[str]) -> dict[str, str]:
+    result = {}
+    for raw in values:
+        variant, separator, model_id = raw.partition("=")
+        variant, model_id = variant.strip(), model_id.strip()
+        if not separator or not variant or not model_id:
+            raise CloznError("--model-id must be VARIANT=OWNER/REPO")
+        if variant in result:
+            raise CloznError(f"duplicate --model-id for variant {variant!r}")
+        result[variant] = model_id
+    return result
+
+
+def _write_json(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True,
+                               allow_nan=False) + "\n", encoding="utf-8")
+
+
+def _write_export_files(stage: Path, export_format: str, payload: dict) -> list[Path]:
+    files = []
+    if export_format in {"eee", "hf-community"}:
+        bundle_path = stage / "clozn-evidence-bundle.json"
+        _write_json(bundle_path, payload); files.append(bundle_path)
+        for aggregate in payload["aggregates"]:
+            path = stage / "eee" / aggregate["filename"]
+            _write_json(path, aggregate["record"]); files.append(path)
+        from clozn.eval.exports import canonical_jsonl
+        for filename, records in payload["instances"].items():
+            path = stage / "eee" / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(canonical_jsonl(records), encoding="utf-8"); files.append(path)
+        for preview in payload["hf_community"]:
+            model_dir = preview["model_id"].replace("/", "--")
+            path = stage / "hf-community" / model_dir / preview["filename"]
+            # JSON is valid YAML 1.2. This keeps Clozn stdlib-only while producing the exact list/object
+            # shape accepted from `.eval_results/*.yaml`; it is a preview and is never pushed here.
+            _write_json(path, preview["records"]); files.append(path)
+    else:
+        main_name = "promptfooconfig.json" if export_format == "promptfoo" else f"{export_format}-adapter.json"
+        main = stage / main_name
+        _write_json(main, payload); files.append(main)
+        records = payload.get("records")
+        if isinstance(records, list):
+            from clozn.eval.exports import canonical_jsonl
+            rows = stage / f"{export_format}-records.jsonl"
+            rows.write_text(canonical_jsonl(records), encoding="utf-8"); files.append(rows)
+    return files
+
+
+def _safe_replace_directory(stage: Path, target: Path, *, force: bool) -> None:
+    target = target.resolve()
+    root = Path(target.anchor).resolve()
+    if target == root or target == Path.home().resolve():
+        raise CloznError("refusing to use a filesystem root or home directory as export output")
+    if target.exists() and not force:
+        raise CloznError(f"export output already exists: {target} (pass --force to replace that exact path)")
+    backup = None
+    if target.exists():
+        backup = target.parent / f".{target.name}.clozn-backup-{uuid.uuid4().hex}"
+        if backup.resolve().parent != target.parent.resolve():
+            raise CloznError("could not verify the export backup path")
+        os.replace(target, backup)
+    try:
+        os.replace(stage, target)
+    except BaseException:
+        if backup is not None and backup.exists() and not target.exists():
+            os.replace(backup, target)
+        raise
+    if backup is not None:
+        if backup.is_dir():
+            shutil.rmtree(backup)
+        else:
+            backup.unlink()
+
+
+def _materialize_export(target_value: str, export_format: str, payload: dict, *, force: bool) -> dict:
+    target = Path(target_value).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.clozn-stage-", dir=target.parent))
+    try:
+        files = _write_export_files(stage, export_format, payload)
+        receipt_files = []
+        for path in sorted(files):
+            data = path.read_bytes()
+            receipt_files.append({"path": path.relative_to(stage).as_posix(), "bytes": len(data),
+                                  "sha256": hashlib.sha256(data).hexdigest()})
+        receipt = {"schema_version": "clozn.eval_export.receipt.v1", "format": export_format,
+                   "source": payload.get("source"), "files": receipt_files,
+                   "issues": payload.get("issues") or []}
+        _write_json(stage / "export-receipt.json", receipt)
+        _safe_replace_directory(stage, target, force=force)
+        receipt["output"] = str(target)
+        return receipt
+    except BaseException:
+        if stage.exists():
+            shutil.rmtree(stage)
+        raise
+
+
+def cmd_export(args):
+    from clozn.eval import exports
+
+    try:
+        result = suite.load_result(args.result)
+        if args.format in {"eee", "hf-community"}:
+            if not args.organization or not args.relationship:
+                raise exports.EvalExportError("--organization and --relationship are required for EEE/HF exports")
+            hf_benchmark = None
+            if args.format == "hf-community":
+                missing = [name for name, value in (("--hf-dataset", args.hf_dataset),
+                                                     ("--target-task", args.target_task),
+                                                     ("--guard-task", args.guard_task)) if not value]
+                if missing:
+                    raise exports.EvalExportError("hf-community requires " + ", ".join(missing))
+                hf_benchmark = {"dataset_id": args.hf_dataset, "target_task_id": args.target_task,
+                                "guard_task_id": args.guard_task}
+            payload = exports.export_community_bundle(
+                result, source_organization=args.organization, evaluator_relationship=args.relationship,
+                model_ids=_model_id_map(args.model_id), hf_benchmark=hf_benchmark,
+                retrieved_timestamp=args.retrieved_timestamp,
+            )
+            if args.format == "hf-community" and not payload["hf_community"]:
+                raise exports.EvalExportError("no Community Eval previews were exportable; provide OWNER/REPO model ids")
+        else:
+            payload = exports.export_adapter(result, args.format, provider=args.provider,
+                                             dataset_uri=args.dataset_uri)
+        receipt = _materialize_export(args.out, args.format, payload, force=args.force)
+    except (suite.ManifestError, exports.EvalExportError, OSError, ValueError) as exc:
+        raise CloznError(f"experiment export failed: {exc}") from exc
+    if args.json:
+        print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    else:
+        print(f"exported {args.format} -> {receipt['output']}")
+        print(f"  {len(receipt['files'])} data file(s); {len(receipt['issues'])} review issue(s)")
+        if receipt["issues"]:
+            print("  inspect export-receipt.json before running or publishing")
     return 0
