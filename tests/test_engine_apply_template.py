@@ -52,6 +52,37 @@ def test_apply_template_returns_the_prompt_field(monkeypatch):
     assert ec.apply_template([{"role": "user", "content": "hi"}]) == "<|im_start|>user\nhi<|im_end|>\n"
 
 
+def test_apply_template_info_returns_exact_worker_token_count(monkeypatch):
+    ec = EngineClient(port=1)
+    monkeypatch.setattr(ec, "_post", lambda path, body: {
+        "prompt": "rendered", "prompt_tokens": 17, "template_source": "model",
+    })
+    assert ec.apply_template_info([{"role": "user", "content": "hi"}]) == {
+        "prompt": "rendered", "prompt_tokens": 17,
+    }
+
+
+def test_apply_template_info_accepts_an_older_worker_without_count(monkeypatch):
+    ec = EngineClient(port=1)
+    monkeypatch.setattr(ec, "_post", lambda path, body: {"prompt": "legacy rendered"})
+    assert ec.apply_template_info([{"role": "user", "content": "hi"}]) == {
+        "prompt": "legacy rendered",
+    }
+    assert ec.apply_template([{"role": "user", "content": "hi"}]) == "legacy rendered"
+
+
+def test_apply_template_info_rejects_a_malformed_worker_count(monkeypatch):
+    from cloze_engine import EngineError
+
+    ec = EngineClient(port=1)
+    monkeypatch.setattr(ec, "_post", lambda path, body: {
+        "prompt": "rendered", "prompt_tokens": True,
+    })
+    import pytest
+    with pytest.raises(EngineError, match="prompt_tokens"):
+        ec.apply_template_info([{"role": "user", "content": "hi"}])
+
+
 # ==================================================================================== _engine_tmpl helper
 
 class _RecordingEngine:
@@ -69,6 +100,16 @@ def test_engine_tmpl_delegates_to_engine_apply_template():
     msgs = [{"role": "user", "content": "hello"}]
     assert cs._engine_tmpl(eng, msgs) == "THE PROMPT"
     assert eng.calls == [msgs]
+
+
+def test_engine_tmpl_can_return_exact_template_token_usage():
+    class InfoEngine:
+        def apply_template_info(self, messages, add_assistant=True):
+            return {"prompt": "THE PROMPT", "prompt_tokens": 9}
+
+    usage = {}
+    assert cs._engine_tmpl(InfoEngine(), [{"role": "user", "content": "hello"}], usage) == "THE PROMPT"
+    assert usage == {"prompt_tokens": 9}
 
 
 def test_engine_tmpl_propagates_errors_no_silent_fallback():

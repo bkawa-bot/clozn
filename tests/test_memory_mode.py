@@ -355,8 +355,16 @@ def test_block_matches_store_order(iso, monkeypatch):
 def test_gate_out_omits_the_block_entirely(iso, monkeypatch):
     _gate(monkeypatch, 0.0)                                  # off-topic turn
     memory_cards.create("likes tea", status="active")
-    block, applied, gate = cs._prompt_block_for(FakeMem(), "summarize this contract")
+    decision = cs._prompt_block_for(FakeMem(), "summarize this contract")
+    block, applied, gate = decision
     assert block is None and applied == [] and gate == 0.0
+    assert [card["text"] for card in decision.omitted] == ["likes tea"]
+    assert decision.omission_reason == "topic_gate_below_threshold"
+
+    receipt = {}
+    cs._capture_prompt_decision(receipt, decision)
+    assert receipt["candidate_cards"] == receipt["omitted_cards"]
+    assert receipt["selection_stage"] == "active_prompt_cards_considered_by_turn_gate"
 
 
 def test_gate_below_threshold_omits_block(iso, monkeypatch):

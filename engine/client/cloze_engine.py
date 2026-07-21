@@ -540,8 +540,29 @@ class EngineClient:
         `add_assistant` ends the prompt with the assistant-turn opener (the generation cue). Raises
         EngineError if the model has no embedded template (never silently mis-formats). Returns the
         rendered prompt string."""
-        r = self._post("/apply_template", {"messages": list(messages), "add_assistant": bool(add_assistant)})
-        return r["prompt"]
+        return self.apply_template_info(messages, add_assistant=add_assistant)["prompt"]
+
+    def apply_template_info(self, messages: Sequence[dict], add_assistant: bool = True) -> dict[str, Any]:
+        """Render with :meth:`apply_template` plus exact worker token-count evidence when available.
+
+        New workers return ``prompt_tokens`` from the same tokenizer seam used for generation.  Older
+        workers returned only ``prompt``; that response remains valid and simply omits the optional
+        count.  :meth:`apply_template` continues to return only the prompt string.
+        """
+        r = self._post("/apply_template", {
+            "messages": list(messages),
+            "add_assistant": bool(add_assistant),
+        })
+        info = {"prompt": r["prompt"]}
+        if "prompt_tokens" in r:
+            prompt_tokens = r["prompt_tokens"]
+            if (not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool)
+                    or prompt_tokens < 0):
+                raise EngineError(
+                    "POST /apply_template returned invalid 'prompt_tokens' "
+                    "(expected non-negative int)")
+            info["prompt_tokens"] = prompt_tokens
+        return info
 
     def prepare_chat(
         self,

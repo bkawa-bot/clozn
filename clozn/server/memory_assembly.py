@@ -73,6 +73,43 @@ PROMPT_GATE_MIN = 0.05     # gate below this -> the block is OMITTED for the tur
                            # over-bleed by omission (binary), not by the prefix's continuous scaling.
 
 
+class PromptBlockDecision(tuple):
+    """Backward-compatible 3-tuple carrying the per-turn card selection receipt."""
+    def __new__(cls, block, applied, gate, *, candidates=(), omitted=(), omission_reason=None):
+        value = super().__new__(cls, (block, applied, gate))
+        value.candidates = [dict(card) for card in candidates if isinstance(card, dict)]
+        value.omitted = [dict(card) for card in omitted if isinstance(card, dict)]
+        value.omission_reason = omission_reason
+        return value
+
+
+def _capture_prompt_decision(mem_out, decision) -> None:
+    """Copy a decision onto request-local evidence without consulting mutable card state later."""
+    if mem_out is None:
+        return
+    applied = decision[1] if isinstance(decision, (tuple, list)) and len(decision) > 1 else []
+    candidates = getattr(decision, "candidates", None)
+    if candidates is None:
+        # Test doubles and third-party adapters may still return the historical plain tuple.
+        candidates = [dict(card) for card in (applied or []) if isinstance(card, dict)]
+    mem_out["candidate_cards"] = [dict(card) for card in candidates]
+    mem_out["omitted_cards"] = [dict(card) for card in getattr(decision, "omitted", [])]
+    mem_out["selection_stage"] = "active_prompt_cards_considered_by_turn_gate"
+    reason = getattr(decision, "omission_reason", None)
+    if reason:
+        mem_out["omission_reason"] = reason
+
+
+def _baseline_prompt_tokens(engine, messages) -> int | None:
+    """Count the same chat template without memory when a supporting worker is available."""
+    try:
+        info = engine.apply_template_info(messages)
+        count = info.get("prompt_tokens") if isinstance(info, dict) else None
+        return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
+    except Exception:
+        return None
+
+
 def _memory_mode():
     """Product always uses prompt cards; the optional lab can still select internalized memory."""
     try:
@@ -133,15 +170,21 @@ def _prompt_block_for(mem, last_user, strength=None):
     cards = ctx._prompt_mem_cards(mem, getattr(mem, "_exclude_card_ids", None) or ())
     texts = [c["text"] for c in cards]
     s = float(strength if strength is not None else getattr(mem, "memory_strength", 1.0))
-    if not texts or s <= 0.0:
-        return None, [], 0.0
+    if not texts:
+        return PromptBlockDecision(None, [], 0.0, candidates=cards,
+                                   omission_reason="no_active_cards")
+    if s <= 0.0:
+        return PromptBlockDecision(None, [], 0.0, candidates=cards, omitted=cards,
+                                   omission_reason="memory_strength_zero")
     g = ctx._prompt_gate(last_user, texts)
     if g < ctx.PROMPT_GATE_MIN:
-        return None, [], g
+        return PromptBlockDecision(None, [], g, candidates=cards, omitted=cards,
+                                   omission_reason="topic_gate_below_threshold")
     rel = ctx._prompt_relevance(last_user, texts)          # {text: cosine} per card (best-effort; {} if no embedder)
     applied = [dict(c, relevance=rel.get(c["text"])) for c in cards]
     import clozn.memory.mode as memory_mode
-    return memory_mode.compile_prompt_block(texts), applied, g
+    return PromptBlockDecision(memory_mode.compile_prompt_block(texts), applied, g,
+                               candidates=cards)
 
 
 def _anchored_gates(last_user, bags):

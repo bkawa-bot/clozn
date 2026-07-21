@@ -661,7 +661,9 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
     // pinned backend's full Jinja renderer. No context/KV
     // and no sampling: pure model-metadata + string work, so NO pool lease is taken (nothing to leak,
     // fully concurrent with generation). No-embedded-template is surfaced as a clean 400, never silently
-    // mis-formatted. Body: {messages:[{role,content}], add_assistant?:bool=true} -> {prompt, template_source}.
+    // mis-formatted. The prompt is tokenized by the same GgmlModel::encode seam generation uses, so
+    // prompt_tokens is exact worker-tokenizer evidence rather than a Python-side estimate. Body:
+    // {messages:[{role,content}], add_assistant?:bool=true} -> {prompt, prompt_tokens, template_source}.
     svr.Post("/apply_template", [&](const httplib::Request& req, httplib::Response& res) {
         json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
         if (body.is_discarded()) {
@@ -704,7 +706,9 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
         const bool add_assistant = body.value("add_assistant", true);
         try {
             const std::string prompt = ctx.chat_templates.apply(messages, add_assistant);
-            json resp = {{"prompt", prompt}, {"template_source", "model"},
+            const int prompt_tokens = static_cast<int>(ctx.model->encode(prompt).size());
+            json resp = {{"prompt", prompt}, {"prompt_tokens", prompt_tokens},
+                         {"template_source", "model"},
                          {"renderer", "jinja"}};
             res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {

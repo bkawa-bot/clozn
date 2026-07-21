@@ -116,13 +116,16 @@ class NoFinishSub:
 
 class PromptCaptureSub(FakeSub):
     def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
-        self._run_meta.update(max_tokens=int(max_new), stream=False)
+        self._run_meta.update(max_tokens=int(max_new), stream=False, prompt_tokens=13)
         block = "You are a helpful assistant talking with a returning user.\n- Keep it brief."
         assembled = [{"role": "system", "content": block}] + [dict(m) for m in messages]
         if mem_out is not None:
             mem_out.update(mode="prompt",
                            applied=[{"id": None, "text": "Keep it brief.", "relevance": 0.82}],
-                           gate=0.91, prompt_block=block, assembled_messages=assembled)
+                           candidate_cards=[{"id": None, "text": "Keep it brief."}],
+                           omitted_cards=[], selection_stage="active_prompt_cards_considered_by_turn_gate",
+                           baseline_prompt_tokens=7, gate=0.91, prompt_block=block,
+                           assembled_messages=assembled)
         return "Brief reply."
 
 
@@ -232,6 +235,10 @@ def test_prompt_mode_logs_the_exact_assembled_messages(iso, monkeypatch):
     assert logged["memory"]["prompt_block"].endswith("- Keep it brief.")
     assert logged["memory"]["cards_applied"] == ["Keep it brief."]
     assert logged["memory"]["relevance"] == [0.82]
+    assert logged["memory"]["candidate_cards"] == [{"id": None, "text": "Keep it brief."}]
+    assert logged["memory"]["omitted_cards"] == []
+    assert logged["memory"]["baseline_prompt_tokens"] == 7
+    assert logged["memory"]["prompt_token_cost"] == 6
 
 
 def test_internalized_mode_does_not_fabricate_an_assembled_prompt(iso, monkeypatch):

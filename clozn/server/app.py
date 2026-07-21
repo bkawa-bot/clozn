@@ -382,7 +382,7 @@ def _qwen_tmpl(messages):
     return s + "<|im_start|>assistant\n"
 
 
-def _engine_tmpl(engine, messages):
+def _engine_tmpl(engine, messages, usage_out=None):
     """Render chat `messages` to a prompt string using the ENGINE-LOADED MODEL'S OWN chat template
     (POST /apply_template -> llama_chat_apply_template over the GGUF's tokenizer.chat_template). THIS is
     what makes the engine paths model-agnostic: whatever GGUF the engine has loaded, its messages are
@@ -392,6 +392,12 @@ def _engine_tmpl(engine, messages):
     Errors propagate deliberately (no silent Qwen fallback): a model with no embedded template, or an
     engine too old to expose /apply_template, must surface -- silently mis-formatting the prompt is the
     exact bug this removes. Callers that need a soft degrade catch EngineError themselves."""
+    if usage_out is not None and hasattr(engine, "apply_template_info"):
+        info = engine.apply_template_info(messages)
+        prompt_tokens = info.get("prompt_tokens") if isinstance(info, dict) else None
+        if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool):
+            usage_out["prompt_tokens"] = prompt_tokens
+        return info["prompt"]
     return engine.apply_template(messages)
 
 
@@ -495,6 +501,7 @@ from clozn.server.memory_assembly import (                                      
     _SUSPICIOUS, QUOTE_SPAN_MAX, PROMPT_GATE_MIN,
     _risk_of, _dial_suggestion, _provenance_of, _memory_mode, _last_user,
     _prompt_gate, _prompt_relevance, _prompt_mem_cards, _prompt_block_for,
+    PromptBlockDecision, _capture_prompt_decision, _baseline_prompt_tokens,
     _anchored_gates, _apply_anchored_memory, _anchored_loop_guard, _inject_block,
     _mem_migrate, _export_markdown, _runs_for_card, _mem_sync_rules,
 )
@@ -904,6 +911,12 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                         memd["gate"] = round(float(mo["gate"]), 4)
                     if mo.get("prompt_block"):
                         memd["prompt_block"] = str(mo["prompt_block"])
+                    for key in ("candidate_cards", "omitted_cards", "selection_stage", "omission_reason",
+                                "prompt_token_cost_unavailable_reason"):
+                        if key in mo:
+                            value = mo[key]
+                            memd[key] = ([dict(card) for card in value if isinstance(card, dict)]
+                                         if key.endswith("_cards") and isinstance(value, list) else value)
                     anchored = [dict(a) for a in (mo.get("anchored") or []) if isinstance(a, dict)]
                     if anchored:
                         memd["anchored"] = anchored
@@ -997,8 +1010,22 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                         meta.setdefault("prompt_tokens", prompt_tokens)
                 except Exception:
                     pass
+                actual_prompt_tokens = mo.get("actual_prompt_tokens")
+                if isinstance(actual_prompt_tokens, int) and not isinstance(actual_prompt_tokens, bool):
+                    meta["prompt_tokens"] = actual_prompt_tokens
                 if extra_meta:
                     meta.update({k: v for k, v in extra_meta.items() if v is not None})
+                if mode == "prompt":
+                    if not memd.get("cards_applied"):
+                        memd["prompt_token_cost"] = 0
+                    else:
+                        baseline_tokens = mo.get("baseline_prompt_tokens")
+                        prompt_tokens = mo.get("actual_prompt_tokens", meta.get("prompt_tokens"))
+                        if (isinstance(baseline_tokens, int) and not isinstance(baseline_tokens, bool)
+                                and isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool)
+                                and prompt_tokens >= baseline_tokens):
+                            memd["baseline_prompt_tokens"] = baseline_tokens
+                            memd["prompt_token_cost"] = prompt_tokens - baseline_tokens
                 git = _git_commit()
                 if git:
                     meta.setdefault("build_git_commit", git)

@@ -567,9 +567,18 @@ class EngineSubstrate(Substrate):
         req.sampling = samp
         req.generation_meta = ctx._engine_generation_meta(max_new, stream=False, sample=samp)
         # MEMORY: the active cards as a topic-gated system block (omitted off-topic / when strength 0).
-        block, applied, gate = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        decision = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        block, applied, gate = decision
+        ctx._capture_prompt_decision(mem_out, decision)
+        if applied and mem_out is not None:
+            baseline_tokens = ctx._baseline_prompt_tokens(self.engine, messages)
+            if baseline_tokens is not None:
+                mem_out["baseline_prompt_tokens"] = baseline_tokens
         assembled = ctx._inject_block(messages, block)
-        prompt = ctx._engine_tmpl(self.engine, assembled)   # per-model template (the loaded GGUF's own), not Qwen ChatML
+        template_usage = {}
+        prompt = ctx._engine_tmpl(self.engine, assembled, usage_out=template_usage)
+        if mem_out is not None and isinstance(template_usage.get("prompt_tokens"), int):
+            mem_out["actual_prompt_tokens"] = template_usage["prompt_tokens"]
         if mem_out is not None:
             # final_prompt = the EXACT rendered string the model saw (backlog #5); assembled_messages is its
             # pre-template form. Both recorded so the run is inspectable at either level.
@@ -648,7 +657,8 @@ class EngineSubstrate(Substrate):
         req.sampling = samp
         req.generation_meta = ctx._engine_generation_meta(max_new, stream=False, sample=samp)
 
-        block, applied, gate = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        decision = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        block, applied, gate = decision
         assembled = ctx._inject_block(messages, block)
         memory_manifest = {
             "mode": "prompt",
@@ -657,6 +667,13 @@ class EngineSubstrate(Substrate):
             "prompt_block": block,
             "assembled_messages": assembled,
         }
+        ctx._capture_prompt_decision(memory_manifest, decision)
+        if applied:
+            # Native structured chat adds tools/schema material inside its atomic renderer.  A plain
+            # apply_template(messages) baseline would charge that unrelated material to memory, so leave
+            # the per-card token delta unavailable until the atomic endpoint exposes a matched baseline.
+            memory_manifest["prompt_token_cost_unavailable_reason"] = \
+                "structured_prompt_baseline_not_captured"
         if mem_out is not None:
             mem_out.update(memory_manifest)
 
@@ -786,7 +803,7 @@ class EngineSubstrate(Substrate):
         of `continuation` text).
         """
         assembled = ctx._inject_block(messages, block)
-        prompt = ctx._engine_tmpl(self.engine, assembled)   # per-model template (the loaded GGUF's own), not Qwen ChatML
+        prompt = ctx._engine_tmpl(self.engine, assembled)
         kw = {}
         sv = None
         if self.steer is not None and steer_strengths and any(steer_strengths.values()):
@@ -982,9 +999,18 @@ class EngineSubstrate(Substrate):
         req.sampling = samp
         req.generation_meta = ctx._engine_generation_meta(max_new, stream=True, sample=samp)
         # MEMORY + TONE: built EXACTLY as chat() builds them.
-        block, applied, gate = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        decision = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        block, applied, gate = decision
+        ctx._capture_prompt_decision(mem_out, decision)
+        if applied and mem_out is not None:
+            baseline_tokens = ctx._baseline_prompt_tokens(self.engine, messages)
+            if baseline_tokens is not None:
+                mem_out["baseline_prompt_tokens"] = baseline_tokens
         assembled = ctx._inject_block(messages, block)
-        prompt = ctx._engine_tmpl(self.engine, assembled)   # per-model template (the loaded GGUF's own), not Qwen ChatML
+        template_usage = {}
+        prompt = ctx._engine_tmpl(self.engine, assembled, usage_out=template_usage)
+        if mem_out is not None and isinstance(template_usage.get("prompt_tokens"), int):
+            mem_out["actual_prompt_tokens"] = template_usage["prompt_tokens"]
         if mem_out is not None:
             # final_prompt = the EXACT rendered string the model saw (backlog #5); kept in lockstep with chat().
             mem_out.update(mode="prompt", applied=applied, gate=gate,

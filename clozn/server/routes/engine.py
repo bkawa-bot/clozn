@@ -160,11 +160,20 @@ def try_post(h, p, body):
             # Product memory is always the legible card block. Soft-prefix training/application lives
             # only in the lab, so this route cannot import Torch or inject a stale .pt artifact.
             ms = float(getattr(mem, "memory_strength", 1.0)) if mem is not None else 1.0
-            block, applied, gate = ctx._prompt_block_for(mem, ctx._last_user(msgs), strength=ms)
+            decision = ctx._prompt_block_for(mem, ctx._last_user(msgs), strength=ms)
+            block, applied, gate = decision
+            ctx._capture_prompt_decision(memout, decision)
+            if applied:
+                baseline_tokens = ctx._baseline_prompt_tokens(ctx.ENGINE, msgs)
+                if baseline_tokens is not None:
+                    memout["baseline_prompt_tokens"] = baseline_tokens
             assembled = ctx._inject_block(msgs, block)
             memout.update(mode="prompt", applied=applied, gate=gate, strength=ms,
                           prompt_block=block, assembled_messages=assembled)
-            prompt = ctx._engine_tmpl(ctx.ENGINE, assembled)
+            template_usage = {}
+            prompt = ctx._engine_tmpl(ctx.ENGINE, assembled, usage_out=template_usage)
+            if isinstance(template_usage.get("prompt_tokens"), int):
+                memout["actual_prompt_tokens"] = template_usage["prompt_tokens"]
             # backlog #5: record the EXACT rendered chat-template string the model saw (both memory
             # modes render one). _log_run reads memout["final_prompt"] -> the run record's final_prompt.
             memout["final_prompt"] = prompt
@@ -182,7 +191,11 @@ def try_post(h, p, body):
             # Generate + capture a per-token trace alongside (B3). Reply is byte-identical to the
             # plain complete(); the trace feeds the Run Inspector timeline. steps=[] (diffusion, or a
             # stream hiccup) -> runlog stores a clean empty trace.
-            reply_raw, steps, finish, _divinfo = ctx._engine_complete_traced(ctx.ENGINE, prompt, mx, kw)
+            usage = {}
+            reply_raw, steps, finish, _divinfo = ctx._engine_complete_traced(
+                ctx.ENGINE, prompt, mx, kw, usage_out=usage)
+            if isinstance(usage.get("prompt_tokens"), int):
+                memout["actual_prompt_tokens"] = usage["prompt_tokens"]
             from clozn.runs.think_tags import prompt_opens_think, sanitize_reply
             reply = sanitize_reply(
                 reply_raw, implicit_open=prompt_opens_think(prompt)
