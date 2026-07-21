@@ -832,8 +832,48 @@ details[open].leader summary::before{content:"▾"}
 .settings-count-value{font-size:20px;font-weight:700;color:var(--navy)}
 .settings-count-value.empty{color:var(--mist)}
 .settings-count-label{font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;margin-top:4px;color:var(--mist)}
+
+/* Experiment · developer home */
+.experiment-matrix-table th,.experiment-matrix-table td{padding:8px 9px;border-top:1px solid var(--edge-soft);
+  vertical-align:top;font-size:8.5px;line-height:1.45;color:var(--slate)}
+.experiment-matrix-table thead th{border-top:0;font-family:var(--disp);font-size:7.5px;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--mist);white-space:nowrap}
+.experiment-matrix-row{cursor:pointer;transition:background .15s ease}
+.experiment-matrix-row:hover,.experiment-matrix-row.selected{background:rgba(95,200,188,.08)}
+.experiment-matrix-row.selected{box-shadow:inset 3px 0 0 var(--teal)}
+.experiment-matrix-row.unavailable{opacity:.68}
+.experiment-matrix-select{height:25px;padding:0 8px;white-space:nowrap}
+.experiment-matrix-method-control{min-width:150px}.experiment-matrix-method-control>div+div{margin-top:3px}
+.experiment-matrix-method-control .none{margin-right:3px;font-size:7px;text-transform:uppercase;letter-spacing:.06em}
+.experiment-matrix-state{min-width:115px}.experiment-matrix-state .none{margin-top:4px;font-size:7.5px}
+
+/* Evidence · method and controls home */
+.evidence-home-root{min-width:0}.evidence-home-identity{grid-template-columns:minmax(230px,.8fr) minmax(360px,1.5fr)}
+.evidence-home-titlecopy{min-width:0}.evidence-home-titlecopy p{white-space:normal}
+.evidence-home-identity-fields{margin:0;display:grid;grid-template-columns:repeat(3,minmax(100px,1fr));gap:6px}
+.evidence-home-identity-field{min-width:0;padding:6px 8px;border:1px solid var(--edge-soft);border-radius:7px;
+  background:rgba(255,255,255,.4)}
+.evidence-home-identity-field dt,.evidence-home-fields dt{font-family:var(--disp);font-size:7px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--mist)}
+.evidence-home-identity-field dd,.evidence-home-fields dd{margin:2px 0 0;overflow-wrap:anywhere;color:var(--navy)}
+.evidence-home-identity-field code{font-family:var(--mono);font-size:8px}
+.evidence-home-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.evidence-home-card{margin:0}.evidence-home-card-head h2{margin:0}.evidence-home-card-body{padding:0 14px 12px}
+.evidence-home-object{padding:10px 0;border-top:1px solid var(--edge-soft)}
+.evidence-home-object:first-child{border-top:0}.evidence-home-object-head{display:flex;align-items:center;gap:8px}
+.evidence-home-object-head h3{min-width:0;margin:0 auto 0 0;font-family:var(--disp);font-size:10px;
+  letter-spacing:.05em;color:var(--navy);overflow-wrap:anywhere}
+.evidence-home-object-summary{margin:6px 0;font-size:8px;line-height:1.55;color:var(--slate)}
+.evidence-home-fields{margin:7px 0 0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
+.evidence-home-field{min-width:0;padding:6px 7px;border-radius:6px;background:rgba(230,243,249,.55)}
+.evidence-home-fields dd{font-family:var(--mono);font-size:7.5px;line-height:1.45}
+.evidence-home-absent{padding:13px 0 3px}.evidence-home-absent p{margin:7px 0 0;font-size:8.5px;line-height:1.55;color:var(--mist)}
+.evidence-home-actions{margin-top:10px}.evidence-home-action-list{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:2px 14px 12px}
+.evidence-home-action-list .spd{display:inline-flex;align-items:center;text-decoration:none}.evidence-home-card-link-absent{font-size:8px}
+.evidence-home-no-run{padding-bottom:13px}.evidence-home-no-run>.none,.evidence-home-no-run>.spd{margin-left:14px}
 @media(max-width:1050px){
   .settings-grid{grid-template-columns:1fr}
+  .evidence-home-identity{grid-template-columns:1fr}.evidence-home-list{grid-template-columns:1fr}
   .read-grid{grid-template-columns:1fr}
   .read-zoom{position:relative;top:auto}
   .workbench-titlebar{grid-template-columns:minmax(220px,1fr) minmax(300px,1fr) auto}
@@ -888,6 +928,7 @@ details[open].leader summary::before{content:"▾"}
   .read-answer{padding:22px 20px 24px;font-size:17px}
   .read-legend{margin:0 18px}.read-legend b{margin-left:0;width:100%}
   .read-meta{padding:10px 18px 13px}
+  .evidence-home-identity-fields{grid-template-columns:1fr}.evidence-home-fields{grid-template-columns:1fr}
 }
 
 .footer{display:flex;align-items:center;gap:18px;margin-top:10px;padding:10px 15px;flex-wrap:wrap;

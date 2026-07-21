@@ -119,7 +119,7 @@ def test_get_experiment_types_returns_the_whole_registry(iso):
     out = _get("/experiments/types")
     assert set(out["types"]) == set(clozn_experiment.REGISTRY)
     for ctype, entry in out["types"].items():
-        assert set(entry.keys()) == {"label", "needs", "cost_hint"}
+        assert set(entry.keys()) == {"label", "needs", "cost_hint", "substrate", "op", "control"}
 
 
 # =================================================================================================== POST

@@ -18,6 +18,7 @@
 import { html, useState, useEffect, useRef } from "../vendor/preact-standalone.mjs";
 import { store, useStore, toast } from "../state.mjs";
 import { api } from "../api.mjs";
+import { normalizeExperiment } from "../object_model.mjs";
 
 /* true when live actions should be blocked (server unreachable, or the record is the sample reel) */
 function guardLive(rec){
@@ -49,6 +50,38 @@ const metaFor = k => FIELD_META[k] || { label: k, placeholder: k, type: "text" }
                                                                                      // with a registry
                                                                                      // type this build
                                                                                      // doesn't know yet
+
+const catalogText = v => {
+  if(v === undefined || v === null || v === "") return "not reported";
+  if(Array.isArray(v)) return v.length ? v.map(String).join(", ") : "not reported";
+  if(typeof v === "object"){
+    try { return JSON.stringify(v); } catch(_e){ return "not reported"; }
+  }
+  return String(v);
+};
+
+/* Prefills come only from the current run. No guessed card, dial, value, or turn is introduced. */
+function prefillFromRun(ctype, rec){
+  if(!rec || rec._sample) return {};
+  const fields = {};
+  const applied = rec.memory && Array.isArray(rec.memory.applied_ids) ? rec.memory.applied_ids : [];
+  const dials = rec.behavior && rec.behavior.active_dials && typeof rec.behavior.active_dials === "object"
+    ? Object.keys(rec.behavior.active_dials) : [];
+  if(ctype === "ablate_card" && applied.length) fields.card_id = applied[0];
+  if((ctype === "ablate_dial" || ctype === "set_dial") && dials.length) fields.dial = dials[0];
+  if(ctype === "edit_turn" && Array.isArray(rec.messages)){
+    for(let i = rec.messages.length - 1; i >= 0; i--){
+      if(rec.messages[i] && rec.messages[i].role === "user"){ fields.turn = i; break; }
+    }
+  }
+  return fields;
+}
+
+function matrixRunState(rec, live){
+  if(!rec) return { ready: false, label: "unavailable", note: "load a run from Replay" };
+  if(!live || rec._sample) return { ready: false, label: "unavailable", note: "live server only" };
+  return { ready: true, label: "run-ready", note: "required capability is verified on submit" };
+}
 
 /* ───────────────────────── module root ───────────────────────── */
 export function ExperimentModule(){
@@ -108,6 +141,17 @@ export function ExperimentModule(){
   const setField = (k, v) => setFields(f => ({ ...f, [k]: v }));
   const missing = needs.filter(k => fields[k] === undefined || fields[k] === null || String(fields[k]).trim() === "");
 
+  function selectType(nextType){
+    if(!types || !types[nextType]) return;
+    const prefill = prefillFromRun(nextType, rec);
+    if(nextType === ctype){
+      setFields(prefill); setMethod(""); setRes(null); setErr(null);
+      return;
+    }
+    pendingRef.current = { ctype: nextType, fields: prefill, method: "" };
+    setCtype(nextType);
+  }
+
   async function run(){
     if(!rec){ toast("need a current run — load one from Replay first"); return; }
     if(guardLive(rec)) return;
@@ -129,7 +173,8 @@ export function ExperimentModule(){
   }
 
   return html`<div class="col">
-    <${TypePicker} types=${types} ctype=${ctype} setCtype=${setCtype} entry=${entry}/>
+    <${ExperimentMatrix} types=${types} rec=${rec} live=${live} ctype=${ctype} selectType=${selectType}/>
+    <${TypePicker} types=${types} ctype=${ctype} setCtype=${selectType} entry=${entry}/>
     <${FormPanel} rec=${rec} live=${live} entry=${entry} ctype=${ctype} needs=${needs} extra=${extra}
       fields=${fields} setField=${setField} methodOpts=${methodOpts} method=${method} setMethod=${setMethod}
       busy=${busy} run=${run} missing=${missing}/>
@@ -143,6 +188,58 @@ export function ExperimentModule(){
 }
 
 /* ───────────────────────── A) change-type picker ───────────────────────── */
+/* Developer-home overview. Every descriptive cell comes from /experiments/types; the only local state
+   claim is whether there is a current live, non-sample run to submit against. Capability success is
+   deliberately left to the execution endpoint. */
+function ExperimentMatrix({ types, rec, live, ctype, selectType }){
+  const loading = types === null;
+  const entries = types ? Object.entries(types) : [];
+  const state = matrixRunState(rec, live);
+  return html`<section class="mod experiment-matrix" aria-labelledby="experiment-matrix-title">
+    <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
+    <div class="mod-h experiment-matrix-head"><span class="led lilac"></span>
+      <span class="cap" id="experiment-matrix-title">experiment matrix · developer home</span>
+      <span class="tail">${loading ? "reading /experiments/types…" : entries.length + " catalog types"}</span></div>
+    ${loading && html`<div class="none experiment-matrix-loading" style="padding:8px 14px 12px">reading the catalog…</div>`}
+    ${!loading && !entries.length && html`<div class="none experiment-matrix-empty" style="padding:8px 14px 12px">no experiment types reported by the server — is it up?</div>`}
+    ${entries.length > 0 && html`<div class="experiment-matrix-table-wrap" style="overflow-x:auto;padding:0 14px 12px">
+      <table class="experiment-matrix-table" style="width:100%;border-collapse:collapse;text-align:left">
+        <caption class="experiment-matrix-caption" style="text-align:left;padding:0 0 7px;color:var(--mist);font-size:9px">
+          Select a row to prefill the existing experiment form. Catalog requirements are shown verbatim.
+        </caption>
+        <thead><tr>
+          <th scope="col">experiment type</th><th scope="col">what changes</th>
+          <th scope="col">required capability</th><th scope="col">method / control</th>
+          <th scope="col">cost hint</th><th scope="col">state</th>
+        </tr></thead>
+        <tbody>${entries.map(([type, catalog]) => {
+          const selected = type === ctype;
+          const method = catalogText(catalog && catalog.op);
+          const control = catalogText(catalog && catalog.control);
+          return html`<tr key=${type} class=${"experiment-matrix-row" + (selected ? " selected" : "") + (state.ready ? " run-ready" : " unavailable")}
+            aria-selected=${selected ? "true" : "false"} onClick=${() => selectType(type)}>
+            <th scope="row" class="experiment-matrix-type">
+              <button type="button" class="experiment-matrix-select spd" aria-pressed=${selected ? "true" : "false"}
+                onClick=${event => { event.stopPropagation(); selectType(type); }}>${type}</button>
+            </th>
+            <td class="experiment-matrix-change">${catalogText(catalog && catalog.label)}</td>
+            <td class="experiment-matrix-capability">${catalogText(catalog && catalog.substrate)}</td>
+            <td class="experiment-matrix-method-control">
+              <div><span class="none">method</span> ${method}</div>
+              <div><span class="none">control</span> ${control}</div>
+            </td>
+            <td class="experiment-matrix-cost">${catalogText(catalog && catalog.cost_hint)}</td>
+            <td class=${"experiment-matrix-state " + (state.ready ? "run-ready" : "unavailable")}>
+              <span class=${"tag " + (state.ready ? "cap-t" : "fail-t")}>${state.label}</span>
+              <div class="none">${state.note}</div>
+            </td>
+          </tr>`;
+        })}</tbody>
+      </table>
+    </div>`}
+  </section>`;
+}
+
 function TypePicker({ types, ctype, setCtype, entry }){
   const loading = types === null;
   const empty = types && !Object.keys(types).length;
@@ -223,10 +320,11 @@ function FormPanel({ rec, live, entry, ctype, needs, extra, fields, setField, me
 
 /* ───────────────────────── C) the layered result ───────────────────────── */
 function ExperimentResult({ res }){
-  const result = res.result || {};
+  const experiment = normalizeExperiment(res);
+  const result = experiment.result || {};
   const cost = res.cost || {};
   const change = res.change || {};
-  const receipt = result.receipt || {};
+  const receipt = experiment.receipt || {};
   return html`<div class="mod">
     <span class="screw" style="top:5px;left:5px"></span><span class="screw" style="top:5px;right:5px"></span>
     <div class="mod-h"><span class="led lilac"></span><span class="cap">experiment result</span>
@@ -263,6 +361,13 @@ function ExperimentResult({ res }){
       <span>passes <b>${cost.passes ?? "—"}</b></span>
       ${cost.est_seconds != null && html`<span>~${cost.est_seconds}s (grounded in this run's own recorded timing)</span>`}
       <span style="flex-basis:100%">${cost.note || "—"}</span>
+    </div>
+
+    <div class="cfg" style="margin:0 14px 12px">
+      <span class="cap">object identity</span>
+      <span>source run <b>${experiment.source_run_id || "not recorded"}</b></span>
+      <span>child run <b>${experiment.child_run_id || "not recorded"}</b></span>
+      <span>status <b>${experiment.status || "not recorded"}</b></span>
     </div>
 
     <details class="leader" style="margin:0 14px 14px">

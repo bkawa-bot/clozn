@@ -7,6 +7,7 @@ import { store, useStore, toast, normSteps, weightsFor, colsFor, colGeom,
 import { api } from "../api.mjs";
 import { loadRun } from "../app.mjs";
 import { PolicyChip } from "../policy.mjs";
+import { normalizeRun } from "../object_model.mjs";
 
 /* ───────────────────────── module root ───────────────────────── */
 export function ReplayModule(){
@@ -21,8 +22,9 @@ export function ReplayModule(){
     </div>
     <${Monitor} rec=${null}/>
   </div>`;
+  const run = normalizeRun(rec);
   return html`<div class="replay-workbench">
-    <${WorkbenchHeader} rec=${rec}/>
+    <${WorkbenchHeader} rec=${rec} run=${run}/>
     <${ContextWarning} rec=${rec}/>
     <${SignalRibbon} rec=${rec}/>
 
@@ -74,7 +76,7 @@ function ContextWarning({ rec }){
 
 /* The first screen is a run instrument, not an output-first chat shell. Every field here comes from
    either the selected journal record or /readyz; an absent worker field stays visibly absent. */
-function WorkbenchHeader({ rec }){
+function WorkbenchHeader({ rec, run }){
   const s = useStore(x => ({ worker: x.worker, P: x.P, playing: x.playing }));
   const steps = normSteps(rec), d = (rec.meta && rec.meta.decode) || {};
   const worker = s.worker || {};
@@ -85,11 +87,11 @@ function WorkbenchHeader({ rec }){
     <div class="workbench-titlecopy">
       <span class="workbench-kicker">run workbench · recorded model state</span>
       <h1>${firstLine(rec)}</h1>
-      <p>${rec.id || "—"} · ${shortTime(rec.created_at) || "time unavailable"}</p>
+      <p>${run.id || "—"} · ${shortTime(rec.created_at) || "time unavailable"}</p>
     </div>
     <div class="workbench-facts">
-      ${fact("model", rec.model)}${fact("runtime", runtime)}${fact("decode", d.mode)}
-      ${fact("finish", rec.finish_reason)}${fact("tokens", steps.length)}
+      ${fact("model", run.model)}${fact("runtime", runtime)}${fact("decode", d.mode)}
+      ${fact("finish", run.answer.finish_reason)}${fact("tokens", steps.length)}
     </div>
     <div class="workbench-status"><span class=${"workbench-live " + (rec._sample ? "sample" : "on")}>${rec._sample ? "SAMPLE" : stage}</span>
       <span>${s.P} / ${steps.length}</span></div>

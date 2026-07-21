@@ -565,5 +565,8 @@ def test_catalog_matches_the_registry_and_hides_the_substrate_field(iso):
     cat = experiment.catalog()
     assert set(cat) == set(experiment.REGISTRY)
     for ctype, entry in cat.items():
-        assert set(entry.keys()) == {"label", "needs", "cost_hint"}
+        assert set(entry.keys()) == {"label", "needs", "cost_hint", "substrate", "op", "control"}
         assert entry["label"] == experiment.REGISTRY[ctype]["label"]
+        assert entry["substrate"] == experiment.REGISTRY[ctype]["substrate"]
+        assert entry["op"] == experiment.REGISTRY[ctype]["op"]
+        assert entry["control"]

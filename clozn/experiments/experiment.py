@@ -126,6 +126,18 @@ _SUBSTRATE_CHECKS = {
     "engine_jlens": lambda sub: bool(sub and getattr(sub, "engine", None) and getattr(sub, "jlens", None)),
 }
 
+_CONTROL_BY_TYPE = {
+    "ablate_card": "with/without intervention; forced mode adds a matched filler control when available",
+    "ablate_memory": "with/without intervention; forced mode adds a matched block filler control when available",
+    "ablate_dial": "with/without intervention; forced mode adds an equal-norm random-vector control when available",
+    "set_dial": "direct baseline comparison; no null control",
+    "swap_concept": "equal-norm random-direction null control",
+    "anchored_recall": "equal-norm random-direction null control",
+    "edit_turn": "direct branch comparison; no null control",
+    "reroll": "direct regenerated comparison; no null control",
+    "toggle_greedy": "direct regenerated comparison; no null control",
+}
+
 
 def substrate_ok(change_type: str, sub) -> bool:
     """Whether `sub` satisfies the substrate requirement REGISTRY records for `change_type`. False for an
@@ -139,8 +151,10 @@ def substrate_ok(change_type: str, sub) -> bool:
 
 
 def catalog() -> dict:
-    """REGISTRY reshaped for a UI catalog (GET /experiments/types): type -> {label, needs, cost_hint}."""
-    return {ctype: {"label": e["label"], "needs": list(e["needs"]), "cost_hint": e["cost_hint"]}
+    """The preflight facts a UI needs before a person runs an experiment."""
+    return {ctype: {"label": e["label"], "needs": list(e["needs"]), "cost_hint": e["cost_hint"],
+                    "substrate": e["substrate"], "op": e["op"],
+                    "control": _CONTROL_BY_TYPE[ctype]}
             for ctype, e in REGISTRY.items()}
 
 

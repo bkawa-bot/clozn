@@ -108,7 +108,7 @@ export const api = {
         runExperiment uses postE (not post): a 400 (bad change spec), 404 (no run), or 503 (missing
         substrate) all carry a real server-written reason the drawer should show verbatim, exactly
         like narrate's own 503 handling -- a generic "didn't answer" toast would bury that. ── */
-  experimentTypes: () => j("/experiments/types", null, 15000),               // -> {types: {<type>: {label, needs, cost_hint}}}
+  experimentTypes: () => j("/experiments/types", null, 15000),               // -> {types: {<type>: preflight method/control/cost}}
   runExperiment: (id, change, method) => postE("/runs/" + enc(id) + "/experiment",
     { change, ...(method != null ? { method } : {}) }, 300000),
 

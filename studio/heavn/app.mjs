@@ -7,6 +7,7 @@ import { ReadModule } from "./modules/read.mjs";
 import { MemoryModule } from "./modules/memory.mjs";
 import { PatchModule } from "./modules/patch.mjs";
 import { ExperimentModule } from "./modules/experiment.mjs";
+import { EvidenceModule } from "./modules/evidence.mjs";
 import { EditModule } from "./modules/edit.mjs";
 import { ScopeModule } from "./modules/scope.mjs";
 import { AtlasModule } from "./modules/atlas.mjs";
@@ -14,10 +15,11 @@ import { SettingsModule } from "./modules/settings.mjs";
 import { ModelsStub } from "./modules/stubs.mjs";
 
 const MODULES = [
+  { id: "replay",   nm: "Replay",   sub: "run home",        view: ReplayModule },
+  { id: "experiment", nm: "Experiment", sub: "developer home", view: ExperimentModule },
+  { id: "evidence", nm: "Evidence", sub: "method & controls", view: EvidenceModule },
   { id: "read",     nm: "Read",     sub: "answer first",     view: ReadModule },
-  { id: "replay",   nm: "Replay",   sub: "runtime desk",    view: ReplayModule },
   { id: "patch",    nm: "Patch",    sub: "interventions",   view: PatchModule },
-  { id: "experiment", nm: "Experiment", sub: "compare & prove", view: ExperimentModule },
   { id: "edit",     nm: "Edit",     sub: "inline repair",   view: EditModule },
   { id: "memory",   nm: "Memory",   sub: "local store",     view: MemoryModule },
   { id: "scope",    nm: "Scope",    sub: "layer inspector", view: ScopeModule },
