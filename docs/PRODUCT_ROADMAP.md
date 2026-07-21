@@ -22,17 +22,18 @@ below are still queued/not started. Commit IDs are included so this snapshot can
 
 | Roadmap item | Status | Evidence and remaining work |
 |---|---|---|
-| Gate 0.1 — one instrumented request path | **IN PROGRESS** | OpenAI Chat and Ollama chat/generate share the instrumented substrate and journal stable run IDs (`c56e320`, `fd4f68e`). Legacy `/v1/completions` still calls the raw worker, and `clozn run` still journals the user prompt rather than the exact rendered prompt. |
+| Gate 0.1 — one instrumented request path | **DONE** | OpenAI Chat, legacy OpenAI Completions, and Ollama chat/generate now share the instrumented substrate. CLI turns retain the readable user message and separately journal the exact rendered engine prompt (`c56e320`, `fd4f68e`, `fc7e28d`). Streaming run-ID delivery remains a Phase-2.6 discovery problem, not an inference-path bypass. |
 | Gate 0.2 — no silent field ignoring | **DONE** for the current OpenAI/Ollama shims | Central OpenAI validation and Ollama explicit-or-rejected field policy are tested and documented (`fd4f68e`). Unsupported behavior-bearing values now receive named 400s; accepted neutral values are documented. |
 | Gate 0.4 — artifact-qualified white-box features | **DONE** | `clozn qualify-whitebox` is the model/artifact capability gate; unqualified or mismatched artifacts fail closed. |
-| Phase 1.1 — `clozn diff-model` | **IN PROGRESS** | Command, same-tokenizer preflight, template policy, paired token receipts, and heuristic verdict shipped (`0ee66f2`). The required real LoRA/fine-tune pair validation and public case study remain open. |
+| Phase 1.1 — `clozn diff-model` | **DONE** | Command, same-tokenizer preflight, template policy, paired token receipts, and heuristic verdict shipped (`0ee66f2`). A real Qwen2.5-0.5B-Instruct → Reasoning-0.5b SFT run verified 8/8 ladders in both directions and produced the worked case study (`5d6439f`); the live run also exposed and fixed a capped-detail denominator bug (`1971fe5`). |
 | Phase 1.2 — Experiment object v0 | **DONE** | `clozn experiment run/show` executes target + guard cases × base/tuned/quant/prompt/dial variants × seeds, retains instrumented run evidence, and supports per-cell drill-down (`64d0f20`). |
 | Phase 1.3 — reproduction receipt | **DONE** | Runs and exported receipt bundles carry model SHA-256, tokenizer/template rendering fingerprint, sampler/seed metadata, engine build when exposed, and Clozn version; CLI runs use the same identity producer (`0d62101`, `04af391`). Missing upstream identity remains visibly omitted rather than fabricated. |
-| Phase 1.4 — headless CI gate | **IN PROGRESS** | `clozn ci baseline/check` has deterministic exit codes, budgets, identity policy, and JSON reports (`64d5c8e`). It currently composes the golden/tiny/diff primitives directly; accepting a Phase-1.2 experiment result as the gate input remains open. |
+| Phase 1.4 — headless CI gate | **DONE** | `clozn ci baseline/check` has deterministic exit codes, budgets, identity policy, and JSON reports (`64d5c8e`). `clozn ci check --experiment` validates a complete Phase-1.2 artifact, recomputes paired target/guard changes from raw cells, applies per-candidate budgets, and can require stable model identity (`fc7e28d`). |
 | Phase 1.5 — deployment equivalence v0 | **DONE** | `clozn validate-export` checks tokenizer/template/BOS-EOS/vocab compatibility plus known-answer behavioral drift (`b61c505`). |
+| Phase 1.6 — positioning collateral | **DONE** | README now leads with Model CI + an inspectable no-switch runtime and links the real Qwen reasoning-SFT case study (`5d6439f`). The worked experiment found one target gain and one structured-output guard regression; the strict identity-qualified CI policy rejected it. |
 | Phase 2.1 — Ollama NDJSON streaming | **DONE** | Default-stream semantics, NDJSON framing, cancellation, finish reasons, and one instrumented final run are implemented and tested (`fd4f68e`). |
 | Phase 2.2 — honest Ollama fields/tags | **DONE** | Unsupported top-level/options fields are rejected, supported sampler options are forwarded, and `/api/tags` uses the real digest or omits it (`fd4f68e`). |
-| Phase 2.3 — legacy completions + CLI journal unification | **IN PROGRESS** | CLI turns now receive immutable identity (`04af391`), but the two Gate-0 gaps named above remain: legacy completions bypass journaling and CLI records the raw user prompt instead of the engine-rendered prompt. |
+| Phase 2.3 — legacy completions + CLI journal unification | **DONE** | Legacy `/v1/completions` now uses the instrumented substrate for streaming and non-streaming requests and journals memory, dials, trace, rendered prompt, finish reason, and failures. CLI turns preserve immutable identity plus the exact rendered prompt (`04af391`, `fc7e28d`). |
 | Phase 2.4 — truncation/context receipts | **IN PROGRESS** | Gateway runs retain assembled/final prompts and CLI reports a token-limit cutoff. API/Replay truncation warnings and `clozn context last` with delivered/survived sections remain open. |
 | Phase 2.6 — stable run-ID side-channel | **IN PROGRESS** | Non-streaming OpenAI and Ollama responses expose `X-Clozn-Run-Id` plus body IDs (`c56e320`, `fd4f68e`). Streaming association, latest-by-client/session, and `clozn watch` remain open. |
 | Phase 2.7 — real-client conformance | **IN PROGRESS** | The real OpenAI Python SDK runs in CI against the gateway. Ollama Python/JS SDKs, Open WebUI, a coding agent, tools, and a published matrix remain open. |
@@ -99,8 +100,9 @@ in time — an agent can carry a Phase-2 M-item while Phase 1 integrates.
 ## 3. Gate 0 — the standing product contract (binding on all phases)
 
 1. Every accepted request runs on **one instrumented path** and gets a stable run ID + receipt.
-   (Today's violations: legacy `/v1/completions` journals nothing; `clozn run` stores the raw
-   prompt, not the rendered template.)
+   **Status: DONE (2026-07-20).** OpenAI Chat, legacy OpenAI Completions, Ollama chat/generate,
+   and CLI turns now converge on the instrumented substrate/journal contract. Streaming protocols
+   persist a run but still need the Phase-2.6 lookup side channel to expose its ID after headers commit.
 2. **No silent field-ignoring.** Unsupported behavior-bearing fields are rejected with typed
    errors (the knockout-vs-flash-attn refusal is the house pattern). The Ollama shim's currently
    ignored fields must become explicit before any compatibility claim.
@@ -128,6 +130,9 @@ per-token receipt." Shippable as an HF/HN post backed by a real LoRA case study.
    *Why:* catches the two named disasters — silent no-op LoRA (diff ≈ 0 when it shouldn't be) and
    forgetting (diff ≫ 0 where it shouldn't be). *Payoff:* the wedge feature, from shipped code.
    *Gate:* validate on one real LoRA pair before the public story (needs a download + GPU smoke).
+   **Status: DONE (2026-07-20).** The Qwen2.5-0.5B-Instruct → Reasoning-0.5b SFT case passed
+   tokenizer/template preflight, verified both eight-run directions, and was followed by a real
+   target/guard experiment. See `docs/MODEL_DIFF_CASE_STUDY_QWEN_REASONING.md`.
 2. **Experiment object v0** — one versioned manifest: named cases × variants (base / tuned /
    quant / prompt / dial) × seeds, target suite + guard suite, per-case drill-down; subsumes the
    currently separate `test` / `eval` / `test-model` / `quant-check` outputs. **M.**
@@ -141,6 +146,9 @@ per-token receipt." Shippable as an HF/HN post backed by a real LoRA case study.
    *Payoff:* "reproducible" becomes checkable, and it's the substrate for #4 and later HF export.
 4. **Headless CI gate** — `clozn ci check <experiment>`: deterministic exit code, allowed-delta
    budgets, baseline artifact, machine-readable report. **M.**
+   **Status: DONE (2026-07-20).** `clozn ci check --experiment RESULT.json` validates artifact
+   integrity and complete case × variant × seed coverage, recomputes paired changes from cells,
+   and gates target gains/regressions, guard regressions, execution errors, and optional identity.
    *Why:* "CI" isn't CI until a pipeline can fail on it. *Payoff:* GitHub-Actions-ready gate.
 5. **Deployment-equivalence check v0** — template/tokenizer/BOS-EOS/vocab + known-answer diff
    across an HF-trainer export → GGUF. **M.**
@@ -148,6 +156,8 @@ per-token receipt." Shippable as an HF/HN post backed by a real LoRA case study.
    trainer-to-runtime gap gets a gate; also fixes our own CLI-vs-gateway template divergence.
 6. **Positioning collateral** — README/story refresh for the wedge, one worked case study. **S.**
    (Docs polish stays cycle-end per standing preference, but the wedge story is product, not polish.)
+   **Status: DONE (2026-07-20).** README leads with Model CI, and the worked case demonstrates a
+   genuine target gain, a structured-output guard regression, and an identity-qualified CI rejection.
 
 Deferred within this wedge: adapter hot-swap in the C++ engine (**L**, after the loop is
 coherent); LightEval/Inspect/Promptfoo adapters + HF Community-Evals/EEE export (**M**, Phase 3);
@@ -165,6 +175,8 @@ becomes inspectable." No broad compatibility claim until the conformance matrix 
    `options`/`think`/etc.; honest `/api/tags` metadata (no placeholder digests). **S–M.** (Gate-0.)
 3. **Instrument or retire legacy `/v1/completions`**; unify `clozn run` onto the rendered-template
    journal record. **S–M.** (Gate-0 violations, found by audit B.)
+   **Status: DONE (2026-07-20).** Both completion modes use the shared substrate and create one
+   honest run record; CLI stores the raw message and exact rendered engine input separately.
 4. **Truncation + context receipts** — loud warning on context capping/truncation in API + Replay;
    `clozn context last` with delivered/survived sections. **S–M.**
    *Why:* silent context mishandling is persona-1's top named pain; we already record the truth.
@@ -335,8 +347,8 @@ perf promises. Full autopsies: `docs/RESEARCH_ROADMAP.md` (Killed + wave verdict
 
 ## 13. Success signals (trimmed to what one person can actually watch)
 
-- **Phase 1:** one real LoRA case study where `diff-model`/`test-model` catches a genuine
-  regression or no-op; CI gate running in a real (even our own) pipeline.
+- **Phase 1: MET LOCALLY (2026-07-20).** The real Qwen reasoning-SFT case produced a `CHANGED`
+  model diff, one target gain, one guard regression, and an exit-1 CI rejection with stable identity.
 - **Phase 2:** conformance matrix green for Open WebUI + both Ollama SDKs + one coding agent;
   zero silent-field incidents; a stranger's app works by changing one base URL.
 - **Phase 3:** time from "odd response" to diagnosis measured in one command; retries kept vs
