@@ -320,7 +320,11 @@ def aggregate_receipts(receipts: list, *, label_a: str, label_b: str) -> dict:
         "pct_preserved": overall_pct,
         "per_run": per_run,
         "top_flips": all_flips[:_TOP_FLIPS_ACROSS_RUNS],
-        "n_flips_total": len(all_flips),
+        # Each per-run receipt intentionally caps flipped_detail, so len(all_flips) can be smaller
+        # than the real count when any one run has many flips.  This denominator labels the displayed
+        # "top N of M" list and therefore must use the uncapped summary total, not the retained-detail
+        # count (a live 0.5B fine-tune comparison exposed the otherwise-off-by-one report).
+        "n_flips_total": total_flipped,
         "caveat": caveat, "topk_note": topk_note,
     }
 

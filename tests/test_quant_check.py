@@ -380,6 +380,31 @@ def test_aggregate_receipts_top_flips_sorted_by_abs_delta_across_runs():
     assert [f["run_id"] for f in agg["top_flips"]] == ["run_2", "run_1"]
 
 
+def test_aggregate_receipts_flip_total_is_not_reduced_by_per_run_detail_cap():
+    # Receipt summaries retain only the first 20 flip details, but their n_flipped count is complete.
+    # The aggregate's "top N of M" denominator must name the complete count, not len(details).
+    receipt = {
+        "causal_verified": True,
+        "run_id": "run_many",
+        "category": "reasoning",
+        "n_tokens": 25,
+        "summary": {
+            "n_preserved": 0,
+            "n_flipped": 25,
+            "n_unknown": 0,
+            "flipped_detail": [
+                {"index": i, "piece": str(i), "delta_nats": float(i)} for i in range(20)
+            ],
+        },
+    }
+
+    agg = qc.aggregate_receipts([receipt], label_a="base", label_b="tuned")
+
+    assert agg["total_flipped"] == 25
+    assert agg["n_flips_total"] == 25
+    assert len(agg["top_flips"]) == qc._TOP_FLIPS_ACROSS_RUNS
+
+
 def test_aggregate_receipts_handles_malformed_receipt_entries():
     agg = qc.aggregate_receipts([None, "not a dict", {}], label_a="a", label_b="b")
     assert agg["n_verified"] == 0
