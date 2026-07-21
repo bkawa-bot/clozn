@@ -35,6 +35,30 @@ def test_record_returns_id_and_persists(store):
     assert rec["id"] == rid
 
 
+def test_watch_cursor_uses_journal_insertion_order_not_generation_start(store):
+    first = store.record(source="api", messages=[{"role": "user", "content": "fast"}],
+                         response="first", started=2000.0, ended=2001.0)
+    cursor = store.cursor_for_run(first)
+    # This request started much earlier but finalized after the cursor was captured.
+    late = store.record(source="api", messages=[{"role": "user", "content": "slow"}],
+                        response="second", started=1000.0, ended=2002.0)
+    page = store.runs_after(cursor)
+    assert [run["id"] for run in page["runs"]] == [late]
+    assert store.latest_run()["id"] == late
+
+
+def test_association_filters_are_exact_and_derived_runs_default_off(store):
+    from clozn.runs.association import client_key, session_key
+    ck = client_key("client-a")
+    sk = session_key("session-a")
+    organic = store.record(source="openai_api", client_key=ck, session_key=sk,
+                           messages=[{"role": "user", "content": "one"}], response="organic")
+    store.record(source="replay", client_key=ck, session_key=sk,
+                 messages=[{"role": "user", "content": "two"}], response="derived")
+    assert store.latest_run(client_id="client-a", session_id="session-a")["id"] == organic
+    assert store.latest_run(client_id="different") is None
+
+
 def test_record_schema_fields(store):
     rid = store.record(source="studio_chat",
                        messages=[{"role": "user", "content": "what is 2+2?"}], response="4")
@@ -42,12 +66,61 @@ def test_record_schema_fields(store):
     for k in ("id", "created_at", "created_ts", "source", "client", "model", "substrate",
               "prompt_summary", "response_summary", "messages", "response", "memory", "behavior",
               "assembled_messages", "final_prompt", "trace", "timing", "parent_run_id",
-              "changes_applied", "error", "flags"):
+              "changes_applied", "error", "output_contract", "flags"):
         assert k in rec, f"missing schema field {k}"
     assert rec["source"] == "studio_chat"
     assert rec["prompt_summary"] == "what is 2+2?"        # last user message summarized
     assert rec["response_summary"] == "4"
     assert set(("started_at", "ended_at", "duration_ms")).issubset(rec["timing"])
+
+
+def test_output_contract_round_trips_and_sets_compact_tool_call_flag(store):
+    contract = {
+        "schema": "clozn.structured_io.v1",
+        "mode": "tools",
+        "raw_output": '{"type":"tool_call","name":"weather","arguments":{"city":"Oslo"}}',
+        "qualification": {"model_sha256": "a" * 64, "parser_id": "parser-v1"},
+        "outcome": {"status": "parsed", "kind": "tool_call", "tool_name": "weather"},
+        "recovery": {"policy": "none", "attempts": []},
+    }
+    rid = store.record(
+        source="openai_api", messages=[{"role": "user", "content": "weather?"}], response="",
+        output_contract=contract,
+    )
+
+    saved = store.get_run(rid)
+    assert saved["output_contract"] == contract
+    assert "tool-call" in saved["flags"]
+    summary = next(row for row in store.list_runs() if row["id"] == rid)
+    assert "tool-call" in summary["flags"]
+
+
+def test_output_contract_parse_error_flag_is_compact_and_malformed_shapes_are_safe(store):
+    failed = store.record(
+        source="openai_api", messages=[{"role": "user", "content": "json"}], response="not-json",
+        error="malformed_model_output: expected one JSON object",
+        output_contract={
+            "schema": "clozn.structured_io.v1",
+            "mode": "json_schema",
+            "outcome": {"status": "error", "kind": "parse_error",
+                        "code": "malformed_model_output"},
+        },
+    )
+    flags = store.get_run(failed)["flags"]
+    assert "output-parse-error" in flags
+    assert "error" in flags
+
+    # Direct/legacy callers are not trusted to honor the type annotation. Bad evidence must be dropped,
+    # never turn a logging-only feature into loss of the entire run.
+    malformed = store.record(
+        source="legacy", messages=[{"role": "user", "content": "hi"}], response="hello",
+        output_contract=["not", "an", "object"],  # type: ignore[arg-type]
+    )
+    assert malformed is not None
+    saved = store.get_run(malformed)
+    assert saved["output_contract"] == {}
+    assert "tool-call" not in saved["flags"]
+    assert "output-parse-error" not in saved["flags"]
 
 
 def test_record_persists_assembled_messages_when_provided(store):
@@ -113,6 +186,28 @@ def test_log_run_forwards_final_prompt_to_the_record(store, monkeypatch):
                               "final_prompt": rendered})
     assert rid is not None
     assert store.get_run(rid)["final_prompt"] == rendered
+
+
+def test_log_run_honors_surface_reported_dials_instead_of_claiming_live_state(store, monkeypatch):
+    """Raw completion reports what actually reached the worker, even if a live dial is configured."""
+    import time
+    from clozn.server import app as cs
+
+    class Steer:
+        def active(self):
+            return {"warm": 0.8}
+
+    class Sub:
+        steer = Steer()
+
+    monkeypatch.setattr(cs, "SUB", Sub())
+    h = object.__new__(cs.make_handler())
+    h.headers = {"User-Agent": "pytest"}
+    rid = h._log_run(
+        "openai_completion", [{"role": "user", "content": "raw"}], "reply", "model", time.time(),
+        mem_out={"mode": "prompt", "applied": [], "active_dials": {}, "final_prompt": "raw"},
+    )
+    assert store.get_run(rid)["behavior"]["active_dials"] == {}
 
 
 def test_log_run_persists_anchored_memory_manifest(store, monkeypatch):

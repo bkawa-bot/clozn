@@ -140,6 +140,105 @@ def load_manifest(path: str) -> dict:
     return validate_manifest(raw)
 
 
+def _manifest_digest(manifest: dict) -> str:
+    canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _coordinate(cell: dict) -> tuple:
+    return (cell.get("suite"), cell.get("case"), cell.get("variant"), cell.get("seed"))
+
+
+def validate_result(raw: dict) -> dict:
+    """Validate a saved Experiment v0 result as a complete, internally consistent artifact.
+
+    A result is CI input, so merely having the right top-level schema label is not enough. The
+    case x variant x seed matrix must be complete and unique, its embedded manifest digest must
+    match, and its stored summary must agree with the cells. This keeps a truncated or manually
+    spliced JSON file from receiving a clean bill of health.
+    """
+    if not isinstance(raw, dict):
+        raise ManifestError("experiment result must be a JSON object")
+    result = copy.deepcopy(raw)
+    if result.get("schema_version") != RESULT_SCHEMA:
+        raise ManifestError(f"result schema_version must be {RESULT_SCHEMA!r}")
+    _nonempty(result.get("experiment_id"), "experiment_id")
+    _nonempty(result.get("name"), "name")
+
+    manifest = validate_manifest(result.get("manifest"))
+    result["manifest"] = manifest
+    expected_digest = _manifest_digest(manifest)
+    if result.get("manifest_sha256") != expected_digest:
+        raise ManifestError("experiment result manifest_sha256 does not match its embedded manifest")
+
+    seeds = result.get("seeds")
+    if (not isinstance(seeds, list) or not seeds
+            or any(not isinstance(seed, int) or isinstance(seed, bool) for seed in seeds)
+            or len(set(seeds)) != len(seeds)):
+        raise ManifestError("experiment result seeds must be a non-empty list of unique integers")
+
+    cells = result.get("cells")
+    if not isinstance(cells, list):
+        raise ManifestError("experiment result cells must be a list")
+    expected = {
+        (suite_name, case["name"], variant["name"], seed)
+        for suite_name in ("target", "guard")
+        for case in manifest["suites"][suite_name]["cases"]
+        for variant in manifest["variants"]
+        for seed in seeds
+    }
+    seen = set()
+    allowed_statuses = {"pass", "fail", "error", "unscored"}
+    for index, cell in enumerate(cells):
+        if not isinstance(cell, dict):
+            raise ManifestError(f"experiment result cells[{index}] must be an object")
+        coordinate = _coordinate(cell)
+        if coordinate not in expected:
+            raise ManifestError(f"experiment result has an unexpected cell coordinate: {coordinate!r}")
+        if coordinate in seen:
+            raise ManifestError(f"experiment result has a duplicate cell coordinate: {coordinate!r}")
+        seen.add(coordinate)
+        if cell.get("status") not in allowed_statuses:
+            raise ManifestError(
+                f"experiment result cell {coordinate!r} has invalid status {cell.get('status')!r}"
+            )
+        if not isinstance(cell.get("assertions"), list):
+            raise ManifestError(f"experiment result cell {coordinate!r} assertions must be a list")
+        # Successful generation, including an assertion failure, must retain the run evidence promised
+        # by Experiment v0. A generation-level error is the one honest case where no run may exist.
+        if cell.get("status") != "error":
+            run_id, run = cell.get("run_id"), cell.get("run")
+            if not isinstance(run_id, str) or not run_id or not isinstance(run, dict):
+                raise ManifestError(f"experiment result cell {coordinate!r} is missing run evidence")
+            if run.get("id") is not None and run.get("id") != run_id:
+                raise ManifestError(f"experiment result cell {coordinate!r} run_id disagrees with run.id")
+
+    missing = expected - seen
+    if missing:
+        sample = sorted(missing, key=repr)[:3]
+        raise ManifestError(
+            f"experiment result is incomplete: missing {len(missing)} cell(s), including {sample!r}"
+        )
+
+    expected_summary = _summarize(
+        cells, manifest["baseline_variant"], [variant["name"] for variant in manifest["variants"]]
+    )
+    if result.get("summary") != expected_summary:
+        raise ManifestError("experiment result summary does not match its cells")
+    return result
+
+
+def load_result(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except OSError as exc:
+        raise ManifestError(f"could not read experiment result {path!r}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ManifestError(f"experiment result is not valid JSON: {exc}") from exc
+    return validate_result(raw)
+
+
 class ExperimentClient:
     """Small HTTP client. All generation goes through /v1/chat/completions."""
     def __init__(self, base_url: str, *, timeout: float = 600.0):
@@ -280,8 +379,7 @@ def run_manifest(raw_manifest: dict, *, default_url: str = DEFAULT_URL, seeds_ov
     seeds = list(range(seeds_override)) if seeds_override is not None else manifest["seeds"]
     if not seeds:
         raise ManifestError("seeds override must be at least 1")
-    canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    digest = _manifest_digest(manifest)
     experiment_id = "exp_" + uuid.uuid4().hex[:16]
     clients, cells = {}, []
     defaults = manifest["defaults"]

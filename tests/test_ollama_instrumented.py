@@ -193,6 +193,49 @@ def test_ollama_generate_enters_the_same_path_as_a_user_turn(iso):
     assert logged["trace"]["token_ids"] == [41, 43]
 
 
+def test_ollama_separates_thinking_from_content_and_never_echoes_it_into_history(iso):
+    def thinking_chat(messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+        iso.calls.append({"messages": [dict(m) for m in messages], "max_new": max_new, "sample": sample})
+        if mem_out is not None:
+            mem_out.update(mode="prompt", applied=[], final_prompt="assistant\n<think>\n")
+        if trace_out is not None:
+            trace_out.extend([
+                {"pos": 0, "piece": "check", "prob": .6},
+                {"pos": 1, "piece": "</think>", "prob": .7},
+                {"pos": 2, "piece": "answer", "prob": .9},
+            ])
+        return "check</think>answer"
+
+    iso.chat = thinking_chat
+    out = _payload(_dispatch("POST", "/api/chat", {
+        "messages": [
+            {"role": "assistant", "content": "prior", "thinking": "do not echo"},
+            {"role": "user", "content": "next"},
+        ],
+        "stream": False,
+    }))
+    assert out["message"] == {"role": "assistant", "content": "answer", "thinking": "check"}
+    assert iso.calls[0]["messages"][0] == {"role": "assistant", "content": "prior"}
+    rec = runlog.get_run(out["clozn_run_id"])
+    assert rec["response"] == "answer"
+    assert rec["reasoning"]["blocks"] == [{"text": "check", "closed": True}]
+    assert "".join(rec["trace"]["tokens"]) == "answer"
+
+
+def test_ollama_nonstream_cutoff_has_warning_body_and_header(iso):
+    iso.last_finish_reason = lambda: "length"
+    raw = _dispatch("POST", "/api/chat", {
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": False, "options": {"num_predict": 2},
+    })
+    out = _payload(raw)
+    assert out["done_reason"] == "length"
+    assert out["clozn_warnings"][0]["code"] == "output_truncated"
+    assert b"X-Clozn-Warning: output-truncated" in raw.partition(b"\r\n\r\n")[0]
+    logged = runlog.get_run(out["clozn_run_id"])
+    assert logged["context_receipt"]["output_cut_off"] is True
+
+
 def test_ollama_generation_failure_is_still_an_inspectable_run(iso):
     iso.fail = True
     out = _payload(_dispatch("POST", "/api/chat", {

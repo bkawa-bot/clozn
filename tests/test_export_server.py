@@ -201,6 +201,49 @@ def test_receipt_bundle_unknowns_are_null_or_empty():
     assert bundle["tiny_tests"] is None
 
 
+def test_receipt_bundle_omits_local_association_fingerprints():
+    bundle = receipt_bundle.build({"id": "r1", "client_key": "client_deadbeef",
+                                   "client_key_source": "header", "session_key": "session_deadbeef"})
+    assert "client_key" not in bundle["run"]
+    assert "client_key_source" not in bundle["run"]
+    assert "session_key" not in bundle["run"]
+
+
+def test_receipt_bundle_keeps_structured_evidence_once_without_widening_private_fields():
+    contract = {
+        "schema": "clozn.structured_io.v1",
+        "mode": "tools",
+        "raw_output": "LOCAL STRUCTURED EVIDENCE",
+        "outcome": {"status": "parsed", "kind": "tool_call", "tool_name": "weather"},
+    }
+    source = {
+        "id": "r_structured",
+        "client_key": "client_deadbeef",
+        "client_key_source": "header",
+        "session_key": "session_deadbeef",
+        "messages": [{"role": "user", "content": "weather?"}],
+        "response": "",
+        "output_contract": contract,
+    }
+    bundle = receipt_bundle.build(source)
+
+    assert bundle["run"]["output_contract"] == contract
+    assert "output_contract" not in {key for key in bundle if key != "run"}
+    assert "client_key" not in bundle["run"]
+    assert "client_key_source" not in bundle["run"]
+    assert "session_key" not in bundle["run"]
+    # The readable receipt does not grow a second raw-output disclosure; the evidence remains available
+    # in the explicit JSON run document.
+    assert "LOCAL STRUCTURED EVIDENCE" not in receipt_bundle.to_markdown(bundle)
+
+
+def test_receipt_bundle_drops_malformed_output_contract_without_mutating_source():
+    source = {"id": "r_bad_contract", "output_contract": ["bad"]}
+    bundle = receipt_bundle.build(source)
+    assert bundle["run"]["output_contract"] == {}
+    assert source["output_contract"] == ["bad"]
+
+
 def test_receipt_bundle_preserves_actual_stored_receipts_and_tiny_tests():
     rec = {"influence": {"dial": "concise"}, "has_effect": True}
     tiny = [{"name": "reply_mentions_mass", "status": "pass"}]

@@ -1,4 +1,4 @@
-// serve/routes_whitebox.cpp -- the white-box read routes: /harvest, /harvest/layers, /score, /apply_template (Phase 12.4 split of the serve monolith).
+// serve/routes_whitebox.cpp -- white-box read and private template routes (Phase 12.4 split of the serve monolith).
 // Moved VERBATIM from the monolith; shared state is read through ServerContext -- the register
 // fn re-binds local aliases so each handler body is byte-identical to the original.
 #include "httplib.h"
@@ -6,6 +6,99 @@
 #include "server_context.hpp"
 
 namespace cloze {
+
+namespace {
+
+json prepared_chat_json(const PreparedChat& prepared) {
+    json triggers = json::array();
+    for (const auto& trigger : prepared.grammar_triggers) {
+        triggers.push_back({
+            {"type", trigger.type},
+            {"value", trigger.value},
+            {"token", trigger.token},
+        });
+    }
+    return {
+        {"prompt", prepared.prompt},
+        {"grammar", prepared.grammar},
+        {"grammar_lazy", prepared.grammar_lazy},
+        {"grammar_triggers", std::move(triggers)},
+        {"preserved_tokens", prepared.preserved_tokens},
+        {"additional_stops", prepared.additional_stops},
+        {"generation_prompt", prepared.generation_prompt},
+        {"parser", prepared.parser},
+        {"format", prepared.format},
+        {"capabilities", prepared.capabilities},
+        {"supports_thinking", prepared.supports_thinking},
+        {"thinking_start_tag", prepared.thinking_start_tag},
+        {"thinking_end_tag", prepared.thinking_end_tag},
+        {"reasoning_format", prepared.reasoning_format},
+        {"parse_tool_calls", prepared.parse_tool_calls},
+    };
+}
+
+PreparedChat prepared_chat_from_json(const json& value) {
+    if (!value.is_object()) {
+        throw std::invalid_argument("'prepared' must be an object returned by /prepare_chat");
+    }
+
+    PreparedChat prepared;
+    prepared.prompt = value.at("prompt").get<std::string>();
+    prepared.grammar = value.at("grammar").get<std::string>();
+    prepared.grammar_lazy = value.at("grammar_lazy").get<bool>();
+    prepared.preserved_tokens = value.at("preserved_tokens").get<std::vector<std::string>>();
+    prepared.additional_stops = value.at("additional_stops").get<std::vector<std::string>>();
+    prepared.generation_prompt = value.at("generation_prompt").get<std::string>();
+    prepared.parser = value.at("parser").get<std::string>();
+    prepared.format = value.at("format").get<std::string>();
+    prepared.capabilities = value.at("capabilities").get<std::map<std::string, bool>>();
+    prepared.supports_thinking = value.at("supports_thinking").get<bool>();
+    prepared.thinking_start_tag = value.at("thinking_start_tag").get<std::string>();
+    prepared.thinking_end_tag = value.at("thinking_end_tag").get<std::string>();
+    prepared.reasoning_format = value.at("reasoning_format").get<std::string>();
+    prepared.parse_tool_calls = value.at("parse_tool_calls").get<bool>();
+
+    const auto& triggers = value.at("grammar_triggers");
+    if (!triggers.is_array()) {
+        throw std::invalid_argument("prepared.grammar_triggers must be an array");
+    }
+    prepared.grammar_triggers.reserve(triggers.size());
+    for (const auto& trigger : triggers) {
+        if (!trigger.is_object()) {
+            throw std::invalid_argument("each prepared grammar trigger must be an object");
+        }
+        prepared.grammar_triggers.push_back(ChatGrammarTrigger{
+            trigger.at("type").get<std::string>(),
+            trigger.at("value").get<std::string>(),
+            trigger.at("token").get<std::int32_t>(),
+        });
+    }
+    return prepared;
+}
+
+json parsed_chat_json(const ParsedChat& parsed) {
+    json tool_calls = json::array();
+    for (const auto& call : parsed.tool_calls) {
+        tool_calls.push_back({
+            {"id", call.id},
+            {"name", call.name},
+            {"arguments", call.arguments},
+        });
+    }
+    json message = json::parse(parsed.openai_json);
+    return {
+        {"role", parsed.role},
+        {"content", parsed.content},
+        {"reasoning_content", parsed.reasoning_content},
+        {"tool_name", parsed.tool_name},
+        {"tool_call_id", parsed.tool_call_id},
+        {"tool_calls", std::move(tool_calls)},
+        {"openai_json", parsed.openai_json},
+        {"message", std::move(message)},
+    };
+}
+
+}  // namespace
 
 void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
     auto& model = ctx.model;
@@ -614,6 +707,105 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
             json resp = {{"prompt", prompt}, {"template_source", "model"},
                          {"renderer", "jinja"}};
             res.set_content(dump_json(resp), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
+    // POST /prepare_chat -- PRIVATE worker seam. It executes llama-common's OpenAI-compatible
+    // message/tool parsing and the loaded model's embedded Jinja template, returning the portable
+    // prompt + grammar + parser descriptor. This does not generate, qualify, or publish support for
+    // structured I/O; the supervisor remains responsible for exact model/template qualification.
+    svr.Post("/prepare_chat", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+        if (body.is_discarded() || !body.is_object()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON object body"}}.dump(), "application/json");
+            return;
+        }
+        if (!body.contains("messages") || !body["messages"].is_array() || body["messages"].empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "'messages' must be a non-empty array"}}.dump(),
+                            "application/json");
+            return;
+        }
+        if (body.contains("tools") && !body["tools"].is_array()) {
+            res.status = 400;
+            res.set_content(json{{"error", "'tools' must be an array"}}.dump(), "application/json");
+            return;
+        }
+        if (body.contains("tool_choice") &&
+            !body["tool_choice"].is_string() && !body["tool_choice"].is_object()) {
+            res.status = 400;
+            res.set_content(json{{"error", "'tool_choice' must be a string or object"}}.dump(),
+                            "application/json");
+            return;
+        }
+        if (body.contains("json_schema") && !body["json_schema"].is_object()) {
+            res.status = 400;
+            res.set_content(json{{"error", "'json_schema' must be an object"}}.dump(),
+                            "application/json");
+            return;
+        }
+        if (!ctx.chat_templates.available()) {
+            res.status = 400;
+            res.set_content(json{{"error", "model has no embedded chat template; cannot prepare chat I/O"}}.dump(),
+                            "application/json");
+            return;
+        }
+
+        try {
+            ChatTemplateRequest request;
+            request.messages_json = body.at("messages").dump();
+            request.tools_json = body.value("tools", json::array()).dump();
+            request.tool_choice_json = body.value("tool_choice", json("auto")).dump();
+            if (body.contains("json_schema")) request.json_schema_json = body["json_schema"].dump();
+            request.parallel_tool_calls = body.value("parallel_tool_calls", false);
+            request.add_generation_prompt = body.value("add_generation_prompt", true);
+            request.enable_thinking = body.value("enable_thinking", true);
+            request.reasoning_format = body.value("reasoning_format", std::string("none"));
+
+            json response = prepared_chat_json(ctx.chat_templates.prepare(request));
+            response["template_source"] = "model";
+            response["renderer"] = "llama-common";
+            res.set_content(dump_json(response), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
+    // POST /parse_chat -- PRIVATE inverse seam. The complete descriptor from /prepare_chat must be
+    // returned with the raw model output so parser format, generation prefix, and PEG state cannot
+    // silently drift between preparation and parsing.
+    svr.Post("/parse_chat", [&](const httplib::Request& req, httplib::Response& res) {
+        json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+        if (body.is_discarded() || !body.is_object()) {
+            res.status = 400;
+            res.set_content(json{{"error", "invalid JSON object body"}}.dump(), "application/json");
+            return;
+        }
+        if (!body.contains("prepared") || !body["prepared"].is_object()) {
+            res.status = 400;
+            res.set_content(json{{"error", "'prepared' must be an object returned by /prepare_chat"}}.dump(),
+                            "application/json");
+            return;
+        }
+        if (!body.contains("model_output") || !body["model_output"].is_string()) {
+            res.status = 400;
+            res.set_content(json{{"error", "'model_output' must be a string"}}.dump(),
+                            "application/json");
+            return;
+        }
+
+        try {
+            const PreparedChat prepared = prepared_chat_from_json(body["prepared"]);
+            const ParsedChat parsed = ctx.chat_templates.parse(
+                prepared,
+                body["model_output"].get<std::string>(),
+                body.value("is_partial", false));
+            res.set_content(dump_json(parsed_chat_json(parsed)), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json{{"error", e.what()}}.dump(), "application/json");

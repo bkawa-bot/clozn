@@ -1,12 +1,302 @@
 """Public OpenAI API plus the namespaced Clozn generation event stream."""
+import json
+import secrets
 import time
+from collections.abc import Mapping
+from typing import Any
 
 from clozn.server import app as ctx
+from clozn.server.structured_io import StructuredIOError
 
 
 def _api_error(h, status: int, message: str, *, param=None, kind="invalid_request_error", code=None):
     error = {"message": message, "type": kind, "param": param, "code": code or status}
     h._json(status, {"error": error})
+
+
+def _active_identity(sub) -> dict:
+    """Read only the loaded substrate's identity; never trust the request model label."""
+    try:
+        identity = sub.identity_meta() if callable(getattr(sub, "identity_meta", None)) else {}
+    except Exception:
+        identity = {}
+    identity = dict(identity) if isinstance(identity, Mapping) else {}
+    for field in ("model_sha256", "template_fingerprint"):
+        if not identity.get(field):
+            try:
+                value = getattr(sub, field, None)
+            except Exception:
+                value = None
+            if value:
+                identity[field] = value
+    return identity
+
+
+def _structured_processor(contract: dict, qualification: dict):
+    from clozn.server.structured_io import (
+        StructuredIOError, parse_output, qualification_evidence, structured_parser_input,
+    )
+
+    qualified = qualification_evidence(qualification, contract["mode"], contract)
+    request_evidence = {
+        "mode": contract["mode"],
+        "tools": contract.get("active_tools") or [],
+        "tool_choice": contract.get("tool_choice"),
+        "parallel_tool_calls": contract.get("parallel_tool_calls"),
+        "response_format": contract.get("response_format"),
+    }
+
+    def evidence(raw_output, *, parser_input=None, reasoning_normalization="none",
+                 status, finish_reason, parsed=None, error=None):
+        parser = dict((parsed or {}).get("evidence") or {})
+        outcome = {"status": status}
+        if parsed:
+            outcome["kind"] = parsed.get("kind")
+            if parsed.get("kind") == "tool_call":
+                outcome["tool_name"] = parsed.get("name")
+                outcome["call_id"] = parsed.get("call_id")
+        if error is not None:
+            outcome.update(code=error.code, message=str(error))
+            parser = dict(error.evidence or parser)
+        normalization = parser.get("normalization", "none")
+        public_finish = "tool_calls" if (parsed or {}).get("kind") == "tool_call" else "stop"
+        return {
+            "schema": "clozn.output_contract.v1",
+            "request": request_evidence,
+            "qualification": qualified,
+            "raw_model_output": raw_output,
+            "parser_input": parser_input,
+            "parser": parser,
+            "outcome": outcome,
+            "recovery": {
+                "policy": "one_outer_json_fence_only",
+                "reasoning_normalization": reasoning_normalization,
+                "json_normalization": normalization,
+            },
+            "substrate_finish_reason": finish_reason,
+            "public_finish_reason": public_finish if status == "parsed" else None,
+        }
+
+    def process(raw_output: str, sanitized_output: str, finish_reason: str | None):
+        if ctx._openai_finish_reason(finish_reason) == "length":
+            exc = StructuredIOError(
+                "structured model output was cut off before validation",
+                code="model_output_truncated", param=None,
+            )
+            exc.evidence = evidence(raw_output, parser_input=None, status="error",
+                                    finish_reason=finish_reason, error=exc)
+            raise exc
+        parser_input = None
+        reasoning_normalization = "none"
+        try:
+            parser_input, reasoning_normalization = structured_parser_input(
+                raw_output, sanitized_output
+            )
+            parsed = parse_output(parser_input, contract)
+        except StructuredIOError as exc:
+            exc.evidence = evidence(
+                raw_output, parser_input=parser_input,
+                reasoning_normalization=reasoning_normalization,
+                status="error", finish_reason=finish_reason, error=exc,
+            )
+            raise
+        if parsed.get("kind") == "tool_call":
+            parsed = {**parsed, "call_id": "call_" + secrets.token_hex(12)}
+        return {
+            "parsed": parsed,
+            "evidence": evidence(
+                raw_output, parser_input=parser_input,
+                reasoning_normalization=reasoning_normalization,
+                status="parsed", finish_reason=finish_reason, parsed=parsed,
+            ),
+        }
+
+    return process
+
+
+def _native_runtime_pipeline(sub) -> dict:
+    """Read the worker-reported atomic chat pipeline for qualification preflight."""
+    try:
+        engine = getattr(sub, "engine", None)
+        health = engine.health() if engine and callable(getattr(engine, "health", None)) else {}
+        native = health.get("native_chat_io") if isinstance(health, Mapping) else None
+    except Exception:
+        native = None
+    if not isinstance(native, Mapping) or native.get("available") is not True:
+        return {}
+    return {
+        key: native.get(key)
+        for key in ("executor_id", "renderer_id", "grammar_id", "parser_id")
+    }
+
+
+def _native_generation_contract(contract: dict) -> dict:
+    """Map the public v1 contract onto llama-common's atomic structured inputs."""
+    mode = contract["mode"]
+    if mode == "tools":
+        return {
+            "tools": contract.get("active_tools") or [],
+            "tool_choice": "auto",
+            "json_schema": None,
+        }
+    if mode == "json_schema":
+        schema = contract["response_format"]["json_schema"]["schema"]
+    else:  # json_object: constrain to one object; Python still performs strict whole-object validation.
+        schema = {"type": "object"}
+    return {"tools": None, "tool_choice": "none", "json_schema": schema}
+
+
+def _native_structured_processor(contract: dict, qualification: dict):
+    """Validate the exact native parser message and produce output-contract v2 evidence."""
+    from clozn.server.structured_io import (
+        NATIVE_MESSAGE_VALIDATOR_ID, StructuredIOError, qualification_evidence,
+        validate_native_message,
+    )
+
+    qualified = qualification_evidence(qualification, contract["mode"], contract)
+    request_evidence = {
+        "mode": contract["mode"],
+        "tools": contract.get("active_tools") or [],
+        "tool_choice": contract.get("tool_choice"),
+        "parallel_tool_calls": contract.get("parallel_tool_calls"),
+        "response_format": contract.get("response_format"),
+    }
+
+    def evidence(raw_output, native, *, status, finish_reason, parsed=None, error=None):
+        native = dict(native) if isinstance(native, Mapping) else {}
+        parse_error = native.get("parse_error")
+        native_message = native.get("message")
+        outcome = {"status": status}
+        if parsed:
+            outcome["kind"] = parsed.get("kind")
+            if parsed.get("kind") == "tool_call":
+                outcome["tool_name"] = parsed.get("name")
+                outcome["call_id"] = parsed.get("call_id")
+        if error is not None:
+            outcome.update(code=error.code, message=str(error))
+        return {
+            "schema": "clozn.output_contract.v2",
+            "request": request_evidence,
+            "qualification": qualified,
+            "raw_model_output": raw_output,
+            "native": {
+                "model_sha256": native.get("model_sha256"),
+                "pipeline": native.get("pipeline"),
+                "format": native.get("format"),
+                "parse_status": "error" if parse_error else "parsed",
+                "parse_error": parse_error,
+                "message": native_message,
+                "reasoning_content": (
+                    native_message.get("reasoning_content")
+                    if isinstance(native_message, Mapping) else None
+                ),
+            },
+            "validator": {
+                "validator_id": NATIVE_MESSAGE_VALIDATOR_ID,
+                "input": native_message,
+                "result": dict(
+                    (parsed or {}).get("evidence")
+                    or (getattr(error, "evidence", None) if error is not None else None)
+                    or {}
+                ),
+            },
+            "outcome": outcome,
+            "recovery": {
+                "policy": "exact_qualified_native_parser_then_strict_validator",
+                "python_repair": "none",
+            },
+            "substrate_finish_reason": finish_reason,
+            "public_finish_reason": (
+                "tool_calls" if status == "parsed" and (parsed or {}).get("kind") == "tool_call"
+                else ("stop" if status == "parsed" else None)
+            ),
+        }
+
+    def process(raw_output: str, native: Any, finish_reason: str | None):
+        native = dict(native) if isinstance(native, Mapping) else {}
+        try:
+            if ctx._openai_finish_reason(finish_reason) == "length":
+                raise StructuredIOError(
+                    "structured model output was cut off before validation",
+                    code="model_output_truncated", param=None,
+                )
+            if native.get("model_sha256") != qualification["model_sha256"]:
+                raise StructuredIOError(
+                    "worker model identity changed during structured generation",
+                    code="qualification_postflight_mismatch", param=None,
+                )
+            runtime_pipeline = native.get("pipeline")
+            expected_pipeline = {
+                key: value for key, value in qualification["pipeline"].items()
+                if key != "validator_id"
+            }
+            if runtime_pipeline != expected_pipeline:
+                raise StructuredIOError(
+                    "worker structured pipeline changed during generation",
+                    code="qualification_postflight_mismatch", param=None,
+                )
+            parse_error = native.get("parse_error")
+            if isinstance(parse_error, Mapping):
+                raise StructuredIOError(
+                    str(parse_error.get("message") or "native parser rejected model output"),
+                    code=str(parse_error.get("code") or "native_parse_failed"), param=None,
+                )
+            parsed = validate_native_message(native.get("message"), contract)
+        except StructuredIOError as exc:
+            exc.evidence = evidence(
+                raw_output, native, status="error", finish_reason=finish_reason, error=exc,
+            )
+            raise
+        if parsed.get("kind") == "tool_call":
+            parsed = {**parsed, "call_id": "call_" + secrets.token_hex(12)}
+        return {
+            "parsed": parsed,
+            "evidence": evidence(
+                raw_output, native, status="parsed", finish_reason=finish_reason, parsed=parsed,
+            ),
+        }
+
+    return process
+
+
+def _buffered_structured_sse(h, parsed: dict, *, model: str, run_id: str | None) -> None:
+    """Emit protocol-valid SSE only after the complete model output has validated."""
+    from clozn.server.http_policy import send_cors_headers
+    from clozn.server.structured_io import openai_stream_deltas
+
+    stream = openai_stream_deltas(parsed)
+    completion_id = "chatcmpl-" + secrets.token_hex(8)
+    created = int(time.time())
+    h.send_response(200)
+    h.send_header("Content-Type", "text/event-stream")
+    h.send_header("Cache-Control", "no-cache")
+    if run_id:
+        h.send_header("X-Clozn-Run-Id", run_id)
+    send_cors_headers(h)
+    h.end_headers()
+
+    def write(delta, finish_reason=None, extension=None):
+        chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        if extension:
+            chunk.update(extension)
+        h.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode("utf-8"))
+
+    try:
+        for delta in stream["deltas"]:
+            write(delta)
+        write({}, stream["finish_reason"], {"clozn_run_id": run_id} if run_id else None)
+        h.wfile.write(b"data: [DONE]\n\n")
+        h.wfile.flush()
+    except OSError:
+        # The buffered generation is already durably recorded.  A delivery failure
+        # must not create a second, contradictory run.
+        return
 
 
 def try_get(h, p):
@@ -35,7 +325,9 @@ def try_post(h, p, body):
     except CompatibilityError as exc:
         _api_error(h, 400, str(exc), param=exc.param, code=exc.code)
         return True
-    if not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):
+    structured = body.pop("_structured_contract", None)
+    sub = ctx.active_sub(h)
+    if not (sub and getattr(sub, "chat", None)):
         h._json(503, {"error": {"message": "model worker unavailable", "type": "service_unavailable"}})
         return True
     from clozn.server.generation_gateway import model_id
@@ -51,21 +343,97 @@ def try_post(h, p, body):
     # receipt footers as context (it would imitate/steer on them). No-op when no footer ever rode.
     from clozn.runs.receipt_footer import strip_footers
     msgs = strip_footers(msgs)
-    if body.get("stream") and getattr(ctx.active_sub(h), "chat_stream", None):
+    from clozn.runs.think_tags import sanitize_messages
+    msgs = sanitize_messages(msgs)
+    journal_messages = None
+    output_processor = None
+    native_structured = None
+    if structured:
+        from clozn.server.structured_io import (
+            normalize_and_lower_messages, require_qualification,
+        )
+        try:
+            if structured.get("mode"):
+                qualification = require_qualification(
+                    _active_identity(sub), structured["mode"],
+                    runtime_pipeline=_native_runtime_pipeline(sub),
+                )
+                if not callable(getattr(sub, "_complete_chat_native", None)):
+                    raise StructuredIOError(
+                        "qualified worker does not expose atomic native structured chat",
+                        code="model_not_qualified", param=(
+                            "tools" if structured["mode"] == "tools" else "response_format"
+                        ),
+                    )
+                plan = normalize_and_lower_messages(msgs, structured)
+                # Native llama-common receives the normalized OpenAI roles directly. The lowered
+                # synthetic envelope remains only for text-bypass history on the legacy chat seam.
+                native_structured = _native_generation_contract(structured)
+                output_processor = _native_structured_processor(structured, qualification)
+            else:
+                plan = normalize_and_lower_messages(msgs, structured)
+            journal_messages = plan["messages"]
+            msgs = plan["messages"] if native_structured is not None else plan["generation_messages"]
+        except StructuredIOError as exc:
+            _api_error(h, 400, str(exc), param=exc.param, code=exc.code)
+            return True
+
+    if body.get("stream") and output_processor is None and getattr(sub, "chat_stream", None):
         from clozn.server import sse
         from clozn.server.routes.receipt_link import receipt_enabled
         # F1 live lens: clozn_lens {layer?, topk?, every?} (or true) is a clozn extension -- absent for
         # standard OpenAI clients, so their streams stay byte-identical (same opt-in rule as clozn_trust).
         # receipt: the in-band footer as a final content chunk (the one ambient surface).
         sse.sse_chat(h, msgs, mx, selected_model, lens=body.get("clozn_lens"), sample=sample,
-                     receipt=body.get("clozn_receipt", receipt_enabled()))
+                     receipt=body.get("clozn_receipt", receipt_enabled()),
+                     journal_messages=journal_messages)
         return True
     from clozn.server.generation_gateway import instrumented_chat
     try:
         generated = instrumented_chat(h, msgs, model=selected_model, max_tokens=mx,
-                                      sample=sample, source="openai_api")
+                                      sample=sample, source="openai_api",
+                                      journal_messages=journal_messages,
+                                      output_processor=output_processor,
+                                      native_structured=native_structured)
+    except StructuredIOError as exc:
+        error = exc.as_error()
+        error["type"] = "model_output_error"
+        error["param"] = None
+        # Full parser/qualification/raw-output evidence is durable in the run.  Keep
+        # the public error compact and avoid echoing a potentially large model result.
+        error.pop("evidence", None)
+        rid = getattr(exc, "run_id", None)
+        response = {"error": error}
+        if rid:
+            response["clozn_run_id"] = rid
+        h._json(502, response,
+                extra_headers={"X-Clozn-Run-Id": rid} if rid else None)
+        return True
     except Exception as exc:
         _api_error(h, 502, str(exc), kind="upstream_error")
+        return True
+
+    if output_processor is not None:
+        from clozn.server.structured_io import serialize_openai_result
+        parsed = generated.structured["parsed"]
+        if body.get("stream"):
+            _buffered_structured_sse(
+                h, parsed, model=selected_model, run_id=generated.run_id,
+            )
+            return True
+        wire = serialize_openai_result(parsed)
+        resp = {
+            "id": "chatcmpl-" + secrets.token_hex(8),
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": selected_model,
+            "choices": [{"index": 0, **wire}],
+        }
+        if generated.run_id:
+            resp["clozn_run_id"] = generated.run_id
+        h._json(200, resp, extra_headers=(
+            {"X-Clozn-Run-Id": generated.run_id} if generated.run_id else None
+        ))
         return True
     reply = generated.reply
     trace_steps = generated.trace_steps
@@ -83,6 +451,10 @@ def try_post(h, p, body):
     extra_headers = {"X-Clozn-Run-Id": rid} if rid else None
     if rid:
         resp["clozn_run_id"] = rid
+    if generated.warnings:
+        resp["clozn_warnings"] = generated.warnings
+        extra_headers = dict(extra_headers or {})
+        extra_headers["X-Clozn-Warning"] = "output-truncated"
     # AMBIENT DELIVERY (AMBIENT_DELIVERY.md): two opt-in, off-by-default deliveries that reach the user
     # INSIDE whatever client they pointed at clozn -- the in-band receipt FOOTER (an exception-only
     # glass-box line + the /r/<id> permalink appended to the reply). Off by default; the logged run

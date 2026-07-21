@@ -132,6 +132,9 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 /* Replay is an instrument workbench: identity + linked tape + model state arrive before the output
    terminal. The longer proof/repair surfaces remain available as the analysis rack below. */
 .replay-workbench{display:flex;flex-direction:column;gap:10px;min-width:0}
+.context-warning{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 12px;border:1px solid rgba(242,109,79,.7);background:rgba(242,109,79,.10);color:#713426;font-size:10px;letter-spacing:.01em}
+.context-warning b{font-size:10px;letter-spacing:.12em;color:var(--coral)}
+.context-warning code{padding:2px 5px;border:1px solid rgba(242,109,79,.35);background:rgba(255,255,255,.45);font-size:9px}
 .replay-empty{max-width:980px}
 .workbench-titlebar{min-width:0;display:grid;grid-template-columns:minmax(250px,1.45fr) minmax(360px,1fr) auto;
   align-items:center;gap:18px;padding:14px 18px;border-radius:16px;border:1px solid rgba(255,255,255,.9);

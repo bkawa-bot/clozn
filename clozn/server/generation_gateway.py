@@ -14,9 +14,12 @@ import secrets
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from clozn.server import app as ctx
 from clozn.server.http_policy import send_cors_headers
+from clozn.runs.context_receipt import warnings_for
 
 
 @dataclass
@@ -35,10 +38,17 @@ class InstrumentedChatResult:
     finish_reason: str | None
     public_finish_reason: str
     run_id: str | None
+    warnings: list[dict]
+    reasoning: dict
+    structured: Any = None
 
 
 def instrumented_chat(handler, messages: list, *, model: str, max_tokens: int = 256,
-                      sample=True, source: str, extra_meta: dict | None = None) -> InstrumentedChatResult:
+                      sample=True, source: str, extra_meta: dict | None = None,
+                      journal_messages: list | None = None,
+                      output_processor: Callable[[str, Any, str | None], Any] | None = None,
+                      native_structured: Mapping[str, Any] | None = None,
+                      ) -> InstrumentedChatResult:
     """Run chat through the active substrate and persist the resulting evidence.
 
     This is deliberately below every compatibility serializer.  The active substrate
@@ -52,31 +62,108 @@ def instrumented_chat(handler, messages: list, *, model: str, max_tokens: int = 
     sub = ctx.active_sub(handler)
     if not (sub and getattr(sub, "chat", None)):
         raise RuntimeError("model worker unavailable")
+    if native_structured is not None and not callable(getattr(sub, "_complete_chat_native", None)):
+        raise RuntimeError("active model worker does not expose atomic native structured chat")
 
     started = time.time()
     trace_steps = []
     memout = {}
+    logged_messages = journal_messages if journal_messages is not None else messages
     chat_kw = {"trace_out": trace_steps, "mem_out": memout}
     if isinstance(sub, ctx.EngineSubstrate):
         # Live compatibility traffic gets the same anchored-memory behavior as the
         # OpenAI route. Receipt/replay callers remain explicitly deterministic.
         chat_kw["apply_anchored"] = True
+    native_result = None
     try:
-        reply = sub.chat(messages, int(max_tokens), sample, **chat_kw)
+        if native_structured is not None:
+            contract = dict(native_structured)
+            native_result = sub._complete_chat_native(
+                messages,
+                tools=contract.get("tools") or None,
+                tool_choice=contract.get("tool_choice", "auto"),
+                json_schema=contract.get("json_schema"),
+                parallel_tool_calls=False,
+                max_new=int(max_tokens), sample=sample,
+                trace_out=trace_steps, mem_out=memout,
+                # Structured output cannot safely run the ordinary anchored retry/loop policy.
+                apply_anchored=False,
+                enable_thinking=True,
+                reasoning_format="none",
+            )
+            reply = native_result["raw_model_output"]
+        else:
+            reply = sub.chat(messages, int(max_tokens), sample, **chat_kw)
     except Exception as exc:
-        handler._log_run(source, messages, "", model, started, error=str(exc),
+        handler._log_run(source, logged_messages, "", model, started, error=str(exc),
                          mem_out=memout, extra_meta=extra_meta)
         raise
 
+    raw_reply = str(reply)
+    from clozn.runs.think_tags import prompt_opens_think, sanitize_reply, sanitize_steps
+    implicit_think = prompt_opens_think(memout.get("final_prompt"))
+    think = sanitize_reply(raw_reply, implicit_open=implicit_think)
+    public_steps = trace_steps
+    reasoning_steps = []
+    if think.stripped:
+        public_steps, reasoning_steps, _ = sanitize_steps(trace_steps, implicit_open=implicit_think)
     finish = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
     public_finish = ctx._openai_finish_reason(finish)
-    rid = handler._log_run(source, messages, reply, model, started,
+    structured = None
+    evidence = None
+    if output_processor is not None:
+        try:
+            processor_value = native_result if native_result is not None else think.public_text
+            structured = output_processor(raw_reply, processor_value, finish)
+            evidence = (structured.get("evidence") if isinstance(structured, Mapping)
+                        else getattr(structured, "evidence", None))
+        except Exception as exc:
+            failure_meta = dict(extra_meta or {})
+            evidence = getattr(exc, "evidence", None)
+            rid = handler._log_run(
+                source, logged_messages, raw_reply, model, started,
+                error=f"{getattr(exc, 'code', 'structured_output_error')}: {exc}",
+                trace=trace_steps, mem_out=memout, finish_reason=finish,
+                finish_reason_fallback=None if finish else public_finish,
+                extra_meta=failure_meta,
+                output_contract=evidence if isinstance(evidence, dict) else None,
+            )
+            try:
+                exc.run_id = rid
+            except Exception:
+                pass
+            if rid is None:
+                from clozn.server.structured_io import StructuredIOError
+                persistence = StructuredIOError(
+                    "structured output failed and its evidence could not be durably journaled",
+                    code="journal_persistence_failed", param=None,
+                    evidence={"cause_code": getattr(exc, "code", type(exc).__name__),
+                              "output_contract": evidence if isinstance(evidence, dict) else {}},
+                )
+                persistence.run_id = None
+                raise persistence from exc
+            raise
+    success_meta = dict(extra_meta or {})
+    rid = handler._log_run(source, logged_messages, raw_reply, model, started,
                            trace=trace_steps, mem_out=memout, finish_reason=finish,
                            finish_reason_fallback=None if finish else public_finish,
-                           extra_meta=extra_meta)
+                           extra_meta=success_meta,
+                           output_contract=evidence if isinstance(evidence, dict) else None)
+    if output_processor is not None and rid is None:
+        from clozn.server.structured_io import StructuredIOError
+        persistence = StructuredIOError(
+            "structured output was validated but its evidence could not be durably journaled",
+            code="journal_persistence_failed", param=None,
+            evidence={"output_contract": evidence if isinstance(evidence, dict) else {}},
+        )
+        persistence.run_id = None
+        raise persistence
     return InstrumentedChatResult(
-        reply=str(reply), trace_steps=trace_steps, memory=memout,
+        reply=think.public_text, trace_steps=public_steps, memory=memout,
         finish_reason=finish, public_finish_reason=public_finish, run_id=rid,
+        warnings=warnings_for(finish, {"max_tokens": int(max_tokens)}),
+        reasoning=think.journal(reasoning_steps=reasoning_steps),
+        structured=structured,
     )
 
 
@@ -253,7 +340,7 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
     send_cors_headers(handler)
     handler.end_headers()
 
-    def write_chunk(text: str, finish_reason=None) -> None:
+    def write_chunk(text: str, finish_reason=None, *, run_id=None, warnings=None) -> None:
         chunk = {
             "id": stream_id,
             "object": "text_completion",
@@ -262,11 +349,16 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
             "choices": [{"text": text, "index": 0, "logprobs": None,
                          "finish_reason": finish_reason}],
         }
+        if run_id:
+            chunk["clozn_run_id"] = run_id
+        if warnings:
+            chunk["clozn_warnings"] = list(warnings)
         handler.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode("utf-8"))
         handler.wfile.flush()
 
     gen = None
     disconnect_error = None
+    think_stream = None
     try:
         if getattr(sub, "chat_stream", None):
             import inspect
@@ -279,8 +371,16 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
                 stream_kw["sample"] = sample
             gen = sub.chat_stream(messages, max_tokens, **stream_kw)
             for piece in gen:
-                text = str(piece)
-                acc.append(text)
+                raw_text = str(piece)
+                acc.append(raw_text)
+                if think_stream is None:
+                    from clozn.runs.think_tags import ThinkTagStream, prompt_opens_think
+                    think_stream = ThinkTagStream(
+                        implicit_open=prompt_opens_think(memout.get("final_prompt"))
+                    )
+                text = think_stream.feed(raw_text)
+                if not text:
+                    continue
                 try:
                     write_chunk(text)
                 except OSError as exc:
@@ -308,7 +408,8 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
             acc.append(generated.reply)
             try:
                 write_chunk(generated.reply)
-                write_chunk("", generated.public_finish_reason)
+                write_chunk("", generated.public_finish_reason, run_id=generated.run_id,
+                            warnings=generated.warnings)
                 handler.wfile.write(b"data: [DONE]\n\n")
                 handler.wfile.flush()
             except OSError:
@@ -326,17 +427,36 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
             )
             return
 
+        if think_stream is not None:
+            tail, _think = think_stream.finish()
+            if tail:
+                try:
+                    write_chunk(tail)
+                except OSError as exc:
+                    disconnect_error = exc
+        if disconnect_error is not None:
+            req_ctx = getattr(sub, "_request", None)
+            if req_ctx is not None and hasattr(req_ctx, "cancel"):
+                req_ctx.cancel()
+            handler._log_run(
+                "openai_api", messages, "".join(acc), model, started,
+                error=f"client disconnected mid-stream: {disconnect_error}", mem_out=memout,
+                extra_meta={**extra_meta, "stream_failure": "client_disconnected"},
+            )
+            return
+
         finish = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
         public_finish = ctx._openai_finish_reason(finish)
         trace = sub.last_stream_trace() if hasattr(sub, "last_stream_trace") else None
-        handler._log_run(
+        run_id = handler._log_run(
             "openai_api", messages, "".join(acc), model, started, trace=trace,
             mem_out=memout, finish_reason=finish,
             finish_reason_fallback=None if finish else public_finish,
             extra_meta=extra_meta,
         )
         try:
-            write_chunk("", public_finish)
+            write_chunk("", public_finish, run_id=run_id,
+                        warnings=warnings_for(finish, {"max_tokens": int(max_tokens)}))
             handler.wfile.write(b"data: [DONE]\n\n")
             handler.wfile.flush()
         except OSError:
@@ -407,5 +527,11 @@ def openai_completion(handler, body: dict) -> None:
             "finish_reason": generated.public_finish_reason,
         }],
     }
-    headers = {"X-Clozn-Run-Id": generated.run_id} if generated.run_id else None
+    if generated.run_id:
+        response["clozn_run_id"] = generated.run_id
+    if generated.warnings:
+        response["clozn_warnings"] = generated.warnings
+    headers = {"X-Clozn-Run-Id": generated.run_id} if generated.run_id else {}
+    if generated.warnings:
+        headers["X-Clozn-Warning"] = "output-truncated"
     handler._json(200, response, extra_headers=headers)

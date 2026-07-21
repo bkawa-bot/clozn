@@ -143,9 +143,23 @@ def _generation_options(options) -> tuple[int, dict | bool]:
 
 
 def _receipt_fields(result) -> tuple[dict, dict | None]:
-    if not result.run_id:
-        return {}, None
-    return {"clozn_run_id": result.run_id}, {"X-Clozn-Run-Id": result.run_id}
+    fields = {}
+    headers = {}
+    if result.run_id:
+        fields["clozn_run_id"] = result.run_id
+        headers["X-Clozn-Run-Id"] = result.run_id
+    if result.warnings:
+        fields["clozn_warnings"] = result.warnings
+        headers["X-Clozn-Warning"] = "output-truncated"
+    return fields, headers or None
+
+
+def _thinking_text(result) -> str | None:
+    """Ollama has a separate wire field for thinking-capable models; never mix it into content."""
+    blocks = (getattr(result, "reasoning", None) or {}).get("blocks") or []
+    if not blocks:
+        return None
+    return "".join(str(block.get("text") or "") for block in blocks if isinstance(block, dict))
 
 
 def try_get(h, p):
@@ -221,7 +235,10 @@ def try_post(h, p, body):
             h._json(502, {"error": f"engine: {e}"})
             return True
         receipt, headers = _receipt_fields(generated)
-        h._json(200, {"model": model, "response": generated.reply, "done": True,
+        thinking = _thinking_text(generated)
+        h._json(200, {"model": model, "response": generated.reply,
+                      **({"thinking": thinking} if thinking is not None else {}), "done": True,
+                      **({"done_reason": generated.public_finish_reason} if generated.warnings else {}),
                       **receipt}, extra_headers=headers)
         return True
     if p == "/api/chat":
@@ -241,6 +258,8 @@ def try_post(h, p, body):
         messages = body.get("messages") or []
         from clozn.runs.receipt_footer import strip_footers
         messages = strip_footers(messages)
+        from clozn.runs.think_tags import sanitize_messages
+        messages = sanitize_messages(messages)
         if _stream_wanted(body) and getattr(sub, "chat_stream", None):
             from clozn.server import ndjson
             ndjson.ndjson_stream(h, messages, max_tokens, model, operation="chat", sample=sample)
@@ -256,8 +275,14 @@ def try_post(h, p, body):
             h._json(502, {"error": f"engine: {e}"})
             return True
         receipt, headers = _receipt_fields(generated)
+        thinking = _thinking_text(generated)
+        message = {"role": "assistant", "content": generated.reply}
+        if thinking is not None:
+            message["thinking"] = thinking
         h._json(200, {"model": model,
-                      "message": {"role": "assistant", "content": generated.reply},
-                      "done": True, **receipt}, extra_headers=headers)
+                      "message": message,
+                      "done": True,
+                      **({"done_reason": generated.public_finish_reason} if generated.warnings else {}),
+                      **receipt}, extra_headers=headers)
         return True
     return False

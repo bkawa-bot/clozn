@@ -286,6 +286,15 @@ int main(int argc, char** argv) {
                {"n_ctx", n_ctx},                              // configured context window (repro metadata)
                {"gpu_layers", gpu_layers},                    // layers offloaded to the GPU (0 => CPU-resident)
                {"device", gpu_layers > 0 ? "cuda" : "cpu"}};  // CUDA build; device follows the offload setting
+        h["native_chat_io"] = {
+            {"available", ar_mode && chat_templates->available()},
+            {"executor_id", NATIVE_CHAT_EXECUTOR_ID},
+            {"renderer_id", NATIVE_CHAT_RENDERER_ID},
+            {"grammar_id", NATIVE_CHAT_GRAMMAR_ID},
+            {"parser_id", NATIVE_CHAT_PARSER_ID},
+            {"atomic", true},
+            {"buffered", true},
+        };
 #ifdef CLOZE_SAE
         if (sae_serve.on)
             h["sae"] = {{"d_sae", sae_serve.enc.d_sae()}, {"layer", sae_serve.layer}, {"k", sae_serve.k}};
@@ -334,6 +343,158 @@ int main(int argc, char** argv) {
             res.set_content(json{{"error", "infill requires a diffusion model; this is autoregressive"}}.dump(),
                             "application/json");
             return;
+        }
+
+        // Private Phase 2.8 atomic seam: prepare with the currently loaded template, constrain the
+        // completion, and parse it below without allowing a client-held descriptor to drift or be
+        // modified between those operations. Streaming is deliberately rejected here: the public
+        // structured route buffers until validation anyway.
+        std::optional<PreparedChat> atomic_prepared_chat;
+        if (body.contains("chat_request")) {
+            if (body.contains("prepared_chat")) {
+                res.status = 400;
+                res.set_content(json{{"error", "chat_request and prepared_chat are mutually exclusive"}}.dump(),
+                                "application/json");
+                return;
+            }
+            if (!ar_mode || is_infill) {
+                res.status = 400;
+                res.set_content(json{{"error", "chat_request requires an autoregressive completion"}}.dump(),
+                                "application/json");
+                return;
+            }
+            if (body.value("stream", false)) {
+                res.status = 400;
+                res.set_content(json{{"error", "chat_request is buffer-then-validate only; set stream:false"}}.dump(),
+                                "application/json");
+                return;
+            }
+            try {
+                const json& request_json = body["chat_request"];
+                if (!request_json.is_object() || !request_json.contains("messages") ||
+                    !request_json["messages"].is_array() || request_json["messages"].empty()) {
+                    throw std::invalid_argument("chat_request.messages must be a non-empty array");
+                }
+                ChatTemplateRequest request;
+                request.messages_json = request_json["messages"].dump();
+                request.tools_json = request_json.value("tools", json::array()).dump();
+                request.tool_choice_json = request_json.value("tool_choice", json("auto")).dump();
+                if (request_json.contains("json_schema")) {
+                    if (!request_json["json_schema"].is_object()) {
+                        throw std::invalid_argument("chat_request.json_schema must be an object");
+                    }
+                    request.json_schema_json = request_json["json_schema"].dump();
+                }
+                request.parallel_tool_calls = request_json.value("parallel_tool_calls", false);
+                request.add_generation_prompt = request_json.value("add_generation_prompt", true);
+                request.enable_thinking = request_json.value("enable_thinking", true);
+                request.reasoning_format = request_json.value("reasoning_format", std::string("none"));
+                const bool active_tools = request_json.contains("tools") &&
+                    request_json["tools"].is_array() && !request_json["tools"].empty() &&
+                    !(request_json.contains("tool_choice") &&
+                      request_json["tool_choice"].is_string() &&
+                      request_json["tool_choice"].get<std::string>() == "none");
+                if (!active_tools && !request_json.contains("json_schema")) {
+                    throw std::invalid_argument(
+                        "chat_request requires active tools or json_schema structured output");
+                }
+                atomic_prepared_chat = chat_templates->prepare(request);
+                const PreparedChat& prepared = *atomic_prepared_chat;
+                json triggers = json::array();
+                for (const ChatGrammarTrigger& trigger : prepared.grammar_triggers) {
+                    triggers.push_back({{"type", trigger.type}, {"value", trigger.value},
+                                        {"token", trigger.token}});
+                }
+                body["prepared_chat"] = {
+                    {"prompt", prepared.prompt}, {"grammar", prepared.grammar},
+                    {"grammar_lazy", prepared.grammar_lazy},
+                    {"grammar_triggers", std::move(triggers)},
+                    {"preserved_tokens", prepared.preserved_tokens},
+                    {"additional_stops", prepared.additional_stops},
+                    {"generation_prompt", prepared.generation_prompt},
+                    {"thinking_start_tag", prepared.thinking_start_tag},
+                    {"thinking_end_tag", prepared.thinking_end_tag},
+                };
+            } catch (const std::exception& e) {
+                res.status = 400;
+                res.set_content(json{{"error", std::string("invalid chat_request: ") + e.what()}}.dump(),
+                                "application/json");
+                return;
+            }
+        }
+
+        // A descriptor returned by /prepare_chat is inspection/qualification data, not a generation
+        // capability: accepting it back from a client would allow grammar/parser tampering and stale
+        // state after a worker restart. Only the server-created atomic descriptor above may enter the
+        // sampler. Product activation still requires exact qualification in the Python gateway.
+        std::optional<GrammarConfig> chat_grammar;
+        if (body.contains("prepared_chat")) {
+            if (!atomic_prepared_chat) {
+                res.status = 400;
+                res.set_content(json{{"error", "client-held prepared_chat is not accepted; use chat_request"}}.dump(),
+                                "application/json");
+                return;
+            }
+            if (!ar_mode || is_infill) {
+                res.status = 400;
+                res.set_content(json{{"error", "prepared_chat requires an autoregressive completion"}}.dump(),
+                                "application/json");
+                return;
+            }
+            const json& prepared = body["prepared_chat"];
+            try {
+                if (!prepared.is_object()) {
+                    throw std::invalid_argument("prepared_chat must be an object returned by /prepare_chat");
+                }
+                const std::string prepared_prompt = prepared.at("prompt").get<std::string>();
+                if (prepared_prompt.empty()) {
+                    throw std::invalid_argument("prepared_chat.prompt must not be empty");
+                }
+                if (body.contains("prompt") &&
+                    (!body["prompt"].is_string() || body["prompt"].get<std::string>() != prepared_prompt)) {
+                    throw std::invalid_argument("prompt must exactly match prepared_chat.prompt");
+                }
+                body["prompt"] = prepared_prompt;
+
+                GrammarConfig parsed;
+                parsed.grammar = prepared.at("grammar").get<std::string>();
+                parsed.grammar_lazy = prepared.at("grammar_lazy").get<bool>();
+                parsed.preserved_tokens = prepared.at("preserved_tokens").get<std::vector<std::string>>();
+                parsed.generation_prompt = prepared.at("generation_prompt").get<std::string>();
+                parsed.reasoning_start_tag = prepared.at("thinking_start_tag").get<std::string>();
+                parsed.reasoning_end_tag = prepared.at("thinking_end_tag").get<std::string>();
+                parsed.additional_stops = prepared.at("additional_stops").get<std::vector<std::string>>();
+
+                const json& triggers = prepared.at("grammar_triggers");
+                if (!triggers.is_array()) {
+                    throw std::invalid_argument("prepared_chat.grammar_triggers must be an array");
+                }
+                parsed.grammar_triggers.reserve(triggers.size());
+                for (const json& value : triggers) {
+                    if (!value.is_object()) {
+                        throw std::invalid_argument("each prepared_chat grammar trigger must be an object");
+                    }
+                    GrammarTrigger trigger;
+                    const std::string type = value.at("type").get<std::string>();
+                    trigger.value = value.at("value").get<std::string>();
+                    trigger.token = value.at("token").get<int>();
+                    if (type == "token") trigger.type = GrammarTriggerType::Token;
+                    else if (type == "word") trigger.type = GrammarTriggerType::Word;
+                    else if (type == "pattern") trigger.type = GrammarTriggerType::Pattern;
+                    else if (type == "pattern_full") trigger.type = GrammarTriggerType::PatternFull;
+                    else throw std::invalid_argument("unknown prepared_chat grammar trigger type: " + type);
+                    parsed.grammar_triggers.push_back(std::move(trigger));
+                }
+                if (parsed.grammar.empty()) {
+                    throw std::invalid_argument("prepared_chat grammar must not be empty");
+                }
+                chat_grammar = std::move(parsed);
+            } catch (const std::exception& e) {
+                res.status = 400;
+                res.set_content(json{{"error", std::string("invalid prepared_chat: ") + e.what()}}.dump(),
+                                "application/json");
+                return;
+            }
         }
         const GenerateConfig cfg = config_from(body);
         const CacheConfig cache = cache_from(body);
@@ -548,7 +709,7 @@ int main(int argc, char** argv) {
 
         // One call into the runtime on a POOLED context (acquire blocks until one is free, so N
         // workers run N requests concurrently; the Lease releases it on any exit).
-        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens, lens_on, lens_layer, plane, readout_layers, write_reqs](
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens, lens_on, lens_layer, plane, readout_layers, write_reqs, chat_grammar](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             // white-box tap on for this request (off by default); the live lens implies it — the
@@ -632,7 +793,8 @@ int main(int argc, char** argv) {
                 GenerateResult r = ar_mode
                        ? generate_ar(*lease, prompt_ids, cfg, ev, sample, probes,
                                      prefix_embd.empty() ? nullptr : &prefix_embd, prefix_rows,
-                                     reference_tokens.empty() ? nullptr : &reference_tokens)
+                                     reference_tokens.empty() ? nullptr : &reference_tokens,
+                                     chat_grammar ? &*chat_grammar : nullptr)
                        : (is_infill
                             ? infill(*lease, prompt_ids, suffix_ids, gap, cfg, nullptr, ev, revise, sample, probes)
                             : generate(*lease, prompt_ids, cfg, cache, nullptr, ev, revise, sample, probes));
@@ -782,8 +944,40 @@ int main(int argc, char** argv) {
                              {"finish_reason", finish_reason(r.reason)}}})},
                 {"board", r.board},  // white-box SNAPSHOT: the full final board (save + POST to /v1/board)
                 {"layout", board_layout_json(*model, r.board, mask_token)},
-                {"usage", {{"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
+                {"usage", {{"prompt_tokens", static_cast<int>(prompt_ids.size())},
+                           {"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
             };
+            if (atomic_prepared_chat) {
+                json trace = json::array();
+                for (const Event& event : r.events) {
+                    trace.push_back(json::parse(sse_data(event, *model, prompt_ids, suffix_ids)));
+                }
+                json chat_io = {
+                    {"raw_model_output", r.text},
+                    {"rendered_prompt", atomic_prepared_chat->prompt},
+                    {"model_sha256", model_sha256},
+                    {"format", atomic_prepared_chat->format},
+                    {"trace", std::move(trace)},
+                    {"pipeline", {
+                        {"executor_id", NATIVE_CHAT_EXECUTOR_ID},
+                        {"renderer_id", NATIVE_CHAT_RENDERER_ID},
+                        {"grammar_id", NATIVE_CHAT_GRAMMAR_ID},
+                        {"parser_id", NATIVE_CHAT_PARSER_ID},
+                    }},
+                };
+                try {
+                    const ParsedChat parsed = chat_templates->parse(*atomic_prepared_chat, r.text);
+                    chat_io["openai_json"] = parsed.openai_json;
+                    chat_io["message"] = json::parse(parsed.openai_json);
+                } catch (const std::exception& e) {
+                    // Generation evidence must survive a native parser failure so the supervisor can
+                    // journal the exact raw output and trace before returning a typed public error.
+                    chat_io["parse_error"] = {
+                        {"code", "native_parse_failed"}, {"message", e.what()},
+                    };
+                }
+                resp["chat_io"] = std::move(chat_io);
+            }
             if (r.ref_active) {  // early-stop-on-divergence verdict (prove-all ablated arms)
                 resp["diverged"] = r.diverged;
                 resp["diverged_at"] = r.diverged_at;

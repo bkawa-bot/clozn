@@ -28,10 +28,8 @@ def test_chat_normalizes_current_token_limit_and_developer_role():
 
 
 @pytest.mark.parametrize("field,value", [
-    ("tools", [{"type": "function", "function": {"name": "weather"}}]),
     ("stop", ["END"]),
     ("n", 2),
-    ("response_format", {"type": "json_object"}),
     ("frequency_penalty", 0.5),
     ("stream_options", {"include_usage": True}),
 ])

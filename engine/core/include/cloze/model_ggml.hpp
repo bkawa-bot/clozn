@@ -146,6 +146,7 @@ public:
     GgmlAdapter& operator=(const GgmlAdapter&) = delete;
 
     const ModelConfig& config() const override { return cfg_; }
+    const llama_vocab* vocab() const { return vocab_; }  // read-only native sampler/token-piece seam
 
     ForwardResult forward(const std::vector<int>& board,
                           const Mask& mask,

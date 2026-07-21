@@ -34,8 +34,9 @@ import base64
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
 
@@ -117,6 +118,225 @@ class Observation:
 
 class EngineError(RuntimeError):
     """An error returned by the engine (non-2xx with a JSON {error: ...} body)."""
+
+
+def _chat_io_object(value: object, label: str) -> dict[str, Any]:
+    """Copy a JSON object or fail before a malformed private chat-I/O round trip.
+
+    The native chat descriptor is intentionally returned as an ordinary dict: callers must be
+    able to preserve fields added by a newer worker when they send it back to /parse_chat.  These
+    small validators therefore check only the fields this client must understand and retain every
+    unknown field verbatim.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object")
+    return dict(value)
+
+
+def _chat_io_sequence(value: object, label: str, *, nonempty: bool = False) -> list[Any]:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise ValueError(f"{label} must be an array")
+    result = list(value)
+    if nonempty and not result:
+        raise ValueError(f"{label} must be a non-empty array")
+    return result
+
+
+def _require_chat_io_response_object(value: object, endpoint: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise EngineError(f"POST {endpoint} returned a non-object JSON response")
+    return dict(value)
+
+
+def _require_response_type(response: Mapping[str, Any], field_name: str, expected: type,
+                           endpoint: str) -> Any:
+    value = response.get(field_name)
+    # bool is an int subclass, so an integer field must explicitly exclude it.
+    valid = isinstance(value, expected) and not (expected is int and isinstance(value, bool))
+    if not valid:
+        raise EngineError(
+            f"POST {endpoint} returned invalid {field_name!r} (expected {expected.__name__})")
+    return value
+
+
+def _validate_prepared_chat_response(value: object, *, require_metadata: bool = True) -> dict[str, Any]:
+    endpoint = "/prepare_chat"
+    response = _require_chat_io_response_object(value, endpoint)
+    for field_name in (
+        "prompt", "grammar", "generation_prompt", "parser", "format",
+        "thinking_start_tag", "thinking_end_tag", "reasoning_format",
+    ):
+        _require_response_type(response, field_name, str, endpoint)
+    if require_metadata:
+        for field_name in ("renderer", "template_source"):
+            _require_response_type(response, field_name, str, endpoint)
+    for field_name in ("grammar_lazy", "supports_thinking", "parse_tool_calls"):
+        _require_response_type(response, field_name, bool, endpoint)
+
+    for field_name in ("preserved_tokens", "additional_stops"):
+        items = _require_response_type(response, field_name, list, endpoint)
+        if any(not isinstance(item, str) for item in items):
+            raise EngineError(f"POST {endpoint} returned invalid {field_name!r} (expected strings)")
+
+    capabilities = _require_response_type(response, "capabilities", dict, endpoint)
+    if any(not isinstance(name, str) or not isinstance(enabled, bool)
+           for name, enabled in capabilities.items()):
+        raise EngineError(f"POST {endpoint} returned invalid 'capabilities'")
+
+    triggers = _require_response_type(response, "grammar_triggers", list, endpoint)
+    for index, trigger in enumerate(triggers):
+        if not isinstance(trigger, Mapping):
+            raise EngineError(f"POST {endpoint} returned invalid grammar_triggers[{index}]")
+        if not isinstance(trigger.get("type"), str) or not isinstance(trigger.get("value"), str):
+            raise EngineError(f"POST {endpoint} returned invalid grammar_triggers[{index}]")
+        token = trigger.get("token")
+        if not isinstance(token, int) or isinstance(token, bool):
+            raise EngineError(f"POST {endpoint} returned invalid grammar_triggers[{index}]")
+    return response
+
+
+def _validate_prepared_chat_request(value: object, label: str = "prepared") -> dict[str, Any]:
+    prepared = _chat_io_object(value, label)
+    try:
+        return _validate_prepared_chat_response(prepared, require_metadata=False)
+    except EngineError as exc:
+        raise ValueError(f"{label} is not a complete native chat descriptor: {exc}") from None
+
+
+def _normalize_chat_request(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    tools: Optional[Sequence[Mapping[str, Any]]] = None,
+    tool_choice: Union[str, Mapping[str, Any]] = "auto",
+    json_schema: Optional[Mapping[str, Any]] = None,
+    parallel_tool_calls: bool = False,
+    add_generation_prompt: bool = True,
+    enable_thinking: bool = True,
+    reasoning_format: str = "none",
+) -> dict[str, Any]:
+    message_items = _chat_io_sequence(messages, "messages", nonempty=True)
+    normalized_messages = [
+        _chat_io_object(message, f"messages[{index}]")
+        for index, message in enumerate(message_items)
+    ]
+    tool_items = _chat_io_sequence([] if tools is None else tools, "tools")
+    normalized_tools = [
+        _chat_io_object(tool, f"tools[{index}]")
+        for index, tool in enumerate(tool_items)
+    ]
+    if not isinstance(tool_choice, (str, Mapping)):
+        raise ValueError("tool_choice must be a string or object")
+    if not isinstance(parallel_tool_calls, bool):
+        raise ValueError("parallel_tool_calls must be a bool")
+    if not isinstance(add_generation_prompt, bool):
+        raise ValueError("add_generation_prompt must be a bool")
+    if not isinstance(enable_thinking, bool):
+        raise ValueError("enable_thinking must be a bool")
+    if not isinstance(reasoning_format, str):
+        raise ValueError("reasoning_format must be a string")
+    active_tools = bool(normalized_tools) and tool_choice != "none"
+    if active_tools and json_schema is not None:
+        raise ValueError("json_schema and active tools are mutually exclusive")
+
+    body: dict[str, Any] = {
+        "messages": normalized_messages,
+        "tools": normalized_tools,
+        "tool_choice": dict(tool_choice) if isinstance(tool_choice, Mapping) else tool_choice,
+        "parallel_tool_calls": parallel_tool_calls,
+        "add_generation_prompt": add_generation_prompt,
+        "enable_thinking": enable_thinking,
+        "reasoning_format": reasoning_format,
+    }
+    if json_schema is not None:
+        body["json_schema"] = _chat_io_object(json_schema, "json_schema")
+    return body
+
+
+def _validate_openai_message_pair(container: Mapping[str, Any], endpoint: str) -> None:
+    openai_json = _require_response_type(container, "openai_json", str, endpoint)
+    message = container.get("message")
+    if not isinstance(message, Mapping):
+        raise EngineError(f"POST {endpoint} returned invalid 'message' (expected object)")
+    try:
+        decoded_message = json.loads(openai_json)
+    except json.JSONDecodeError:
+        raise EngineError(f"POST {endpoint} returned invalid 'openai_json'") from None
+    if not isinstance(decoded_message, dict) or decoded_message != dict(message):
+        raise EngineError(f"POST {endpoint} returned inconsistent message/openai_json")
+
+
+def _validate_parsed_chat_response(value: object) -> dict[str, Any]:
+    endpoint = "/parse_chat"
+    response = _require_chat_io_response_object(value, endpoint)
+    for field_name in (
+        "role", "content", "reasoning_content", "tool_name", "tool_call_id",
+    ):
+        _require_response_type(response, field_name, str, endpoint)
+
+    calls = _require_response_type(response, "tool_calls", list, endpoint)
+    for index, call in enumerate(calls):
+        if not isinstance(call, Mapping) or any(
+            not isinstance(call.get(field_name), str)
+            for field_name in ("id", "name", "arguments")
+        ):
+            raise EngineError(f"POST {endpoint} returned invalid tool_calls[{index}]")
+
+    _validate_openai_message_pair(response, endpoint)
+    return response
+
+
+def _validate_atomic_chat_response(value: object) -> dict[str, Any]:
+    endpoint = "/v1/completions"
+    response = _require_chat_io_response_object(value, endpoint)
+    for field_name in ("id", "object"):
+        _require_response_type(response, field_name, str, endpoint)
+    _require_response_type(response, "board", list, endpoint)
+    _require_response_type(response, "layout", list, endpoint)
+    _require_response_type(response, "usage", dict, endpoint)
+
+    choices = _require_response_type(response, "choices", list, endpoint)
+    if not choices or not isinstance(choices[0], Mapping):
+        raise EngineError(f"POST {endpoint} returned invalid 'choices'")
+    first_choice = choices[0]
+    text = first_choice.get("text")
+    index = first_choice.get("index")
+    finish_reason = first_choice.get("finish_reason")
+    if (not isinstance(text, str) or not isinstance(index, int) or isinstance(index, bool)
+            or not isinstance(finish_reason, str)):
+        raise EngineError(f"POST {endpoint} returned invalid 'choices[0]'")
+
+    chat_io = response.get("chat_io")
+    if not isinstance(chat_io, Mapping):
+        raise EngineError(f"POST {endpoint} returned invalid 'chat_io' (expected object)")
+    raw_output = _require_response_type(chat_io, "raw_model_output", str, endpoint)
+    _require_response_type(chat_io, "rendered_prompt", str, endpoint)
+    model_sha256 = _require_response_type(chat_io, "model_sha256", str, endpoint)
+    if (len(model_sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in model_sha256)):
+        raise EngineError(f"POST {endpoint} returned invalid 'chat_io.model_sha256'")
+    _require_response_type(chat_io, "format", str, endpoint)
+    trace = _require_response_type(chat_io, "trace", list, endpoint)
+    if any(not isinstance(frame, Mapping) for frame in trace):
+        raise EngineError(f"POST {endpoint} returned invalid 'chat_io.trace'")
+    pipeline = chat_io.get("pipeline")
+    if not isinstance(pipeline, Mapping) or any(
+        not isinstance(pipeline.get(field_name), str)
+        for field_name in ("executor_id", "renderer_id", "grammar_id", "parser_id")
+    ):
+        raise EngineError(f"POST {endpoint} returned invalid 'chat_io.pipeline'")
+    parse_error = chat_io.get("parse_error")
+    if parse_error is not None:
+        if (not isinstance(parse_error, Mapping)
+                or not isinstance(parse_error.get("code"), str)
+                or not isinstance(parse_error.get("message"), str)):
+            raise EngineError(f"POST {endpoint} returned invalid 'chat_io.parse_error'")
+        if "message" in chat_io or "openai_json" in chat_io:
+            raise EngineError(f"POST {endpoint} returned incoherent parsed fields and parse_error")
+    else:
+        _validate_openai_message_pair(chat_io, endpoint)
+    if raw_output != text:
+        raise EngineError(f"POST {endpoint} returned inconsistent choices[0].text/chat_io.raw_model_output")
+    return response
 
 
 class EngineClient:
@@ -258,8 +478,59 @@ class EngineClient:
         """POST /v1/completions: a plain generation (no white-box). params: max_tokens, steps,
         topk, temperature, ... Returns the OpenAI-ish body {choices, board, layout, usage}."""
         body = dict(params)
+        if "prepared_chat" in body:
+            raise ValueError(
+                "client-held prepared_chat generation is unsupported; use complete_chat() atomically")
         body["prompt"] = prompt
         return self._post("/v1/completions", body)
+
+    def complete_chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        tools: Optional[Sequence[Mapping[str, Any]]] = None,
+        tool_choice: Union[str, Mapping[str, Any]] = "auto",
+        json_schema: Optional[Mapping[str, Any]] = None,
+        parallel_tool_calls: bool = False,
+        add_generation_prompt: bool = True,
+        enable_thinking: bool = True,
+        reasoning_format: str = "none",
+        max_tokens: int = 32,
+        **options: Any,
+    ) -> dict[str, Any]:
+        """Atomically prepare, constrain, generate, and parse one private native chat request.
+
+        Unlike the low-level prepare_chat/complete/parse_chat sequence, the native worker retains
+        the prepared grammar and parser for the whole operation. Structured generation is buffered
+        and validated, so this helper always sends ``stream:false`` and cannot target diffusion.
+        Unknown response fields are retained after the completion and chat-I/O invariants pass.
+        """
+        if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens < 1:
+            raise ValueError("max_tokens must be a positive integer")
+        reserved = {"prompt", "prepared_chat", "chat_request", "stream"}.intersection(options)
+        if reserved:
+            names = ", ".join(sorted(reserved))
+            raise ValueError(f"complete_chat options cannot override reserved field(s): {names}")
+        chat_request = _normalize_chat_request(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            json_schema=json_schema,
+            parallel_tool_calls=parallel_tool_calls,
+            add_generation_prompt=add_generation_prompt,
+            enable_thinking=enable_thinking,
+            reasoning_format=reasoning_format,
+        )
+        active_tools = bool(chat_request["tools"]) and chat_request["tool_choice"] != "none"
+        if not active_tools and "json_schema" not in chat_request:
+            raise ValueError("complete_chat requires active tools or json_schema")
+        body = dict(options)
+        body.update({
+            "chat_request": chat_request,
+            "stream": False,
+            "max_tokens": max_tokens,
+        })
+        return _validate_atomic_chat_response(self._post("/v1/completions", body))
 
     def apply_template(self, messages: Sequence[dict], add_assistant: bool = True) -> str:
         """POST /apply_template: render chat `messages` into a prompt string using THE MODEL'S OWN
@@ -271,6 +542,59 @@ class EngineClient:
         rendered prompt string."""
         r = self._post("/apply_template", {"messages": list(messages), "add_assistant": bool(add_assistant)})
         return r["prompt"]
+
+    def prepare_chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        tools: Optional[Sequence[Mapping[str, Any]]] = None,
+        tool_choice: Union[str, Mapping[str, Any]] = "auto",
+        json_schema: Optional[Mapping[str, Any]] = None,
+        parallel_tool_calls: bool = False,
+        add_generation_prompt: bool = True,
+        enable_thinking: bool = True,
+        reasoning_format: str = "none",
+    ) -> dict[str, Any]:
+        """POST /prepare_chat: build the native model-specific chat generation descriptor.
+
+        This is a private worker seam, not a public compatibility promise.  The returned object
+        contains the rendered prompt plus llama-common grammar, trigger, stop, and parser state.  It
+        is intentionally kept as a dict so fields from a newer worker survive an unchanged round trip
+        into :meth:`parse_chat`; known fields are validated so generation never proceeds from a
+        partial or mistyped descriptor.
+        """
+        body = _normalize_chat_request(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            json_schema=json_schema,
+            parallel_tool_calls=parallel_tool_calls,
+            add_generation_prompt=add_generation_prompt,
+            enable_thinking=enable_thinking,
+            reasoning_format=reasoning_format,
+        )
+        return _validate_prepared_chat_response(self._post("/prepare_chat", body))
+
+    def parse_chat(self, prepared: Mapping[str, Any], model_output: str, *,
+                   is_partial: bool = False) -> dict[str, Any]:
+        """POST /parse_chat: parse native output with its matching prepared descriptor.
+
+        Unknown descriptor fields are forwarded unchanged.  This lets the client bridge compatible
+        additive worker upgrades while the worker remains the sole owner of parser semantics.
+        """
+        # Validate locally before returning a descriptor to the worker. Metadata added by the endpoint
+        # is retained; only the known generation/parse fields are required.
+        normalized_prepared = _validate_prepared_chat_request(prepared)
+        if not isinstance(model_output, str):
+            raise ValueError("model_output must be a string")
+        if not isinstance(is_partial, bool):
+            raise ValueError("is_partial must be a bool")
+        body = {
+            "prepared": normalized_prepared,
+            "model_output": model_output,
+            "is_partial": is_partial,
+        }
+        return _validate_parsed_chat_response(self._post("/parse_chat", body))
 
     def score(self, prompt: Optional[str] = None, prompt_ids: Optional[Sequence[int]] = None,
               continuation_ids: Optional[Sequence[int]] = None, continuation: Optional[str] = None,

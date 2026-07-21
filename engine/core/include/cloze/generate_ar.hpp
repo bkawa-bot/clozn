@@ -14,6 +14,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "cloze/events.hpp"
@@ -22,6 +23,38 @@
 #include "cloze/probe.hpp"       // ConceptProbes
 
 namespace cloze {
+
+// Backend-neutral copy of the grammar information emitted by llama.cpp's
+// common_chat_templates_apply(). The serving layer adapts common_chat_params to
+// this struct; generate_ar.cpp owns construction and advancement of the native
+// llama grammar sampler. Diffusion generation deliberately has no such input.
+enum class GrammarTriggerType {
+    Token,
+    Word,
+    Pattern,
+    PatternFull,
+};
+
+struct GrammarTrigger {
+    GrammarTriggerType type = GrammarTriggerType::Pattern;
+    std::string value;
+    int token = -1;
+};
+
+struct GrammarConfig {
+    std::string grammar;
+    bool grammar_lazy = false;
+    std::vector<GrammarTrigger> grammar_triggers;
+    std::vector<std::string> preserved_tokens;
+    std::string generation_prompt;
+    // Lazy tool grammars must be suspended while a model is inside its reasoning block; otherwise
+    // a tool marker mentioned in hidden reasoning can spuriously activate the output grammar.
+    std::string reasoning_start_tag;
+    std::string reasoning_end_tag;
+    // Template-provided assistant terminators. Generation stops as soon as the decoded output
+    // ends with one of these byte strings, and the terminator is omitted from result.text.
+    std::vector<std::string> additional_stops;
+};
 
 struct BranchResult {
     std::vector<int> generated;
@@ -52,7 +85,11 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
                            // diverged/diverged_at verdict. Sampling/batching are untouched: this is ONLY a
                            // termination check, so greedy determinism holds (the reply is what full generation
                            // would produce, truncated). nullptr/empty = no reference (full generation, default).
-                           const std::vector<int>* reference = nullptr);
+                           const std::vector<int>* reference = nullptr,
+                           // Optional native GBNF constraint emitted by the applied chat template. AR-only:
+                           // callers must reject this option for diffusion generation rather than silently
+                           // running an unconstrained diffusion path.
+                           const GrammarConfig* grammar = nullptr);
 
 // Batched multi-sequence branching: prefill a shared prompt once, then decode N independent
 // continuations in parallel using a single llama_decode per step. Each branch gets its own

@@ -14,8 +14,7 @@ an otherwise-untouched OpenAI chat.completion body that ALSO carries "clozn_run_
 runlog.get_run() to the exact run just logged; the raw HTTP response carries an X-Clozn-Run-Id header with
 the same value; a logging failure (runlog.record -> None) omits both cleanly rather than emitting a literal
 "null"/"None"; the pre-existing 503-no-substrate path and _json's other (no-extra-header) call sites are
-untouched; and the streaming path is verified to be left exactly as it was (the run id is deferred there,
-by design -- not silently dropped without anyone noticing).
+untouched; and streaming carries the finalized run id on its ordinary terminal chunk before `[DONE]`.
 """
 from __future__ import annotations
 
@@ -140,14 +139,14 @@ class InternalizedSub(FakeSub):
 
 # --- driving the real handler without a socket (mirrors test_counterfactual_server / test_narrate_server) ---
 
-def _dispatch(method, path, body_obj=None):
+def _dispatch(method, path, body_obj=None, headers=None):
     raw = json.dumps(body_obj if body_obj is not None else {}).encode("utf-8")
     H = cs.make_handler()
     h = object.__new__(H)
     h.path = path
     h.rfile = io.BytesIO(raw)
     h.wfile = io.BytesIO()
-    h.headers = {"Content-Length": str(len(raw)), "User-Agent": "pytest"}
+    h.headers = {"Content-Length": str(len(raw)), "User-Agent": "pytest", **(headers or {})}
     h.requestline, h.request_version, h.command = f"{method} {path} HTTP/1.1", "HTTP/1.1", method
     getattr(h, f"do_{method}")()
     return h.wfile.getvalue()
@@ -161,6 +160,11 @@ def _post_raw(path, body_obj=None):
 def _post(path, body_obj=None):
     """Just the parsed JSON body (matches the other server tests' convention)."""
     _, _, payload = _post_raw(path, body_obj).partition(b"\r\n\r\n")
+    return json.loads(payload.decode("utf-8"))
+
+
+def _get(path, headers=None):
+    _, _, payload = _dispatch("GET", path, headers=headers).partition(b"\r\n\r\n")
     return json.loads(payload.decode("utf-8"))
 
 
@@ -250,11 +254,20 @@ def test_chat_completions_uses_real_length_finish_reason_end_to_end(iso, monkeyp
                                          "messages": [{"role": "user", "content": "hi"}],
                                          "max_tokens": 3})
     assert out["choices"][0]["finish_reason"] == "length"
+    assert out["clozn_warnings"][0]["code"] == "output_truncated"
     logged = runlog.get_run(out["clozn_run_id"])
     assert logged["finish_reason"] == "length"
     assert "truncated" in logged["flags"]
     assert logged["meta"]["finish_reason_source"] == "substrate"
     assert logged["meta"]["max_tokens"] == 3
+
+
+def test_chat_completions_length_sets_warning_header(iso, monkeypatch):
+    monkeypatch.setattr(cs, "SUB", FakeSub(finish_reason="length"))
+    raw = _post_raw("/v1/chat/completions", {
+        "messages": [{"role": "user", "content": "hi"}], "max_tokens": 3,
+    })
+    assert b"X-Clozn-Warning: output-truncated" in raw.partition(b"\r\n\r\n")[0]
 
 
 def test_chat_completions_fallback_finish_reason_is_explicit_not_persisted_as_real(iso, monkeypatch):
@@ -277,6 +290,59 @@ def test_chat_completions_raw_http_response_carries_the_x_clozn_run_id_header(is
     assert f"X-Clozn-Run-Id: {rid}".encode("utf-8") in header_block
 
 
+def test_opt_in_association_headers_resolve_exact_latest_without_storing_raw_ids(iso):
+    raw_client = "studio-install-123"
+    raw_session = "studio-tab-456"
+    raw = _dispatch("POST", "/v1/chat/completions",
+                    {"messages": [{"role": "user", "content": "associated"}]},
+                    headers={"X-Clozn-Client-Id": raw_client,
+                             "X-Clozn-Session-Id": raw_session})
+    _, _, payload = raw.partition(b"\r\n\r\n")
+    rid = json.loads(payload)["clozn_run_id"]
+    rec = runlog.get_run(rid)
+    assert rec["client_key"].startswith("client_")
+    assert rec["session_key"].startswith("session_")
+    assert raw_client not in json.dumps(rec)
+    assert raw_session not in json.dumps(rec)
+
+    latest = _get("/runs/latest", headers={"X-Clozn-Client-Id": raw_client,
+                                            "X-Clozn-Session-Id": raw_session})
+    assert latest["available"] is True
+    assert latest["association"] == {"exact": True, "ambiguous": False, "selector": "session"}
+    assert latest["run"]["id"] == rid
+
+
+def test_latest_requires_an_explicit_association_selector(iso):
+    out = _get("/runs/latest")
+    assert out["error"]["code"] == "association_selector_required"
+
+
+def test_runs_watch_endpoint_pages_new_matches_from_an_opaque_cursor(iso):
+    headers = {"X-Clozn-Client-Id": "watch-client", "X-Clozn-Session-Id": "watch-session"}
+    first = json.loads(_dispatch(
+        "POST", "/v1/chat/completions", {"messages": [{"role": "user", "content": "one"}]},
+        headers=headers,
+    ).partition(b"\r\n\r\n")[2])["clozn_run_id"]
+    cursor = runlog.cursor_for_run(first)
+    second = json.loads(_dispatch(
+        "POST", "/v1/chat/completions", {"messages": [{"role": "user", "content": "two"}]},
+        headers=headers,
+    ).partition(b"\r\n\r\n")[2])["clozn_run_id"]
+    page = _get("/runs/watch?after=" + cursor, headers=headers)
+    assert [run["id"] for run in page["runs"]] == [second]
+    assert page["next_cursor"] != cursor
+
+
+def test_invalid_association_header_is_typed_400_and_records_nothing(iso):
+    raw = _dispatch("POST", "/v1/chat/completions",
+                    {"messages": [{"role": "user", "content": "no"}]},
+                    headers={"X-Clozn-Session-Id": "contains a space"})
+    header, _, payload = raw.partition(b"\r\n\r\n")
+    assert b" 400 " in header
+    assert json.loads(payload)["error"]["code"] == "invalid_association_id"
+    assert runlog.list_runs() == []
+
+
 def test_chat_completions_omits_the_bridge_cleanly_when_logging_fails(iso, monkeypatch):
     """runlog.record failing (returning None, its own documented contract) must not surface a literal
     "null"/"None" anywhere, and must not break the reply itself -- logging must never break the request."""
@@ -290,16 +356,77 @@ def test_chat_completions_omits_the_bridge_cleanly_when_logging_fails(iso, monke
     assert body["choices"][0]["message"]["content"] == "A plain reply."   # the reply itself is unaffected
 
 
-def test_streaming_path_is_left_unchanged_run_id_deferred_not_dropped(iso):
-    """Documents + enforces the deferral decision: streaming still ends in [DONE] with no clozn_run_id or
-    X-Clozn-Run-Id anywhere -- this is a deliberate scope fence (see the comment in _sse_chat), not a bug."""
+def test_streaming_terminal_chunk_carries_exact_resolvable_run_id(iso):
+    """Headers are already committed, so the ordinary terminal finish chunk carries the stable id."""
     raw = _post_raw("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}], "stream": True})
     text = raw.decode("utf-8")
     assert "data: [DONE]" in text
-    assert "clozn_run_id" not in text
     assert "X-Clozn-Run-Id" not in text
+    frames = [json.loads(line[6:]) for line in text.splitlines()
+              if line.startswith("data: {")]
+    terminal = frames[-1]
+    rid = terminal["clozn_run_id"]
+    assert terminal["choices"][0]["finish_reason"] == "stop"
+    assert runlog.get_run(rid)["response"] == "Hello"
     # the reply still streamed through untouched
     assert '"content": "Hel"' in text and '"content": "lo"' in text
+
+
+def test_think_blocks_are_clean_on_openai_wire_history_trace_and_journal(iso, monkeypatch):
+    class ThinkSub(FakeSub):
+        def __init__(self):
+            super().__init__()
+            self.seen = []
+
+        @staticmethod
+        def _fill(mem_out):
+            if mem_out is not None:
+                mem_out.update(applied=[], gate=None, final_prompt="assistant\n<think>\n")
+
+        def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+            self.seen = [dict(m) for m in messages]
+            self._fill(mem_out)
+            if trace_out is not None:
+                trace_out.extend([
+                    {"pos": 0, "piece": "private plan", "prob": .7},
+                    {"pos": 1, "piece": "</think>", "prob": .8},
+                    {"pos": 2, "piece": "answer", "prob": .9},
+                ])
+            return "private plan</think>answer"
+
+        def chat_stream(self, messages, max_new=256, mem_out=None):
+            self.seen = [dict(m) for m in messages]
+            self._fill(mem_out)
+            yield "private "
+            yield "plan</thi"
+            yield "nk>an"
+            yield "swer"
+
+        def last_stream_trace(self):
+            return [
+                {"pos": 0, "piece": "private "}, {"pos": 1, "piece": "plan</thi"},
+                {"pos": 2, "piece": "nk>an"}, {"pos": 3, "piece": "swer"},
+            ]
+
+    sub = ThinkSub()
+    monkeypatch.setattr(cs, "SUB", sub)
+    old = {"role": "assistant", "content": "old scratch</think>old answer"}
+    body = {"messages": [old, {"role": "user", "content": "next"}]}
+    out = _post("/v1/chat/completions", body)
+    assert out["choices"][0]["message"]["content"] == "answer"
+    assert sub.seen[0]["content"] == "old answer"
+    rec = runlog.get_run(out["clozn_run_id"])
+    assert rec["response"] == "answer"
+    assert rec["reasoning"]["blocks"][0]["text"] == "private plan"
+    assert "".join(rec["trace"]["tokens"]) == "answer"
+
+    raw = _post_raw("/v1/chat/completions", {**body, "stream": True})
+    wire = raw.decode("utf-8")
+    assert "private" not in wire and "think" not in wire
+    assert '"content": "an"' in wire and '"content": "swer"' in wire
+    streamed = runlog.get_run(runlog.list_runs(1)[0]["id"])
+    assert streamed["response"] == "answer"
+    assert streamed["reasoning"]["blocks"][0]["text"] == "private plan"
 
 
 def test_streaming_path_uses_real_length_finish_reason_and_logs_it(iso, monkeypatch):
@@ -308,6 +435,7 @@ def test_streaming_path_uses_real_length_finish_reason_and_logs_it(iso, monkeypa
                                              "stream": True, "max_tokens": 2})
     text = raw.decode("utf-8")
     assert '"finish_reason": "length"' in text
+    assert '"clozn_warnings"' in text and '"output_truncated"' in text
     logged = runlog.get_run(runlog.list_runs(1)[0]["id"])
     assert logged["finish_reason"] == "length"
     assert logged["meta"]["finish_reason_source"] == "substrate"

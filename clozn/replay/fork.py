@@ -44,6 +44,7 @@ from __future__ import annotations
 import time
 
 import clozn.runs.store as runlog
+from clozn.runs.think_tags import sanitize_messages
 
 MAX_NEW = 256          # continuation budget, mirroring branch/replay's chat(max_new=256)
 
@@ -263,7 +264,7 @@ def fork(run: dict, sub, position, token=None, token_id=None, max_new: int = MAX
         rid = runlog.record(
             source="fork", client="studio",
             model=run.get("model"), substrate=run.get("substrate"),
-            messages=list(run.get("messages") or []), response=reply,
+            messages=sanitize_messages(run.get("messages") or []), response=reply,
             memory=memd, behavior={"active_dials": applied_dials},
             final_prompt=forked_prompt,                     # the exact spliced string this child saw
             finish_reason=finish,

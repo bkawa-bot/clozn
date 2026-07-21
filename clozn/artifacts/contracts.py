@@ -18,6 +18,24 @@ from clozn.cli.fit_planner import gguf_header_from_path
 
 
 CONTRACT_VERSION = 1
+CHAT_IO_ARTIFACT_TYPE = "chat_io"
+CHAT_IO_ARTIFACT_VERSION = 2
+CHAT_IO_NATIVE_EXECUTOR_ID = "clozn.chat_io.atomic_executor.v1"
+CHAT_IO_NATIVE_RENDERER_ID = "clozn.chat_io.llama_common.renderer.v1"
+CHAT_IO_NATIVE_GRAMMAR_ID = "clozn.chat_io.ar_grammar.v1"
+CHAT_IO_NATIVE_PARSER_ID = "clozn.chat_io.llama_common.parser.v1"
+CHAT_IO_VALIDATOR_ID = "clozn.structured_io.native_message_validator.v1"
+CHAT_IO_JSON_SCHEMA_SUBSET_ID = "clozn.structured_io.json_schema_subset.v1"
+CHAT_IO_EVIDENCE_SCHEMA = "clozn.chat_io.qualification_evidence.v2"
+CHAT_IO_QUALIFICATION_SUITE_ID = "clozn.chat_io.qualification_suite.v1"
+CHAT_IO_PIPELINE = {
+    "executor_id": CHAT_IO_NATIVE_EXECUTOR_ID,
+    "renderer_id": CHAT_IO_NATIVE_RENDERER_ID,
+    "grammar_id": CHAT_IO_NATIVE_GRAMMAR_ID,
+    "parser_id": CHAT_IO_NATIVE_PARSER_ID,
+    "validator_id": CHAT_IO_VALIDATOR_ID,
+}
+_CHAT_IO_FEATURES = frozenset({"tools", "json_object", "json_schema"})
 _MODEL_FIELDS = (
     "architecture",
     "hidden_size",
@@ -99,6 +117,19 @@ def _require_hex_digest(value, label: str) -> str:
     if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
         raise ArtifactContractError(f"{label} must be a lowercase SHA-256 digest")
     return digest
+
+
+def _read_json_object(path: Path, label: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except Exception as error:
+        raise ArtifactContractError(
+            f"{label} could not be read: {path}: {error}"
+        ) from None
+    if not isinstance(value, Mapping):
+        raise ArtifactContractError(f"{label} must be a JSON object: {path}")
+    return dict(value)
 
 
 def validate_artifact_manifest(
@@ -206,6 +237,296 @@ def validate_artifact_manifest(
         "model_sha256": actual_model_digest,
         "files": checked,
     }
+
+
+def validate_chat_io_profile(
+    manifest: Mapping[str, object],
+    model_identity: Mapping[str, object],
+    template_fingerprint: str,
+    artifact_dir: str | os.PathLike[str],
+) -> dict:
+    """Validate one exact-model structured-I/O qualification artifact.
+
+    ``chat_io`` profiles use the ordinary artifact envelope and payload checksum
+    rules, then add the exact rendered-template and protocol contracts that are
+    behaviorally relevant to structured output.  Unlike transferable activation
+    artifacts, one profile may name exactly one GGUF digest: qualification evidence
+    for one quantized file is never generalized to another file, model family, or
+    filename.
+
+    The v2 profile extension is::
+
+        {
+          "profile": {
+            "template_fingerprint": "...",
+            "pipeline": {
+              "executor_id": "clozn.chat_io.atomic_executor.v1",
+              "renderer_id": "clozn.chat_io.llama_common.renderer.v1",
+              "grammar_id": "clozn.chat_io.ar_grammar.v1",
+              "parser_id": "clozn.chat_io.llama_common.parser.v1",
+              "validator_id": "clozn.structured_io.native_message_validator.v1"
+            },
+            "features": ["tools", "json_object", "json_schema"],
+            "schema_subsets": {
+              "tool_parameters": "clozn.structured_io.json_schema_subset.v1",
+              "json_schema": "clozn.structured_io.json_schema_subset.v1"
+            },
+            "evidence": {"path": "evidence.json", "sha256": "..."}
+          }
+        }
+
+    The evidence file is checked by the generic ``files`` contract and must echo
+    the exact identity and supported contract versions.  Its contents remain
+    otherwise extensible so qualification runners can record model-specific cases.
+    """
+    base = validate_artifact_manifest(
+        manifest, model_identity, artifact_dir, expected_type=CHAT_IO_ARTIFACT_TYPE
+    )
+    if manifest.get("artifact_version") != CHAT_IO_ARTIFACT_VERSION:
+        raise ArtifactContractError(
+            f"chat_io artifact_version must be {CHAT_IO_ARTIFACT_VERSION}"
+        )
+    model_contract = manifest["model"]
+    actual_model_digest = base["model_sha256"]
+    compatible = model_contract["compatible_gguf_sha256"]
+    if len(compatible) != 1 or str(compatible[0]).lower() != actual_model_digest:
+        raise ArtifactContractError(
+            "chat_io model.compatible_gguf_sha256 must contain exactly the loaded GGUF sha256"
+        )
+
+    actual_template = str(template_fingerprint or "").lower()
+    if (len(actual_template) < 16 or len(actual_template) > 64
+            or any(ch not in "0123456789abcdef" for ch in actual_template)):
+        raise ArtifactContractError(
+            "loaded template fingerprint must be 16 to 64 lowercase hexadecimal characters"
+        )
+
+    profile = manifest.get("profile")
+    if not isinstance(profile, Mapping):
+        raise ArtifactContractError("chat_io profile is required")
+    required = {
+        "template_fingerprint", "pipeline", "features", "schema_subsets", "evidence",
+    }
+    extra = sorted(set(profile) - required)
+    missing = sorted(required - set(profile))
+    if extra or missing:
+        raise ArtifactContractError(
+            f"chat_io profile fields are invalid: missing={missing!r}, extra={extra!r}"
+        )
+
+    claimed_template = str(profile["template_fingerprint"] or "").lower()
+    if claimed_template != actual_template:
+        raise ArtifactContractError(
+            f"chat_io template fingerprint mismatch: profile has {claimed_template!r}, "
+            f"loaded template has {actual_template!r}"
+        )
+    pipeline = profile["pipeline"]
+    if not isinstance(pipeline, Mapping) or dict(pipeline) != CHAT_IO_PIPELINE:
+        raise ArtifactContractError(
+            f"chat_io pipeline must equal {CHAT_IO_PIPELINE!r}"
+        )
+
+    features = profile["features"]
+    if (not isinstance(features, list) or not features
+            or any(not isinstance(feature, str) for feature in features)
+            or len(set(features)) != len(features)
+            or any(feature not in _CHAT_IO_FEATURES for feature in features)):
+        raise ArtifactContractError(
+            "chat_io features must be a non-empty unique list containing only "
+            "tools, json_object, and json_schema"
+        )
+    schema_subsets = profile["schema_subsets"]
+    expected_subsets = {}
+    if "tools" in features:
+        expected_subsets["tool_parameters"] = CHAT_IO_JSON_SCHEMA_SUBSET_ID
+    if "json_schema" in features:
+        expected_subsets["json_schema"] = CHAT_IO_JSON_SCHEMA_SUBSET_ID
+    if schema_subsets != expected_subsets:
+        raise ArtifactContractError(
+            f"chat_io schema_subsets must equal {expected_subsets!r} for the declared features"
+        )
+
+    evidence = profile["evidence"]
+    if not isinstance(evidence, Mapping) or set(evidence) != {"path", "sha256"}:
+        raise ArtifactContractError(
+            "chat_io profile.evidence must contain exactly path and sha256"
+        )
+    evidence_path = evidence["path"]
+    if not isinstance(evidence_path, str) or not evidence_path:
+        raise ArtifactContractError("chat_io profile.evidence.path must be a relative path")
+    evidence_digest = _require_hex_digest(
+        evidence["sha256"], "chat_io profile.evidence.sha256"
+    )
+    files = manifest["files"]
+    file_spec = files.get(evidence_path)
+    if not isinstance(file_spec, Mapping):
+        raise ArtifactContractError(
+            "chat_io evidence payload must be declared in files"
+        )
+    declared_digest = _require_hex_digest(
+        file_spec.get("sha256"), f"files[{evidence_path!r}].sha256"
+    )
+    if evidence_digest != declared_digest:
+        raise ArtifactContractError(
+            "chat_io evidence checksum does not match its files declaration"
+        )
+
+    root = Path(artifact_dir).resolve()
+    payload_path = (root / evidence_path).resolve()
+    try:
+        payload_path.relative_to(root)
+    except ValueError:
+        raise ArtifactContractError(
+            f"artifact payload escapes its directory: {evidence_path}"
+        ) from None
+    payload = _read_json_object(payload_path, "chat_io qualification evidence")
+    evidence_required = {
+        "schema_version", "suite_id", "model_sha256", "template_fingerprint",
+        "pipeline", "features", "schema_subsets", "results",
+    }
+    missing_evidence = sorted(evidence_required - set(payload))
+    if missing_evidence:
+        raise ArtifactContractError(
+            f"chat_io qualification evidence is missing fields: {missing_evidence!r}"
+        )
+    expected_evidence = {
+        "schema_version": CHAT_IO_EVIDENCE_SCHEMA,
+        "suite_id": CHAT_IO_QUALIFICATION_SUITE_ID,
+        "model_sha256": actual_model_digest,
+        "template_fingerprint": actual_template,
+        "pipeline": CHAT_IO_PIPELINE,
+        "features": features,
+        "schema_subsets": expected_subsets,
+    }
+    for field, expected in expected_evidence.items():
+        if payload[field] != expected:
+            raise ArtifactContractError(
+                f"chat_io qualification evidence {field} mismatch: "
+                f"expected {expected!r}, got {payload[field]!r}"
+            )
+    results = payload["results"]
+    required_results = {"pipeline", *features}
+    if not isinstance(results, Mapping) or not required_results.issubset(results):
+        raise ArtifactContractError(
+            "chat_io qualification evidence results must cover pipeline and every feature"
+        )
+    for result_name in sorted(required_results):
+        result = results[result_name]
+        if not isinstance(result, Mapping) or set(result) != {"passed", "failed"}:
+            raise ArtifactContractError(
+                f"chat_io qualification result {result_name!r} must contain exactly passed and failed"
+            )
+        passed = result["passed"]
+        failed = result["failed"]
+        if (not isinstance(passed, int) or isinstance(passed, bool) or passed < 1
+                or not isinstance(failed, int) or isinstance(failed, bool) or failed != 0):
+            raise ArtifactContractError(
+                f"chat_io qualification result {result_name!r} requires passed >= 1 and failed == 0"
+            )
+
+    registry_entry = {
+        "model_sha256": actual_model_digest,
+        "template_fingerprint": actual_template,
+        "features": list(features),
+        "schema_subsets": dict(expected_subsets),
+        "pipeline": dict(CHAT_IO_PIPELINE),
+        "evidence": {
+            "schema_version": CHAT_IO_EVIDENCE_SCHEMA,
+            "suite_id": CHAT_IO_QUALIFICATION_SUITE_ID,
+            "artifact_version": manifest["artifact_version"],
+            "payload_sha256": evidence_digest,
+        },
+    }
+    return {
+        **base,
+        "template_fingerprint": actual_template,
+        "pipeline": dict(CHAT_IO_PIPELINE),
+        "features": list(features),
+        "schema_subsets": dict(schema_subsets),
+        "evidence": {
+            "path": evidence_path,
+            "sha256": evidence_digest,
+            "schema_version": CHAT_IO_EVIDENCE_SCHEMA,
+            "suite_id": CHAT_IO_QUALIFICATION_SUITE_ID,
+        },
+        "registry_entry": registry_entry,
+    }
+
+
+def find_compatible_chat_io_profile(
+    model_identity: Mapping[str, object],
+    template_fingerprint: str,
+    root: str | os.PathLike[str],
+    *,
+    explicit_dir: str | os.PathLike[str] | None = None,
+) -> dict | None:
+    """Find and validate exactly one ``chat_io`` profile for an active identity.
+
+    Automatic discovery ignores profiles for other exact model/template tuples.
+    Once a manifest claims the active tuple, corruption or contract drift is an
+    error rather than a reason to continue searching.  The returned normalized
+    object includes ``artifact_dir`` and a registry-compatible entry, but merely
+    discovering it does not activate structured I/O.
+    """
+    actual_model_digest = _require_hex_digest(
+        model_identity.get("sha256"), "GGUF sha256"
+    )
+    actual_template = str(template_fingerprint or "").lower()
+    if (len(actual_template) < 16 or len(actual_template) > 64
+            or any(ch not in "0123456789abcdef" for ch in actual_template)):
+        raise ArtifactContractError(
+            "loaded template fingerprint must be 16 to 64 lowercase hexadecimal characters"
+        )
+    if explicit_dir is not None:
+        candidates = [Path(explicit_dir)]
+        strict = True
+    else:
+        base = Path(root) / CHAT_IO_ARTIFACT_TYPE
+        if not base.is_dir():
+            return None
+        candidates = sorted({path.parent for path in base.rglob("manifest.json")})
+        strict = False
+
+    matches: list[dict] = []
+    for directory in candidates:
+        manifest_path = directory / "manifest.json"
+        if not manifest_path.is_file():
+            if strict:
+                raise ArtifactContractError(f"artifact manifest is missing: {manifest_path}")
+            continue
+        try:
+            manifest = _read_json_object(manifest_path, "artifact manifest")
+        except ArtifactContractError:
+            if strict:
+                raise
+            continue
+
+        model_contract = manifest.get("model")
+        compatible = (model_contract.get("compatible_gguf_sha256")
+                      if isinstance(model_contract, Mapping) else None)
+        profile = manifest.get("profile")
+        claimed_template = (profile.get("template_fingerprint")
+                            if isinstance(profile, Mapping) else None)
+        claims_identity = (
+            isinstance(compatible, list)
+            and actual_model_digest in {str(value).lower() for value in compatible}
+            and isinstance(claimed_template, str)
+            and claimed_template.lower() == actual_template
+        )
+        if not strict and not claims_identity:
+            continue
+        normalized = validate_chat_io_profile(
+            manifest, model_identity, actual_template, directory
+        )
+        matches.append({**normalized, "artifact_dir": str(directory.resolve())})
+
+    if len(matches) > 1:
+        raise ArtifactContractError(
+            "multiple chat_io artifacts claim exact GGUF/template identity "
+            f"{actual_model_digest}/{actual_template}: "
+            + ", ".join(match["artifact_dir"] for match in matches)
+        )
+    return matches[0] if matches else None
 
 
 def find_compatible_artifact(

@@ -224,6 +224,24 @@ def test_replay_records_finish_reason_and_meta_when_available(store):
     assert child["meta"]["quant"] == "Q4_K_M" and child["meta"]["sampling"] == "greedy"
     assert child["meta"]["capture_tier"] == "standard"     # the tier rides every run's meta
     assert "truncated" in child["flags"]                   # length -> truncated, exactly like a live run
+    assert child["warnings"][0]["code"] == "output_truncated"
+
+
+class _ContextSub(FakeSub):
+    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+        reply = super().chat(messages, max_new=max_new, sample=sample, trace_out=trace_out,
+                             mem_out=mem_out)
+        if mem_out is not None:
+            mem_out["assembled_messages"] = [{"role": "system", "content": "replay memory"}] + list(messages)
+            mem_out["final_prompt"] = "REPLAY EXACT PROMPT"
+        return reply
+
+
+def test_replay_child_retains_its_own_survived_prompt(store):
+    child = replay.replay(RUN, {}, _ContextSub())
+    assert child["assembled_messages"][0] == {"role": "system", "content": "replay memory"}
+    assert child["final_prompt"] == "REPLAY EXACT PROMPT"
+    assert child["context_receipt"]["survived"]["final_prompt"] == "REPLAY EXACT PROMPT"
 
 
 def test_replay_at_light_tier_drops_the_trace(store, monkeypatch):

@@ -587,8 +587,20 @@ class EngineSubstrate(Substrate):
         comp = ctx._apply_anchored_memory(kw, mem_out, ctx._last_user(messages)) if apply_anchored else None
         if reference_tokens:                                # prove-all early-stop: halt when the answer changes
             kw["reference_tokens"] = [int(t) for t in reference_tokens if t is not None]
-        reply_raw, steps, finish, divinfo = ctx._engine_complete_traced(self.engine, prompt, max_new, kw,
-                                                                    sample=samp)
+        usage = {}
+        traced_kw = {"sample": samp}
+        try:
+            import inspect
+            params = inspect.signature(ctx._engine_complete_traced).parameters.values()
+            if ("usage_out" in inspect.signature(ctx._engine_complete_traced).parameters
+                    or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)):
+                traced_kw["usage_out"] = usage
+        except Exception:
+            pass
+        reply_raw, steps, finish, divinfo = ctx._engine_complete_traced(
+            self.engine, prompt, max_new, kw, **traced_kw)
+        if isinstance(usage.get("prompt_tokens"), int):
+            req.prompt_tokens = usage["prompt_tokens"]
         req.finish_reason = finish                          # stash for last_finish_reason() (the log path)
         req.diverged, req.diverged_at = divinfo             # stash for last_divergence()
         if comp is not None:                                 # LOOP GUARD: only when anchored memory was
@@ -601,6 +613,134 @@ class EngineSubstrate(Substrate):
         if mem_out is not None:
             req.memory_manifest = dict(mem_out)
         return reply_raw.strip()
+
+    def _complete_chat_native(self, messages, *, tools=None, tool_choice="auto", json_schema=None,
+                              parallel_tool_calls=False, max_new=256, sample=True,
+                              trace_out=None, mem_out=None, apply_anchored=False,
+                              add_generation_prompt=True, enable_thinking=True,
+                              reasoning_format="none") -> dict:
+        """Private atomic model-native structured chat on the C++ worker.
+
+        This is deliberately a substrate seam, not an OpenAI route or a qualification claim.  The
+        worker owns the model's chat template, grammar, generation, and native output parser for the
+        whole request via ``EngineClient.complete_chat``; keeping those operations atomic prevents a
+        client-held prepared descriptor from drifting between rendering and generation.
+
+        Clozn still owns the layers around that native operation.  Prompt-card memory is injected into
+        the message list before the worker renders it, tone dials (and explicitly requested anchored
+        memory) use the same raw steering channel as :meth:`chat`, and sampling resolves through the
+        same per-request policy.  The worker's buffered response contains the actual native event JSON,
+        so it is folded through ``accumulate_ar_events`` rather than reconstructed from a final board.
+
+        The return value keeps ``raw_model_output`` byte-for-byte as supplied by the worker and exposes
+        its parsed OpenAI message separately.  The same atomic response also carries the exact rendered
+        tool/schema prompt, so ``final_prompt`` is recorded from worker evidence rather than from a
+        second, potentially drifting render request.
+        """
+        req = self._new_request()
+        samp = ctx._resolve_sampling(sample)
+        req.sampling = samp
+        req.generation_meta = ctx._engine_generation_meta(max_new, stream=False, sample=samp)
+
+        block, applied, gate = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        assembled = ctx._inject_block(messages, block)
+        memory_manifest = {
+            "mode": "prompt",
+            "applied": applied,
+            "gate": gate,
+            "prompt_block": block,
+            "assembled_messages": assembled,
+        }
+        if mem_out is not None:
+            mem_out.update(memory_manifest)
+
+        options = {}
+        st = (getattr(self.steer, "strength", None) if self.steer is not None else None) or ctx._disk_dials()
+        req.steering_snapshot = dict(st) if st else {}
+        if self.steer is not None and st and any(st.values()):
+            steer_vec = self.steer.steer_vector(st)
+            if steer_vec:
+                options["steer_vec"] = steer_vec
+                options["steer"] = {"coef": 1.0, "layer": self.steer.layer}
+
+        # Anchored memory is opt-in, matching chat().  The atomic response now carries real token events,
+        # but this private seam intentionally does not run chat()'s multi-pass loop guard: retrying would
+        # require a second atomic structured generation and could produce a different parsed call.  The
+        # public route must not opt in until that policy is explicitly designed and qualified.
+        if apply_anchored:
+            ctx._apply_anchored_memory(options, memory_manifest, ctx._last_user(messages))
+            if mem_out is not None:
+                mem_out.update(memory_manifest)
+
+        if samp and samp.get("on"):
+            options.update(
+                temperature=float(samp["temperature"]),
+                rep_penalty=float(samp["repeat_penalty"]),
+                top_k=int(samp["top_k"]),
+                top_p=float(samp["top_p"]),
+                seed=int(samp["seed"]),
+            )
+        else:
+            options.update(temperature=0.0, rep_penalty=1.0, top_k=0, top_p=1.0, seed=0)
+
+        # Publish the memory decision even if the worker fails.  It describes what was assembled for
+        # this request, not a claim that generation succeeded.
+        req.memory_manifest = dict(memory_manifest)
+        response = self.engine.complete_chat(
+            assembled,
+            tools=tools,
+            tool_choice=tool_choice,
+            json_schema=json_schema,
+            parallel_tool_calls=parallel_tool_calls,
+            add_generation_prompt=add_generation_prompt,
+            enable_thinking=enable_thinking,
+            reasoning_format=reasoning_format,
+            max_tokens=int(max_new),
+            **options,
+        )
+
+        choice = response["choices"][0]
+        chat_io = response["chat_io"]
+        usage = dict(response.get("usage") or {})
+        finish = choice.get("finish_reason")
+        req.finish_reason = finish if isinstance(finish, str) else None
+        prompt_tokens = usage.get("prompt_tokens")
+        if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool):
+            req.prompt_tokens = prompt_tokens
+
+        native_events = chat_io.get("trace")
+        if not isinstance(native_events, list):
+            native_events = []
+        import clozn.runs.store as runlog
+        steps = runlog.accumulate_ar_events(native_events)
+        req.trace = list(steps)
+        if trace_out is not None:
+            trace_out.extend(steps)
+
+        # Unlike the earlier descriptor, the hardened atomic response carries the exact rendered prompt
+        # from the same in-worker prepare/generate transaction.  It is now valid evidence for the normal
+        # context receipt and replaces the pre-generation manifest snapshot on both channels.
+        rendered_prompt = chat_io["rendered_prompt"]
+        memory_manifest["final_prompt"] = rendered_prompt
+        req.memory_manifest = dict(memory_manifest)
+        if mem_out is not None:
+            mem_out["final_prompt"] = rendered_prompt
+
+        parse_error = chat_io.get("parse_error")
+        parsed_message = chat_io.get("message")
+        return {
+            "raw_model_output": chat_io["raw_model_output"],
+            "rendered_prompt": rendered_prompt,
+            "model_sha256": chat_io["model_sha256"],
+            "message": dict(parsed_message) if isinstance(parsed_message, dict) else None,
+            "openai_json": chat_io.get("openai_json"),
+            "format": chat_io["format"],
+            "pipeline": dict(chat_io.get("pipeline") or {}),
+            "parse_error": dict(parse_error) if isinstance(parse_error, dict) else None,
+            "finish_reason": req.finish_reason,
+            "usage": usage,
+            "trace": list(steps),
+        }
 
     def last_divergence(self):
         """The early-stop verdict from the most recent chat(): (diverged, diverged_at). (None, None) when
@@ -770,6 +910,9 @@ class EngineSubstrate(Substrate):
         meta = ctx._engine_generation_meta()
         meta.update(dict(health_meta))
         meta.update(getattr(self, "_last_generation_meta", None) or {})
+        prompt_tokens = getattr(self, "_last_prompt_tokens", None)
+        if isinstance(prompt_tokens, int):
+            meta["prompt_tokens"] = prompt_tokens
         return dict(meta)
 
     def identity_meta(self) -> dict:
@@ -1027,7 +1170,7 @@ def _engine_model_info(name):
     return fam, dict(_ENGINE_MODELS.get(fam, _ENGINE_MODEL_DEFAULT))
 
 
-def _engine_complete_traced(engine, prompt, max_tokens, kw, sample=None):
+def _engine_complete_traced(engine, prompt, max_tokens, kw, sample=None, usage_out=None):
     """Generate on the engine and ALSO capture a per-token trace (issue B3), returning
     (reply, steps, finish, divinfo).
 
@@ -1082,6 +1225,9 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw, sample=None):
                 except Exception:
                     continue
                 frames.append(obj)
+                if (usage_out is not None and obj.get("type") == "gen_started"
+                        and isinstance(obj.get("prompt_tokens"), int)):
+                    usage_out["prompt_tokens"] = obj["prompt_tokens"]
                 ch = obj.get("choices")                     # the final OpenAI-style frame carries the full text
                 if ch and isinstance(ch, list) and ch[0].get("text"):
                     text = ch[0]["text"]
@@ -1103,6 +1249,9 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw, sample=None):
     # decode under a DIFFERENT regime than the one recorded in the run's meta.
     r = engine.complete(prompt, max_tokens=max_tokens, temperature=temperature, rep_penalty=rep_penalty,
                         top_k=top_k, top_p=top_p, seed=seed, **kw)
+    prompt_tokens = (r.get("usage") or {}).get("prompt_tokens") if isinstance(r, dict) else None
+    if usage_out is not None and isinstance(prompt_tokens, int):
+        usage_out["prompt_tokens"] = prompt_tokens
     ch = r.get("choices") if isinstance(r, dict) else None
     finish = ch[0].get("finish_reason") if (ch and isinstance(ch[0], dict)) else None
     divinfo = (r.get("diverged"), r.get("diverged_at")) if isinstance(r, dict) else (None, None)

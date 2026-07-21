@@ -135,7 +135,8 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
     try:
         if not run or not isinstance(run, dict):
             return None
-        messages = run.get("messages") or []
+        from clozn.runs.think_tags import sanitize_messages
+        messages = sanitize_messages(run.get("messages") or [])
         chat = getattr(sub, "chat", None)
         if not callable(chat):
             return None
@@ -157,6 +158,7 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
         notes = _apply_changes(changes, sub, mode)
         eff_dials = _effective_dials(sub)
         trace_steps: list = []          # per-token trace of the replay reply (B3) -- the baseline-vs-replay
+        replay_memout: dict = {}        # exact post-change assembled/rendered prompt for the child receipt
         #                                 token diff needs it; replay previously never passed trace_out.
         try:
             # greedy:true (the receipts path) decodes deterministically, so the original-vs-replayed
@@ -167,7 +169,8 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
             # Build the call kwargs and drop any the substrate's chat() doesn't accept (torch QwenSubstrate
             # / test fakes predate trace_out and/or reference_tokens). Progressive-degrade on the exact
             # unknown kwarg named in the TypeError, so the reply is never lost -- just less instrumented.
-            call_kw = {"max_new": 256, "sample": sampled, "trace_out": trace_steps}
+            call_kw = {"max_new": 256, "sample": sampled, "trace_out": trace_steps,
+                       "mem_out": replay_memout}
             if reference_tokens:
                 call_kw["reference_tokens"] = reference_tokens
             while True:
@@ -176,7 +179,7 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
                     break
                 except TypeError as e:
                     msg = str(e)
-                    dropped = next((k for k in ("reference_tokens", "trace_out")
+                    dropped = next((k for k in ("reference_tokens", "trace_out", "mem_out")
                                     if k in call_kw and k in msg), None)
                     if dropped is None:
                         raise                                # a real TypeError from inside chat, not a kwarg
@@ -284,6 +287,8 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
             parent_run_id=run.get("id"),
             changes_applied=changes,
             started=t0,
+            assembled_messages=replay_memout.get("assembled_messages"),
+            final_prompt=replay_memout.get("final_prompt"),
         )
         if rid is None:
             return None

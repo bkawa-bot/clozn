@@ -854,7 +854,8 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
             return provider
 
         def _log_run(self, source, messages, response, model, started, error=None, trace=None,
-                     mem_out=None, finish_reason=None, finish_reason_fallback=None, extra_meta=None):
+                     mem_out=None, finish_reason=None, finish_reason_fallback=None, extra_meta=None,
+                     output_contract=None):
             """Persist this interaction as an inspectable run (never let logging break the request).
             mem_out (prompt mode): the {applied, gate, strength?} record the generation path filled --
             what memory ACTUALLY rode this turn (the topic gate may have omitted the block).
@@ -869,8 +870,17 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
             surface", not an error the request should see."""
             try:
                 import clozn.runs.store as runlog
+                extra_meta = dict(extra_meta or {})
+                from clozn.runs.association import request_client, request_session
+                session_key = request_session(self.headers)
+                client_key, client_key_source = request_client(self.headers)
                 mem = getattr(_sub(), "_mem", None) if _sub() else None
                 mo = mem_out or {}
+                from clozn.runs.think_tags import prompt_opens_think, sanitize_messages, sanitize_reply
+                messages = sanitize_messages(messages)
+                think = sanitize_reply(response, implicit_open=prompt_opens_think(mo.get("final_prompt")))
+                response = think.public_text
+                reasoning = think.journal()
                 mode = mo.get("mode") or _memory_mode()
                 if mode == "prompt":
                     # cards_applied == what was INJECTED this turn -- the per-turn honesty prompt mode
@@ -960,7 +970,13 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                     pass
                 # only meaningfully-nonzero dials (|v| >= 0.05); steer.active() drops exact-zeros but a
                 # slider nudged to a hair (e.g. 0.02) still slips through and would clutter the record.
-                dials = _sub().steer.active() if (_sub() and hasattr(_sub(), "steer")) else {}
+                if "active_dials" in mo:
+                    # Some accepted surfaces (currently raw legacy text completions) build steering
+                    # explicitly and report exactly what reached the worker. This prevents a live dial
+                    # setting from being journaled as applied when that surface could not materialize it.
+                    dials = dict(mo.get("active_dials") or {})
+                else:
+                    dials = _sub().steer.active() if (_sub() and hasattr(_sub(), "steer")) else {}
                 dials = {k: v for k, v in dials.items() if abs(float(v)) >= 0.05}
                 meta = None
                 try:                                          # engine: {model_file, quant, mode, sampling}
@@ -969,6 +985,13 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                 except Exception:
                     meta = None
                 meta = dict(meta or {})
+                try:
+                    prompt_tokens = (_sub().last_prompt_tokens()
+                                     if _sub() is not None and hasattr(_sub(), "last_prompt_tokens") else None)
+                    if isinstance(prompt_tokens, int):
+                        meta.setdefault("prompt_tokens", prompt_tokens)
+                except Exception:
+                    pass
                 if extra_meta:
                     meta.update({k: v for k, v in extra_meta.items() if v is not None})
                 git = _git_commit()
@@ -1009,7 +1032,10 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                                     memory=memd, behavior={"active_dials": dials}, started=started, error=error,
                                     trace=trace, finish_reason=finish_reason, meta=meta,
                                     assembled_messages=assembled_messages, final_prompt=final_prompt,
-                                    workspace_provider=workspace_provider, identity=identity)
+                                    workspace_provider=workspace_provider, identity=identity,
+                                    reasoning=reasoning, session_key=session_key,
+                                    client_key=client_key, client_key_source=client_key_source,
+                                    output_contract=output_contract)
                 self._maybe_snapshot_turn(rid, messages, trace, error)
                 return rid                        # M5 bridge: the run id, for callers that want to surface it
             except Exception:
@@ -1056,6 +1082,14 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
 
         def do_POST(self):
             if self._reject_untrusted_origin():
+                return
+            try:
+                from clozn.runs.association import validate_request_headers
+                validate_request_headers(self.headers)
+            except Exception as exc:
+                field = getattr(exc, "field", "association")
+                self._json(400, {"error": {"message": str(exc), "type": "invalid_request_error",
+                                            "param": field, "code": "invalid_association_id"}})
                 return
             if self.headers.get("Transfer-Encoding"):
                 self.close_connection = True

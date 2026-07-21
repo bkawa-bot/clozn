@@ -55,9 +55,8 @@ def cmd_run(args):
 
 def cmd_show(args):
     try:
-        with open(args.result, encoding="utf-8") as f:
-            result = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
+        result = suite.load_result(args.result)
+    except suite.ManifestError as exc:
         raise CloznError(f"could not read experiment result: {exc}") from exc
     filtered = any(v is not None for v in (args.suite, args.case, args.variant, args.seed))
     if args.json:

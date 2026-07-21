@@ -86,12 +86,16 @@ def ndjson_stream(handler, messages, max_new, model, *, operation, sample=True, 
     send_cors_headers(handler)
     handler.end_headers()
 
-    def line(piece=None, *, done=False, done_reason=None, extra=None):
+    def line(piece=None, *, thinking=None, done=False, done_reason=None, extra=None):
         o = {"model": model, "created_at": _iso_now(), "done": done}
         if operation == "chat":
             o["message"] = {"role": "assistant", "content": piece or ""}
+            if thinking is not None:
+                o["message"]["thinking"] = thinking
         else:
             o["response"] = piece or ""
+            if thinking is not None:
+                o["thinking"] = thinking
         if done_reason is not None:
             o["done_reason"] = done_reason
         if extra:
@@ -114,10 +118,11 @@ def ndjson_stream(handler, messages, max_new, model, *, operation, sample=True, 
     sub = ctx.active_sub(handler)
     gen = sub.chat_stream(messages, max_new, mem_out=memout, sample=sample)
     disconnect_error = None
+    think_stream = None
 
-    def _emit(piece):
+    def _emit(piece=None, *, thinking=None):
         nonlocal disconnect_error
-        err = _write(line(piece))
+        err = _write(line(piece, thinking=thinking))
         if err is not None:
             disconnect_error = err
             return False
@@ -126,8 +131,26 @@ def ndjson_stream(handler, messages, max_new, model, *, operation, sample=True, 
     try:
         for piece in gen:
             acc.append(piece)
-            if not _emit(piece):
+            if think_stream is None:
+                from clozn.runs.think_tags import ThinkTagStream, prompt_opens_think
+                think_stream = ThinkTagStream(
+                    implicit_open=prompt_opens_think(memout.get("final_prompt"))
+                )
+            public_piece = think_stream.feed(piece)
+            for thinking_piece in think_stream.drain_reasoning():
+                if not _emit(thinking=thinking_piece):
+                    break
+            if disconnect_error is not None:
                 break
+            if public_piece and not _emit(public_piece):
+                break
+        if disconnect_error is None and think_stream is not None:
+            tail, _ = think_stream.finish()
+            for thinking_piece in think_stream.drain_reasoning():
+                if not _emit(thinking=thinking_piece):
+                    break
+            if disconnect_error is None and tail:
+                _emit(tail)
         if disconnect_error is not None:
             # CLIENT DISCONNECT: log the partial reply honestly and stop -- no further writes are
             # attempted (the client is confirmed gone), and finish_reason stays unset (never "stop").
@@ -142,21 +165,30 @@ def ndjson_stream(handler, messages, max_new, model, *, operation, sample=True, 
         fr = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
         trace = sub.last_stream_trace() if hasattr(sub, "last_stream_trace") else None
         prompt_tokens = sub.last_prompt_tokens() if hasattr(sub, "last_prompt_tokens") else None
-        handler._log_run(source, messages, "".join(acc), model, t0, trace=trace, mem_out=memout,
-                         finish_reason=fr,
-                         extra_meta={"compatibility_api": "ollama", "ollama_operation": operation})
+        rid = handler._log_run(source, messages, "".join(acc), model, t0, trace=trace, mem_out=memout,
+                               finish_reason=fr,
+                               extra_meta={"compatibility_api": "ollama", "ollama_operation": operation})
         ended = time.time()
         timing = _timing_fields(t0, ended, trace, prompt_tokens)
+        from clozn.runs.context_receipt import warnings_for
+        cutoff_warnings = warnings_for(fr, {"max_tokens": int(max_new)})
+        if cutoff_warnings:
+            timing["clozn_warnings"] = cutoff_warnings
+        if rid:
+            timing["clozn_run_id"] = rid
         _write(line(done=True, done_reason=_DONE_REASON.get(fr), extra=timing))
     except Exception as e:
         # WORKER-DIES-MIDSTREAM: see the module docstring. Distinct from the client-disconnect branch
         # above because this exception came from ITERATING `gen` (reading the worker), never from
         # writing to `handler.wfile`.
-        handler._log_run(source, messages, "".join(acc), model, t0, error=str(e), mem_out=memout,
-                         extra_meta={"stream_failure": "worker_disconnected",
-                                     "compatibility_api": "ollama", "ollama_operation": operation})
+        rid = handler._log_run(source, messages, "".join(acc), model, t0, error=str(e), mem_out=memout,
+                               extra_meta={"stream_failure": "worker_disconnected",
+                                           "compatibility_api": "ollama", "ollama_operation": operation})
         try:
-            _write(line(done=True, extra={"error": str(e)}))
+            terminal = {"error": str(e)}
+            if rid:
+                terminal["clozn_run_id"] = rid
+            _write(line(done=True, extra=terminal))
         except Exception:
             pass
     finally:

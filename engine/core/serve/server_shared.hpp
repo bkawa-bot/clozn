@@ -64,7 +64,8 @@ inline std::string make_id(const char* prefix) {
 
 // dLLM reason -> OpenAI finish_reason.
 inline const char* finish_reason(const std::string& reason) {
-    return reason == "eos" ? "stop" : "length";  // length | steps_exhausted -> "length"
+    return (reason == "eos" || reason == "stop") ? "stop" : "length";
+    // length | steps_exhausted -> "length"
 }
 
 inline void quiet_log(ggml_log_level level, const char* text, void*) {

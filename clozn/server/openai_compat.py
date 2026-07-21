@@ -55,6 +55,7 @@ def _empty_sequence(value: Any) -> bool:
 CHAT_SUPPORTED_FIELDS = frozenset({
     "model", "messages", "max_tokens", "max_completion_tokens", "temperature", "top_p", "seed",
     "stream", "top_k", "repeat_penalty", "clozn_trust", "clozn_receipt", "clozn_lens",
+    "tools", "tool_choice", "parallel_tool_calls", "response_format",
 })
 
 # Accepted only at the listed neutral value, then removed.  These are compatibility affordances, not
@@ -68,10 +69,6 @@ CHAT_NEUTRAL_FIELDS: dict[str, Callable[[Any], bool]] = {
     "top_logprobs": lambda v: _is_int(v) and v == 0,
     "stop": lambda _v: False,                 # only null is neutral (handled by _neutral)
     "logit_bias": _empty_mapping,
-    "response_format": lambda v: v == {"type": "text"},
-    "tools": _empty_sequence,
-    "tool_choice": lambda v: v == "none",
-    "parallel_tool_calls": lambda v: v is True,
     "functions": _empty_sequence,
     "function_call": lambda v: v == "none",
     "modalities": lambda v: v == ["text"],
@@ -174,13 +171,43 @@ def normalize_chat_request(body: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(body, Mapping):
         _fail("request body must be a JSON object", "body")
     _check_known_fields(body, CHAT_SUPPORTED_FIELDS, CHAT_NEUTRAL_FIELDS)
+    from clozn.server.structured_io import StructuredIOError, normalize_and_lower_messages, normalize_contract
+    try:
+        structured = normalize_contract(body)
+    except StructuredIOError as exc:
+        raise CompatibilityError(str(exc), param=exc.param, code=exc.code) from exc
+
     out = {key: value for key, value in body.items() if key in CHAT_SUPPORTED_FIELDS}
     for field in ("max_tokens", "max_completion_tokens", "temperature", "top_p", "seed", "stream",
                   "top_k", "repeat_penalty", "clozn_trust", "clozn_receipt", "clozn_lens"):
         if out.get(field) is None:
             out.pop(field, None)
 
-    out["messages"] = _normalize_messages(body.get("messages"))
+    has_tool_history = any(
+        isinstance(message, Mapping)
+        and (message.get("role") == "tool" or "tool_calls" in message)
+        for message in (body.get("messages") if isinstance(body.get("messages"), list) else [])
+    )
+    if structured.get("mode") or has_tool_history:
+        try:
+            plan = normalize_and_lower_messages(body.get("messages"), structured)
+        except StructuredIOError as exc:
+            raise CompatibilityError(str(exc), param=exc.param, code=exc.code) from exc
+        out["messages"] = plan["messages"]
+        out["_structured_contract"] = structured
+    else:
+        out["messages"] = _normalize_messages(body.get("messages"))
+
+    if structured.get("mode"):
+        for extension in ("clozn_trust", "clozn_receipt", "clozn_lens"):
+            if body.get(extension):
+                _fail(f"{extension} cannot be combined with structured I/O in v1", extension,
+                      code="unsupported_parameter")
+
+    # Neutral structured fields remain compatibility no-ops, just as before.  Active
+    # fields are represented by the private normalized contract consumed by the route.
+    for field in ("tools", "tool_choice", "parallel_tool_calls", "response_format"):
+        out.pop(field, None)
     if "model" in out and (not isinstance(out["model"], str) or not out["model"].strip()):
         _fail("model must be a non-empty string", "model")
     if "stream" in out and not isinstance(out["stream"], bool):

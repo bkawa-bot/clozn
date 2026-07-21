@@ -41,6 +41,9 @@ class _InstrumentedSubstrate:
         self.fail = False
         self._stream = False
         self.stream_closed = False
+        self.reply = "legacy reply"
+        self.stream_pieces = ["legacy", " reply"]
+        self.finish = "length"
 
     def _memory(self, messages, mem_out):
         if mem_out is not None:
@@ -65,7 +68,7 @@ class _InstrumentedSubstrate:
                 {"pos": 0, "token_id": 10, "piece": "legacy", "prob": 0.9},
                 {"pos": 1, "token_id": 11, "piece": " reply", "prob": 0.6},
             ])
-        return "legacy reply"
+        return self.reply
 
     def chat_stream(self, messages, max_new=256, mem_out=None, sample=True):
         self._stream = True
@@ -81,19 +84,16 @@ class _InstrumentedSubstrate:
 
         self._request = _Request()
         try:
-            yield "legacy"
-            yield " reply"
+            yield from self.stream_pieces
         finally:
             self.stream_closed = True
 
     def last_finish_reason(self):
-        return "length"
+        return self.finish
 
     def last_stream_trace(self):
-        return [
-            {"pos": 0, "token_id": 10, "piece": "legacy", "prob": 0.9},
-            {"pos": 1, "token_id": 11, "piece": " reply", "prob": 0.6},
-        ]
+        return [{"pos": pos, "token_id": 10 + pos, "piece": piece, "prob": 0.9 - pos / 10}
+                for pos, piece in enumerate(self.stream_pieces)]
 
     def run_meta(self):
         return {"model_id": "fake-model", "sampler_mode": "sample", "temperature": 0.4,
@@ -148,7 +148,8 @@ def test_nonstream_completion_uses_instrumented_path_and_run_id_header(iso):
     })
     out = _body(raw)
 
-    assert set(out) == {"id", "object", "created", "model", "choices"}
+    assert set(out) == {"id", "object", "created", "model", "choices",
+                        "clozn_run_id", "clozn_warnings"}
     assert out["object"] == "text_completion"
     assert out["choices"] == [{"text": "legacy reply", "index": 0, "logprobs": None,
                                "finish_reason": "length"}]
@@ -159,6 +160,9 @@ def test_nonstream_completion_uses_instrumented_path_and_run_id_header(iso):
     header = raw.partition(b"\r\n\r\n")[0].decode("latin-1")
     rid_line = next(line for line in header.splitlines() if line.startswith("X-Clozn-Run-Id: "))
     rid = rid_line.split(": ", 1)[1]
+    assert out["clozn_run_id"] == rid
+    assert out["clozn_warnings"][0]["code"] == "output_truncated"
+    assert "X-Clozn-Warning: output-truncated" in header
     logged = runlog.get_run(rid)
     assert logged["source"] == "openai_api"
     assert logged["messages"] == [{"role": "user", "content": "finish this"}]
@@ -179,7 +183,10 @@ def test_stream_completion_is_strict_openai_shape_and_journaled(iso):
 
     assert [frame["choices"][0]["text"] for frame in frames] == ["legacy", " reply", ""]
     assert frames[-1]["choices"][0]["finish_reason"] == "length"
-    assert all(set(frame) == {"id", "object", "created", "model", "choices"} for frame in frames)
+    base_keys = {"id", "object", "created", "model", "choices"}
+    assert all(set(frame) == base_keys for frame in frames[:-1])
+    assert set(frames[-1]) == base_keys | {"clozn_run_id", "clozn_warnings"}
+    assert frames[-1]["clozn_warnings"][0]["code"] == "output_truncated"
     assert all(frame["object"] == "text_completion" for frame in frames)
     assert raw.endswith(b"data: [DONE]\n\n")
     assert b"X-Clozn-Run-Id" not in raw.partition(b"\r\n\r\n")[0]
@@ -189,11 +196,28 @@ def test_stream_completion_is_strict_openai_shape_and_journaled(iso):
     rows = runlog.list_runs(5)
     assert len(rows) == 1
     logged = runlog.get_run(rows[0]["id"])
+    assert frames[-1]["clozn_run_id"] == logged["id"]
     assert logged["response"] == "legacy reply"
     assert logged["trace"]["token_ids"] == [10, 11]
     assert logged["final_prompt"] == "<rendered>legacy prompt + memory</rendered>"
     assert logged["meta"]["stream"] is True
     assert logged["meta"]["openai_operation"] == "completion"
+
+
+def test_completion_think_tags_never_reach_nonstream_or_stream_clients(iso):
+    iso.reply = "<think>secret</think>answer"
+    iso.stream_pieces = ["<thi", "nk>secret</thi", "nk>an", "swer"]
+    iso.finish = "stop"
+
+    nonstream = _body(_dispatch({"model": "fake-model", "prompt": "reason"}))
+    assert nonstream["choices"][0]["text"] == "answer"
+    assert runlog.get_run(nonstream["clozn_run_id"])["reasoning"]["blocks"][0]["text"] == "secret"
+
+    frames = _sse(_dispatch({"model": "fake-model", "prompt": "reason", "stream": True}))
+    wire_text = "".join(frame["choices"][0]["text"] for frame in frames)
+    assert wire_text == "answer"
+    assert "secret" not in wire_text and "think" not in wire_text
+    assert runlog.get_run(frames[-1]["clozn_run_id"])["reasoning"]["blocks"][0]["text"] == "secret"
 
 
 def test_nonstream_generation_failure_is_journaled_and_returned_as_error(iso):

@@ -211,6 +211,7 @@ def test_chat_ndjson_chunk_shape_and_final_line(isolated_runlog):
     assert isinstance(final["total_duration"], int) and final["total_duration"] >= 0
     assert final["eval_count"] == 3                 # len(last_stream_trace()) -- 3 committed pieces
     assert final["prompt_eval_count"] == 5           # sub.last_prompt_tokens()
+    assert runlog.get_run(final["clozn_run_id"])["response"] == "Hello!"
     # never fabricated -- see clozn/server/ndjson.py's module docstring
     assert "load_duration" not in final
     assert "prompt_eval_duration" not in final
@@ -242,12 +243,33 @@ def test_generate_ndjson_chunk_shape(isolated_runlog):
     assert final["response"] == ""
     assert final["done"] is True
     assert final["done_reason"] == "length"
+    assert final["clozn_warnings"][0]["code"] == "output_truncated"
 
     rows = runlog.list_runs(5)
     assert len(rows) == 1
     logged = runlog.get_run(rows[0]["id"])
     assert logged["response"] == "The sky is blue."
     assert logged["meta"]["ollama_operation"] == "generate"
+
+
+def test_ollama_stream_separates_split_thinking_chunks_from_public_content(isolated_runlog):
+    _activate(isolated_runlog, StreamingSub(
+        pieces=("<thi", "nk>secret</thi", "nk>an", "swer"), finish="stop"
+    ))
+    lines = _ndjson_lines(_dispatch("POST", "/api/chat", {
+        "messages": [{"role": "user", "content": "hi"}],
+    }))
+    payload = lines[:-1]
+    thinking = "".join(line["message"].get("thinking", "") for line in payload)
+    content = "".join(line["message"]["content"] for line in payload)
+    assert thinking == "secret"
+    assert content == "answer"
+    assert all("<think>" not in json.dumps(line).lower() for line in lines)
+    assert lines[-1]["eval_count"] == 4  # raw generation accounting is retained
+    rec = runlog.get_run(runlog.list_runs(1)[0]["id"])
+    assert rec["response"] == "answer"
+    assert rec["reasoning"]["blocks"] == [{"text": "secret", "closed": True}]
+    assert "".join(rec["trace"]["tokens"]) == "answer"
 
 
 # ==================================================================================== default-stream flip
@@ -311,6 +333,7 @@ def test_worker_failure_mid_stream_emits_one_error_line_and_finalizes_one_run(is
     assert lines[0]["message"]["content"] == "Hel"
     assert lines[-1]["done"] is True
     assert "worker connection reset" in lines[-1].get("error", "")
+    assert runlog.get_run(lines[-1]["clozn_run_id"])["error"]
     assert sub.closed is True
     assert sub._request.is_cancelled() is False         # NOT a client disconnect -- must not be conflated
 

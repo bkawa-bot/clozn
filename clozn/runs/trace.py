@@ -17,6 +17,10 @@ TRACE_KEYS = (
     "logprobs",
     "topk_entropy",
     "steps",
+    # Model-emitted <think> tokens are evidence, but not answer tokens.  They live beside (never inside)
+    # the public timeline so Replay can inspect them without continuation/fork/tool consumers ingesting
+    # them as assistant content.
+    "reasoning_steps",
     "workspace_readouts",
 )
 
@@ -267,6 +271,11 @@ def _norm_trace(trace) -> dict:
                 norm["steps"] = steps
         if "workspace_readouts" in trace:
             norm["workspace_readouts"] = trace["workspace_readouts"]
+        if isinstance(trace.get("reasoning_steps"), list):
+            norm["reasoning_steps"] = [
+                step for i, raw in enumerate(trace["reasoning_steps"])
+                if (step := _clean_step(raw, i)) is not None
+            ]
         return {k: norm[k] for k in TRACE_KEYS if k in norm}
     return {}
 

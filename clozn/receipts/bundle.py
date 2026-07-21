@@ -114,6 +114,18 @@ def _identity(run: dict) -> dict:
 def build(run: dict | None, explain: dict | None = None, receipts=None) -> dict:
     """Build the versioned export bundle from existing run/explain data."""
     run = run if isinstance(run, dict) else {}
+    # Association fingerprints are intentionally local-only. They help a sidecar find the right run,
+    # but add no reproduction evidence and must not become portable cross-install identifiers.
+    portable_run = {k: v for k, v in run.items()
+                    if k not in {"client_key", "client_key_source", "session_key"}}
+    # output_contract is already part of the stored run evidence, so the JSON receipt retains one
+    # object-shaped copy under bundle["run"] rather than promoting/duplicating its raw model output at
+    # another top-level export key.  A malformed legacy value degrades to {}.  Association fingerprints
+    # remain governed by the top-level filter above; never recursively redact identically named user/tool
+    # fields, which would alter the evidence itself.
+    if "output_contract" in portable_run:
+        contract = portable_run["output_contract"]
+        portable_run["output_contract"] = dict(contract) if isinstance(contract, dict) else {}
     explain = explain if isinstance(explain, dict) else None
     trace = _dict(run.get("trace"))
     memory = _dict(run.get("memory"))
@@ -124,7 +136,7 @@ def build(run: dict | None, explain: dict | None = None, receipts=None) -> dict:
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "run": run,
+        "run": portable_run,
         "repro": _repro(run),
         "identity": _identity(run),
         "trace": trace,

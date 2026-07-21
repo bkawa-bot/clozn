@@ -18,10 +18,10 @@ exception to the caller). A failure at step N therefore leaves the DB at EXACTLY
 usable, never half-migrated -- and a subsequent `migrate()` call retries from N.
 
 The ledger deliberately reuses the pre-existing `schema_meta(key, value)` table (rather than adding a new
-`schema_migrations` table) so that a fresh, fully-migrated DB's `sqlite_master` schema (its CREATE
-TABLE/INDEX text) is BYTE-IDENTICAL to what the old `_ensure()` produced -- the migration bookkeeping is
-extra ROWS in an existing table, not an extra table. This is asserted directly in
-tests/test_runs_migrations.py by diffing `sqlite_master` dumps. Per-migration rows are keyed
+`schema_migrations` table), so migration bookkeeping remains extra ROWS rather than an extra schema
+object. Migration 1 preserves the old baseline exactly; later append-only migrations evolve it normally.
+Fresh and upgraded legacy databases are asserted structurally identical in tests/test_runs_migrations.py.
+Per-migration rows are keyed
 `migration:<version>` (JSON value: description + applied_at); the coarse `schema_version` key is kept in
 sync too since it predates this module and nothing else in the repo reads the per-migration rows.
 
@@ -94,12 +94,49 @@ def _verify_0001(db: sqlite3.Connection) -> bool:
     return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'").fetchone() is not None
 
 
+def _migration_0002_run_association(db: sqlite3.Connection) -> None:
+    """Add insertion-order cursors and opaque client/session lookup columns.
+
+    ``created_ts`` is generation start time, so it is not a safe polling cursor: a slow request may be
+    journaled after a request that started later.  ``recorded_ts`` captures the actual journal insertion
+    order.  Existing records use their start time as the only honest backfill available.
+    """
+    columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+    if "recorded_ts" not in columns:
+        db.execute("ALTER TABLE runs ADD COLUMN recorded_ts REAL")
+    if "client_key" not in columns:
+        db.execute("ALTER TABLE runs ADD COLUMN client_key TEXT")
+    if "session_key" not in columns:
+        db.execute("ALTER TABLE runs ADD COLUMN session_key TEXT")
+    db.execute("UPDATE runs SET recorded_ts = created_ts WHERE recorded_ts IS NULL")
+    db.execute("CREATE INDEX IF NOT EXISTS runs_recorded_idx ON runs(recorded_ts DESC, id DESC)")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS runs_client_latest_idx "
+        "ON runs(client_key, recorded_ts DESC, id DESC)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS runs_session_latest_idx "
+        "ON runs(session_key, recorded_ts DESC, id DESC) WHERE session_key IS NOT NULL"
+    )
+
+
+def _verify_0002(db: sqlite3.Connection) -> bool:
+    columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+    indexes = {row[1] for row in db.execute("PRAGMA index_list(runs)")}
+    return (
+        {"recorded_ts", "client_key", "session_key"}.issubset(columns)
+        and {"runs_recorded_idx", "runs_client_latest_idx", "runs_session_latest_idx"}.issubset(indexes)
+    )
+
+
 # The shipped, ordered migration set. Append-only: once released, a migration's `apply` must never be
 # edited (a DB that already applied it would silently diverge from one that applies the edited version) --
 # ship a NEW migration with a higher version instead.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial schema: schema_meta + runs + indexes", _migration_0001_initial_schema,
               verify=_verify_0001),
+    Migration(2, "run association: insertion cursor + opaque client/session keys",
+              _migration_0002_run_association, verify=_verify_0002),
 )
 
 TARGET_VERSION = max(m.version for m in MIGRATIONS)

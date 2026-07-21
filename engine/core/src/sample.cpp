@@ -4,9 +4,35 @@
 #include <cmath>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace cloze {
+
+ReasoningBlockGate::ReasoningBlockGate(std::vector<int> start_tokens,
+                                       std::vector<int> end_tokens)
+    : start_tokens_(std::move(start_tokens)), end_tokens_(std::move(end_tokens)) {
+    if (start_tokens_.empty() || end_tokens_.empty()) {
+        throw std::invalid_argument("reasoning block token sequences must not be empty");
+    }
+    window_limit_ = std::max(start_tokens_.size(), end_tokens_.size());
+}
+
+bool ReasoningBlockGate::ends_with(const std::vector<int>& values,
+                                   const std::vector<int>& suffix) {
+    return suffix.size() <= values.size() &&
+           std::equal(suffix.rbegin(), suffix.rend(), values.rbegin());
+}
+
+void ReasoningBlockGate::accept(int token) {
+    window_.push_back(token);
+    if (window_.size() > window_limit_) window_.erase(window_.begin());
+    if (!active_ && ends_with(window_, start_tokens_)) {
+        active_ = true;
+    } else if (active_ && ends_with(window_, end_tokens_)) {
+        active_ = false;
+    }
+}
 
 std::vector<Candidate> sample_candidates(const ForwardResult& fwd,
                                          const std::vector<int>& positions,
@@ -16,6 +42,9 @@ std::vector<Candidate> sample_candidates(const ForwardResult& fwd,
     }
     if (opts.temperature > 0.0 && opts.rng == nullptr) {
         throw std::invalid_argument("temperature > 0 requires an rng");
+    }
+    if (opts.constraint != nullptr && fwd.n_requested != 1) {
+        throw std::invalid_argument("token constraints require one-row autoregressive sampling");
     }
     const int vocab = fwd.vocab;
 
@@ -33,6 +62,25 @@ std::vector<Candidate> sample_candidates(const ForwardResult& fwd,
 
     for (int r = 0; r < fwd.n_requested; ++r) {
         const float* row = fwd.row(r);
+        std::vector<float> constrained;
+        if (opts.constraint != nullptr) {
+            constrained.assign(row, row + vocab);
+            opts.constraint->apply(constrained);
+            if (constrained.size() != static_cast<size_t>(vocab)) {
+                throw std::runtime_error("token constraint changed the vocabulary size");
+            }
+            bool any_allowed = false;
+            for (float logit : constrained) {
+                if (std::isfinite(logit)) {
+                    any_allowed = true;
+                    break;
+                }
+            }
+            if (!any_allowed) {
+                throw std::runtime_error("token constraint rejected every candidate");
+            }
+            row = constrained.data();
+        }
         for (int t = 0; t < vocab; ++t) x[t] = static_cast<double>(row[t]);
 
         // Repetition penalty (CTRL/HF convention): pull already-seen tokens' logits toward 0.
@@ -92,6 +140,19 @@ std::vector<Candidate> sample_candidates(const ForwardResult& fwd,
         out.push_back(Candidate{positions[r], token, conf});
     }
     return out;
+}
+
+Candidate sample_committed_candidate(const ForwardResult& fwd,
+                                     int position,
+                                     const SampleOpts& opts) {
+    const std::vector<Candidate> candidates = sample_candidates(fwd, {position}, opts);
+    if (candidates.empty()) {
+        throw std::runtime_error("autoregressive sampler returned no candidate");
+    }
+    if (opts.constraint != nullptr) {
+        opts.constraint->accept(candidates.front().token_id);
+    }
+    return candidates.front();
 }
 
 }  // namespace cloze

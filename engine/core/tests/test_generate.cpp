@@ -11,11 +11,14 @@
 // so quota fills strictly left-to-right and the final board is exactly f(p) per slot.
 #include "cloze/generate.hpp"
 #include "cloze/model.hpp"
+#include "cloze/sample.hpp"
 #include "fake_adapter.hpp"  // the deterministic, model-free adapter
 
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -23,6 +26,28 @@ using namespace cloze;
 
 namespace {
 const std::vector<int> PROMPT = {1, 2, 3, 4, 5};  // p = 5; first slot is position 5
+
+class OnlyTokenConstraint final : public TokenConstraint {
+public:
+    explicit OnlyTokenConstraint(int allowed) : allowed_(allowed) {}
+
+    void apply(std::vector<float>& logits) override {
+        ++apply_calls;
+        for (size_t i = 0; i < logits.size(); ++i) {
+            if (static_cast<int>(i) != allowed_) {
+                logits[i] = -std::numeric_limits<float>::infinity();
+            }
+        }
+    }
+
+    void accept(int token) override { accepted.push_back(token); }
+
+    int apply_calls = 0;
+    std::vector<int> accepted;
+
+private:
+    int allowed_;
+};
 }  // namespace
 
 int main() {
@@ -75,6 +100,97 @@ int main() {
         assert(holes == 2);
         assert(r.board[5] == 5 && r.board[6] == 6);  // first two filled left-to-right
         assert(r.reason == "steps_exhausted");
+    }
+
+    // (e) AR constraints run before selection and atomically accept the token
+    // that was actually committed. The unconstrained argmax is token 0; the
+    // constraint forces token 2 and observes exactly that token once.
+    {
+        ForwardResult fwd;
+        fwd.logits = {9.0f, 3.0f, 1.0f};
+        fwd.n_requested = 1;
+        fwd.vocab = 3;
+        OnlyTokenConstraint constraint(/*allowed=*/2);
+        SampleOpts opts;
+        opts.constraint = &constraint;
+        const Candidate candidate = sample_committed_candidate(fwd, /*position=*/7, opts);
+        assert(candidate.pos == 7);
+        assert(candidate.token_id == 2);
+        assert(constraint.apply_calls == 1);
+        assert((constraint.accepted == std::vector<int>{2}));
+    }
+
+    // A stateful constraint is intentionally one-row/AR-only. This prevents a
+    // caller from accidentally applying one grammar state across diffusion slots.
+    {
+        ForwardResult fwd;
+        fwd.logits = {1.0f, 0.0f, 0.0f, 1.0f};
+        fwd.n_requested = 2;
+        fwd.vocab = 2;
+        OnlyTokenConstraint constraint(/*allowed=*/0);
+        SampleOpts opts;
+        opts.constraint = &constraint;
+        bool rejected = false;
+        try {
+            (void)sample_candidates(fwd, {0, 1}, opts);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        assert(rejected);
+    }
+
+    // A constraint that leaves no legal token fails closed; it must never fall
+    // through to token 0 because a softmax over all -inf logits is undefined.
+    {
+        ForwardResult fwd;
+        fwd.logits = {3.0f, 2.0f};
+        fwd.n_requested = 1;
+        fwd.vocab = 2;
+        OnlyTokenConstraint constraint(/*allowed outside vocab=*/9);
+        SampleOpts opts;
+        opts.constraint = &constraint;
+        bool rejected = false;
+        try {
+            (void)sample_committed_candidate(fwd, /*position=*/0, opts);
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        assert(rejected);
+        assert(constraint.accepted.empty());
+    }
+
+    // Lazy tool grammar gating follows token sequences, not decoded substring guesses: it becomes
+    // active only after the complete start tag, releases after the complete end tag, and re-arms
+    // for a later reasoning block in the same response.
+    {
+        ReasoningBlockGate gate({10, 11}, {20, 21});
+        assert(!gate.active());
+        gate.accept(10);
+        assert(!gate.active());
+        gate.accept(11);
+        assert(gate.active());
+        gate.accept(99);
+        gate.accept(20);
+        assert(gate.active());
+        gate.accept(21);
+        assert(!gate.active());
+        gate.accept(10);
+        gate.accept(11);
+        assert(gate.active());
+        gate.accept(20);
+        gate.accept(21);
+        assert(!gate.active());
+    }
+
+    // A half-specified reasoning boundary cannot safely gate a lazy grammar.
+    {
+        bool rejected = false;
+        try {
+            (void)ReasoningBlockGate({}, {20});
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        assert(rejected);
     }
 
     std::printf("test_generate: all assertions passed\n");

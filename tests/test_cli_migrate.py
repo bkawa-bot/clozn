@@ -60,7 +60,7 @@ def test_cmd_migrate_reports_pending_on_a_fresh_store(isolated, capsys):
     # a fresh store has already been migrated as a SIDE EFFECT of this very call (apply mode, not dry-run)
     assert out["current_version"] == 0                  # the report reflects the version BEFORE this call
     assert out["target_version"] >= 1
-    assert out["applied"] == [1]
+    assert out["applied"] == [1, 2]
 
 
 def test_cmd_migrate_dry_run_does_not_touch_the_db(isolated, capsys):
@@ -96,7 +96,7 @@ def test_cmd_migrate_text_output_mentions_version(isolated, capsys):
     mig.cmd_migrate(args)
     text = capsys.readouterr().out
     assert "schema version:" in text
-    assert "applied 1 migration" in text
+    assert "applied 2 migration" in text
 
 
 def test_cmd_migrate_surfaces_failure_as_cloznerror(isolated, monkeypatch):

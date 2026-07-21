@@ -7,6 +7,7 @@ blob.  Old ``run_*.json`` journals are accepted only through :func:`import_json_
 from __future__ import annotations
 
 from contextlib import closing
+import base64
 import glob
 import hashlib
 import json
@@ -14,6 +15,7 @@ import logging
 import os
 import re
 import sqlite3
+import secrets
 import time
 import uuid
 
@@ -78,6 +80,19 @@ def _connect() -> sqlite3.Connection:
     db.execute("PRAGMA foreign_keys=ON")
     db.execute("PRAGMA busy_timeout=30000")
     return db
+
+
+def association_secret() -> bytes:
+    """Stable install-local HMAC key in SQLite metadata; never exported with a run payload."""
+    _ensure()
+    with closing(_connect()) as db, db:
+        row = db.execute("SELECT value FROM schema_meta WHERE key = 'association_hmac_key'").fetchone()
+        if row is None:
+            candidate = secrets.token_hex(32)
+            db.execute("INSERT OR IGNORE INTO schema_meta(key, value) VALUES('association_hmac_key', ?)",
+                       (candidate,))
+            row = db.execute("SELECT value FROM schema_meta WHERE key = 'association_hmac_key'").fetchone()
+    return bytes.fromhex(str(row["value"]))
 
 
 def _valid_rid(rid) -> bool:
@@ -175,9 +190,12 @@ def _row_values(rec: dict, payload_json: str) -> tuple:
     return (
         rec["id"],
         float(rec.get("created_ts") or 0.0),
+        float(rec.get("recorded_ts") or rec.get("created_ts") or 0.0),
         str(rec.get("created_at") or ""),
         str(rec.get("source") or ""),
         str(rec.get("client") or "unknown"),
+        rec.get("client_key"),
+        rec.get("session_key"),
         str(rec.get("model") or ""),
         str(rec.get("substrate") or ""),
         rec.get("parent_run_id"),
@@ -192,9 +210,10 @@ def _row_values(rec: dict, payload_json: str) -> tuple:
 
 _INSERT = """
     INSERT INTO runs(
-        id, created_ts, created_at, source, client, model, substrate, parent_run_id,
-        finish_reason, error, prompt_summary, response_summary, duration_ms, payload_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, created_ts, recorded_ts, created_at, source, client, client_key, session_key,
+        model, substrate, parent_run_id, finish_reason, error, prompt_summary, response_summary,
+        duration_ms, payload_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -219,7 +238,10 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
            parent_run_id: str | None = None, changes_applied: dict | None = None,
            error: str | None = None, finish_reason: str | None = None,
            meta: dict | None = None, assembled_messages=None, final_prompt: str | None = None,
-           workspace_provider=None, identity: dict | None = None) -> str | None:
+           workspace_provider=None, identity: dict | None = None,
+           reasoning: dict | None = None, session_key: str | None = None,
+           client_key: str | None = None, client_key_source: str | None = None,
+           output_contract: dict | None = None) -> str | None:
     """Persist a completed run and return its id. Logging failures remain non-fatal.
 
     `identity` (roadmap S4.3): the immutable reproduction-identity block from
@@ -233,21 +255,67 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
         started = started if started is not None else time.time()
         ended = ended if ended is not None else time.time()
         rid = f"run_{int(started * 1000):013x}_{uuid.uuid4().hex[:6]}"
-        msgs = messages or []
+        from .think_tags import prompt_opens_think, sanitize_messages, sanitize_reply, sanitize_steps
+        implicit_think = prompt_opens_think(final_prompt)
+        msgs = sanitize_messages(messages or [])
+        # A gateway caller that supplies `reasoning` has already separated the public response.  Do not
+        # apply the prompt-prefilled state to that clean answer a second time (it would hide the answer as
+        # an unclosed block).  Direct store callers still get the full safety-net sanitation here.
+        think = sanitize_reply(response, implicit_open=implicit_think if not reasoning else False)
+        response = think.public_text
         prompt = next((m.get("content", "") for m in reversed(msgs) if m.get("role") == "user"), "")
-        norm_trace = _with_workspace_readouts(rid, _norm_trace(trace), workspace_provider)
+        norm_trace = _norm_trace(trace)
+        reasoning_doc = dict(reasoning or {})
+        if (think.stripped or reasoning_doc) and isinstance(norm_trace.get("steps"), list):
+            public_steps, reasoning_steps, trace_think = sanitize_steps(
+                norm_trace["steps"], implicit_open=implicit_think
+            )
+            public_trace = steps_to_trace(public_steps)
+            if "workspace_readouts" in norm_trace:
+                public_trace["workspace_readouts"] = norm_trace["workspace_readouts"]
+            if reasoning_steps:
+                public_trace["reasoning_steps"] = reasoning_steps
+            norm_trace = public_trace
+            trace_public = trace_think.public_text
+            alignment = "matched" if trace_public == response else (
+                "matched_ignoring_outer_whitespace"
+                if trace_public.strip() == response.strip() else "mismatch"
+            )
+            if not reasoning_doc:
+                reasoning_doc = think.journal(reasoning_steps=reasoning_steps,
+                                               trace_alignment=alignment)
+            else:
+                reasoning_doc.setdefault("trace_step_count", len(reasoning_steps))
+                reasoning_doc.setdefault("trace_alignment", alignment)
+        elif think.stripped and not reasoning_doc:
+            reasoning_doc = think.journal()
+        norm_trace = _with_workspace_readouts(rid, norm_trace, workspace_provider)
+        from .context_receipt import build_context_receipt, warnings_for
+        context_receipt = build_context_receipt(
+            messages=msgs,
+            assembled_messages=assembled_messages,
+            final_prompt=final_prompt,
+            finish_reason=finish_reason,
+            meta=meta,
+            trace=norm_trace,
+        )
         rec = {
             "id": rid,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)),
             "created_ts": started,
+            "recorded_ts": time.time(),
             "source": source,
             "client": client or "unknown",
+            "client_key": client_key,
+            "client_key_source": client_key_source,
+            "session_key": session_key,
             "model": model,
             "substrate": substrate,
             "prompt_summary": _summ(prompt),
             "response_summary": _summ(response),
             "messages": msgs,
             "response": response,
+            "reasoning": reasoning_doc,
             "assembled_messages": assembled_messages if assembled_messages is not None else None,
             "final_prompt": final_prompt,
             "memory": memory or {},
@@ -261,6 +329,12 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
             "finish_reason": finish_reason,
             "meta": meta or {},
             "identity": identity or {},
+            # Structured-I/O evidence is an additive, JSON-payload field: it does not need a SQLite
+            # migration because none of its members are indexed columns.  Copy only a real object so a
+            # malformed direct/legacy caller cannot make _flags() raise and silently lose the whole run.
+            "output_contract": dict(output_contract) if isinstance(output_contract, dict) else {},
+            "context_receipt": context_receipt,
+            "warnings": warnings_for(finish_reason, meta),
         }
         rec["flags"] = _flags(rec)
         if not _put(rec):
@@ -276,7 +350,7 @@ def _prune() -> None:
     with closing(_connect()) as db, db:
         db.execute(
             "DELETE FROM runs WHERE id IN ("
-            "SELECT id FROM runs ORDER BY created_ts DESC, id DESC LIMIT -1 OFFSET ?)",
+            "SELECT id FROM runs ORDER BY recorded_ts DESC, id DESC LIMIT -1 OFFSET ?)",
             (int(KEEP),),
         )
 
@@ -297,6 +371,155 @@ def list_runs(limit: int = 50, *, include_replays: bool = True) -> list[dict]:
         except Exception:
             continue
     return out
+
+
+_DERIVED_SOURCES = frozenset({"replay", "branch", "fork"})
+
+
+def find_runs(limit: int = 50, *, client: str | None = None, session_id: str | None = None,
+              client_id: str | None = None, model: str | None = None,
+              include_derived: bool = False) -> list[dict]:
+    """Newest matching summaries for sidecars/watchers, over the bounded local journal.
+
+    Session input may be the raw caller-known token or an already-opaque ``session_...`` key.  Client
+    matching is case-insensitive because User-Agent normalization produces human-facing labels.
+    """
+    from .association import client_key, session_key
+    wanted_limit = max(0, int(limit))
+    if wanted_limit == 0:
+        return []
+    wanted_session = session_key(session_id)
+    wanted_client_id = client_key(client_id)
+    wanted_client = str(client).strip().casefold() if client is not None and str(client).strip() else None
+    wanted_model = str(model).strip().casefold() if model is not None and str(model).strip() else None
+    clauses = []
+    params: list = []
+    if not include_derived:
+        clauses.append("source NOT IN ('replay', 'branch', 'fork')")
+    if wanted_client is not None:
+        clauses.append("lower(client) = ?")
+        params.append(wanted_client)
+    if wanted_client_id is not None:
+        clauses.append("client_key = ?")
+        params.append(wanted_client_id)
+    if wanted_session is not None:
+        clauses.append("session_key = ?")
+        params.append(wanted_session)
+    if wanted_model is not None:
+        clauses.append("lower(model) = ?")
+        params.append(wanted_model)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    _ensure()
+    with closing(_connect()) as db:
+        rows = db.execute(
+            f"SELECT recorded_ts, payload_json FROM runs {where} "
+            "ORDER BY recorded_ts DESC, id DESC LIMIT ?",
+            (*params, wanted_limit),
+        ).fetchall()
+    out = []
+    for row in rows:
+        try:
+            run = json.loads(row["payload_json"])
+            run.setdefault("recorded_ts", float(row["recorded_ts"]))
+            out.append(_summary(run))
+        except Exception:
+            continue
+    return out
+
+
+def latest_run(*, client: str | None = None, session_id: str | None = None,
+               client_id: str | None = None, model: str | None = None,
+               include_derived: bool = False) -> dict | None:
+    rows = find_runs(1, client=client, session_id=session_id, client_id=client_id,
+                     model=model, include_derived=include_derived)
+    return rows[0] if rows else None
+
+
+def encode_cursor(recorded_ts: float, rid: str) -> str:
+    """Opaque exact `(recorded_ts, id)` cursor; float.hex avoids timestamp rounding loss."""
+    payload = json.dumps([float(recorded_ts).hex(), str(rid)], separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_cursor(cursor: str) -> tuple[float, str]:
+    try:
+        text = str(cursor)
+        raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+        stamp, rid = json.loads(raw.decode("utf-8"))
+        value = float.fromhex(stamp)
+        if not _valid_rid(rid):
+            raise ValueError
+        return value, rid
+    except Exception as exc:
+        raise ValueError("invalid run cursor") from exc
+
+
+def cursor_for_run(rid: str) -> str | None:
+    if not _valid_rid(rid):
+        return None
+    _ensure()
+    with closing(_connect()) as db:
+        row = db.execute("SELECT recorded_ts, id FROM runs WHERE id = ?", (rid,)).fetchone()
+    return encode_cursor(row["recorded_ts"], row["id"]) if row else None
+
+
+def current_cursor() -> str | None:
+    _ensure()
+    with closing(_connect()) as db:
+        row = db.execute(
+            "SELECT recorded_ts, id FROM runs ORDER BY recorded_ts DESC, id DESC LIMIT 1"
+        ).fetchone()
+    return encode_cursor(row["recorded_ts"], row["id"]) if row else None
+
+
+def runs_after(cursor: str | None, *, limit: int = 100, client: str | None = None,
+               client_id: str | None = None, session_id: str | None = None,
+               model: str | None = None, include_derived: bool = False) -> dict:
+    """Oldest-first cursor page for `clozn watch`; every scanned row advances the cursor.
+
+    Advancing across filtered-out rows is deliberate: a watcher must not rescan unrelated traffic on
+    every poll, and the opaque tuple remains valid even if the referenced row is later pruned.
+    """
+    wanted = max(1, min(1000, int(limit)))
+    after_ts, after_id = decode_cursor(cursor) if cursor else (float("-inf"), "")
+    from .association import client_key, session_key
+    wanted_client = str(client).strip().casefold() if client is not None and str(client).strip() else None
+    wanted_client_id = client_key(client_id)
+    wanted_session = session_key(session_id)
+    wanted_model = str(model).strip().casefold() if model is not None and str(model).strip() else None
+    _ensure()
+    with closing(_connect()) as db:
+        rows = db.execute(
+            "SELECT recorded_ts, id, payload_json FROM runs "
+            "WHERE recorded_ts > ? OR (recorded_ts = ? AND id > ?) "
+            "ORDER BY recorded_ts ASC, id ASC",
+            (after_ts, after_ts, after_id),
+        ).fetchall()
+    out = []
+    scanned_ts, scanned_id = after_ts, after_id
+    for row in rows:
+        scanned_ts, scanned_id = float(row["recorded_ts"]), str(row["id"])
+        try:
+            run = json.loads(row["payload_json"])
+        except Exception:
+            continue
+        run.setdefault("recorded_ts", scanned_ts)
+        if not include_derived and str(run.get("source") or "") in _DERIVED_SOURCES:
+            continue
+        if wanted_client is not None and str(run.get("client") or "").casefold() != wanted_client:
+            continue
+        if wanted_client_id is not None and run.get("client_key") != wanted_client_id:
+            continue
+        if wanted_session is not None and run.get("session_key") != wanted_session:
+            continue
+        if wanted_model is not None and str(run.get("model") or "").casefold() != wanted_model:
+            continue
+        out.append(_summary(run))
+        if len(out) >= wanted:
+            break
+    next_cursor = (encode_cursor(scanned_ts, scanned_id)
+                   if scanned_id else cursor)
+    return {"runs": out, "next_cursor": next_cursor}
 
 
 def get_run(rid: str) -> dict | None:
@@ -357,6 +580,7 @@ def import_json_dir(path: str) -> dict:
                 continue
             rec.setdefault("trace", {})
             rec.setdefault("created_ts", os.path.getmtime(filename))
+            rec.setdefault("recorded_ts", rec["created_ts"])
             rec.setdefault("created_at", time.strftime("%Y-%m-%dT%H:%M:%S",
                                                         time.localtime(rec["created_ts"])))
             rec.setdefault("source", "legacy")

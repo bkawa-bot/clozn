@@ -149,7 +149,8 @@ def try_post(h, p, body):
         if ctx.ENGINE is None:
             h._json(502, {"error": "no engine configured"})
             return True
-        msgs = body.get("messages", [])
+        from clozn.runs.think_tags import sanitize_messages
+        msgs = sanitize_messages(body.get("messages", []))
         t0 = time.time()
         memout = {}
         try:
@@ -182,9 +183,12 @@ def try_post(h, p, body):
             # plain complete(); the trace feeds the Run Inspector timeline. steps=[] (diffusion, or a
             # stream hiccup) -> runlog stores a clean empty trace.
             reply_raw, steps, finish, _divinfo = ctx._engine_complete_traced(ctx.ENGINE, prompt, mx, kw)
-            reply = reply_raw.strip()
+            from clozn.runs.think_tags import prompt_opens_think, sanitize_reply
+            reply = sanitize_reply(
+                reply_raw, implicit_open=prompt_opens_think(prompt)
+            ).public_text.strip()
             # Pass the raw step list; runlog.record normalizes it -> {tokens, confidence, alternatives}.
-            h._log_run("engine_chat", msgs, reply, "clozn-qwen (engine)", t0, trace=steps,
+            h._log_run("engine_chat", msgs, reply_raw, "clozn-qwen (engine)", t0, trace=steps,
                        mem_out=memout, finish_reason=finish)
             # "memory" == did the prompt-card block actually ride this reply.
             h._json(200, {"reply": reply,
@@ -221,8 +225,14 @@ def try_post(h, p, body):
             return True
         # runlog.record normalizes the raw step list -> {tokens, confidence, alternatives}; a diffusion
         # substrate (or any path that filled nothing) yields [] -> a clean empty trace.
+        raw_reply = str(r.get("reply", ""))
         h._log_run("studio_chat", [{"role": "user", "content": msg}],
-                  str(r.get("reply", "")), "clozn-qwen", t0, trace=trace_steps, mem_out=memout)
+                  raw_reply, "clozn-qwen", t0, trace=trace_steps, mem_out=memout)
+        from clozn.runs.think_tags import prompt_opens_think, sanitize_reply
+        r = dict(r)
+        r["reply"] = sanitize_reply(
+            raw_reply, implicit_open=prompt_opens_think(memout.get("final_prompt"))
+        ).public_text
         h._json(200, r)
         return True
     if p == "/denoise":   # Dream diffusion window -> capture it as a run

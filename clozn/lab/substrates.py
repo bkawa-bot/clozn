@@ -23,6 +23,19 @@ from clozn.server.substrates import Substrate                          # the sha
 _RETRAIN_INIT_LOCK = threading.Lock()   # guards the double-checked lazy init of each instance's retrain state
 
 
+def _render_final_prompt(memory, messages):
+    """Best-effort exact text twin of SelfTeach._chat_ids, for receipts and think-prefill detection."""
+    try:
+        rendered_messages = list(messages)
+        if not memory._supports_system() and any(m.get("role") == "system" for m in rendered_messages):
+            rendered_messages = memory._fold_system(rendered_messages)
+        return memory.tok.apply_chat_template(
+            rendered_messages, tokenize=False, add_generation_prompt=True
+        )
+    except Exception:
+        return None
+
+
 class _InternalizedRetrain:
     """The internalized soft-prefix RETRAIN machinery, moved here VERBATIM out of clozn.server.app so the
     PRODUCT module carries none of it. Mixed into QwenSubstrate/DreamSubstrate (before Substrate in the
@@ -226,10 +239,12 @@ class QwenSubstrate(_InternalizedRetrain, Substrate):
             assembled = ctx._inject_block(m.history, block)
             if mem_out is not None:
                 mem_out.update(mode="prompt", applied=applied, gate=gate,
-                               prompt_block=block, assembled_messages=assembled)
+                               prompt_block=block, assembled_messages=assembled,
+                               final_prompt=_render_final_prompt(m, assembled))
             reply = m._generate(assembled, use_prefix=False, max_new=max_new,
                                 sample=True, trace_out=trace_out)
-            m.history.append({"role": "assistant", "content": reply})
+            from clozn.runs.think_tags import sanitize_reply
+            m.history.append({"role": "assistant", "content": sanitize_reply(reply).public_text})
             return reply
 
     def _whatlearned_prompt(self):
@@ -301,7 +316,8 @@ class QwenSubstrate(_InternalizedRetrain, Substrate):
                     assembled = ctx._inject_block(messages, block)
                     if mem_out is not None:
                         mem_out.update(mode="prompt", applied=applied, gate=gate,
-                                       prompt_block=block, assembled_messages=assembled)
+                                       prompt_block=block, assembled_messages=assembled,
+                                       final_prompt=_render_final_prompt(self.memory, assembled))
                     reply = self.memory._generate(assembled, use_prefix=False,
                                                   max_new=max_new, sample=sample, trace_out=trace_out)
                     self._last_finish_reason = getattr(self.memory, "_last_finish_reason", None)
@@ -311,6 +327,8 @@ class QwenSubstrate(_InternalizedRetrain, Substrate):
                 # over-bleed). memory_strength 0 still zeroes it; a missing embedder falls back to no-gating.
                 reply = self.memory._generate(messages, use_prefix=True, max_new=max_new, sample=sample,
                                               gate="auto", trace_out=trace_out)
+                if mem_out is not None:
+                    mem_out.update(mode="internalized", final_prompt=_render_final_prompt(self.memory, messages))
                 self._last_finish_reason = getattr(self.memory, "_last_finish_reason", None)
                 return reply
             finally:
@@ -355,9 +373,12 @@ class QwenSubstrate(_InternalizedRetrain, Substrate):
             assembled = ctx._inject_block(messages, block)
             if mem_out is not None:
                 mem_out.update(mode="prompt", applied=applied, gate=gate,
-                               prompt_block=block, assembled_messages=assembled)
+                               prompt_block=block, assembled_messages=assembled,
+                               final_prompt=_render_final_prompt(m, assembled))
             e = m._embed(m._chat_ids(assembled))
         else:
+            if mem_out is not None:
+                mem_out.update(mode="internalized", final_prompt=_render_final_prompt(m, messages))
             e = m._embed(m._chat_ids(messages))
             if m.prefix is not None:                        # prepend the consolidated memory prefix, scaled by
                 # memory_strength x TOPIC RELEVANCE (same on-topic gating as _generate's gate="auto"; this path

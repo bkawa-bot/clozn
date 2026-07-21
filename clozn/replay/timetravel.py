@@ -275,6 +275,8 @@ def message_turns(messages) -> list[dict]:
     the assistant reply that followed it (the reply may be absent for a dangling final user turn). Returns
     [{turn, user, assistant, user_idx, assistant_idx}]; system messages ride with the next turn's context
     but don't start a turn of their own. Pure -- the branch UI reads this to offer 'branch from turn t'."""
+    from clozn.runs.think_tags import sanitize_messages
+    messages = sanitize_messages(messages)
     turns: list[dict] = []
     cur = None
     for i, m in enumerate(messages or []):
@@ -302,6 +304,8 @@ def branch_messages(messages, turn: int, alt_user=None) -> list[dict]:
     an alt = 'ask something different at turn t and continue from there'. The result is a clean messages[]
     ending in a user turn -- exactly what the stateless chat path re-generates from. Raises ValueError on a
     turn index that doesn't exist (the caller validates + reports; never a silent wrong-branch)."""
+    from clozn.runs.think_tags import sanitize_messages
+    messages = sanitize_messages(messages)
     turns = message_turns(messages)
     if not turns:
         raise ValueError("no turns to branch from")

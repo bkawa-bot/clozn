@@ -2,9 +2,8 @@
 old `_ensure()` schema-stamping).
 
 Covers, per the backlog item's explicit contract:
-  1. fresh-DB schema identity: migration 0 -> current produces the SAME structural schema the OLD
-     `_ensure()` (pre-refactor, reference SQL hardcoded below verbatim from the code this replaces) used
-     to produce from scratch.
+  1. fresh-DB schema identity: migration 0 -> current produces the SAME structural schema as an old
+     `_ensure()` database upgraded in place.
   2. legacy-DB upgrade: a DB actually left by the OLD `_ensure()` -- constructed here byte-for-byte the way
      that code built it -- upgrades in place, losslessly (every run row survives unchanged) and ends up
      structurally identical to a fresh migration.
@@ -98,19 +97,20 @@ def _row_ids(db: sqlite3.Connection) -> list[str]:
 
 # ======================================================================================= 1. fresh-DB identity
 
-def test_fresh_migration_matches_legacy_ensure_schema(tmp_path):
-    """Migration 0 -> current, run against a brand-new empty DB, must produce a schema structurally
-    identical to what the old `_ensure()` produced from scratch (BACKLOG §2's explicit requirement)."""
+def test_fresh_migration_matches_upgraded_legacy_schema(tmp_path):
+    """A fresh current DB and an in-place-upgraded legacy DB have identical structural schemas."""
     legacy_path = str(tmp_path / "legacy.sqlite3")
     _build_legacy_db(legacy_path)
     legacy_db = sqlite3.connect(legacy_path)
+    legacy_applied = migrations.migrate(legacy_db)
 
     fresh_path = str(tmp_path / "fresh.sqlite3")
     fresh_db = sqlite3.connect(fresh_path)
     applied = migrations.migrate(fresh_db)
 
     try:
-        assert applied == [1]
+        assert legacy_applied == [1, 2]
+        assert applied == [1, 2]
         assert _schema_dump(fresh_db) == _schema_dump(legacy_db)
     finally:
         legacy_db.close()
@@ -134,7 +134,7 @@ def test_migrate_is_idempotent_on_an_up_to_date_db(tmp_path):
     try:
         first = migrations.migrate(db)
         second = migrations.migrate(db)
-        assert first == [1]
+        assert first == [1, 2]
         assert second == []                          # nothing pending -> no-op, not a re-apply
     finally:
         db.close()
@@ -174,7 +174,7 @@ def test_legacy_db_upgrades_in_place_losslessly(tmp_path):
 
         applied = migrations.migrate(db)
 
-        assert applied == [1]
+        assert applied == [1, 2]
         assert migrations.current_version(db) == migrations.TARGET_VERSION
         assert migrations.pending(db) == []
         assert _row_ids(db) == before                  # lossless: same rows, same ids, nothing dropped

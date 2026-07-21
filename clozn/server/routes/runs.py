@@ -9,9 +9,97 @@ prefix match here would shadow it (both start with "/runs/"). The fallback moves
 once every more-specific /runs/<id>/<suffix> GET has its own registered family ahead of this one in the
 dispatch order -- see app.py's `_GET_ROUTES` comment.
 """
+from urllib.parse import parse_qs, urlsplit
+
+
+def _one(query: dict, name: str):
+    values = query.get(name) or []
+    return values[-1] if values else None
+
+
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _association_error(h, exc):
+    h._json(400, {"error": {"message": str(exc), "type": "invalid_request_error",
+                             "param": getattr(exc, "field", "association"),
+                             "code": "invalid_association_id"}})
+
+
+def _selectors(h, query: dict) -> dict:
+    """Validated raw selectors. Custom headers are opt-in; ordinary User-Agent is not a lookup token."""
+    from clozn.runs.association import validate_selector
+    client_id = _one(query, "client_id")
+    session_id = _one(query, "session")
+    if client_id is None:
+        client_id = h.headers.get("X-Clozn-Client-Id")
+    if session_id is None:
+        session_id = h.headers.get("X-Clozn-Session-Id")
+    if client_id is not None:
+        client_id = validate_selector(client_id, "client_id")
+    if session_id is not None:
+        session_id = validate_selector(session_id, "session")
+    client = _one(query, "client")
+    if client is not None:
+        client = validate_selector(client, "client")
+    model = _one(query, "model")
+    if model is not None:
+        model = validate_selector(model, "model")
+    return {"client": client, "client_id": client_id, "session_id": session_id, "model": model}
 
 
 def try_get(h, p):
+    if p == "/runs/latest":
+        import clozn.runs.store as runlog
+        query = parse_qs(urlsplit(h.path).query, keep_blank_values=True)
+        try:
+            selectors = _selectors(h, query)
+        except Exception as exc:
+            _association_error(h, exc)
+            return True
+        exact = bool(selectors["client_id"] or selectors["session_id"])
+        if not exact and not selectors["client"]:
+            h._json(400, {"error": {"message": "choose client_id, session, or client; global newest is /runs",
+                                     "type": "invalid_request_error", "param": "association",
+                                     "code": "association_selector_required"}})
+            return True
+        run = runlog.latest_run(**selectors, include_derived=_truthy(_one(query, "include_derived")))
+        h._json(200, {
+            "available": run is not None,
+            "run": run,
+            "association": {
+                "exact": exact,
+                "ambiguous": not exact,
+                "selector": "session" if selectors["session_id"] else (
+                    "client_id" if selectors["client_id"] else "client"
+                ),
+            },
+        })
+        return True
+    if p == "/runs/watch":
+        import clozn.runs.store as runlog
+        query = parse_qs(urlsplit(h.path).query, keep_blank_values=True)
+        try:
+            selectors = _selectors(h, query)
+            raw_limit = _one(query, "limit")
+            limit = 100 if raw_limit is None else int(raw_limit)
+            if not 1 <= limit <= 1000:
+                raise ValueError("limit must be between 1 and 1000")
+            page = runlog.runs_after(
+                _one(query, "after"), limit=limit, **selectors,
+                include_derived=_truthy(_one(query, "include_derived")),
+            )
+        except Exception as exc:
+            if getattr(exc, "field", None):
+                _association_error(h, exc)
+            else:
+                h._json(400, {"error": {"message": str(exc), "type": "invalid_request_error",
+                                         "param": "after" if "cursor" in str(exc) else "limit",
+                                         "code": "invalid_watch_query"}})
+            return True
+        h._json(200, page)
+        return True
     if p == "/runs":                 # the Run Log -- every interaction, newest first (the Studio Runs page)
         import clozn.runs.store as runlog
         h._json(200, {"runs": runlog.list_runs(80)})

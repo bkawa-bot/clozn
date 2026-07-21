@@ -284,4 +284,20 @@ if(CLOZE_BUILD_SERVE AND CLOZE_BUILD_GGML)
         target_compile_options(cloze-server PRIVATE /bigobj /EHsc)
         set_source_files_properties(${_vendor}/cpp-httplib/httplib.cpp PROPERTIES COMPILE_FLAGS /w)
     endif()
+
+    # Private Phase 2.8 native chat-I/O seam: model-free template preparation + PEG parsing.
+    # This does not register a public HTTP route or qualify any model/template pair.
+    add_executable(test_chat_template_renderer
+        tests/test_chat_template_renderer.cpp
+        serve/chat_template_renderer.cpp)
+    target_include_directories(test_chat_template_renderer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/serve)
+    target_link_libraries(test_chat_template_renderer PRIVATE llama-common)
+    target_compile_definitions(test_chat_template_renderer PRIVATE
+        CLOZE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    if(MSVC)
+        target_compile_options(test_chat_template_renderer PRIVATE /EHsc)
+    endif()
+    add_test(NAME chat_template_renderer COMMAND test_chat_template_renderer)
+    set_tests_properties(chat_template_renderer PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()

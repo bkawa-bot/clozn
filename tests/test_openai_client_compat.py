@@ -97,6 +97,8 @@ def test_real_openai_client_lists_models_and_parses_chat(openai_gateway):
     assert reply.choices[0].message.content == "SDK round trip."
     assert reply.choices[0].finish_reason == "stop"
     assert reply.usage is None                 # Clozn omits unknown counts instead of returning fake zeros
+    rid = (reply.model_extra or {}).get("clozn_run_id")
+    assert rid and runlog.get_run(rid)["response"] == "SDK round trip."
 
 
 def test_real_openai_client_parses_stream(openai_gateway):
@@ -108,21 +110,31 @@ def test_real_openai_client_parses_stream(openai_gateway):
         temperature=0,
     )
     pieces = []
+    terminal_run_id = None
     for chunk in stream:
         if chunk.choices and chunk.choices[0].delta.content:
             pieces.append(chunk.choices[0].delta.content)
+        if chunk.choices and chunk.choices[0].finish_reason:
+            terminal_run_id = (chunk.model_extra or {}).get("clozn_run_id")
     assert "".join(pieces) == "SDK stream."
+    assert terminal_run_id and runlog.get_run(terminal_run_id)["response"] == "SDK stream."
 
 
-def test_real_openai_client_receives_typed_400_for_unsupported_tools(openai_gateway):
+def test_real_openai_client_receives_typed_400_for_unqualified_tools(openai_gateway):
     client = _client(openai_gateway)
     with pytest.raises(openai.BadRequestError) as caught:
         client.chat.completions.create(
             model="clozn-local",
             messages=[{"role": "user", "content": "Weather?"}],
-            tools=[{"type": "function", "function": {"name": "weather", "parameters": {}}}],
+            tools=[{"type": "function", "function": {
+                "name": "weather",
+                "parameters": {"type": "object", "properties": {},
+                               "additionalProperties": False},
+                "strict": True,
+            }}],
         )
     assert caught.value.status_code == 400
     error = caught.value.body.get("error", caught.value.body)
     assert error["param"] == "tools"
     assert error["type"] == "invalid_request_error"
+    assert error["code"] == "model_not_qualified"

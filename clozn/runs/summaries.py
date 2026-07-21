@@ -8,6 +8,11 @@ SUMMARY_FIELDS = (
     "created_at",
     "source",
     "client",
+    "client_key",
+    "client_key_source",
+    "session_key",
+    "created_ts",
+    "recorded_ts",
     "model",
     "substrate",
     "prompt_summary",
@@ -18,6 +23,7 @@ SUMMARY_FIELDS = (
     "finish_reason",
     "parent_run_id",
     "flags",
+    "warnings",
 )
 
 
@@ -51,6 +57,16 @@ def _flags(rec: dict) -> list[str]:
         f.append("error")
     if rec.get("finish_reason") == "length":
         f.append("truncated")
+    if (rec.get("reasoning") or {}).get("stripped_from_response"):
+        f.append("reasoning-captured")
+    output = rec.get("output_contract")
+    output = output if isinstance(output, dict) else {}
+    outcome = output.get("outcome")
+    outcome = outcome if isinstance(outcome, dict) else {}
+    if outcome.get("kind") == "tool_call" and outcome.get("status") == "parsed":
+        f.append("tool-call")
+    if outcome.get("status") == "error":
+        f.append("output-parse-error")
     conf = (rec.get("trace") or {}).get("confidence") or []
     if conf and min(conf) < 0.3:
         f.append("low-confidence")

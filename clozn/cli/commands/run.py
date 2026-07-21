@@ -62,12 +62,14 @@ def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
     length) once done. We pair the per-token frames by position into a replayable trace -- the raw
     material for the timeline: where was it uncertain, and what did it almost say -- and also pluck the
     stop cause so CLI runs get a real `finish_reason` in the run journal, same as Studio's chat path.
-    -> (token count, steps, finish_reason)."""
+    -> (token count, steps, finish_reason, prompt_tokens)."""
     body = json.dumps({"prompt": prompt, "max_tokens": max_tokens, "stream": True}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/api/clozn/generate", data=body,
                                  headers={"Content-Type": "application/json"})
     n = 0
     frames = []                                             # every parsed SSE frame, for the shared accumulator
+    from clozn.runs.think_tags import ThinkTagStream, prompt_opens_think
+    think_stream = ThinkTagStream(implicit_open=prompt_opens_think(prompt))
     with urllib.request.urlopen(req, timeout=600) as resp:
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
@@ -83,9 +85,15 @@ def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
             frames.append(obj)
             if obj.get("type") == "tokens_committed":       # print live as tokens land
                 for it in obj.get("items", []):
-                    sys.stdout.write(fmt._stream_token(it.get("piece", ""), it.get("conf"), heat))
-                    sys.stdout.flush()
+                    public_piece = think_stream.feed(it.get("piece", ""))
+                    if public_piece:
+                        sys.stdout.write(fmt._stream_token(public_piece, it.get("conf"), heat))
+                        sys.stdout.flush()
                     n += 1
+    tail, think_result = think_stream.finish()
+    if tail:
+        sys.stdout.write(fmt._stream_token(tail, None, heat))
+        sys.stdout.flush()
     # Accumulation (pair tokens_committed with step_lens by position) lives in runlog so the CLI and the
     # engine-chat capture share ONE tested implementation. Fall back to a local pairing if the import fails
     # -- the stdlib CLI must never break on a missing sibling.
@@ -116,7 +124,10 @@ def stream_ar(port: int, prompt: str, max_tokens: int, heat: bool = False):
         for obj in frames:
             if obj.get("type") == "gen_finished" and isinstance(obj.get("reason"), str):
                 finish = "stop" if obj["reason"] == "eos" else "length"
-    return n, steps, finish
+    prompt_tokens = next((obj.get("prompt_tokens") for obj in frames
+                          if obj.get("type") == "gen_started"
+                          and isinstance(obj.get("prompt_tokens"), int)), None)
+    return n, steps, finish, prompt_tokens, think_result.public_text
 
 
 def _complete_once_raw(port: int, prompt: str, max_tokens: int) -> dict:
@@ -140,17 +151,30 @@ def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, h
     g0 = time.time()
     steps = []
     finish = None
+    prompt_tokens = None
     if mode == "autoregressive":
-        n, steps, finish = stream_ar(port, text, max_tokens, heat=heat)
+        streamed = stream_ar(port, text, max_tokens, heat=heat)
+        # Keep the helper seam friendly to older/custom stream implementations that return the original
+        # (count, steps, finish) tuple. The built-in path returns the richer prompt-count/public-answer
+        # values needed for context receipts and think-tag hygiene.
+        if len(streamed) == 3:
+            n, steps, finish = streamed
+            public_resp = "".join(str(step.get("piece") or "") for step in steps)
+        else:
+            n, steps, finish, prompt_tokens, public_resp = streamed
         sys.stdout.write("\n")
         if heat and fmt.COLOR:                             # a legend + how many tokens wavered, after the reply
             lows = sum(1 for s in steps if fmt._num(s.get("conf")) < 0.5)
             print(f"{fmt._conf_legend()}   {fmt.DIM}{lows} wavered{fmt.RST}", file=sys.stderr)
-        resp = "".join(s["piece"] for s in steps).strip()
+        raw_resp = "".join(s["piece"] for s in steps)
+        resp = public_resp.strip()
     else:
         r = _complete_once_raw(port, text, max_tokens)
-        resp = (r.get("choices") or [{}])[0].get("text", "").strip()
+        raw_resp = str((r.get("choices") or [{}])[0].get("text", ""))
+        from clozn.runs.think_tags import prompt_opens_think, sanitize_reply
+        resp = sanitize_reply(raw_resp, implicit_open=prompt_opens_think(text)).public_text.strip()
         finish = (r.get("choices") or [{}])[0].get("finish_reason")
+        prompt_tokens = (r.get("usage") or {}).get("prompt_tokens")
         print(resp); n = len(resp.split())
     dt = time.time() - g0
     rate = f", ~{n/dt:.0f} tok/s" if dt > 0 and mode == "autoregressive" else ""
@@ -165,8 +189,9 @@ def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, h
     # in REPL mode, prior turns).  Gate 0 requires the journal to record what the model actually saw;
     # replacing messages with template syntax would satisfy that mechanically while making the ordinary
     # run view worse, so runlog's purpose-built final_prompt field carries the exact wire input instead.
-    _log_run_cli(model_name, prompt_for_trace, resp, steps, g0, finish_reason=finish, port=port,
-                 final_prompt=text)
+    _log_run_cli(model_name, prompt_for_trace, raw_resp, steps, g0, finish_reason=finish, port=port,
+                 final_prompt=text, meta={"max_tokens": int(max_tokens),
+                                          "prompt_tokens": prompt_tokens})
     return resp
 
 
@@ -206,7 +231,7 @@ def _identity_for_port(port):
 
 
 def _log_run_cli(model_name, prompt, resp, steps, started, finish_reason=None, port=None,
-                 final_prompt=None):
+                 final_prompt=None, meta=None):
     """Write this CLI turn to the Run Log so `clozn run`/REPL turns show up in the Studio alongside chats.
     runlog.py lives in clozn.runs (a sibling of this stdlib-only CLI) and is itself stdlib-only, so we
     import it directly. Logging must NEVER break a run -- swallow everything."""
@@ -220,7 +245,9 @@ def _log_run_cli(model_name, prompt, resp, steps, started, finish_reason=None, p
         runlog.record(source="cli", client="cli", model=model_name, substrate="engine",
                       messages=messages, response=resp, trace=trace, started=started,
                       finish_reason=finish_reason, identity=identity,
-                      assembled_messages=messages, final_prompt=final_prompt)
+                      assembled_messages=messages,
+                      final_prompt=final_prompt if final_prompt is not None else prompt,
+                      meta={k: v for k, v in (meta or {}).items() if v is not None})
     except Exception:
         pass
 

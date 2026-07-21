@@ -285,7 +285,10 @@ class SelfTeach:
             gate = "auto" if strength is None else float(strength)
             reply = self._generate(self.history, use_prefix=True, max_new=max_new, sample=True, gate=gate,
                                    trace_out=trace_out)
-            self.history.append({"role": "assistant", "content": reply})
+            # Keep emitted scratch text available to the gateway/journal, but never put it back into this
+            # stateful substrate's own next-turn history.
+            from clozn.runs.think_tags import sanitize_reply
+            self.history.append({"role": "assistant", "content": sanitize_reply(reply).public_text})
             return reply
 
     # ---- rule extraction: the model reads the convo and names the user's preferences -----------

@@ -1,11 +1,35 @@
 /* heavnOS api — one client for the clozn server. Field names follow the server's own route shapes.
    Every function returns null on failure rather than throwing; callers render honest absence. */
 
+function associationId(storage, key, prefix){
+  try{
+    let value = storage.getItem(key);
+    if(!value){
+      const random = globalThis.crypto?.randomUUID?.() ||
+        (Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
+      value = prefix + random;
+      storage.setItem(key, value);
+    }
+    return value;
+  }catch(e){ return prefix + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2); }
+}
+const CLIENT_ID = associationId(globalThis.localStorage, "clozn.client_id", "studio-");
+const SESSION_ID = associationId(globalThis.sessionStorage, "clozn.session_id", "studio-session-");
+const associationHeaders = () => ({
+  "X-Clozn-Client-Id": CLIENT_ID,
+  "X-Clozn-Session-Id": SESSION_ID,
+});
+function associated(opts){
+  const o = Object.assign({}, opts || {});
+  o.headers = Object.assign({}, associationHeaders(), o.headers || {});
+  return o;
+}
+
 async function j(path, opts, timeoutMs = 30000){
   const c = new AbortController();
   const k = setTimeout(() => c.abort(), timeoutMs);
   try{
-    const r = await fetch(path, Object.assign({ signal: c.signal }, opts || {}));
+    const r = await fetch(path, associated(Object.assign({ signal: c.signal }, opts || {})));
     clearTimeout(k);
     if(!r.ok) return null;
     return await r.json();
@@ -19,8 +43,8 @@ async function postE(path, body, timeoutMs = 30000){
   const c = new AbortController();
   const k = setTimeout(() => c.abort(), timeoutMs);
   try{
-    const r = await fetch(path, { method: "POST", signal: c.signal,
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    const r = await fetch(path, associated({ method: "POST", signal: c.signal,
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }));
     clearTimeout(k);
     let o = null; try{ o = await r.json(); }catch(e){ o = {}; }
     return Object.assign({ __status: r.status }, o);
@@ -37,6 +61,7 @@ export const api = {
 
   /* ── runs ── */
   listRuns: () => j("/runs", null, 8000),                              // -> {runs:[summaries]}
+  latestRun: () => j("/runs/latest", null, 8000),                      // exact tab/session association
   getRun: id => j("/runs/" + enc(id), null, 8000),                     // -> full record (maybe {run:...})
   family: id => j("/runs/" + enc(id) + "/family"),                     // -> {runs:[...]}
   exportUrl: (id, fmt = "json") => "/runs/" + enc(id) + "/export?format=" + fmt,
@@ -141,7 +166,7 @@ export const api = {
       try{
         const r = await fetch("/v1/chat/completions", {
           method: "POST", signal: c.signal,
-          headers: { "Content-Type": "application/json" },
+          headers: Object.assign({ "Content-Type": "application/json" }, associationHeaders()),
           body: JSON.stringify({ messages, stream: true,
                                  ...(lens ? { clozn_lens: lens } : {}),
                                  ...(trust ? { clozn_trust: true } : {}) }),

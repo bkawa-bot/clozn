@@ -59,6 +59,56 @@ def _manifest(identity, payload, **model_overrides):
     }
 
 
+def _chat_io_manifest(identity, directory, *, template_fingerprint="b" * 64,
+                      features=None, evidence_overrides=None):
+    features = features or ["tools", "json_object", "json_schema"]
+    schema_subsets = {}
+    if "tools" in features:
+        schema_subsets["tool_parameters"] = contracts.CHAT_IO_JSON_SCHEMA_SUBSET_ID
+    if "json_schema" in features:
+        schema_subsets["json_schema"] = contracts.CHAT_IO_JSON_SCHEMA_SUBSET_ID
+    evidence = {
+        "schema_version": contracts.CHAT_IO_EVIDENCE_SCHEMA,
+        "suite_id": contracts.CHAT_IO_QUALIFICATION_SUITE_ID,
+        "model_sha256": identity["sha256"],
+        "template_fingerprint": template_fingerprint,
+        "pipeline": dict(contracts.CHAT_IO_PIPELINE),
+        "features": features,
+        "schema_subsets": schema_subsets,
+        "results": {
+            name: {"passed": 1, "failed": 0}
+            for name in ["pipeline", *features]
+        },
+    }
+    evidence.update(evidence_overrides or {})
+    encoded = json.dumps(evidence, sort_keys=True).encode("utf-8")
+    payload = directory / "qualification-evidence.json"
+    payload.write_bytes(encoded)
+    digest = hashlib.sha256(encoded).hexdigest()
+    return {
+        "contract_version": contracts.CONTRACT_VERSION,
+        "artifact_type": contracts.CHAT_IO_ARTIFACT_TYPE,
+        "artifact_version": contracts.CHAT_IO_ARTIFACT_VERSION,
+        "model": {
+            "source_id": "fixture-only",
+            "architecture": identity["architecture"],
+            "hidden_size": identity["hidden_size"],
+            "layer_count": identity["layer_count"],
+            "vocab_size": identity["vocab_size"],
+            "tokenizer_sha256": identity["tokenizer_sha256"],
+            "compatible_gguf_sha256": [identity["sha256"]],
+        },
+        "profile": {
+            "template_fingerprint": template_fingerprint,
+            "pipeline": dict(contracts.CHAT_IO_PIPELINE),
+            "features": features,
+            "schema_subsets": schema_subsets,
+            "evidence": {"path": payload.name, "sha256": digest},
+        },
+        "files": {payload.name: {"bytes": len(encoded), "sha256": digest}},
+    }
+
+
 def test_gguf_identity_pins_file_tokenizer_and_dimensions(model):
     path, identity = model
     assert identity["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
@@ -179,3 +229,155 @@ def test_explicit_legacy_manifest_is_refused(model, tmp_path):
         contracts.find_compatible_artifact(
             "jlens", identity, tmp_path, explicit_dir=directory
         )
+
+
+def test_chat_io_profile_validates_exact_identity_and_registry_shape(model, tmp_path):
+    from clozn.server import structured_io
+
+    _path, identity = model
+    manifest = _chat_io_manifest(identity, tmp_path)
+    result = contracts.validate_chat_io_profile(
+        manifest, identity, "b" * 64, tmp_path
+    )
+    assert result["model_sha256"] == identity["sha256"]
+    assert result["template_fingerprint"] == "b" * 64
+    assert result["schema_subsets"] == {
+        "tool_parameters": contracts.CHAT_IO_JSON_SCHEMA_SUBSET_ID,
+        "json_schema": contracts.CHAT_IO_JSON_SCHEMA_SUBSET_ID
+    }
+    assert result["pipeline"] == contracts.CHAT_IO_PIPELINE
+    assert result["evidence"]["sha256"] == manifest["profile"]["evidence"]["sha256"]
+    registry = structured_io.validate_qualification_registry({
+        "schema_version": structured_io.QUALIFICATION_SCHEMA,
+        "entries": [result["registry_entry"]],
+    })
+    assert registry["entries"][0]["features"] == [
+        "tools", "json_object", "json_schema"
+    ]
+    assert registry["entries"][0]["pipeline"] == contracts.CHAT_IO_PIPELINE
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("features", ["tools", "future_feature"]),
+    ("schema_subsets", {}),
+])
+def test_chat_io_profile_rejects_contract_drift(model, tmp_path, field, bad):
+    _path, identity = model
+    manifest = _chat_io_manifest(identity, tmp_path)
+    manifest["profile"][field] = bad
+    with pytest.raises(contracts.ArtifactContractError, match=field):
+        contracts.validate_chat_io_profile(manifest, identity, "b" * 64, tmp_path)
+
+
+@pytest.mark.parametrize("field", [
+    "executor_id", "renderer_id", "grammar_id", "parser_id", "validator_id",
+])
+def test_chat_io_profile_rejects_each_native_pipeline_drift(model, tmp_path, field):
+    _path, identity = model
+    manifest = _chat_io_manifest(identity, tmp_path)
+    manifest["profile"]["pipeline"][field] += ".drift"
+    with pytest.raises(contracts.ArtifactContractError, match="pipeline"):
+        contracts.validate_chat_io_profile(manifest, identity, "b" * 64, tmp_path)
+
+
+def test_chat_io_profile_rejects_v1_and_incomplete_or_failed_results(model, tmp_path):
+    _path, identity = model
+    manifest = _chat_io_manifest(identity, tmp_path)
+    manifest["artifact_version"] = 1
+    with pytest.raises(contracts.ArtifactContractError, match="artifact_version"):
+        contracts.validate_chat_io_profile(manifest, identity, "b" * 64, tmp_path)
+
+    manifest = _chat_io_manifest(identity, tmp_path)
+    evidence_path = tmp_path / manifest["profile"]["evidence"]["path"]
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    del evidence["results"]["tools"]
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    encoded = evidence_path.read_bytes()
+    digest = hashlib.sha256(encoded).hexdigest()
+    manifest["files"][evidence_path.name] = {"bytes": len(encoded), "sha256": digest}
+    manifest["profile"]["evidence"]["sha256"] = digest
+    with pytest.raises(contracts.ArtifactContractError, match="cover pipeline"):
+        contracts.validate_chat_io_profile(manifest, identity, "b" * 64, tmp_path)
+
+    manifest = _chat_io_manifest(identity, tmp_path)
+    evidence_path = tmp_path / manifest["profile"]["evidence"]["path"]
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["results"]["pipeline"] = {"passed": 1, "failed": 1}
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    encoded = evidence_path.read_bytes()
+    digest = hashlib.sha256(encoded).hexdigest()
+    manifest["files"][evidence_path.name] = {"bytes": len(encoded), "sha256": digest}
+    manifest["profile"]["evidence"]["sha256"] = digest
+    with pytest.raises(contracts.ArtifactContractError, match="failed == 0"):
+        contracts.validate_chat_io_profile(manifest, identity, "b" * 64, tmp_path)
+
+
+def test_chat_io_profile_rejects_template_mismatch_and_multi_model_claim(model, tmp_path):
+    _path, identity = model
+    manifest = _chat_io_manifest(identity, tmp_path)
+    with pytest.raises(contracts.ArtifactContractError, match="template fingerprint mismatch"):
+        contracts.validate_chat_io_profile(manifest, identity, "c" * 64, tmp_path)
+
+    manifest["model"]["compatible_gguf_sha256"].append("d" * 64)
+    with pytest.raises(contracts.ArtifactContractError, match="exactly the loaded GGUF"):
+        contracts.validate_chat_io_profile(manifest, identity, "b" * 64, tmp_path)
+
+
+def test_chat_io_profile_rejects_evidence_checksum_and_identity_drift(model, tmp_path):
+    _path, identity = model
+    manifest = _chat_io_manifest(identity, tmp_path)
+    manifest["profile"]["evidence"]["sha256"] = "e" * 64
+    with pytest.raises(contracts.ArtifactContractError, match="checksum"):
+        contracts.validate_chat_io_profile(manifest, identity, "b" * 64, tmp_path)
+
+    manifest = _chat_io_manifest(
+        identity, tmp_path, evidence_overrides={"model_sha256": "f" * 64}
+    )
+    with pytest.raises(contracts.ArtifactContractError, match="model_sha256 mismatch"):
+        contracts.validate_chat_io_profile(manifest, identity, "b" * 64, tmp_path)
+
+    manifest = _chat_io_manifest(
+        identity, tmp_path, evidence_overrides={"suite_id": "clozn.chat_io.future_suite.v1"}
+    )
+    with pytest.raises(contracts.ArtifactContractError, match="suite_id mismatch"):
+        contracts.validate_chat_io_profile(manifest, identity, "b" * 64, tmp_path)
+
+
+def test_chat_io_tool_only_profile_qualifies_tool_parameter_schema_subset(model, tmp_path):
+    _path, identity = model
+    manifest = _chat_io_manifest(identity, tmp_path, features=["tools"])
+    result = contracts.validate_chat_io_profile(
+        manifest, identity, "b" * 64, tmp_path
+    )
+    assert result["schema_subsets"] == {
+        "tool_parameters": contracts.CHAT_IO_JSON_SCHEMA_SUBSET_ID,
+    }
+
+
+def test_chat_io_discovery_is_exact_and_model_free(model, tmp_path):
+    _path, identity = model
+    wrong = tmp_path / contracts.CHAT_IO_ARTIFACT_TYPE / "wrong-template"
+    wrong.mkdir(parents=True)
+    wrong_manifest = _chat_io_manifest(identity, wrong, template_fingerprint="c" * 64)
+    (wrong / "manifest.json").write_text(json.dumps(wrong_manifest), encoding="utf-8")
+
+    exact = tmp_path / contracts.CHAT_IO_ARTIFACT_TYPE / "exact"
+    exact.mkdir()
+    exact_manifest = _chat_io_manifest(identity, exact)
+    (exact / "manifest.json").write_text(json.dumps(exact_manifest), encoding="utf-8")
+
+    found = contracts.find_compatible_chat_io_profile(identity, "b" * 64, tmp_path)
+    assert found["artifact_dir"] == str(exact.resolve())
+    assert found["registry_entry"]["model_sha256"] == identity["sha256"]
+    assert contracts.find_compatible_chat_io_profile(identity, "d" * 64, tmp_path) is None
+
+
+def test_chat_io_discovery_refuses_ambiguous_exact_profiles(model, tmp_path):
+    _path, identity = model
+    for name in ("one", "two"):
+        directory = tmp_path / contracts.CHAT_IO_ARTIFACT_TYPE / name
+        directory.mkdir(parents=True)
+        manifest = _chat_io_manifest(identity, directory)
+        (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(contracts.ArtifactContractError, match="multiple chat_io artifacts"):
+        contracts.find_compatible_chat_io_profile(identity, "b" * 64, tmp_path)

@@ -23,6 +23,7 @@ export function ReplayModule(){
   </div>`;
   return html`<div class="replay-workbench">
     <${WorkbenchHeader} rec=${rec}/>
+    <${ContextWarning} rec=${rec}/>
     <${SignalRibbon} rec=${rec}/>
 
     <div class="workbench-stage">
@@ -54,6 +55,20 @@ export function ReplayModule(){
       </div>
     </div>
   </div>`;
+}
+
+function ContextWarning({ rec }){
+  const warnings = (rec.context_receipt && rec.context_receipt.warnings) || rec.warnings || [];
+  const cutoff = warnings.find(w => w && w.code === "output_truncated")
+    || (rec.finish_reason === "length" ? { message: "generation stopped at the output/context token budget; the reply may be incomplete" } : null);
+  if(!cutoff) return null;
+  const lim = (rec.context_receipt && rec.context_receipt.limits) || {};
+  return html`<section class="context-warning" role="alert">
+    <b>OUTPUT CUT OFF</b>
+    <span>${cutoff.message}</span>
+    ${lim.requested_max_tokens != null && html`<code>requested ${lim.requested_max_tokens} tokens</code>`}
+    <span>Prompt input was not silently truncated; overlong prompts are rejected by the worker.</span>
+  </section>`;
 }
 
 /* The first screen is a run instrument, not an output-first chat shell. Every field here comes from
@@ -179,6 +194,8 @@ function Monitor({ rec }){
   const trust = useStore(x => rec ? x.trust[rec.id] : null);
   const [supportBusy, setSupportBusy] = useState(false);
   const steps = rec ? normSteps(rec) : [];
+  const reasoningBlocks = rec && rec.reasoning && Array.isArray(rec.reasoning.blocks)
+    ? rec.reasoning.blocks : [];
   const done = P >= steps.length;
   const trunc = rec && rec.finish_reason === "length";
   const liveView = chatting || chatBuf != null;   /* streaming, or streamed & awaiting the journal */
@@ -281,6 +298,15 @@ function Monitor({ rec }){
           ${trust && html`<span style="color:var(--mist)">shading source is disclosed below</span>`}
         ` : html`<span>nothing recorded yet</span>`}
     </div>
+    ${reasoningBlocks.length ? html`<details class="cfg" data-testid="captured-reasoning"
+        style="margin:6px 13px 0;border-left-color:var(--lilac)">
+      <summary><span class="cap">captured reasoning</span>
+        <span style="margin-left:auto">${reasoningBlocks.length} think block(s)</span></summary>
+      <small>model-emitted &lt;think&gt; text · inspectable evidence, not a privileged or verified thought ·
+        excluded from the answer, continuation history, token forks, and tool parsing</small>
+      ${reasoningBlocks.map((b, i) => html`<pre key=${i} style="white-space:pre-wrap;margin:7px 0 0">${b.text || ""}</pre>
+        <span class=${"tag " + (b.closed ? "cap-t" : "fail-t")}>${b.closed ? "CLOSED" : "UNCLOSED"}</span>`)}
+    </details>` : null}
     ${rec && !rec._sample && html`<div class="trust-channels" data-testid="trust-channels">
       <section><b>confidence</b>
         ${truthMeta && truthMeta.available && !truthMeta.small_n
@@ -320,9 +346,12 @@ async function doSend(rec, text, cont){
      journal-poll window after `chatting` itself has already flipped back to false -- guard on
      both, so a second send can't start while the first is still settling into the journal. */
   if(s.chatting || s.chatBuf != null) return;
-  const prevTop = (s.runs[0] || {}).id;
-  const messages = (cont && rec && Array.isArray(rec.messages) ? rec.messages : [])
-    .concat([{ role: "user", content: text }]);
+  const messages = (cont && rec && Array.isArray(rec.messages) ? rec.messages.map(m => ({ ...m })) : []);
+  /* A run stores the request transcript and its current assistant answer separately.  Continuing must
+     include that clean public answer exactly once; reasoning evidence is intentionally never copied. */
+  if(cont && rec && rec.response != null && (!messages.length || messages[messages.length - 1].role !== "assistant"))
+    messages.push({ role: "assistant", content: String(rec.response) });
+  messages.push({ role: "user", content: text });
   const lensLayer = s.lensLayer || 0;                 /* F1: 0 = off; else the requested J-lens depth */
   store.set({ chatting: true, chatBuf: "", chatPrompt: text, playing: false, liveLens: null, livePolicy: null });
   chatAbortFn = api.chatStream(messages, {
@@ -335,20 +364,22 @@ async function doSend(rec, text, cont){
     },
     onPolicy: fr => store.set({ livePolicy: fr || null }),
     onDelta: chunk => store.set(st => ({ chatBuf: (st.chatBuf || "") + chunk })),
-    onDone: async () => {
+    onDone: async final => {
       store.set({ chatting: false });
-      for(let i = 0; i < 14; i++){                       /* poll the journal for the new run */
-        await new Promise(r => setTimeout(r, 450));
-        const l = await api.listRuns();
-        if(l && Array.isArray(l.runs) && l.runs.length && l.runs[0].id !== prevTop){
-          store.set({ runs: l.runs, chatBuf: null, chatPrompt: null });
-          await loadRun(l.runs[0].id);
-          toast("run " + l.runs[0].id + " recorded — on the tape");
-          return;
-        }
+      let runId = final && final.clozn_run_id;
+      if(!runId){
+        const latest = await api.latestRun();             /* session-key fallback for older gateways */
+        runId = latest && latest.available && latest.run && latest.run.id;
       }
-      store.set({ chatBuf: null, chatPrompt: null });
-      toast("stream ended but the run hasn't appeared in the journal yet — it should land on the next poll");
+      const l = await api.listRuns();
+      store.set({ ...(l && Array.isArray(l.runs) ? { runs: l.runs } : {}),
+        chatBuf: null, chatPrompt: null });
+      if(runId){
+        await loadRun(runId);
+        toast("run " + runId + " recorded — on the tape");
+      }else{
+        toast("stream ended but no run id was returned — refresh the journal to inspect it");
+      }
     },
     onError: err => { store.set({ chatting: false, chatBuf: null, chatPrompt: null });
       toast("chat stream failed: " + err); },

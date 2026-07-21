@@ -1,14 +1,187 @@
 #include "cloze/generate_ar.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <memory>
 #include <random>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "cloze/sample.hpp"
 #include "cloze/whitebox.hpp"  // features_from / lens_from (shared with the diffusion loop)
 
 namespace cloze {
+
+namespace {
+
+std::string regex_escape(const std::string& value) {
+    static const std::string metacharacters = R"(.^$|()*+?[]{}\)";
+    std::string out;
+    out.reserve(value.size() * 2);
+    for (char ch : value) {
+        if (metacharacters.find(ch) != std::string::npos) out.push_back('\\');
+        out.push_back(ch);
+    }
+    return out;
+}
+
+std::string token_piece(const llama_vocab* vocab, llama_token token, bool special) {
+    char local[128];
+    int n = llama_token_to_piece(vocab, token, local, static_cast<int>(sizeof(local)), 0, special);
+    if (n >= 0) return std::string(local, static_cast<size_t>(n));
+    std::string out(static_cast<size_t>(-n), '\0');
+    n = llama_token_to_piece(vocab, token, out.data(), static_cast<int>(out.size()), 0, special);
+    if (n < 0) throw std::runtime_error("failed to decode grammar token");
+    out.resize(static_cast<size_t>(n));
+    return out;
+}
+
+class LlamaGrammarConstraint final : public TokenConstraint {
+public:
+    LlamaGrammarConstraint(GgmlAdapter& adapter, const GrammarConfig& config)
+        : vocab_(adapter.vocab()) {
+        if (vocab_ == nullptr) throw std::invalid_argument("grammar requires a model vocabulary");
+        if (config.grammar.empty()) throw std::invalid_argument("grammar must not be empty");
+
+        for (const std::string& value : config.preserved_tokens) {
+            const std::vector<int> ids = adapter.encode(value);
+            if (ids.size() == 1) preserved_tokens_.insert(ids.front());
+        }
+
+        std::vector<std::string> patterns;
+        std::vector<llama_token> tokens;
+        for (const GrammarTrigger& trigger : config.grammar_triggers) {
+            switch (trigger.type) {
+                case GrammarTriggerType::Token:
+                    if (trigger.token < 0 || trigger.token >= llama_vocab_n_tokens(vocab_)) {
+                        throw std::invalid_argument("grammar trigger token is outside the model vocabulary");
+                    }
+                    tokens.push_back(static_cast<llama_token>(trigger.token));
+                    break;
+                case GrammarTriggerType::Word: {
+                    const std::vector<int> ids = adapter.encode(trigger.value);
+                    if (ids.size() == 1) {
+                        if (preserved_tokens_.find(ids.front()) == preserved_tokens_.end()) {
+                            throw std::invalid_argument("single-token grammar trigger must be preserved: " + trigger.value);
+                        }
+                        tokens.push_back(static_cast<llama_token>(ids.front()));
+                    } else {
+                        patterns.push_back(regex_escape(trigger.value));
+                    }
+                    break;
+                }
+                case GrammarTriggerType::Pattern:
+                    patterns.push_back(trigger.value);
+                    break;
+                case GrammarTriggerType::PatternFull: {
+                    std::string anchored = trigger.value.empty() ? "^$" : trigger.value;
+                    if (!trigger.value.empty() && trigger.value.front() != '^') anchored.insert(anchored.begin(), '^');
+                    if (!trigger.value.empty() && trigger.value.back() != '$') anchored.push_back('$');
+                    patterns.push_back(std::move(anchored));
+                    break;
+                }
+            }
+        }
+
+        if (config.grammar_lazy && patterns.empty() && tokens.empty()) {
+            throw std::invalid_argument("lazy grammar requires at least one trigger");
+        }
+
+        if (config.grammar_lazy) {
+            std::vector<const char*> pattern_ptrs;
+            pattern_ptrs.reserve(patterns.size());
+            for (const std::string& pattern : patterns) pattern_ptrs.push_back(pattern.c_str());
+            sampler_.reset(llama_sampler_init_grammar_lazy_patterns(
+                vocab_, config.grammar.c_str(), "root",
+                pattern_ptrs.data(), pattern_ptrs.size(), tokens.data(), tokens.size()));
+        } else {
+            sampler_.reset(llama_sampler_init_grammar(vocab_, config.grammar.c_str(), "root"));
+        }
+        if (!sampler_) throw std::invalid_argument("invalid grammar emitted by chat template");
+
+        if (config.grammar_lazy && !config.reasoning_start_tag.empty() &&
+            !config.reasoning_end_tag.empty()) {
+            reasoning_gate_ = std::make_unique<ReasoningBlockGate>(
+                adapter.encode(config.reasoning_start_tag),
+                adapter.encode(config.reasoning_end_tag));
+        }
+
+        // llama.cpp's common sampler advances output-format/tool-call grammars over
+        // the assistant prefix already present in the prompt. Chat-template grammar
+        // configs are exactly that category, so reproduce the prefill here.
+        if (!config.grammar_lazy && !config.generation_prompt.empty()) {
+            const std::vector<int> prefill = adapter.encode(config.generation_prompt);
+            for (size_t i = 0; i < prefill.size(); ++i) {
+                const std::string piece = token_piece(vocab_, static_cast<llama_token>(prefill[i]), true);
+                if (i == 0 && !piece.empty() && !config.generation_prompt.empty() &&
+                    std::isspace(static_cast<unsigned char>(piece.front())) &&
+                    !std::isspace(static_cast<unsigned char>(config.generation_prompt.front()))) {
+                    continue;
+                }
+                llama_sampler_accept(sampler_.get(), static_cast<llama_token>(prefill[i]));
+            }
+        }
+
+        // Lazy grammars use the generation prefix only to establish whether generation begins
+        // inside a reasoning block. The grammar itself remains unadvanced until its trigger fires.
+        if (reasoning_gate_ && !config.generation_prompt.empty()) {
+            for (int token : adapter.encode(config.generation_prompt)) reasoning_gate_->accept(token);
+        }
+    }
+
+    void apply(std::vector<float>& logits) override {
+        grammar_applied_ = !reasoning_gate_ || !reasoning_gate_->active();
+        if (!grammar_applied_) return;
+        candidates_.resize(logits.size());
+        for (size_t i = 0; i < logits.size(); ++i) {
+            candidates_[i] = llama_token_data{
+                static_cast<llama_token>(i), logits[i], 0.0f};
+        }
+        llama_token_data_array array{
+            candidates_.data(), candidates_.size(), -1, false};
+        llama_sampler_apply(sampler_.get(), &array);
+        for (const llama_token_data& candidate : candidates_) {
+            if (candidate.id < 0 || static_cast<size_t>(candidate.id) >= logits.size()) {
+                throw std::runtime_error("grammar sampler returned an invalid token id");
+            }
+            logits[static_cast<size_t>(candidate.id)] = candidate.logit;
+        }
+    }
+
+    void accept(int token) override {
+        const bool accept_grammar = grammar_applied_;
+        if (reasoning_gate_) reasoning_gate_->accept(token);
+        if (accept_grammar) {
+            llama_sampler_accept(sampler_.get(), static_cast<llama_token>(token));
+        }
+    }
+
+    std::string decode(const std::vector<int>& tokens) const {
+        std::string out;
+        for (int token : tokens) {
+            out += token_piece(vocab_, static_cast<llama_token>(token),
+                               preserved_tokens_.find(token) != preserved_tokens_.end());
+        }
+        return out;
+    }
+
+private:
+    struct SamplerDeleter {
+        void operator()(llama_sampler* sampler) const { llama_sampler_free(sampler); }
+    };
+
+    const llama_vocab* vocab_ = nullptr;
+    std::set<int> preserved_tokens_;
+    std::unique_ptr<llama_sampler, SamplerDeleter> sampler_;
+    std::vector<llama_token_data> candidates_;
+    std::unique_ptr<ReasoningBlockGate> reasoning_gate_;
+    bool grammar_applied_ = true;
+};
+
+}  // namespace
 
 GenerateResult generate_ar(GgmlAdapter& adapter,
                            const std::vector<int>& prompt_ids,
@@ -18,7 +191,8 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
                            const ConceptProbes* read_probes,
                            const std::vector<float>* prefix_embd,
                            int prefix_rows,
-                           const std::vector<int>* reference) {
+                           const std::vector<int>* reference,
+                           const GrammarConfig* grammar) {
     if (prompt_ids.empty()) throw std::invalid_argument("prompt_ids must be non-empty");
     if (config.max_new < 1) throw std::invalid_argument("max_new must be >= 1");
 
@@ -70,9 +244,16 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     if (sample.rep_penalty != 1.0) sopts.board = &seq;
     if (sample.temperature > 0.0) sopts.rng = &rng;
 
+    std::unique_ptr<LlamaGrammarConstraint> grammar_constraint;
+    if (grammar != nullptr && !grammar->grammar.empty()) {
+        grammar_constraint = std::make_unique<LlamaGrammarConstraint>(adapter, *grammar);
+        sopts.constraint = grammar_constraint.get();
+    }
+
     std::vector<int> generated;
     generated.reserve(config.max_new);
     std::string reason = "length";
+    std::string stopped_text;
 
     // Hard context window: absolute positions [0, n_ctx) fit the KV cache. The prompt (+ any soft prefix)
     // must fit it; a prompt that exceeds it is a client error surfaced cleanly (the handler turns it into a
@@ -94,10 +275,9 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
         // 500: a generation that reaches the context window stops, it never overflows.
         if (n_past >= n_ctx) { reason = "length"; break; }
         const std::vector<int> want = {n_past};  // the position about to be generated
-        const std::vector<Candidate> cand = sample_candidates(fwd, want, sopts);
-        if (cand.empty()) break;
-        const int tok = cand[0].token_id;
-        const double conf = cand[0].confidence;
+        const Candidate cand = sample_committed_candidate(fwd, n_past, sopts);
+        const int tok = cand.token_id;
+        const double conf = cand.confidence;
 
         // The commit + the logit-lens (what this slot is considering = the distribution we sampled).
         emit(TokensCommitted{t, 0, {CommitItem{n_past, tok, conf}}});
@@ -106,6 +286,25 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
         generated.push_back(tok);
         seq.push_back(tok);
         const bool is_eos = (eos >= 0 && tok == eos);
+
+        // llama.cpp chat templates may provide extra assistant terminators in addition to the
+        // model EOS token. Match them against the same special-token-aware byte stream returned
+        // to the parser. The matched terminator remains visible in board/events, but is not fed
+        // back into the KV or exposed in result.text.
+        bool hit_additional_stop = false;
+        if (grammar != nullptr && !grammar->additional_stops.empty()) {
+            const std::string decoded = grammar_constraint
+                                            ? grammar_constraint->decode(generated)
+                                            : adapter.decode(generated);
+            for (const std::string& stop : grammar->additional_stops) {
+                if (!stop.empty() && decoded.size() >= stop.size() &&
+                    decoded.compare(decoded.size() - stop.size(), stop.size(), stop) == 0) {
+                    stopped_text = decoded.substr(0, decoded.size() - stop.size());
+                    hit_additional_stop = true;
+                    break;
+                }
+            }
+        }
 
         // Early-stop on divergence from the reference (prove-all ablated arms): the just-committed token
         // is already in `generated`, so the partial reply is a bit-exact PREFIX of the full reply. We stop
@@ -116,6 +315,12 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
             diverged = true;
             diverged_at = k;
             ++t;  // count this committed step (matches the non-diverged ++t below)
+            break;
+        }
+
+        if (hit_additional_stop) {
+            reason = "stop";
+            ++t;
             break;
         }
 
@@ -136,7 +341,9 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     if (reason == "eos" && !kept.empty()) kept.pop_back();  // drop the trailing EOS for the text
     result.new_tokens = static_cast<int>(kept.size());
     result.generated = kept;
-    result.text = adapter.decode(kept);
+    result.text = reason == "stop"
+                      ? stopped_text
+                      : (grammar_constraint ? grammar_constraint->decode(kept) : adapter.decode(kept));
     result.steps_total = t;
     result.reason = reason;
     result.ref_active = ref_active;    // divergence checking was armed (a reference was supplied)

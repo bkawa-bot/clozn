@@ -41,6 +41,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install CPU torch + the version-pinned golden deps
         # Pinned to the environment the open-dCoder real-checkpoint goldens were generated against:
         # library drift can shift a logit enough to flip a near-tie pick (the seam's invariant 3).
@@ -55,7 +58,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
           pip install -e "engine/lab[dev]"
-          pip install "transformers==4.57.6" "tokenizers==0.22.2" "numpy==2.4.6" "openai>=1"
+          pip install "transformers==4.57.6" "tokenizers==0.22.2" "numpy==2.4.6" \
+            "openai==2.46.0" "ollama==0.6.2"
+      - name: Install pinned official JavaScript client
+        run: npm ci --prefix tests/clients
       - name: Cache the open-dCoder checkpoint
         uses: actions/cache@v4
         with:
@@ -101,6 +107,22 @@ jobs:
         # Validated locally with torch/transformers import-blocked: 36/36 pass. test_studio is
         # intentionally excluded -- it touches the HF SteeringControl and is not a torch-free test.
         run: python -m unittest -v tests.test_runtime_architecture tests.test_product_smoke
+
+  aider-client:
+    name: Aider 0.86.2 -> OpenAI-compatible gateway
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install the pinned released coding agent
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest "aider-chat==0.86.2"
+      - name: Real Aider subprocess conformance
+        run: pytest tests/test_aider_client_compat.py -q
 
   packaging:
     name: packaging — clean-room install (wheel, console entry point, doctor)
