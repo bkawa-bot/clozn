@@ -1,0 +1,113 @@
+"""Prompt-first corrective retry, persistent scope, and conflict-safe undo routes."""
+from __future__ import annotations
+
+from clozn.server import app as ctx
+
+
+def _identity_conflict(run: dict, sub) -> str | None:
+    recorded = run.get("identity") or {}
+    if not recorded or not hasattr(sub, "identity_meta"):
+        return None
+    try:
+        active = sub.identity_meta() or {}
+    except Exception:
+        return None
+    for field in ("model_sha256", "template_fingerprint"):
+        if recorded.get(field) and active.get(field) and recorded[field] != active[field]:
+            return field
+    return None
+
+
+def try_post(h, p, body):
+    if p.startswith("/runs/") and p.endswith("/retry"):
+        rid = p[len("/runs/"):-len("/retry")]
+        import clozn.runs.store as runlog
+        run = runlog.get_run(rid)
+        if run is None:
+            h._json(404, {"error": "run not found"})
+            return True
+        sub = ctx.active_sub(h)
+        if not (sub and callable(getattr(sub, "chat", None))):
+            h._json(503, {"error": "corrective retry requires a ready product model worker"})
+            return True
+        preset = str(body.get("preset") or "")
+        scope = str(body.get("scope") or "once")
+        from clozn.replay.corrective import CORRECTION_PRESETS, retry_compare
+        if preset not in CORRECTION_PRESETS:
+            h._json(400, {"error": "preset must be one of: " + ", ".join(CORRECTION_PRESETS)})
+            return True
+        if scope not in {"once", "session", "profile"}:
+            h._json(400, {"error": "scope must be once, session, or profile"})
+            return True
+        mismatch = _identity_conflict(run, sub)
+        if mismatch:
+            h._json(409, {"error": f"active worker {mismatch} does not match the target run"})
+            return True
+
+        target = None
+        if scope == "session":
+            target = run.get("session_key")
+            if not target:
+                h._json(409, {"error": "that run has no exact session association; use --scope once"})
+                return True
+        elif scope == "profile":
+            target = (run.get("meta") or {}).get("active_profile")
+            if not target:
+                h._json(409, {"error": "that run has no captured active profile; use --scope once"})
+                return True
+            if target != ctx._active_profile_name():
+                h._json(409, {"error": "the profile that shaped that run is not currently active"})
+                return True
+
+        try:
+            from clozn.behavior import corrective_retries
+            active_presets = corrective_retries.effective_presets(
+                session_key=run.get("session_key"),
+                profile_name=ctx._active_profile_name(),
+            )
+            comparison = retry_compare(
+                run, preset, sub, scope=scope, active_presets=active_presets,
+            )
+        except ValueError as exc:
+            h._json(400, {"error": str(exc)})
+            return True
+        if comparison is None:
+            h._json(500, {"error": "corrective retry comparison failed"})
+            return True
+
+        if scope == "once":
+            policy = {"status": "request_local", "scope": "once", "target": None,
+                      "presets": [preset], "undo_id": None}
+            undo = {"status": "automatic_restored", "available": False,
+                    "note": "the intervention applied only to the candidate replay"}
+        elif comparison.get("coherence", {}).get("degenerate"):
+            policy = {"status": "not_activated", "scope": scope, "target": target,
+                      "reason": "candidate output was degenerate"}
+            undo = {"status": "not_needed", "available": False}
+        elif not comparison.get("intervention_observed"):
+            policy = {"status": "not_activated", "scope": scope, "target": target,
+                      "reason": "the correction was not present in survived prompt evidence"}
+            undo = {"status": "not_needed", "available": False}
+        else:
+            try:
+                policy = corrective_retries.activate(scope, target, preset)
+            except corrective_retries.CorrectivePolicyError as exc:
+                h._json(409, {"error": str(exc), "comparison": comparison})
+                return True
+            undo_id = policy.get("undo_id")
+            undo = {"status": "available" if undo_id else "not_needed",
+                    "available": bool(undo_id), "id": undo_id}
+        h._json(200, {**comparison, "policy": policy, "undo": undo})
+        return True
+
+    if p.startswith("/corrective-retries/") and p.endswith("/undo"):
+        transaction_id = p[len("/corrective-retries/"):-len("/undo")]
+        from clozn.behavior import corrective_retries
+        try:
+            result = corrective_retries.undo(transaction_id)
+        except corrective_retries.CorrectivePolicyError as exc:
+            h._json(409, {"error": str(exc)})
+            return True
+        h._json(200, result)
+        return True
+    return False

@@ -31,6 +31,26 @@ import clozn.runs.store as runlog
 NUDGE_STEP = 0.5            # a "nudge" bumps one dial this far toward its + pole (then set() caps it per-axis)
 
 
+def _inject_prompt_instructions(messages: list[dict], instructions) -> list[dict]:
+    """Add request-local system instructions without changing delivered messages.
+
+    This mirrors prompt-memory assembly: caller system context remains first and the
+    Clozn-owned block is appended to it, otherwise a system message is prepended.
+    The journal still records ``messages`` unchanged; only assembled/final prompt
+    evidence contains this intervention.
+    """
+    blocks = [str(value).strip() for value in (instructions or []) if str(value).strip()]
+    if not blocks:
+        return [dict(message) for message in messages]
+    block = "\n\n".join(blocks)
+    copied = [dict(message) for message in messages]
+    for message in copied:
+        if message.get("role") == "system":
+            message["content"] = (str(message.get("content") or "") + "\n\n" + block).strip()
+            return copied
+    return [{"role": "system", "content": block}] + copied
+
+
 def _mode() -> str:
     """The active memory mode; any hiccup resolves to "internalized" (the long-standing behavior),
     mirroring clozn_server._memory_mode."""
@@ -115,7 +135,8 @@ def _effective_dials(sub) -> dict:
         return {}
 
 
-def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
+def replay(run: dict, changes: dict, sub, reference_tokens=None, *,
+           prompt_instructions=None, max_new: int | None = None) -> dict | None:
     """Re-run `run` under `changes` on the live substrate `sub`; record the result as a child run and return
     it. Returns None on any failure (a replay must never raise into the request handler).
 
@@ -137,6 +158,7 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
             return None
         from clozn.runs.think_tags import sanitize_messages
         messages = sanitize_messages(run.get("messages") or [])
+        generation_messages = _inject_prompt_instructions(messages, prompt_instructions)
         chat = getattr(sub, "chat", None)
         if not callable(chat):
             return None
@@ -169,13 +191,14 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
             # Build the call kwargs and drop any the substrate's chat() doesn't accept (torch QwenSubstrate
             # / test fakes predate trace_out and/or reference_tokens). Progressive-degrade on the exact
             # unknown kwarg named in the TypeError, so the reply is never lost -- just less instrumented.
-            call_kw = {"max_new": 256, "sample": sampled, "trace_out": trace_steps,
+            budget = int(max_new) if isinstance(max_new, int) and max_new > 0 else 256
+            call_kw = {"max_new": budget, "sample": sampled, "trace_out": trace_steps,
                        "mem_out": replay_memout}
             if reference_tokens:
                 call_kw["reference_tokens"] = reference_tokens
             while True:
                 try:
-                    reply = chat(messages, **call_kw)
+                    reply = chat(generation_messages, **call_kw)
                     break
                 except TypeError as e:
                     msg = str(e)
@@ -272,9 +295,16 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
         if notes:
             memd["notes"] = notes
 
+        meta = {**(meta or {}), "max_tokens": budget}
+        identity = None
+        try:
+            if hasattr(sub, "identity_meta"):
+                identity = sub.identity_meta() or None
+        except Exception:
+            identity = None
         rid = runlog.record(
             source="replay",
-            client="studio",
+            client=run.get("client") or "studio",
             model=run.get("model"),
             substrate=run.get("substrate"),
             messages=messages,
@@ -289,6 +319,10 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None) -> dict | None:
             started=t0,
             assembled_messages=replay_memout.get("assembled_messages"),
             final_prompt=replay_memout.get("final_prompt"),
+            identity=identity,
+            session_key=run.get("session_key"),
+            client_key=run.get("client_key"),
+            client_key_source=run.get("client_key_source"),
         )
         if rid is None:
             return None

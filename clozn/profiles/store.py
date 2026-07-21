@@ -19,6 +19,7 @@ Bundle layout (~/.clozn/profiles/<name>.json), version-tagged for future migrati
   "version": 1, "name": "work", "description": "...",
   "cards":        [{"text": "...", "status": "active"}, ...],       # dispositions (say-it tier)
   "dials":        {"concise": 0.8, "warm": -0.2},                    # built-in dial settings
+  "response_policies": ["less-verbose"],                              # prompt-first retry defaults
   "custom_dials": [{"name","pos","neg","max"}, ...],                 # show-it recipes (recompilable)
   "facts":        [{"cue": "...", "answer": " ..."}, ...],           # slot-store sources (recompilable)
   "created_at": ..., "updated_at": ...
@@ -48,7 +49,7 @@ def new_profile(name: str, description: str = "") -> dict:
     if not _NAME_RE.match(name or ""):
         raise ValueError(f"profile name must match {_NAME_RE.pattern!r}, got {name!r}")
     return {"version": VERSION, "name": name, "description": description,
-            "cards": [], "dials": {}, "custom_dials": [], "facts": [],
+            "cards": [], "dials": {}, "response_policies": [], "custom_dials": [], "facts": [],
             "created_at": _now(), "updated_at": _now()}
 
 
@@ -80,6 +81,13 @@ def validate(p: dict) -> dict:
             except (TypeError, ValueError):
                 continue                       # a non-numeric dial value is dropped, not fatal
     p["dials"] = dials_out
+
+    from clozn.replay.corrective import CORRECTION_PRESETS
+    policies_in = p.get("response_policies")
+    policies_in = policies_in if isinstance(policies_in, list) else []
+    p["response_policies"] = list(dict.fromkeys(
+        str(value) for value in policies_in if str(value) in CORRECTION_PRESETS
+    ))
 
     custom_in = p.get("custom_dials")
     custom_in = custom_in if isinstance(custom_in, list) else []

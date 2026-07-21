@@ -220,16 +220,23 @@ def try_post(h, p, body):
         if body.get("system") is not None:
             messages.append({"role": "system", "content": str(body.get("system") or "")})
         messages.append({"role": "user", "content": prompt})
+        journal_messages = messages
+        from clozn.server.generation_gateway import apply_corrective_policy
+        messages, corrective_evidence = apply_corrective_policy(h, journal_messages)
         if _stream_wanted(body) and getattr(sub, "chat_stream", None):
             from clozn.server import ndjson
-            ndjson.ndjson_stream(h, messages, max_tokens, model, operation="generate", sample=sample)
+            ndjson.ndjson_stream(h, messages, max_tokens, model, operation="generate", sample=sample,
+                                 journal_messages=journal_messages,
+                                 corrective_evidence=corrective_evidence)
             return True
         from clozn.server.generation_gateway import instrumented_chat
         try:
             generated = instrumented_chat(
                 h, messages, model=model, max_tokens=max_tokens, sample=sample,
                 source="ollama_api",
-                extra_meta={"compatibility_api": "ollama", "ollama_operation": "generate"},
+                extra_meta={"compatibility_api": "ollama", "ollama_operation": "generate",
+                            "corrective_policy": corrective_evidence},
+                journal_messages=journal_messages,
             )
         except Exception as e:
             h._json(502, {"error": f"engine: {e}"})
@@ -260,16 +267,23 @@ def try_post(h, p, body):
         messages = strip_footers(messages)
         from clozn.runs.think_tags import sanitize_messages
         messages = sanitize_messages(messages)
+        journal_messages = messages
+        from clozn.server.generation_gateway import apply_corrective_policy
+        messages, corrective_evidence = apply_corrective_policy(h, journal_messages)
         if _stream_wanted(body) and getattr(sub, "chat_stream", None):
             from clozn.server import ndjson
-            ndjson.ndjson_stream(h, messages, max_tokens, model, operation="chat", sample=sample)
+            ndjson.ndjson_stream(h, messages, max_tokens, model, operation="chat", sample=sample,
+                                 journal_messages=journal_messages,
+                                 corrective_evidence=corrective_evidence)
             return True
         from clozn.server.generation_gateway import instrumented_chat
         try:
             generated = instrumented_chat(
                 h, messages, model=model, max_tokens=max_tokens, sample=sample,
                 source="ollama_api",
-                extra_meta={"compatibility_api": "ollama", "ollama_operation": "chat"},
+                extra_meta={"compatibility_api": "ollama", "ollama_operation": "chat",
+                            "corrective_policy": corrective_evidence},
+                journal_messages=journal_messages,
             )
         except Exception as e:
             h._json(502, {"error": f"engine: {e}"})

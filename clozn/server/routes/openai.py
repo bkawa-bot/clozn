@@ -346,7 +346,19 @@ def try_post(h, p, body):
     msgs = strip_footers(msgs)
     from clozn.runs.think_tags import sanitize_messages
     msgs = sanitize_messages(msgs)
-    journal_messages = None
+    delivered_messages = msgs
+    from clozn.server.generation_gateway import apply_corrective_policy
+    msgs, corrective_evidence = apply_corrective_policy(h, delivered_messages)
+    if structured and corrective_evidence:
+        _api_error(
+            h, 409,
+            "active corrective response policies are prose interventions and cannot be applied "
+            "to a structured-output request; undo the policy or use a different session/profile",
+            param="response_format" if structured.get("mode") != "tools" else "tools",
+            code="corrective_policy_inapplicable",
+        )
+        return True
+    journal_messages = delivered_messages if corrective_evidence else None
     output_processor = None
     native_structured = None
     if structured:
@@ -394,13 +406,15 @@ def try_post(h, p, body):
         # receipt: the in-band footer as a final content chunk (the one ambient surface).
         sse.sse_chat(h, msgs, mx, selected_model, lens=body.get("clozn_lens"), sample=sample,
                      receipt=body.get("clozn_receipt", receipt_enabled()),
-                     journal_messages=journal_messages)
+                     journal_messages=journal_messages,
+                     corrective_evidence=corrective_evidence)
         return True
     from clozn.server.generation_gateway import instrumented_chat
     try:
         generated = instrumented_chat(h, msgs, model=selected_model, max_tokens=mx,
                                       sample=sample, source="openai_api",
                                       journal_messages=journal_messages,
+                                      extra_meta={"corrective_policy": corrective_evidence},
                                       output_processor=output_processor,
                                       native_structured=native_structured)
     except StructuredIOError as exc:

@@ -43,6 +43,28 @@ class InstrumentedChatResult:
     structured: Any = None
 
 
+def apply_corrective_policy(handler, messages: list) -> tuple[list, dict | None]:
+    """Apply active profile/session response policies to a copied request.
+
+    Callers retain the original messages for journaling, so the context receipt
+    never claims the client supplied Clozn's instruction. The returned evidence is
+    safe to place in run metadata.
+    """
+    from clozn.behavior import corrective_retries
+    from clozn.runs.association import request_session
+    session_key = request_session(getattr(handler, "headers", None))
+    profile_name = ctx._active_profile_name()
+    presets = corrective_retries.effective_presets(
+        session_key=session_key, profile_name=profile_name,
+    )
+    return (
+        corrective_retries.inject(messages, presets),
+        corrective_retries.evidence(
+            presets, session_key=session_key, profile_name=profile_name,
+        ),
+    )
+
+
 def instrumented_chat(handler, messages: list, *, model: str, max_tokens: int = 256,
                       sample=True, source: str, extra_meta: dict | None = None,
                       journal_messages: list | None = None,
@@ -312,7 +334,7 @@ def _completion_sample(body: dict):
 
 
 def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
-                       sample) -> None:
+                       sample, journal_messages=None, corrective_evidence=None) -> None:
     """Instrumented OpenAI legacy-completion SSE stream.
 
     Generation crosses ``Substrate.chat_stream`` and the completed/failed/abandoned
@@ -332,7 +354,9 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
     acc: list[str] = []
     stream_id = "cmpl-" + secrets.token_hex(8)
     created = int(time.time())
-    extra_meta = {"compatibility_api": "openai", "openai_operation": "completion"}
+    logged_messages = journal_messages if journal_messages is not None else messages
+    extra_meta = {"compatibility_api": "openai", "openai_operation": "completion",
+                  "corrective_policy": corrective_evidence}
 
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")
@@ -394,6 +418,7 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
                     handler, messages, model=model, max_tokens=max_tokens, sample=sample,
                     source="openai_api",
                     extra_meta={**extra_meta, "requested_stream": True},
+                    journal_messages=logged_messages,
                 )
             except Exception as exc:
                 # instrumented_chat already journaled the failure exactly once.
@@ -421,7 +446,7 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
             if req_ctx is not None and hasattr(req_ctx, "cancel"):
                 req_ctx.cancel()
             handler._log_run(
-                "openai_api", messages, "".join(acc), model, started,
+                "openai_api", logged_messages, "".join(acc), model, started,
                 error=f"client disconnected mid-stream: {disconnect_error}", mem_out=memout,
                 extra_meta={**extra_meta, "stream_failure": "client_disconnected"},
             )
@@ -439,7 +464,7 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
             if req_ctx is not None and hasattr(req_ctx, "cancel"):
                 req_ctx.cancel()
             handler._log_run(
-                "openai_api", messages, "".join(acc), model, started,
+                "openai_api", logged_messages, "".join(acc), model, started,
                 error=f"client disconnected mid-stream: {disconnect_error}", mem_out=memout,
                 extra_meta={**extra_meta, "stream_failure": "client_disconnected"},
             )
@@ -449,7 +474,7 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
         public_finish = ctx._openai_finish_reason(finish)
         trace = sub.last_stream_trace() if hasattr(sub, "last_stream_trace") else None
         run_id = handler._log_run(
-            "openai_api", messages, "".join(acc), model, started, trace=trace,
+            "openai_api", logged_messages, "".join(acc), model, started, trace=trace,
             mem_out=memout, finish_reason=finish,
             finish_reason_fallback=None if finish else public_finish,
             extra_meta=extra_meta,
@@ -466,7 +491,7 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
             return
     except Exception as exc:
         handler._log_run(
-            "openai_api", messages, "".join(acc), model, started, error=str(exc),
+            "openai_api", logged_messages, "".join(acc), model, started, error=str(exc),
             mem_out=memout,
             extra_meta={**extra_meta, "stream_failure": "worker_disconnected"},
         )
@@ -495,7 +520,8 @@ def openai_completion(handler, body: dict) -> None:
                                       "param": exc.param, "code": exc.code}})
         return
     model = str(body.get("model") or model_id())
-    messages = _completion_messages(body["prompt"])
+    journal_messages = _completion_messages(body["prompt"])
+    messages, corrective_evidence = apply_corrective_policy(handler, journal_messages)
     max_tokens = int(body.get("max_tokens", 256))
     sample = _completion_sample(body)
     sub = ctx.active_sub(handler)
@@ -504,13 +530,17 @@ def openai_completion(handler, body: dict) -> None:
                                       "type": "service_unavailable"}})
         return
     if body.get("stream"):
-        _stream_completion(handler, messages, model=model, max_tokens=max_tokens, sample=sample)
+        _stream_completion(handler, messages, model=model, max_tokens=max_tokens, sample=sample,
+                           journal_messages=journal_messages,
+                           corrective_evidence=corrective_evidence)
         return
     try:
         generated = instrumented_chat(
             handler, messages, model=model, max_tokens=max_tokens, sample=sample,
             source="openai_api",
-            extra_meta={"compatibility_api": "openai", "openai_operation": "completion"},
+            extra_meta={"compatibility_api": "openai", "openai_operation": "completion",
+                        "corrective_policy": corrective_evidence},
+            journal_messages=journal_messages,
         )
     except Exception as exc:
         _error(handler, exc)

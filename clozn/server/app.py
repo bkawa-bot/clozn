@@ -696,6 +696,7 @@ from clozn.server.routes import memory as _memory_routes              # noqa: E4
 from clozn.server.routes import facts as _facts_routes                # noqa: E402
 from clozn.server.routes import receipts as _receipts_routes          # noqa: E402
 from clozn.server.routes import replay as _replay_routes              # noqa: E402
+from clozn.server.routes import corrective_retries as _corrective_retry_routes  # noqa: E402
 from clozn.server.routes import timetravel as _timetravel_routes      # noqa: E402
 from clozn.server.routes import profiles as _profiles_routes          # noqa: E402
 from clozn.server.routes import preferences as _preferences_routes    # noqa: E402
@@ -721,7 +722,8 @@ _GET_ROUTES = [_static_routes, _health_routes, _runs_routes, _memory_routes, _re
               _timetravel_routes, _profiles_routes, _ollama_routes, _openai_routes, _engine_routes,
               _journal_routes, _card_routes, _anchored_routes, _diff_routes, _receipt_link_routes,
               _runs_fallback_routes]
-_POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes, _replay_routes,
+_POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes,
+               _corrective_retry_routes, _replay_routes,
                _timetravel_routes, _profiles_routes, _preferences_routes, _feedback_routes,
                _ollama_routes, _openai_routes, _engine_routes, _rewrite_routes, _readouts_routes,
                _span_receipt_routes, _fork_routes, _journal_routes, _anchored_routes, _diff_routes,
@@ -985,6 +987,9 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                 except Exception:
                     meta = None
                 meta = dict(meta or {})
+                active_profile = _active_profile_name()
+                if active_profile:
+                    meta.setdefault("active_profile", active_profile)
                 try:
                     prompt_tokens = (_sub().last_prompt_tokens()
                                      if _sub() is not None and hasattr(_sub(), "last_prompt_tokens") else None)

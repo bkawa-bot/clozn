@@ -85,6 +85,7 @@ from clozn.cli.commands.doctor import cmd_doctor                                
 from clozn.cli.commands.context import add_subparser as _add_context                             # noqa: E402
 from clozn.cli.commands.watch import add_subparser as _add_watch                                 # noqa: E402
 from clozn.cli.commands.connect import add_subparser as _add_connect                             # noqa: E402
+from clozn.cli.commands.retry import add_subparser as _add_retry                                 # noqa: E402
 
 
 def build_parser():
@@ -219,6 +220,7 @@ def build_parser():
     _add_context(sub)           # `clozn context last` — delivered vs survived prompt receipt (Phase 2.4)
     _add_watch(sub)             # `clozn watch` — insertion-ordered run tail/correlation (Phase 2.6)
     _add_connect(sub)           # `clozn connect aider` — safe third-party app config with backup
+    _add_retry(sub)             # `clozn retry last` — prompt-first corrective compare + scoped undo
     sub.add_parser("version", help="print the installed clozn version (+ git commit if available)"
                    ).set_defaults(fn=cmd_version)
     pdoc = sub.add_parser("doctor", help="diagnose this install: engine binary, models, studio assets, "

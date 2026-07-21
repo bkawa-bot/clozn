@@ -34,7 +34,7 @@ from clozn.server.http_policy import send_cors_headers
 
 
 def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample=True,
-             journal_messages=None):
+             journal_messages=None, corrective_evidence=None):
     """Stream one /v1/chat/completions reply as OpenAI-style `chat.completion.chunk` frames over SSE,
     then log the run. `handler` is the live BaseHTTPRequestHandler (needs .wfile + ._log_run).
 
@@ -96,6 +96,7 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample
     # Strict OpenAI clients ignore unknown fields while sidecars and Studio can correlate the exact run.
     t0 = time.time(); acc = []; memout = {}
     logged_messages = journal_messages if journal_messages is not None else messages
+    policy_meta = {"corrective_policy": corrective_evidence}
     sub = ctx.active_sub(handler)
     gen = sub.chat_stream(messages, max_new, mem_out=memout, **stream_kw)
     disconnect_error = None
@@ -138,7 +139,7 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample
                 req_ctx.cancel()          # durable record on the context itself, belt to gen.close()'s suspenders
             handler._log_run("openai_api", logged_messages, "".join(acc), model, t0,
                              error=f"client disconnected mid-stream: {disconnect_error}", mem_out=memout,
-                             extra_meta={"stream_failure": "client_disconnected"})
+                             extra_meta={**policy_meta, "stream_failure": "client_disconnected"})
             return
         fr = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
         openai_fr = ctx._openai_finish_reason(fr)
@@ -146,7 +147,8 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample
         trace = sub.last_stream_trace() if hasattr(sub, "last_stream_trace") else None
         rid = handler._log_run("openai_api", logged_messages, "".join(acc), model, t0, trace=trace,
                                mem_out=memout, finish_reason=fr,
-                               finish_reason_fallback=None if fr else openai_fr)
+                               finish_reason_fallback=None if fr else openai_fr,
+                               extra_meta=policy_meta)
         if receipt and rid:                       # the exception-only footer, as one final content chunk
             try:
                 import clozn.runs.store as _runlog
@@ -186,7 +188,7 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample
         # from the client-disconnect branch above because this exception came from ITERATING `gen`
         # (reading the worker), never from writing to `handler.wfile`.
         handler._log_run("openai_api", logged_messages, "".join(acc), model, t0, error=str(e), mem_out=memout,
-                         extra_meta={"stream_failure": "worker_disconnected"})
+                         extra_meta={**policy_meta, "stream_failure": "worker_disconnected"})
         try:
             handler.wfile.write(("data: " + json.dumps({"error": str(e)}) + "\n\n").encode("utf-8"))
             handler.wfile.write(b"data: [DONE]\n\n")

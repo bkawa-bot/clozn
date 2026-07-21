@@ -47,6 +47,11 @@ def _change_label(run: dict) -> str | None:
             suffix = ""
         parts.append(f"{name} up{suffix}")
 
+    corrective = changes.get("corrective_retry")
+    if isinstance(corrective, dict) and corrective.get("preset"):
+        arm = str(corrective.get("arm") or "candidate")
+        parts.append(f"retry {corrective['preset']} ({arm})")
+
     if changes.get("branch_turn") is not None:
         branch = f"branched from turn {changes.get('branch_turn')}"
         if changes.get("edited_user"):

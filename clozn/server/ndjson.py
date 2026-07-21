@@ -68,7 +68,8 @@ def _timing_fields(started: float, ended: float, trace, prompt_tokens) -> dict:
     return out
 
 
-def ndjson_stream(handler, messages, max_new, model, *, operation, sample=True, source="ollama_api"):
+def ndjson_stream(handler, messages, max_new, model, *, operation, sample=True, source="ollama_api",
+                  journal_messages=None, corrective_evidence=None):
     """Stream one ``/api/chat`` (``operation="chat"``) or ``/api/generate`` (``operation="generate"``)
     reply as Ollama NDJSON, then log exactly one run.
 
@@ -116,6 +117,8 @@ def ndjson_stream(handler, messages, max_new, model, *, operation, sample=True, 
     acc: list[str] = []
     memout: dict = {}
     sub = ctx.active_sub(handler)
+    logged_messages = journal_messages if journal_messages is not None else messages
+    policy_meta = {"corrective_policy": corrective_evidence}
     gen = sub.chat_stream(messages, max_new, mem_out=memout, sample=sample)
     disconnect_error = None
     think_stream = None
@@ -157,17 +160,18 @@ def ndjson_stream(handler, messages, max_new, model, *, operation, sample=True, 
             req_ctx = getattr(sub, "_request", None)
             if req_ctx is not None and hasattr(req_ctx, "cancel"):
                 req_ctx.cancel()          # durable record on the context itself, belt to gen.close()'s suspenders
-            handler._log_run(source, messages, "".join(acc), model, t0,
+            handler._log_run(source, logged_messages, "".join(acc), model, t0,
                              error=f"client disconnected mid-stream: {disconnect_error}", mem_out=memout,
-                             extra_meta={"stream_failure": "client_disconnected",
+                             extra_meta={**policy_meta, "stream_failure": "client_disconnected",
                                          "compatibility_api": "ollama", "ollama_operation": operation})
             return
         fr = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
         trace = sub.last_stream_trace() if hasattr(sub, "last_stream_trace") else None
         prompt_tokens = sub.last_prompt_tokens() if hasattr(sub, "last_prompt_tokens") else None
-        rid = handler._log_run(source, messages, "".join(acc), model, t0, trace=trace, mem_out=memout,
+        rid = handler._log_run(source, logged_messages, "".join(acc), model, t0, trace=trace, mem_out=memout,
                                finish_reason=fr,
-                               extra_meta={"compatibility_api": "ollama", "ollama_operation": operation})
+                               extra_meta={**policy_meta, "compatibility_api": "ollama",
+                                           "ollama_operation": operation})
         ended = time.time()
         timing = _timing_fields(t0, ended, trace, prompt_tokens)
         from clozn.runs.context_receipt import warnings_for
@@ -181,8 +185,8 @@ def ndjson_stream(handler, messages, max_new, model, *, operation, sample=True, 
         # WORKER-DIES-MIDSTREAM: see the module docstring. Distinct from the client-disconnect branch
         # above because this exception came from ITERATING `gen` (reading the worker), never from
         # writing to `handler.wfile`.
-        rid = handler._log_run(source, messages, "".join(acc), model, t0, error=str(e), mem_out=memout,
-                               extra_meta={"stream_failure": "worker_disconnected",
+        rid = handler._log_run(source, logged_messages, "".join(acc), model, t0, error=str(e), mem_out=memout,
+                               extra_meta={**policy_meta, "stream_failure": "worker_disconnected",
                                            "compatibility_api": "ollama", "ollama_operation": operation})
         try:
             terminal = {"error": str(e)}
