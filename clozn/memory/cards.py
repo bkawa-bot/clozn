@@ -22,8 +22,11 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
+from contextlib import contextmanager
+import unicodedata
 
 from clozn._io import atomic_write_json
 
@@ -31,6 +34,50 @@ CARDS_PATH = os.path.join(os.path.expanduser("~/.clozn"), "studio_memory_cards.j
 
 # lifecycle states; only ACTIVE feeds the prefix (E1). Kept as a tuple so callers can validate against it.
 STATUSES = ("pending", "active", "disabled", "rejected")
+_PROCESS_LOCK = threading.RLock()
+_SUSPICIOUS_TEXT = ("ignore ", "disregard ", "system prompt", "you are now", "forget ",
+                    "override", "jailbreak", "developer mode", "instead of", "from now on you",
+                    "pretend ")
+
+
+class CardStoreError(RuntimeError):
+    """A strict bulk operation could not safely read, merge, or persist the card store."""
+
+
+def risk_of_text(text: str) -> str:
+    """Classify imported text with the same conservative instruction-like risk rule as live adds."""
+    lowered = str(text or "").lower()
+    return "suspicious" if any(fragment in lowered for fragment in _SUSPICIOUS_TEXT) else "low"
+
+
+@contextmanager
+def _transaction():
+    """Serialize whole-file read/modify/write operations across threads and processes."""
+    with _PROCESS_LOCK:
+        directory = os.path.dirname(CARDS_PATH) or "."
+        os.makedirs(directory, exist_ok=True)
+        lock_path = CARDS_PATH + ".lock"
+        with open(lock_path, "a+b") as lock_file:
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _now() -> str:
@@ -62,6 +109,73 @@ def _save(cards: list[dict]) -> bool:
         return False
 
 
+def load_strict() -> list[dict]:
+    """Read the store without `_load`'s fail-open behavior (for transactional imports)."""
+    if not os.path.exists(CARDS_PATH):
+        return []
+    try:
+        with open(CARDS_PATH, encoding="utf-8") as handle:
+            cards = json.load(handle)
+    except Exception as exc:
+        raise CardStoreError(f"cannot read existing memory-card store: {exc}") from None
+    if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
+        raise CardStoreError("existing memory-card store is not an array of card objects")
+    ids = [card.get("id") for card in cards]
+    if any(not isinstance(card_id, str) or not card_id for card_id in ids) or len(ids) != len(set(ids)):
+        raise CardStoreError("existing memory-card store has missing or duplicate card ids")
+    return cards
+
+
+def _text_key(value) -> str:
+    return " ".join(unicodedata.normalize("NFKC", str(value or "")).split()).casefold()
+
+
+def merge_import(imported: list[dict], *, on_duplicate: str = "skip", dry_run: bool = False) -> dict:
+    """Merge fully parsed cards in one locked atomic write; never edits existing cards."""
+    if on_duplicate not in ("skip", "error"):
+        raise CardStoreError("on_duplicate must be 'skip' or 'error'")
+    if not isinstance(imported, list) or any(not isinstance(card, dict) for card in imported):
+        raise CardStoreError("imported cards must be an array of card objects")
+    with _transaction():
+        existing = load_strict()
+        by_id = {card["id"]: card for card in existing}
+        by_text = {_text_key(card.get("text")): card for card in existing if _text_key(card.get("text"))}
+        merged = [dict(card) for card in existing]
+        added = []
+        skipped = []
+        for raw in imported:
+            card = dict(raw)
+            card_id = card.get("id")
+            text_key = _text_key(card.get("text"))
+            if not isinstance(card_id, str) or not card_id:
+                raise CardStoreError("every imported card must have a non-empty id")
+            prior_id = by_id.get(card_id)
+            if prior_id is not None:
+                if _text_key(prior_id.get("text")) != text_key:
+                    raise CardStoreError(f"card id {card_id!r} already exists with different text")
+                skipped.append(card_id)
+                continue
+            prior_text = by_text.get(text_key) if text_key else None
+            if prior_text is not None:
+                if on_duplicate == "error":
+                    raise CardStoreError(
+                        f"card text duplicates existing card {prior_text.get('id')!r}")
+                skipped.append(card_id)
+                continue
+            merged.append(card)
+            by_id[card_id] = card
+            if text_key:
+                by_text[text_key] = card
+            added.append(card_id)
+        if not dry_run and added:
+            try:
+                atomic_write_json(CARDS_PATH, merged)
+            except Exception as exc:
+                raise CardStoreError(f"could not persist imported cards: {exc}") from None
+        return {"parsed": len(imported), "added": len(added), "skipped_duplicates": len(skipped),
+                "added_ids": added, "skipped_ids": skipped, "dry_run": bool(dry_run)}
+
+
 def create(text: str, status: str = "pending", source_run_id: str | None = None,
            kind: str = "preference", risk: str = "low", evidence: str = "",
            strength: float = 1.0, source_turn: int | None = None,
@@ -91,10 +205,11 @@ def create(text: str, status: str = "pending", source_run_id: str | None = None,
             "evidence": evidence,
             "strength": float(strength),
         }
-        cards = _load()
-        cards.append(card)
-        if not _save(cards):
-            return None
+        with _transaction():
+            cards = _load()
+            cards.append(card)
+            if not _save(cards):
+                return None
         return card
     except Exception:
         return None
@@ -147,28 +262,29 @@ def update(card_id: str, **fields) -> dict | None:
 
     `id` and `created_at` are immutable and silently ignored. `strength` is coerced to float; an
     out-of-range `status` is ignored (keeps the store's states well-formed)."""
-    cards = _load()
-    updated = None
-    for c in cards:
-        if c.get("id") == card_id:
-            for k, v in fields.items():
-                if k in ("id", "created_at"):
-                    continue
-                if k == "status" and v not in STATUSES:
-                    continue
-                if k == "strength":
-                    try:
-                        v = float(v)
-                    except (TypeError, ValueError):
+    with _transaction():
+        cards = _load()
+        updated = None
+        for c in cards:
+            if c.get("id") == card_id:
+                for k, v in fields.items():
+                    if k in ("id", "created_at"):
                         continue
-                c[k] = v
-            updated = c
-            break
-    if updated is None:
-        return None
-    if not _save(cards):
-        return None
-    return updated
+                    if k == "status" and v not in STATUSES:
+                        continue
+                    if k == "strength":
+                        try:
+                            v = float(v)
+                        except (TypeError, ValueError):
+                            continue
+                    c[k] = v
+                updated = c
+                break
+        if updated is None:
+            return None
+        if not _save(cards):
+            return None
+        return updated
 
 
 def set_status(card_id: str, status: str) -> dict | None:
@@ -180,19 +296,24 @@ def set_status(card_id: str, status: str) -> dict | None:
 
 def delete(card_id: str) -> bool:
     """Remove a card; True if one was removed, False otherwise (incl. IO failure)."""
-    cards = _load()
-    kept = [c for c in cards if c.get("id") != card_id]
-    if len(kept) == len(cards):
-        return False
-    return _save(kept)
+    with _transaction():
+        cards = _load()
+        kept = [c for c in cards if c.get("id") != card_id]
+        if len(kept) == len(cards):
+            return False
+        return _save(kept)
 
 
 def bump_usage(card_id: str) -> dict | None:
     """Record that a card influenced a run: ++usage_count and stamp last_used_at (hooked from _log_run)."""
-    card = get(card_id)
-    if card is None:
+    with _transaction():
+        cards = _load()
+        for card in cards:
+            if card.get("id") == card_id:
+                card["usage_count"] = int(card.get("usage_count") or 0) + 1
+                card["last_used_at"] = _now()
+                return dict(card) if _save(cards) else None
         return None
-    return update(card_id, usage_count=int(card.get("usage_count") or 0) + 1, last_used_at=_now())
 
 
 def active_texts() -> list[str]:
