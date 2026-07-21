@@ -125,6 +125,8 @@ def try_post(h, p, body):
         # memory; receipts/replay/forced-scoring paths (which never call this route) keep the
         # deterministic baseline.
         chat_kw["apply_anchored"] = True
+        from clozn.server.generation_gateway import request_memory_scope
+        chat_kw["memory_scope"] = request_memory_scope(h)
     try:
         rewritten = sub.chat(messages, mx, sample, **chat_kw)
     except Exception as e:

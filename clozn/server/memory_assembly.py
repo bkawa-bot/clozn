@@ -146,20 +146,20 @@ def _prompt_relevance(last_user, texts):
         return {}
 
 
-def _prompt_mem_cards(mem, exclude_ids=()):
+def _prompt_mem_cards(mem, exclude_ids=(), request_scope=None):
     """The ACTIVE cards ({id, text}) that feed the prompt block, minus exclude_ids (replay's REAL
     per-card ablation). Reads the card store directly (memory_mode.active_cards) -- in prompt mode the
     cards ARE the memory (m.rules is bookkeeping that can lag right after boot). Falls back to
     mem.rules (id-less) only if the store module is unavailable, so a broken store degrades to the old
     rule list rather than to amnesia."""
     import clozn.memory.mode as memory_mode
-    cards = memory_mode.active_cards(exclude_ids)
+    cards = memory_mode.active_cards(exclude_ids, request_scope=request_scope)
     if cards is not None:
         return cards
     return [{"id": None, "text": t} for t in (getattr(mem, "rules", []) or []) if t]
 
 
-def _prompt_block_for(mem, last_user, strength=None):
+def _prompt_block_for(mem, last_user, strength=None, request_scope=None):
     """Prompt-mode injection decision for THIS turn -> (block_text | None, applied_cards, gate).
 
     None == omit the block entirely: no active cards, strength == 0 (the dial maps to on/off in prompt
@@ -167,7 +167,8 @@ def _prompt_block_for(mem, last_user, strength=None):
     applied_cards is [] whenever the block is omitted. Honors mem._exclude_card_ids (set temporarily
     by replay.py for per-card receipts). `strength` overrides mem.memory_strength (the pure-engine
     path reads it from disk); `mem` may be None on that path -- every read of it is defensive."""
-    cards = ctx._prompt_mem_cards(mem, getattr(mem, "_exclude_card_ids", None) or ())
+    cards = ctx._prompt_mem_cards(mem, getattr(mem, "_exclude_card_ids", None) or (),
+                                  request_scope=request_scope)
     texts = [c["text"] for c in cards]
     s = float(strength if strength is not None else getattr(mem, "memory_strength", 1.0))
     if not texts:
@@ -205,7 +206,8 @@ def _anchored_gates(last_user, bags):
         return None
 
 
-def _apply_anchored_memory(kw: dict, mem_out: dict | None, last_user: str | None) -> dict | None:
+def _apply_anchored_memory(kw: dict, mem_out: dict | None, last_user: str | None,
+                           request_scope=None) -> dict | None:
     """Add X7/J-anchored memory to a live engine request when the raw steer slot is free. Returns the
     compile_steer() payload that was ACTUALLY injected into `kw` (steer_vec/coef/layer/s_total/vector/
     bags), or None when nothing was injected -- no active bags, nothing composed, or the raw-steer slot
@@ -215,6 +217,16 @@ def _apply_anchored_memory(kw: dict, mem_out: dict | None, last_user: str | None
     try:
         from clozn.memory import anchored
         bags = anchored.active_bags()
+        if request_scope is not None:
+            from clozn.memory import cards as memory_cards, scope as memory_scope
+            current = request_scope if isinstance(request_scope, memory_scope.MemoryScope) \
+                else memory_scope.MemoryScope()
+            eligible_ids = {card.get("id") for card in memory_scope.eligible_cards(
+                memory_cards.list_cards(status="active"), current)}
+            before_scope = len(bags)
+            bags = [bag for bag in bags if bag.get("card_id") in eligible_ids]
+            if mem_out is not None and before_scope > len(bags):
+                mem_out["anchored_scope_excluded_count"] = before_scope - len(bags)
         if not bags:
             return None
         comp = anchored.compile_steer(bags, gates=_anchored_gates(last_user, bags))

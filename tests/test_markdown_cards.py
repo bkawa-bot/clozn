@@ -23,6 +23,7 @@ def _card(**changes):
         "risk": "low",
         "evidence": "Approved by the user.\nSecond line.",
         "strength": 0.75,
+        "scope": {"kind": "global"},
     }
     card.update(changes)
     return card
@@ -67,6 +68,26 @@ def test_human_scalar_edits_are_validated_and_parsed():
     parsed = md.parse_cards(edited)
     assert parsed[0]["status"] == "disabled"
     assert parsed[0]["strength"] == 1.25
+
+
+def test_scope_round_trip_and_legacy_markdown_normalize_to_global():
+    scoped = _card(scope={"kind": "project", "key": "repo:clozn", "label": "Clozn"})
+    assert md.parse_cards(md.format_cards([scoped])) == [scoped]
+
+    legacy_card = _card()
+    legacy_card.pop("scope")
+    rendered = md.format_cards([legacy_card])
+    assert '- scope: {"kind":"global"}' in rendered
+    assert md.parse_cards(rendered)[0]["scope"] == {"kind": "global"}
+
+    # A v1 document exported before scope existed has no scope metadata line.
+    old_v1 = rendered.replace('- scope: {"kind":"global"}\n', "", 1)
+    assert md.parse_cards(old_v1)[0]["scope"] == {"kind": "global"}
+
+
+def test_malformed_explicit_scope_fails_closed():
+    with pytest.raises(md.CardMarkdownError, match="scope"):
+        md.format_cards([_card(scope={"kind": "project", "key": "contains space"})])
 
 
 @pytest.mark.parametrize("bad_change,match", [

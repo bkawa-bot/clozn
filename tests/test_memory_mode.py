@@ -338,6 +338,27 @@ def test_active_cards_reads_only_active_and_honors_exclusions(iso):
     assert any(c["id"] == b["id"] for c in minus_a)
 
 
+def test_active_cards_use_exact_scope_and_global_app_project_order(iso):
+    from clozn.memory.scope import MemoryScope
+
+    memory_cards.create("other project", status="active",
+                        scope={"kind": "project", "key": "project_other"})
+    memory_cards.create("this project", status="active",
+                        scope={"kind": "project", "key": "project_this"})
+    memory_cards.create("this app", status="active",
+                        scope={"kind": "app", "key": "client_this"})
+    memory_cards.create("global preference", status="active")
+
+    assert [card["text"] for card in memory_mode.active_cards()] == ["global preference"]
+    selected = memory_mode.active_cards(
+        request_scope=MemoryScope(app_key="client_this", project_key="project_this"))
+    assert [(card["text"], card["scope_kind"]) for card in selected] == [
+        ("global preference", "global"),
+        ("this app", "app"),
+        ("this project", "project"),
+    ]
+
+
 # ---- clozn_server: the per-turn block decision -------------------------------------------------------
 
 def test_block_matches_store_order(iso, monkeypatch):

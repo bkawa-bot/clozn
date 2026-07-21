@@ -519,8 +519,9 @@ def _active_profile_name():
 
 
 def _profiles_switch(sub, p) -> dict:
-    """Apply profile bundle `p` to the live substrate `sub`: cards REPLACE the studio's active set (a
-    profile switch is a replacement, never a merge -- disjoint personas must not bleed into each other),
+    """Apply profile bundle `p` to the live substrate `sub`: global cards REPLACE the studio's global
+    set (a profile switch is a replacement, never a merge -- disjoint personas must not bleed), while
+    app/project cards remain as request-selected overlays,
     dials replace via profiles.apply_dials (steer.clear() then set()), and the prompt-mode/internalized
     resync goes through the SAME _start_retrain machinery every other card mutation uses: instant in
     prompt mode (the cards ARE the memory there), a backgrounded consolidate() in internalized mode.
@@ -531,19 +532,20 @@ def _profiles_switch(sub, p) -> dict:
     Returns {name, prompt_block, cards:{removed,added}, dials, resync, facts_note}."""
     import clozn.memory.cards as memory_cards
 
-    # 1) CARDS: delete the current active set, then create the profile's cards fresh as active. Deleting
-    #    (not just disabling) is the isolation contract: a stale disabled card from persona A must never
-    #    reappear if the user later hand-edits persona B's set, and disjoint personas keep disjoint cards.
+    # 1) CARDS: delete the current GLOBAL set, then create the profile's cards fresh as global+active.
+    #    App/project cards are independent overlays and survive switches byte-for-byte. Deleting the old
+    #    globals (not just disabling them) still keeps disjoint profile personas isolated.
+    from clozn.memory.scope import global_scope, scope_for_card
     removed = 0
     for c in memory_cards.list_cards():
-        if memory_cards.delete(c["id"]):
+        if scope_for_card(c)["kind"] == "global" and memory_cards.delete(c["id"]):
             removed += 1
     added = 0
     for c in p.get("cards", []):
         if c.get("status", "active") != "active":     # a disabled card in the bundle stays inert here too
             continue
         if memory_cards.create(c["text"], status="active", kind="preference",
-                               evidence=f"profile:{p['name']}") is not None:
+                               evidence=f"profile:{p['name']}", scope=global_scope()) is not None:
             added += 1
 
     # 2) SYNC the memory mechanism from the new active set. force=True: the pre-check inside
@@ -880,9 +882,10 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
             try:
                 import clozn.runs.store as runlog
                 extra_meta = dict(extra_meta or {})
-                from clozn.runs.association import request_client, request_session
+                from clozn.runs.association import request_client, request_project, request_session
                 session_key = request_session(self.headers)
                 client_key, client_key_source = request_client(self.headers)
+                project_key = request_project(self.headers)
                 mem = getattr(_sub(), "_mem", None) if _sub() else None
                 mo = mem_out or {}
                 from clozn.runs.think_tags import prompt_opens_think, sanitize_messages, sanitize_reply
@@ -904,6 +907,12 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                             "strength": float(strength),
                             "has_prefix": (getattr(mem, "prefix", None) is not None) if mem is not None else False,
                             "mode": mode, "proposed_cards": []}
+                    applied_scope_kinds = [c.get("scope_kind") for c in applied]
+                    if any(kind in {"global", "app", "project"} for kind in applied_scope_kinds):
+                        memd["applied_scope_kinds"] = [
+                            kind if kind in {"global", "app", "project"} else "global"
+                            for kind in applied_scope_kinds
+                        ]
                     rel = [c.get("relevance") for c in applied]   # per-card topic cosine, aligned with cards_applied
                     if any(r is not None for r in rel):           # omit entirely when the embedder was unavailable
                         memd["relevance"] = [round(float(r), 4) if r is not None else None for r in rel]
@@ -926,6 +935,9 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                             memd["anchored_s_total"] = round(float(mo["anchored_s_total"]), 4)
                     if mo.get("anchored_skipped"):
                         memd["anchored_skipped"] = str(mo["anchored_skipped"])
+                    if isinstance(mo.get("anchored_scope_excluded_count"), int):
+                        memd["anchored_scope_excluded_count"] = max(
+                            0, int(mo["anchored_scope_excluded_count"]))
                     if isinstance(mo.get("anchored_loop_guard"), dict):
                         # the loop guard's honest self-healing record --
                         # _flags() below turns this into the visible "memory-retried"/"memory-loop-guard"
@@ -1067,6 +1079,7 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                                     workspace_provider=workspace_provider, identity=identity,
                                     reasoning=reasoning, session_key=session_key,
                                     client_key=client_key, client_key_source=client_key_source,
+                                    project_key=project_key,
                                     output_contract=output_contract)
                 self._maybe_snapshot_turn(rid, messages, trace, error)
                 return rid                        # M5 bridge: the run id, for callers that want to surface it
@@ -1189,7 +1202,15 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
             # (/memory/*, /steer/* -- Substrate._memory/_steer above, substrate-polymorphic domain
             # dispatch, not per-path HTTP routing, so it stays here rather than in a route module).
             try:
-                r = _sub().handle(p, body) if _sub() else None
+                routed_body = body
+                if p in ("/memory/add", "/memory/scope") and isinstance(body, dict):
+                    # The public body selects only the kind. Exact opaque keys come from validated
+                    # request headers and cross the substrate boundary as an unforgeable Python object;
+                    # JSON callers cannot inject this private value themselves.
+                    from clozn.server.generation_gateway import request_memory_scope
+                    routed_body = dict(body)
+                    routed_body["_memory_scope"] = request_memory_scope(self)
+                r = _sub().handle(p, routed_body) if _sub() else None
                 if r is None:
                     return self._json(409, {"error": f"'{p}' isn't served by the '{_subname()}' substrate",
                                             "need": "dream" if p == "/denoise" else "qwen", "active": _subname()})

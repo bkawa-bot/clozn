@@ -11,6 +11,7 @@ fixed Markdown list lines; the human-authored fields are literal fenced blocks::
 
     - id: "mem_abc"
     - status: "active"
+    - scope: {"kind":"global"}
     ...
 
     ### Text
@@ -27,8 +28,9 @@ objects.  Canonical output uses UTF-8-friendly text, LF newlines, stable field
 order, and a final newline.  CRLF/CR input is normalized to LF, including inside
 literal blocks.
 
-The format covers every field currently produced by ``memory.cards.create``.
-Unknown/missing fields and duplicate IDs fail instead of being silently lost.
+The format covers every field currently produced by ``memory.cards.create``.  Scope is the sole
+additive optional field: pre-scope v1 documents normalize it to global, while an explicitly malformed
+scope fails.  Other unknown/missing fields and duplicate IDs fail instead of being silently lost.
 """
 from __future__ import annotations
 
@@ -39,6 +41,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from clozn.memory.cards import STATUSES
+from clozn.memory.scope import MemoryScopeError, normalize_scope
 
 
 SCHEMA = "clozn.memory_cards.markdown.v1"
@@ -49,6 +52,7 @@ MAX_CARDS = 10_000
 _METADATA_FIELDS = (
     "id",
     "status",
+    "scope",
     "kind",
     "risk",
     "strength",
@@ -64,6 +68,7 @@ _BLOCK_FIELDS = (
     ("evidence", "Evidence", "evidence"),
 )
 _ALL_FIELDS = frozenset(_METADATA_FIELDS) | frozenset(field for field, _, _ in _BLOCK_FIELDS)
+_REQUIRED_FIELDS = _ALL_FIELDS - {"scope"}
 _FENCE_RUN = re.compile(r"~+")
 
 
@@ -89,7 +94,7 @@ def _normalize_card(value: Any, index: int) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise CardMarkdownError(f"card {index} must be an object")
     extra = sorted(set(value) - _ALL_FIELDS)
-    missing = sorted(_ALL_FIELDS - set(value))
+    missing = sorted(_REQUIRED_FIELDS - set(value))
     if extra or missing:
         raise CardMarkdownError(
             f"card {index} fields are invalid: missing={missing!r}, extra={extra!r}")
@@ -102,6 +107,10 @@ def _normalize_card(value: Any, index: int) -> dict[str, Any]:
         raise CardMarkdownError(f"card {index} status must be one of {list(STATUSES)!r}")
     kind = _string(value["kind"], "kind")
     risk = _string(value["risk"], "risk")
+    try:
+        scope = normalize_scope(value.get("scope"), legacy_global="scope" not in value)
+    except MemoryScopeError as exc:
+        raise CardMarkdownError(f"card {index} scope is invalid: {exc}") from None
 
     strength = value["strength"]
     if (isinstance(strength, bool) or not isinstance(strength, (int, float))
@@ -120,6 +129,7 @@ def _normalize_card(value: Any, index: int) -> dict[str, Any]:
         "id": card_id,
         "text": _string(value["text"], "text"),
         "status": status,
+        "scope": scope,
         "source_run_id": _string(value["source_run_id"], "source_run_id", nullable=True),
         "source_turn": source_turn,
         "quoted_span": _string(value["quoted_span"], "quoted_span"),
@@ -222,6 +232,8 @@ def parse_cards(document: str) -> list[dict[str, Any]]:
         raw: dict[str, Any] = {}
         for field in _METADATA_FIELDS:
             prefix = f"- {field}: "
+            if field == "scope" and (index >= len(lines) or not lines[index].startswith(prefix)):
+                continue
             if index >= len(lines) or not lines[index].startswith(prefix):
                 raise CardMarkdownError(f"expected metadata field {field!r} at line {index + 1}")
             try:

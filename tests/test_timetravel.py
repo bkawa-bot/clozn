@@ -381,6 +381,31 @@ def test_branch_records_child_with_parent_and_turn(store):
     assert sub.seen["sample"] is False                   # greedy by default (the receipt path)
 
 
+def test_branch_live_regeneration_inherits_exact_memory_scope_and_associations(store):
+    parent = {
+        **PARENT,
+        "session_key": "session_0123456789abcdef01234567",
+        "client_key": "client_0123456789abcdef01234567",
+        "client_key_source": "header",
+        "project_key": "project_0123456789abcdef01234567",
+    }
+
+    class ScopedSub(FakeSub):
+        def chat(self, messages, max_new=256, sample=True, memory_scope=None):
+            self.seen_scope = memory_scope
+            return super().chat(messages, max_new=max_new, sample=sample)
+
+    sub = ScopedSub()
+    child = tt.branch(parent, 1, sub)
+
+    assert sub.seen_scope.app_key == parent["client_key"]
+    assert sub.seen_scope.project_key == parent["project_key"]
+    assert child["session_key"] == parent["session_key"]
+    assert child["client_key"] == parent["client_key"]
+    assert child["client_key_source"] == "header"
+    assert child["project_key"] == parent["project_key"]
+
+
 def test_branch_with_alt_user_notes_edit(store):
     sub = FakeSub()
     child = tt.branch(PARENT, 1, sub, alt_user="ask something else")

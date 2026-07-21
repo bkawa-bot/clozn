@@ -24,6 +24,7 @@ def test_prompt_receipt_reports_exact_evidence_without_estimating_memory_tokens(
             "mode": "prompt",
             "cards_applied": ["likes concise answers"],
             "applied_ids": ["mem_1"],
+            "applied_scope_kinds": ["project"],
             "relevance": [0.812345],
             "gate": 0.91,
             "strength": 1.0,
@@ -40,6 +41,7 @@ def test_prompt_receipt_reports_exact_evidence_without_estimating_memory_tokens(
             "anchored": [{"card_id": "mem_2", "coef": 0.4}],
             "anchored_layer": 8,
             "anchored_s_total": 0.4,
+            "anchored_scope_excluded_count": 2,
             "facts": {"read": {"ids": ["fact_1"], "slot_ms": 2.5}},
         },
         "changes_applied": {"disabled_memory_ids": ["mem_3"]},
@@ -50,7 +52,8 @@ def test_prompt_receipt_reports_exact_evidence_without_estimating_memory_tokens(
     receipt = memory_usage(run)
 
     injected = receipt["prompt_cards"]["injected"]
-    assert injected["cards"] == [{"text": "likes concise answers", "id": "mem_1", "relevance": 0.8123}]
+    assert injected["cards"] == [{"text": "likes concise answers", "id": "mem_1",
+                                   "relevance": 0.8123, "scope_kind": "project"}]
     assert receipt["prompt_cards"]["selected"]["status"] == "observed"
     assert [card["id"] for card in receipt["prompt_cards"]["selected"]["cards"]] == ["mem_1", "mem_3"]
     assert receipt["prompt_cards"]["omitted"]["ids"] == ["mem_3"]
@@ -66,11 +69,14 @@ def test_prompt_receipt_reports_exact_evidence_without_estimating_memory_tokens(
         "note": "Exact matched prompt-token delta captured for this run.",
     }
     assert receipt["anchored"]["bags"][0]["card_id"] == "mem_2"
+    assert receipt["anchored"]["scope_excluded_count"] == 2
     assert receipt["facts"]["evidence"]["read"]["ids"] == ["fact_1"]
     rendered = format_memory_usage(receipt)
     assert "selected - 2 card(s), capture-time" in rendered
     assert "omitted - mem_3" in rendered
     assert "token cost - 7 prompt-memory tokens (exact delta)" in rendered
+    assert "mem_1: likes concise answers (project, relevance 0.8123)" in rendered
+    assert "excluded by scope: 2" in rendered
 
 
 def test_no_prompt_block_has_zero_cost_but_unknown_omissions():

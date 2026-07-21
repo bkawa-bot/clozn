@@ -38,6 +38,7 @@ module -- and its tests -- stay model-free. IO/among-tensors ops never raise int
 """
 from __future__ import annotations
 
+import inspect
 import time
 
 import clozn.memory.mode as memory_mode  # the single settings file (studio_settings.json) + its never-raise get/set helpers
@@ -367,7 +368,14 @@ def branch(run: dict, turn: int, sub, alt_user=None, sample: bool = False,
 
         t0 = time.time()
         try:
-            reply = chat(branched, max_new=256, sample=bool(sample))
+            call_kw = {"max_new": 256, "sample": bool(sample)}
+            try:
+                if "memory_scope" in inspect.signature(chat).parameters:
+                    from clozn.replay.replay import _memory_scope_for_run
+                    call_kw["memory_scope"] = _memory_scope_for_run(run)
+            except (TypeError, ValueError):
+                pass
+            reply = chat(branched, **call_kw)
         finally:                                          # restore EXACTLY (never leave the studio mutated)
             if steer is not None:
                 try:
@@ -398,6 +406,8 @@ def branch(run: dict, turn: int, sub, alt_user=None, sample: bool = False,
             messages=branched, response=reply,
             memory=memd, behavior={"active_dials": dials},
             parent_run_id=run.get("id"), changes_applied=changes, started=t0,
+            session_key=run.get("session_key"), client_key=run.get("client_key"),
+            client_key_source=run.get("client_key_source"), project_key=run.get("project_key"),
         )
         if rid is None:
             return None

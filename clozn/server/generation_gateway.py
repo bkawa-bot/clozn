@@ -43,6 +43,14 @@ class InstrumentedChatResult:
     structured: Any = None
 
 
+def request_memory_scope(handler):
+    """Resolve exact request-local memory scope; User-Agent never activates app memory."""
+    from clozn.memory.scope import MemoryScope
+    from clozn.runs.association import request_explicit_client, request_project
+    headers = getattr(handler, "headers", None)
+    return MemoryScope(app_key=request_explicit_client(headers), project_key=request_project(headers))
+
+
 def apply_corrective_policy(handler, messages: list) -> tuple[list, dict | None]:
     """Apply active profile/session response policies to a copied request.
 
@@ -96,6 +104,7 @@ def instrumented_chat(handler, messages: list, *, model: str, max_tokens: int = 
         # Live compatibility traffic gets the same anchored-memory behavior as the
         # OpenAI route. Receipt/replay callers remain explicitly deterministic.
         chat_kw["apply_anchored"] = True
+        chat_kw["memory_scope"] = request_memory_scope(handler)
     native_result = None
     try:
         if native_structured is not None:
@@ -112,6 +121,7 @@ def instrumented_chat(handler, messages: list, *, model: str, max_tokens: int = 
                 apply_anchored=False,
                 enable_thinking=True,
                 reasoning_format="none",
+                memory_scope=request_memory_scope(handler),
             )
             reply = native_result["raw_model_output"]
         else:
@@ -393,6 +403,8 @@ def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
             stream_kw = {"mem_out": memout}
             if "sample" in params:
                 stream_kw["sample"] = sample
+            if "memory_scope" in params:
+                stream_kw["memory_scope"] = request_memory_scope(handler)
             gen = sub.chat_stream(messages, max_tokens, **stream_kw)
             for piece in gen:
                 raw_text = str(piece)

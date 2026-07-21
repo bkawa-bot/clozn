@@ -29,6 +29,7 @@ from contextlib import contextmanager
 import unicodedata
 
 from clozn._io import atomic_write_json
+from clozn.memory.scope import MemoryScopeError, normalize_scope
 
 CARDS_PATH = os.path.join(os.path.expanduser("~/.clozn"), "studio_memory_cards.json")
 
@@ -145,6 +146,11 @@ def merge_import(imported: list[dict], *, on_duplicate: str = "skip", dry_run: b
         skipped = []
         for raw in imported:
             card = dict(raw)
+            try:
+                card["scope"] = normalize_scope(
+                    card.get("scope"), legacy_global="scope" not in card)
+            except MemoryScopeError as exc:
+                raise CardStoreError(f"imported card scope is invalid: {exc}") from None
             card_id = card.get("id")
             text_key = _text_key(card.get("text"))
             if not isinstance(card_id, str) or not card_id:
@@ -179,7 +185,7 @@ def merge_import(imported: list[dict], *, on_duplicate: str = "skip", dry_run: b
 def create(text: str, status: str = "pending", source_run_id: str | None = None,
            kind: str = "preference", risk: str = "low", evidence: str = "",
            strength: float = 1.0, source_turn: int | None = None,
-           quoted_span: str = "") -> dict | None:
+           quoted_span: str = "", scope=None) -> dict | None:
     """Create + persist a card; return it (or None on IO failure).
 
     `source_turn` + `quoted_span` are the PROVENANCE pair (roadmap: the OBEY defense, see
@@ -188,8 +194,10 @@ def create(text: str, status: str = "pending", source_run_id: str | None = None,
     `source_turn` is the index of the cited message within its run's `messages` list; `quoted_span` is the
     verbatim (possibly truncated) text of that message. Both default empty/None for cards that don't claim
     a run at all (e.g. a manually-typed /memory/add) -- that's a different, self-authored category, not a
-    provenance failure. See has_provenance()."""
+    provenance failure. See has_provenance(). ``scope=None`` is the legacy/global default; an explicit
+    scope must pass clozn.memory.scope's strict writer validation."""
     try:
+        normalized_scope = normalize_scope(scope, legacy_global=scope is None)
         card = {
             "id": "mem_" + uuid.uuid4().hex[:12],
             "text": (text or "").strip(),
@@ -204,6 +212,7 @@ def create(text: str, status: str = "pending", source_run_id: str | None = None,
             "risk": risk,
             "evidence": evidence,
             "strength": float(strength),
+            "scope": normalized_scope,
         }
         with _transaction():
             cards = _load()
@@ -261,7 +270,13 @@ def update(card_id: str, **fields) -> dict | None:
     """Patch the given fields on a card; return the updated card (or None if not found / IO fails).
 
     `id` and `created_at` are immutable and silently ignored. `strength` is coerced to float; an
-    out-of-range `status` is ignored (keeps the store's states well-formed)."""
+    out-of-range `status` is ignored (keeps the store's states well-formed). An explicit malformed
+    `scope` refuses the whole update before any other field is applied."""
+    if "scope" in fields:
+        try:
+            fields = {**fields, "scope": normalize_scope(fields["scope"], legacy_global=False)}
+        except MemoryScopeError:
+            return None
     with _transaction():
         cards = _load()
         updated = None
@@ -317,8 +332,14 @@ def bump_usage(card_id: str) -> dict | None:
 
 
 def active_texts() -> list[str]:
-    """The text of every active card -- what self_teach builds the memory prefix from (E1)."""
-    return [c.get("text", "") for c in list_cards(status="active") if c.get("text")]
+    """Global active text used by the request-agnostic internalized memory mechanism.
+
+    App/project overlays can only be selected at request time, so they must never be fused into one
+    shared soft prefix. Product prompt mode reads scoped cards through ``memory.mode.active_cards``.
+    """
+    from clozn.memory.scope import scope_for_card
+    return [c.get("text", "") for c in list_cards(status="active")
+            if c.get("text") and scope_for_card(c)["kind"] == "global"]
 
 
 def migrate_from_rules(rules: list[str]) -> list[dict]:

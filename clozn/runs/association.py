@@ -1,9 +1,9 @@
-"""Opaque client/session association for the local run side-channel.
+"""Opaque client/session/project association for the local run side-channel.
 
 Third-party clients often discard response extensions and streaming headers are committed before a run
 exists.  Clozn therefore records a privacy-preserving session key beside each run and lets a sidecar look
-up the newest matching record.  Raw OpenAI ``user`` values and ``X-Clozn-Session-Id`` headers are never
-stored: only a stable SHA-256-derived opaque key is journaled.
+up the newest matching record.  Raw OpenAI ``user`` values and Clozn association headers are never
+stored: only stable SHA-256-derived opaque keys are journaled.
 """
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ import re
 
 SESSION_PREFIX = "session_"
 CLIENT_PREFIX = "client_"
+PROJECT_PREFIX = "project_"
 _SESSION_KEY_RE = re.compile(r"^session_[0-9a-f]{24}$")
 _CLIENT_KEY_RE = re.compile(r"^client_[0-9a-f]{24}$")
+_PROJECT_KEY_RE = re.compile(r"^project_[0-9a-f]{24}$")
 
 
 class AssociationValueError(ValueError):
@@ -36,7 +38,7 @@ def validate_selector(value, field: str) -> str:
 
 
 def validate_request_headers(headers) -> None:
-    for header in ("X-Clozn-Client-Id", "X-Clozn-Session-Id"):
+    for header in ("X-Clozn-Client-Id", "X-Clozn-Session-Id", "X-Clozn-Project-Id"):
         try:
             value = headers.get(header) if headers is not None else None
         except Exception:
@@ -97,3 +99,33 @@ def request_client(headers) -> tuple[str | None, str | None]:
         return client_key(explicit, accept_key=False), "header"
     key = client_key(user_agent, accept_key=False)
     return key, "user_agent" if key else None
+
+
+def request_explicit_client(headers) -> str | None:
+    """Return the opaque explicit client key without a User-Agent fallback."""
+    try:
+        value = headers.get("X-Clozn-Client-Id") if headers is not None else None
+    except Exception:
+        value = None
+    return client_key(value, accept_key=False)
+
+
+def project_key(value, *, accept_key: bool = True) -> str | None:
+    """Normalize a caller-known project identifier to the opaque journal key."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if accept_key and _PROJECT_KEY_RE.fullmatch(text.lower()):
+        return text.lower()
+    return _digest(PROJECT_PREFIX, text)
+
+
+def request_project(headers) -> str | None:
+    """Return the opaque key for the explicit project association header."""
+    try:
+        value = headers.get("X-Clozn-Project-Id") if headers is not None else None
+    except Exception:
+        value = None
+    return project_key(value, accept_key=False)

@@ -42,6 +42,7 @@ def test_create_shape_and_defaults(store):
     assert c["risk"] == "low"
     assert c["evidence"] == ""
     assert c["strength"] == 1.0
+    assert c["scope"] == {"kind": "global"}
     assert c["usage_count"] == 0
     assert c["last_used_at"] is None
     assert c["source_run_id"] is None
@@ -50,8 +51,36 @@ def test_create_shape_and_defaults(store):
     assert "created_at" in c
     # every documented field is present
     for k in ("id", "text", "status", "source_run_id", "source_turn", "quoted_span", "created_at",
-              "last_used_at", "usage_count", "kind", "risk", "evidence", "strength"):
+              "last_used_at", "usage_count", "kind", "risk", "evidence", "strength", "scope"):
         assert k in c
+
+
+def test_create_normalizes_scopes_and_rejects_malformed_writes(store):
+    scoped = store.create("project preference", scope={
+        "kind": "project", "key": "repo:clozn", "label": "Clozn",
+    })
+    assert scoped["scope"] == {
+        "kind": "project", "key": "repo:clozn", "label": "Clozn",
+    }
+    assert store.create("bad", scope={"kind": "project"}) is None
+    assert store.create("also bad", scope="project") is None
+
+
+def test_update_scope_is_atomic_and_legacy_missing_scope_remains_readable(store):
+    card = store.create("scoped")
+    updated = store.update(card["id"], scope={"kind": "app", "key": "aider"})
+    assert updated["scope"] == {"kind": "app", "key": "aider"}
+    before = store.get(card["id"])
+    assert store.update(card["id"], text="must not land", scope={
+        "kind": "app", "key": "bad key",
+    }) is None
+    assert store.get(card["id"]) == before
+
+    cards = store._load()
+    cards[0].pop("scope")
+    assert store._save(cards) is True
+    assert "scope" not in store.get(card["id"])
+    assert store.active_texts() == []
 
 
 def test_create_with_overrides_persists(store):
@@ -133,6 +162,15 @@ def test_active_texts_only_active(store):
     store.create("pending one", status="pending")
     store.create("disabled one", status="disabled")
     assert store.active_texts() == ["active one"]
+
+
+def test_internalized_active_texts_excludes_request_scoped_overlays(store):
+    store.create("global", status="active")
+    store.create("app only", status="active", scope={"kind": "app", "key": "client_one"})
+    store.create("project only", status="active",
+                 scope={"kind": "project", "key": "project_one"})
+
+    assert store.active_texts() == ["global"]
 
 
 def test_bump_usage(store):

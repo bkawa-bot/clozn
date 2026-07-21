@@ -242,6 +242,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
            workspace_provider=None, identity: dict | None = None,
            reasoning: dict | None = None, session_key: str | None = None,
            client_key: str | None = None, client_key_source: str | None = None,
+           project_key: str | None = None,
            output_contract: dict | None = None) -> str | None:
     """Persist a completed run and return its id. Logging failures remain non-fatal.
 
@@ -310,6 +311,7 @@ def record(*, source: str, client: str = "unknown", model: str = "", substrate: 
             "client_key": client_key,
             "client_key_source": client_key_source,
             "session_key": session_key,
+            "project_key": project_key,
             "model": model,
             "substrate": substrate,
             "prompt_summary": _summ(prompt),

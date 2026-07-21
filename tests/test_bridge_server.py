@@ -300,17 +300,22 @@ def test_chat_completions_raw_http_response_carries_the_x_clozn_run_id_header(is
 def test_opt_in_association_headers_resolve_exact_latest_without_storing_raw_ids(iso):
     raw_client = "studio-install-123"
     raw_session = "studio-tab-456"
+    raw_project = "workspace-clozn"
     raw = _dispatch("POST", "/v1/chat/completions",
                     {"messages": [{"role": "user", "content": "associated"}]},
                     headers={"X-Clozn-Client-Id": raw_client,
-                             "X-Clozn-Session-Id": raw_session})
+                             "X-Clozn-Session-Id": raw_session,
+                             "X-Clozn-Project-Id": raw_project})
     _, _, payload = raw.partition(b"\r\n\r\n")
     rid = json.loads(payload)["clozn_run_id"]
     rec = runlog.get_run(rid)
     assert rec["client_key"].startswith("client_")
+    assert rec["client_key_source"] == "header"
     assert rec["session_key"].startswith("session_")
+    assert rec["project_key"].startswith("project_")
     assert raw_client not in json.dumps(rec)
     assert raw_session not in json.dumps(rec)
+    assert raw_project not in json.dumps(rec)
 
     latest = _get("/runs/latest", headers={"X-Clozn-Client-Id": raw_client,
                                             "X-Clozn-Session-Id": raw_session})

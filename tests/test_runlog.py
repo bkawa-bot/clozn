@@ -59,6 +59,15 @@ def test_association_filters_are_exact_and_derived_runs_default_off(store):
     assert store.latest_run(client_id="different") is None
 
 
+def test_record_persists_optional_opaque_project_association(store):
+    from clozn.runs.association import project_key
+    opaque = project_key("workspace-one")
+    rid = store.record(source="openai_api", project_key=opaque,
+                       messages=[{"role": "user", "content": "one"}], response="answer")
+
+    assert store.get_run(rid)["project_key"] == opaque
+
+
 def test_record_schema_fields(store):
     rid = store.record(source="studio_chat",
                        messages=[{"role": "user", "content": "what is 2+2?"}], response="4")
@@ -66,7 +75,7 @@ def test_record_schema_fields(store):
     for k in ("id", "created_at", "created_ts", "source", "client", "model", "substrate",
               "prompt_summary", "response_summary", "messages", "response", "memory", "behavior",
               "assembled_messages", "final_prompt", "trace", "timing", "parent_run_id",
-              "changes_applied", "error", "output_contract", "flags"):
+              "changes_applied", "error", "project_key", "output_contract", "flags"):
         assert k in rec, f"missing schema field {k}"
     assert rec["source"] == "studio_chat"
     assert rec["prompt_summary"] == "what is 2+2?"        # last user message summarized
@@ -186,6 +195,27 @@ def test_log_run_forwards_final_prompt_to_the_record(store, monkeypatch):
                               "final_prompt": rendered})
     assert rid is not None
     assert store.get_run(rid)["final_prompt"] == rendered
+
+
+def test_log_run_records_applied_scope_kinds_without_opaque_keys(store, monkeypatch):
+    import time
+    from clozn.server import app as cs
+    monkeypatch.setattr(cs, "SUB", None)
+    h = object.__new__(cs.make_handler())
+    h.headers = {"User-Agent": "pytest"}
+
+    rid = h._log_run(
+        "openai_api", [{"role": "user", "content": "hi"}], "hey", "clozn-engine", time.time(),
+        mem_out={"mode": "prompt", "applied": [
+            {"id": "mem_global", "text": "Global preference", "scope_kind": "global"},
+            {"id": "mem_project", "text": "Project convention", "scope_kind": "project",
+             "scope_key": "project_secret"},
+        ]},
+    )
+
+    memory = store.get_run(rid)["memory"]
+    assert memory["applied_scope_kinds"] == ["global", "project"]
+    assert "project_secret" not in repr(memory)
 
 
 def test_log_run_honors_surface_reported_dials_instead_of_claiming_live_state(store, monkeypatch):

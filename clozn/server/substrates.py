@@ -30,6 +30,41 @@ class Substrate:
     and defines _gen(prompt) -- a one-shot generate used by the /steer/check A/B (AR generate vs denoise).
     So memory + dials are written ONCE and work identically on Qwen and Dream."""
 
+    @staticmethod
+    def _requested_card_scope(body):
+        """Resolve a public scope *kind* against gateway-injected private request context.
+
+        JSON callers may say only ``scope: global|app|project``.  The opaque key is copied exclusively
+        from a real ``MemoryScope`` under the private ``_memory_scope`` seam; a JSON object cannot
+        impersonate that frozen dataclass.  This keeps association keys out of the public mutation
+        contract and makes a missing gateway association fail closed instead of widening the card.
+        """
+        from clozn.memory.scope import MemoryScope, app_scope, global_scope, project_scope
+
+        if not isinstance(body, dict):
+            return None, "memory request body must be an object"
+        if any(field in body for field in ("key", "scope_key", "app_key", "project_key")):
+            return None, "raw memory scope keys are not accepted"
+
+        trusted = body.get("_memory_scope")
+        if "_memory_scope" in body and not isinstance(trusted, MemoryScope):
+            return None, "memory scope context was not injected by the gateway"
+        requested = body.get("scope", "global")
+        if not isinstance(requested, str) or requested.strip().lower() not in ("global", "app", "project"):
+            return None, "scope must be global, app, or project"
+        requested = requested.strip().lower()
+        if requested == "global":
+            return global_scope(), None
+        if not isinstance(trusted, MemoryScope):
+            return None, f"{requested} scope is unavailable for this request"
+        if requested == "app":
+            if trusted.app_key is None:
+                return None, "app scope is unavailable for this request"
+            return app_scope(trusted.app_key), None
+        if trusted.project_key is None:
+            return None, "project scope is unavailable for this request"
+        return project_scope(trusted.project_key), None
+
     def _memory(self, path, body):
         """Card-backed memory (D2 + E1). Cards carry the metadata + review status; m.rules stays == the
         ACTIVE-card texts and drives the prefix via consolidate(). Status changes go through _mem_sync_rules,
@@ -50,15 +85,34 @@ class Substrate:
             text = str(body.get("text", "")).strip()
             if not text:
                 return {"ok": False, "reason": "empty trait"}
+            scope, scope_error = self._requested_card_scope(body)
+            if scope_error:
+                return {"ok": False, "reason": scope_error}
             card = memory_cards.create(text, status="pending", kind="preference",
                                        risk=ctx._risk_of(text), source_run_id=body.get("source_run_id"),
-                                       evidence=str(body.get("evidence", "")))
+                                       evidence=str(body.get("evidence", "")), scope=scope)
             if not card:
                 return {"ok": False, "reason": "could not create card"}
             # If this is really a STYLE preference, surface the tone DIAL that delivers it (the trained
             # prefix carries topical prefs well but style ones weakly). Card is still created + pending;
             # this only SUGGESTS the better mechanism -- null when the text isn't a style match.
             return {**card, "dial_suggestion": ctx._dial_suggestion(text)}
+
+        if path == "/memory/scope":             # rebind by kind; opaque key comes only from private context
+            cid = str(body.get("id", "")).strip()
+            if not cid:
+                return {"ok": False, "reason": "need a card id"}
+            if "scope" not in body:
+                return {"ok": False, "reason": "need scope: global, app, or project"}
+            scope, scope_error = self._requested_card_scope(body)
+            if scope_error:
+                return {"ok": False, "reason": scope_error}
+            if memory_cards.get(cid) is None:
+                return {"ok": False, "reason": "no such card"}
+            card = memory_cards.update(cid, scope=scope)
+            if card is None:
+                return {"ok": False, "reason": "could not update card scope"}
+            return card
 
         if path == "/memory/remove":            # delete by id -> if it was active, rebuild from the rest
             cid = str(body.get("id", "")).strip()
@@ -534,7 +588,7 @@ class EngineSubstrate(Substrate):
         return req.prompt_tokens if req is not None else None
 
     def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None,
-             reference_tokens=None, apply_anchored=False):
+             reference_tokens=None, apply_anchored=False, memory_scope=None):
         """One stateless chat completion on the engine with memory (prompt-mode card block) + tone dials
         applied. Mirrors QwenSubstrate.chat's contract EXACTLY (same signature, same trace_out/mem_out
         fill) so the receipts/replay stack is backend-agnostic.
@@ -567,7 +621,10 @@ class EngineSubstrate(Substrate):
         req.sampling = samp
         req.generation_meta = ctx._engine_generation_meta(max_new, stream=False, sample=samp)
         # MEMORY: the active cards as a topic-gated system block (omitted off-topic / when strength 0).
-        decision = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        decision = (ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+                    if memory_scope is None else
+                    ctx._prompt_block_for(
+                        self.memory, ctx._last_user(messages), request_scope=memory_scope))
         block, applied, gate = decision
         ctx._capture_prompt_decision(mem_out, decision)
         if applied and mem_out is not None:
@@ -593,7 +650,10 @@ class EngineSubstrate(Substrate):
             if sv:
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
-        comp = ctx._apply_anchored_memory(kw, mem_out, ctx._last_user(messages)) if apply_anchored else None
+        comp = ((ctx._apply_anchored_memory(kw, mem_out, ctx._last_user(messages))
+                 if memory_scope is None else ctx._apply_anchored_memory(
+                     kw, mem_out, ctx._last_user(messages), request_scope=memory_scope))
+                if apply_anchored else None)
         if reference_tokens:                                # prove-all early-stop: halt when the answer changes
             kw["reference_tokens"] = [int(t) for t in reference_tokens if t is not None]
         usage = {}
@@ -633,7 +693,7 @@ class EngineSubstrate(Substrate):
                               parallel_tool_calls=False, max_new=256, sample=True,
                               trace_out=None, mem_out=None, apply_anchored=False,
                               add_generation_prompt=True, enable_thinking=True,
-                              reasoning_format="none") -> dict:
+                              reasoning_format="none", memory_scope=None) -> dict:
         """Private atomic model-native structured chat on the C++ worker.
 
         This is deliberately a substrate seam, not an OpenAI route or a qualification claim.  The
@@ -657,7 +717,10 @@ class EngineSubstrate(Substrate):
         req.sampling = samp
         req.generation_meta = ctx._engine_generation_meta(max_new, stream=False, sample=samp)
 
-        decision = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        decision = (ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+                    if memory_scope is None else
+                    ctx._prompt_block_for(
+                        self.memory, ctx._last_user(messages), request_scope=memory_scope))
         block, applied, gate = decision
         assembled = ctx._inject_block(messages, block)
         memory_manifest = {
@@ -691,7 +754,11 @@ class EngineSubstrate(Substrate):
         # require a second atomic structured generation and could produce a different parsed call.  The
         # public route must not opt in until that policy is explicitly designed and qualified.
         if apply_anchored:
-            ctx._apply_anchored_memory(options, memory_manifest, ctx._last_user(messages))
+            if memory_scope is None:
+                ctx._apply_anchored_memory(options, memory_manifest, ctx._last_user(messages))
+            else:
+                ctx._apply_anchored_memory(
+                    options, memory_manifest, ctx._last_user(messages), request_scope=memory_scope)
             if mem_out is not None:
                 mem_out.update(memory_manifest)
 
@@ -955,7 +1022,8 @@ class EngineSubstrate(Substrate):
                 pass
         return dict(getattr(self, "_identity_meta_val", None) or {})
 
-    def chat_stream(self, messages, max_new=256, mem_out=None, lens=None, on_frame=None, sample=True):
+    def chat_stream(self, messages, max_new=256, mem_out=None, lens=None, on_frame=None, sample=True,
+                    memory_scope=None):
         """Streaming twin of chat(): the SAME memory-block + tone-dial + anchored-memory construction
         (kept in lockstep -- see chat()'s comments; do not let this drift from that logic), but opens the engine's
         /v1/completions with stream:True (mirrors _engine_complete_traced's request) and yields text as
@@ -999,7 +1067,10 @@ class EngineSubstrate(Substrate):
         req.sampling = samp
         req.generation_meta = ctx._engine_generation_meta(max_new, stream=True, sample=samp)
         # MEMORY + TONE: built EXACTLY as chat() builds them.
-        decision = ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+        decision = (ctx._prompt_block_for(self.memory, ctx._last_user(messages))
+                    if memory_scope is None else
+                    ctx._prompt_block_for(
+                        self.memory, ctx._last_user(messages), request_scope=memory_scope))
         block, applied, gate = decision
         ctx._capture_prompt_decision(mem_out, decision)
         if applied and mem_out is not None:
@@ -1024,7 +1095,11 @@ class EngineSubstrate(Substrate):
                 kw["steer_vec"] = sv
                 kw["steer"] = {"coef": 1.0, "layer": self.steer.layer}
         # F6 ANCHORED MEMORY (X7): active bags compose into ONE gated steer_vec at L21 and ride live chat.
-        ctx._apply_anchored_memory(kw, mem_out, ctx._last_user(messages))
+        if memory_scope is None:
+            ctx._apply_anchored_memory(kw, mem_out, ctx._last_user(messages))
+        else:
+            ctx._apply_anchored_memory(
+                kw, mem_out, ctx._last_user(messages), request_scope=memory_scope)
         body = dict(kw); body["prompt"] = prompt; body["max_tokens"] = int(max_new)
         if samp and samp.get("on"):     # S5: real sampling -- Ollama-style temperature/top_k/top_p/rep_penalty/seed
             body["temperature"] = float(samp["temperature"])

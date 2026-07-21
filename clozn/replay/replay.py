@@ -135,6 +135,20 @@ def _effective_dials(sub) -> dict:
         return {}
 
 
+def _memory_scope_for_run(run: dict):
+    """Reconstruct only exact scopes captured on the parent run.
+
+    A User-Agent client association remains useful for sidecar lookup, but must never activate app-scoped
+    memory during a replay. Project association is always explicit because it has no fallback source.
+    """
+    from clozn.memory.scope import MemoryScope
+    app_key = run.get("client_key") if run.get("client_key_source") == "header" else None
+    try:
+        return MemoryScope(app_key=app_key, project_key=run.get("project_key"))
+    except Exception:
+        return MemoryScope()
+
+
 def replay(run: dict, changes: dict, sub, reference_tokens=None, *,
            prompt_instructions=None, max_new: int | None = None) -> dict | None:
     """Re-run `run` under `changes` on the live substrate `sub`; record the result as a child run and return
@@ -164,6 +178,7 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None, *,
             return None
         changes = changes or {}
         mode = _mode()
+        run_scope = _memory_scope_for_run(run)
 
         steer = getattr(sub, "steer", None)
         mem = getattr(sub, "memory", None) or getattr(sub, "_mem", None)
@@ -193,7 +208,7 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None, *,
             # unknown kwarg named in the TypeError, so the reply is never lost -- just less instrumented.
             budget = int(max_new) if isinstance(max_new, int) and max_new > 0 else 256
             call_kw = {"max_new": budget, "sample": sampled, "trace_out": trace_steps,
-                       "mem_out": replay_memout}
+                       "mem_out": replay_memout, "memory_scope": run_scope}
             if reference_tokens:
                 call_kw["reference_tokens"] = reference_tokens
             while True:
@@ -202,7 +217,7 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None, *,
                     break
                 except TypeError as e:
                     msg = str(e)
-                    dropped = next((k for k in ("reference_tokens", "trace_out", "mem_out")
+                    dropped = next((k for k in ("reference_tokens", "trace_out", "mem_out", "memory_scope")
                                     if k in call_kw and k in msg), None)
                     if dropped is None:
                         raise                                # a real TypeError from inside chat, not a kwarg
@@ -273,7 +288,7 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None, *,
             eligible = None
             try:
                 import clozn.memory.mode as memory_mode
-                eligible = memory_mode.active_cards(excluded)
+                eligible = memory_mode.active_cards(excluded, request_scope=run_scope)
             except Exception:
                 pass
             if eligible is None:                             # store unavailable -> id-less rules fallback
@@ -292,6 +307,13 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None, *,
         }
         if ids is not None:
             memd["applied_ids"] = [] if changes.get("memory_off") else ids
+            scope_kinds = [c.get("scope_kind") for c in eligible]
+            if any(kind in {"global", "app", "project"} for kind in scope_kinds):
+                memd["applied_scope_kinds"] = (
+                    [] if changes.get("memory_off") else
+                    [kind if kind in {"global", "app", "project"} else "global"
+                     for kind in scope_kinds]
+                )
         if notes:
             memd["notes"] = notes
 
@@ -323,6 +345,7 @@ def replay(run: dict, changes: dict, sub, reference_tokens=None, *,
             session_key=run.get("session_key"),
             client_key=run.get("client_key"),
             client_key_source=run.get("client_key_source"),
+            project_key=run.get("project_key"),
         )
         if rid is None:
             return None

@@ -48,6 +48,7 @@ def _write_markdown(path: str, document: str, *, force: bool) -> None:
 
 def _fresh_card(text: str, *, status: str, source: str, imported=None) -> dict:
     from clozn.memory import cards as memory_cards
+    from clozn.memory.scope import normalize_scope
     original = imported if isinstance(imported, dict) else {}
     provenance_ok = False
     source_run_id = original.get("source_run_id")
@@ -75,14 +76,101 @@ def _fresh_card(text: str, *, status: str, source: str, imported=None) -> dict:
         "risk": memory_cards.risk_of_text(text),
         "evidence": f"imported from {source}",
         "strength": float(original.get("strength", 1.0)),
+        "scope": normalize_scope(original.get("scope"), legacy_global="scope" not in original),
     }
+
+
+def _requested_card_scope(args) -> dict:
+    """Build a card scope from raw CLI selectors without ever persisting those selectors."""
+    from clozn.memory.scope import MemoryScopeError, card_scope
+    from clozn.runs.association import (AssociationValueError, client_key, project_key,
+                                        validate_selector)
+
+    try:
+        kind = str(args.scope)
+        label = getattr(args, "label", None)
+        raw_client = getattr(args, "client_id", None)
+        raw_project = getattr(args, "project", None)
+        if kind == "global":
+            if raw_client or raw_project or label:
+                raise ctx.CloznError("global memory does not accept --client-id, --project, or --label")
+            return card_scope("global")
+        if kind == "app":
+            if not raw_client:
+                raise ctx.CloznError("app memory requires --client-id")
+            if raw_project:
+                raise ctx.CloznError("app memory does not accept --project")
+            raw_client = validate_selector(raw_client, "--client-id")
+            return card_scope("app", key=client_key(raw_client, accept_key=False), label=label)
+        if not raw_project:
+            raise ctx.CloznError("project memory requires --project")
+        if raw_client:
+            raise ctx.CloznError("project memory does not accept --client-id")
+        raw_project = validate_selector(raw_project, "--project")
+        return card_scope("project", key=project_key(raw_project, accept_key=False), label=label)
+    except (AssociationValueError, MemoryScopeError) as exc:
+        raise ctx.CloznError(str(exc)) from None
+
+
+def cmd_memory_add(args) -> int:
+    from clozn.memory import cards as memory_cards
+    if not str(args.text or "").strip():
+        raise ctx.CloznError("memory card text must not be empty")
+    scope = _requested_card_scope(args)
+    card = memory_cards.create(
+        args.text, status=args.status, kind="preference",
+        risk=memory_cards.risk_of_text(args.text), evidence="added with clozn memory add",
+        scope=scope)
+    if card is None:
+        raise ctx.CloznError("could not create memory card")
+    if args.json:
+        print(json.dumps(card, indent=2, ensure_ascii=False))
+    else:
+        print(f"memory added - {card['id']} [{card['status']}/{scope['kind']}]")
+    return 0
+
+
+def cmd_memory_scope(args) -> int:
+    from clozn.memory import cards as memory_cards
+    if memory_cards.get(args.card_id) is None:
+        raise ctx.CloznError(f"no memory card {args.card_id!r}")
+    scope = _requested_card_scope(args)
+    card = memory_cards.update(args.card_id, scope=scope)
+    if card is None:
+        raise ctx.CloznError("could not update memory-card scope")
+    if args.json:
+        print(json.dumps(card, indent=2, ensure_ascii=False))
+    else:
+        print(f"memory scoped - {card['id']} [{scope['kind']}]")
+    return 0
+
+
+def cmd_memory_list(args) -> int:
+    from clozn.memory import cards as memory_cards
+    from clozn.memory.scope import scope_for_card
+    status = None if args.status == "all" else args.status
+    listed = memory_cards.list_cards(status=status)
+    if args.json:
+        print(json.dumps(listed, indent=2, ensure_ascii=False))
+        return 0
+    if not listed:
+        print("no memory cards")
+        return 0
+    for card in listed:
+        scope = scope_for_card(card)
+        label = f"/{scope['label']}" if scope.get("label") else ""
+        print(f"{card.get('id')} [{card.get('status')}/{scope['kind']}{label}] {card.get('text') or ''}")
+    return 0
 
 
 def cmd_memory_export(args) -> int:
     from clozn.memory import cards as memory_cards
     from clozn.memory import markdown_cards
+    from clozn.memory.scope import scope_for_card
     status = None if args.status == "all" else args.status
     exported = [dict(card) for card in memory_cards.list_cards(status=status)]
+    if args.scope == "global":
+        exported = [card for card in exported if scope_for_card(card)["kind"] == "global"]
     if not args.include_provenance:
         for card in exported:
             card.update(source_run_id=None, source_turn=None, quoted_span="", evidence="")
@@ -133,7 +221,12 @@ def _card_lines(cards) -> list[str]:
         if not isinstance(card, dict):
             continue
         identity = card.get("id") or "unidentified"
-        suffix = f" (relevance {card['relevance']})" if card.get("relevance") is not None else ""
+        details = []
+        if card.get("scope_kind") in {"global", "app", "project"}:
+            details.append(str(card["scope_kind"]))
+        if card.get("relevance") is not None:
+            details.append(f"relevance {card['relevance']}")
+        suffix = f" ({', '.join(details)})" if details else ""
         lines.append(f"  - {identity}: {card.get('text') or ''}{suffix}")
     return lines
 
@@ -192,6 +285,8 @@ def format_memory_usage(receipt: dict) -> str:
         line = f"anchored - {anchored.get('count', 0)} bag(s)"
         if anchored.get("skipped"):
             line += f"; skipped: {anchored['skipped']}"
+        if anchored.get("scope_excluded_count"):
+            line += f"; excluded by scope: {anchored['scope_excluded_count']}"
         lines.append(line)
     facts = receipt.get("facts") or {}
     if facts.get("status") == "observed":
@@ -226,12 +321,30 @@ def add_subparser(subparsers):
     last = used_commands.add_parser("last", help="show memory evidence for the latest organic run")
     last.add_argument("--json", action="store_true", help="print the structured receipt")
     last.set_defaults(fn=cmd_memory_used_last)
+    added = commands.add_parser("add", help="add a pending or active memory card")
+    added.add_argument("text", help="memory card text")
+    added.add_argument("--status", choices=("pending", "active"), default="pending")
+    _add_scope_arguments(added)
+    added.add_argument("--json", action="store_true", help="print the created card")
+    added.set_defaults(fn=cmd_memory_add)
+    scoped = commands.add_parser("scope", help="change which requests may use a memory card")
+    scoped.add_argument("card_id", help="memory card id")
+    _add_scope_arguments(scoped)
+    scoped.add_argument("--json", action="store_true", help="print the updated card")
+    scoped.set_defaults(fn=cmd_memory_scope)
+    listed = commands.add_parser("list", help="list memory cards and their scopes")
+    listed.add_argument("--status", choices=("active", "pending", "disabled", "rejected", "all"),
+                        default="all")
+    listed.add_argument("--json", action="store_true", help="print card objects")
+    listed.set_defaults(fn=cmd_memory_list)
     export = commands.add_parser("export", help="export cards as deterministic Markdown")
     export.add_argument("path", nargs="?", default="-", help="output path or - for stdout")
     export.add_argument("--status", choices=("active", "pending", "disabled", "rejected", "all"),
                         default="active", help="cards to export (default active)")
     export.add_argument("--include-provenance", action="store_true",
                         help="include source run, quote, and evidence fields")
+    export.add_argument("--scope", choices=("global", "all"), default="global",
+                        help="export portable global cards (default) or all install-scoped cards")
     export.add_argument("--force", action="store_true", help="overwrite an existing output file")
     export.set_defaults(fn=cmd_memory_export)
     imported = commands.add_parser("import", help="transactionally merge Markdown cards")
@@ -245,3 +358,10 @@ def add_subparser(subparsers):
     imported.add_argument("--dry-run", action="store_true", help="validate and report without writing")
     imported.add_argument("--json", action="store_true", help="print the machine-readable import report")
     imported.set_defaults(fn=cmd_memory_import)
+
+
+def _add_scope_arguments(parser) -> None:
+    parser.add_argument("--scope", choices=("global", "app", "project"), default="global")
+    parser.add_argument("--client-id", help="raw app identity; stored only as an opaque local key")
+    parser.add_argument("--project", help="raw project identity; stored only as an opaque local key")
+    parser.add_argument("--label", help="optional local display label for app/project scope")

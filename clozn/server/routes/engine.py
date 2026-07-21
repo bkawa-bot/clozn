@@ -160,7 +160,10 @@ def try_post(h, p, body):
             # Product memory is always the legible card block. Soft-prefix training/application lives
             # only in the lab, so this route cannot import Torch or inject a stale .pt artifact.
             ms = float(getattr(mem, "memory_strength", 1.0)) if mem is not None else 1.0
-            decision = ctx._prompt_block_for(mem, ctx._last_user(msgs), strength=ms)
+            from clozn.server.generation_gateway import request_memory_scope
+            memory_scope = request_memory_scope(h)
+            decision = ctx._prompt_block_for(
+                mem, ctx._last_user(msgs), strength=ms, request_scope=memory_scope)
             block, applied, gate = decision
             ctx._capture_prompt_decision(memout, decision)
             if applied:
@@ -187,7 +190,8 @@ def try_post(h, p, body):
                 if sv:
                     kw["steer_vec"] = sv
                     kw["steer"] = {"coef": 1.0, "layer": es.layer}
-            ctx._apply_anchored_memory(kw, memout, ctx._last_user(msgs))
+            ctx._apply_anchored_memory(
+                kw, memout, ctx._last_user(msgs), request_scope=memory_scope)
             # Generate + capture a per-token trace alongside (B3). Reply is byte-identical to the
             # plain complete(); the trace feeds the Run Inspector timeline. steps=[] (diffusion, or a
             # stream hiccup) -> runlog stores a clean empty trace.

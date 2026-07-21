@@ -117,7 +117,7 @@ def build(run: dict | None, explain: dict | None = None, receipts=None) -> dict:
     # Association fingerprints are intentionally local-only. They help a sidecar find the right run,
     # but add no reproduction evidence and must not become portable cross-install identifiers.
     portable_run = {k: v for k, v in run.items()
-                    if k not in {"client_key", "client_key_source", "session_key"}}
+                    if k not in {"client_key", "client_key_source", "session_key", "project_key"}}
     # output_contract is already part of the stored run evidence, so the JSON receipt retains one
     # object-shaped copy under bundle["run"] rather than promoting/duplicating its raw model output at
     # another top-level export key.  A malformed legacy value degrades to {}.  Association fingerprints

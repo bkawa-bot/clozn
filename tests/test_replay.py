@@ -167,6 +167,42 @@ def test_plain_reroll_records_child(store):
     assert child["changes_applied"] == {}
 
 
+class _ScopedSub(FakeSub):
+    def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None,
+             memory_scope=None):
+        self.seen_scope = memory_scope
+        return super().chat(messages, max_new=max_new, sample=sample, trace_out=trace_out,
+                            mem_out=mem_out)
+
+
+def test_replay_reuses_only_explicit_client_scope_and_inherits_project_on_child(store):
+    parent = {
+        **RUN,
+        "client_key": "client_0123456789abcdef01234567",
+        "client_key_source": "header",
+        "project_key": "project_0123456789abcdef01234567",
+    }
+    sub = _ScopedSub()
+
+    child = replay.replay(parent, {}, sub)
+
+    assert sub.seen_scope.app_key == parent["client_key"]
+    assert sub.seen_scope.project_key == parent["project_key"]
+    assert child["client_key"] == parent["client_key"]
+    assert child["client_key_source"] == "header"
+    assert child["project_key"] == parent["project_key"]
+
+
+def test_replay_does_not_activate_user_agent_client_scope(store):
+    parent = {**RUN, "client_key": "client_ua_fingerprint", "client_key_source": "user_agent"}
+    sub = _ScopedSub()
+
+    child = replay.replay(parent, {}, sub)
+
+    assert child is not None
+    assert sub.seen_scope.app_key is None
+
+
 # --- best-effort card toggles: no-op with a note ----------------------------------------------------------
 
 def test_disabled_memory_ids_is_noted_stub(store):

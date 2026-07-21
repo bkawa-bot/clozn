@@ -203,10 +203,12 @@ def test_receipt_bundle_unknowns_are_null_or_empty():
 
 def test_receipt_bundle_omits_local_association_fingerprints():
     bundle = receipt_bundle.build({"id": "r1", "client_key": "client_deadbeef",
-                                   "client_key_source": "header", "session_key": "session_deadbeef"})
+                                   "client_key_source": "header", "session_key": "session_deadbeef",
+                                   "project_key": "project_deadbeef"})
     assert "client_key" not in bundle["run"]
     assert "client_key_source" not in bundle["run"]
     assert "session_key" not in bundle["run"]
+    assert "project_key" not in bundle["run"]
 
 
 def test_receipt_bundle_keeps_structured_evidence_once_without_widening_private_fields():

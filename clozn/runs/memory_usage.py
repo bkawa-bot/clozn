@@ -45,14 +45,18 @@ def _cards(memory: Mapping) -> list[dict]:
     texts = _list(memory.get("cards_applied"))
     ids = _list(memory.get("applied_ids"))
     relevance = _list(memory.get("relevance"))
-    return [
-        {
+    scopes = _list(memory.get("applied_scope_kinds"))
+    cards = []
+    for index, text in enumerate(texts):
+        card = {
             "text": _card_text(text),
             "id": ids[index] if index < len(ids) else None,
             "relevance": _relevance(relevance[index]) if index < len(relevance) else None,
         }
-        for index, text in enumerate(texts)
-    ]
+        if index < len(scopes) and scopes[index] in {"global", "app", "project"}:
+            card["scope_kind"] = scopes[index]
+        cards.append(card)
+    return cards
 
 
 def _snapshot_cards(value) -> list[dict]:
@@ -74,7 +78,7 @@ def _total_prompt_tokens(run: Mapping) -> tuple[int | None, str | None]:
 
 def _anchored(memory: Mapping) -> dict:
     keys = ("anchored", "anchored_layer", "anchored_s_total", "anchored_skipped",
-            "anchored_loop_guard")
+            "anchored_loop_guard", "anchored_scope_excluded_count")
     if not any(key in memory for key in keys):
         return {"status": "not_observed"}
     bags = [dict(item) for item in _list(memory.get("anchored")) if isinstance(item, Mapping)]
@@ -85,6 +89,7 @@ def _anchored(memory: Mapping) -> dict:
         "layer": memory.get("anchored_layer"),
         "s_total": memory.get("anchored_s_total"),
         "skipped": memory.get("anchored_skipped"),
+        "scope_excluded_count": _nonnegative_int(memory.get("anchored_scope_excluded_count")),
         "loop_guard": (dict(memory["anchored_loop_guard"])
                        if isinstance(memory.get("anchored_loop_guard"), Mapping) else None),
         "evidence": [f"memory.{key}" for key in keys if key in memory],

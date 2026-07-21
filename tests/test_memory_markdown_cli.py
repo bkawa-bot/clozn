@@ -7,6 +7,7 @@ import pytest
 
 from clozn.cli import main as cli
 from clozn.memory import cards
+from clozn.runs.association import client_key, project_key
 
 
 @pytest.fixture
@@ -68,3 +69,44 @@ def test_versioned_reimport_is_idempotent(isolated, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["added"] == 0 and report["skipped_duplicates"] == 1
     assert len(cards.list_cards()) == 1
+
+
+def test_add_and_rescope_use_opaque_local_keys(isolated, capsys):
+    assert cli.main(["memory", "add", "Use concise answers", "--status", "active",
+                     "--scope", "app", "--client-id", "editor-one", "--json"]) == 0
+    created = json.loads(capsys.readouterr().out)
+    assert created["scope"] == {"kind": "app", "key": client_key("editor-one", accept_key=False)}
+    assert "editor-one" not in json.dumps(cards.list_cards())
+
+    assert cli.main(["memory", "scope", created["id"], "--scope", "project",
+                     "--project", "repo-one", "--label", "My repo", "--json"]) == 0
+    updated = json.loads(capsys.readouterr().out)
+    assert updated["scope"] == {"kind": "project",
+                                 "key": project_key("repo-one", accept_key=False),
+                                 "label": "My repo"}
+    assert "repo-one" not in json.dumps(cards.list_cards())
+
+
+def test_export_defaults_to_portable_global_cards(isolated, capsys):
+    cards.create("Global preference", status="active")
+    cards.create("App preference", status="active",
+                 scope={"kind": "app", "key": client_key("editor-one", accept_key=False)})
+    portable = isolated / "portable.md"
+    complete = isolated / "complete.md"
+
+    assert cli.main(["memory", "export", str(portable)]) == 0
+    assert "Global preference" in portable.read_text(encoding="utf-8")
+    assert "App preference" not in portable.read_text(encoding="utf-8")
+
+    assert cli.main(["memory", "export", str(complete), "--scope", "all"]) == 0
+    assert "App preference" in complete.read_text(encoding="utf-8")
+
+
+def test_list_shows_scope_without_opaque_key(isolated, capsys):
+    cards.create("Project preference", status="pending",
+                 scope={"kind": "project", "key": project_key("repo-one", accept_key=False),
+                        "label": "My repo"})
+    assert cli.main(["memory", "list"]) == 0
+    output = capsys.readouterr().out
+    assert "pending/project/My repo" in output
+    assert "project_" not in output

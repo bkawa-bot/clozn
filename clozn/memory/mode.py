@@ -126,16 +126,22 @@ def set_setting(key: str, value) -> bool:
         return False
 
 
-def active_cards(exclude_ids=()) -> list[dict] | None:
+def active_cards(exclude_ids=(), request_scope=None) -> list[dict] | None:
     """The ACTIVE memory cards as [{id, text}], minus exclude_ids (replay's per-card ablation) -- the
     prompt block's source of truth. [] when the store is simply empty; None if memory_cards itself is
     unavailable, so callers can tell "no cards" from "no store" and keep their own fallbacks."""
     exclude = {str(i) for i in (exclude_ids or ())}
     try:
         from clozn.memory import cards as memory_cards
-        return [{"id": c.get("id"), "text": c["text"]}
-                for c in memory_cards.list_cards(status="active")
-                if c.get("text") and str(c.get("id")) not in exclude]
+        from clozn.memory import scope as memory_scope
+        current = request_scope if isinstance(request_scope, memory_scope.MemoryScope) \
+            else memory_scope.MemoryScope()
+        active = [card for card in memory_cards.list_cards(status="active")
+                  if card.get("text") and str(card.get("id")) not in exclude]
+        eligible = memory_scope.eligible_cards(active, current)
+        return [{"id": card.get("id"), "text": card["text"],
+                 "scope_kind": memory_scope.scope_for_card(card)["kind"]}
+                for card in eligible]
     except Exception:
         return None
 

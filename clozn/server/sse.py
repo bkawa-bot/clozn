@@ -79,6 +79,9 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample
     stream_kw = {}
     if "sample" in params:
         stream_kw["sample"] = sample
+    if "memory_scope" in params:
+        from clozn.server.generation_gateway import request_memory_scope
+        stream_kw["memory_scope"] = request_memory_scope(handler)
     if lens:
         if "lens" in params and "on_frame" in params:
             stream_kw.update(lens=(lens if isinstance(lens, dict) else {}), on_frame=side_frame)

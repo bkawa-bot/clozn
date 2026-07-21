@@ -30,6 +30,7 @@ from clozn.server import app as cs      # noqa: E402
 import clozn.lab.substrates as lab_substrates       # noqa: E402  (the _InternalizedRetrain mixin lives here)
 import clozn.memory.cards as memory_cards            # noqa: E402
 import clozn.memory.mode as memory_mode             # noqa: E402
+from clozn.memory.scope import app_scope, project_scope, scope_for_card  # noqa: E402
 from clozn.profiles import store as P           # noqa: E402
 import clozn.runs.store as runlog                  # noqa: E402
 
@@ -299,6 +300,27 @@ def test_switching_between_two_disjoint_personas_never_bleeds(iso, monkeypatch):
     assert cs._active_profile_name() == "work"
 
 
+def test_switch_replaces_only_global_cards_and_preserves_scoped_overlays(iso, monkeypatch):
+    _mk_store().save(_friend_bundle())
+    old_global = memory_cards.create("Old persona", status="active")
+    app_card = memory_cards.create(
+        "Editor overlay", status="active", scope=app_scope("editor"))
+    project_card = memory_cards.create(
+        "Repo overlay", status="disabled", scope=project_scope("repo"))
+    monkeypatch.setattr(cs, "SUB", FakeSub())
+
+    out = _post("/profiles/switch", {"name": "friend"})
+
+    stored = memory_cards.list_cards()
+    by_id = {card["id"]: card for card in stored}
+    assert old_global["id"] not in by_id
+    assert by_id[app_card["id"]] == app_card
+    assert by_id[project_card["id"]] == project_card
+    globals_ = [card for card in stored if scope_for_card(card)["kind"] == "global"]
+    assert [card["text"] for card in globals_] == ["Loves sci-fi"]
+    assert out["cards"] == {"removed": 1, "added": 1}
+
+
 def test_switch_in_internalized_mode_kicks_the_normal_background_retrain(iso, monkeypatch):
     """Off the "instant" contract on purpose: internalized mode still goes through the SAME async
     consolidate() path a card add/remove already uses -- not reimplemented, not skipped."""
@@ -356,6 +378,22 @@ def test_export_returns_the_bundle_as_json(iso):
     assert out["ok"] is True
     assert out["profile"]["name"] == "friend"
     assert out["profile"]["custom_dials"] == []
+
+
+def test_profile_snapshot_and_export_include_only_global_cards(iso):
+    global_card = memory_cards.create("Global preference", status="active")
+    app_card = memory_cards.create(
+        "Editor-only preference", status="active", scope=app_scope("editor"))
+    project_card = memory_cards.create(
+        "Repo-only preference", status="active", scope=project_scope("repo"))
+    profile = P.new_profile("snapshot")
+    profile["cards"] = [global_card, app_card, project_card]
+
+    saved = _post("/profiles/save", profile)["profile"]
+    exported = _post("/profiles/export", {"name": "snapshot"})["profile"]
+
+    assert saved["cards"] == [{"text": "Global preference", "status": "active"}]
+    assert exported["cards"] == saved["cards"]
 
 
 def test_export_unknown_profile_is_a_clean_404(iso):
