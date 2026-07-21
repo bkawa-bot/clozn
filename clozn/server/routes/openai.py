@@ -3,6 +3,7 @@ import json
 import os
 import secrets
 import time
+import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
@@ -13,6 +14,31 @@ from clozn.server.structured_io import StructuredIOError
 def _api_error(h, status: int, message: str, *, param=None, kind="invalid_request_error", code=None):
     error = {"message": message, "type": kind, "param": param, "code": code or status}
     h._json(status, {"error": error})
+
+
+def _calibration_task(body) -> tuple[dict | Any, str | None]:
+    """Extract Clozn's task extension before standard OpenAI normalization.
+
+    The compatibility normalizer intentionally rejects unknown fields.  Keeping
+    this narrow extraction here preserves that policy table while accepting one
+    local, bounded identifier that never reaches model prompting.
+    """
+    if not isinstance(body, Mapping) or "clozn_task" not in body:
+        return body, None
+    value = body.get("clozn_task")
+    if (isinstance(value, bool) or not isinstance(value, str)
+            or any(unicodedata.category(char) == "Cc" for char in value)):
+        raise ValueError(
+            "clozn_task must be a non-empty string of at most 80 characters without control characters"
+        )
+    normalized_task = " ".join(value.strip().lower().split())
+    if not normalized_task or len(normalized_task) > 80:
+        raise ValueError(
+            "clozn_task must be a non-empty string of at most 80 characters without control characters"
+        )
+    normalized_input = dict(body)
+    normalized_input.pop("clozn_task", None)
+    return normalized_input, normalized_task
 
 
 def _active_identity(sub) -> dict:
@@ -322,9 +348,13 @@ def try_post(h, p, body):
         return False
     from clozn.server.openai_compat import CompatibilityError, normalize_chat_request
     try:
+        body, calibration_task = _calibration_task(body)
         body = normalize_chat_request(body)
     except CompatibilityError as exc:
         _api_error(h, 400, str(exc), param=exc.param, code=exc.code)
+        return True
+    except ValueError as exc:
+        _api_error(h, 400, str(exc), param="clozn_task", code="invalid_parameter")
         return True
     structured = body.pop("_structured_contract", None)
     sub = ctx.active_sub(h)
@@ -407,14 +437,20 @@ def try_post(h, p, body):
         sse.sse_chat(h, msgs, mx, selected_model, lens=body.get("clozn_lens"), sample=sample,
                      receipt=body.get("clozn_receipt", receipt_enabled()),
                      journal_messages=journal_messages,
-                     corrective_evidence=corrective_evidence)
+                     corrective_evidence=corrective_evidence,
+                     task=calibration_task)
         return True
     from clozn.server.generation_gateway import instrumented_chat
+    run_meta = {}
+    if corrective_evidence is not None:
+        run_meta["corrective_policy"] = corrective_evidence
+    if calibration_task is not None:
+        run_meta["clozn_task"] = calibration_task
     try:
         generated = instrumented_chat(h, msgs, model=selected_model, max_tokens=mx,
                                       sample=sample, source="openai_api",
                                       journal_messages=journal_messages,
-                                      extra_meta={"corrective_policy": corrective_evidence},
+                                      extra_meta=run_meta or None,
                                       output_processor=output_processor,
                                       native_structured=native_structured)
     except StructuredIOError as exc:
@@ -518,7 +554,7 @@ def try_post(h, p, body):
     # silent (no key at all) unless a matching, fitted calibration actually says "ask" or "abstain"; see
     # generation_gateway.policy_signal.
     from clozn.server.generation_gateway import policy_signal
-    policy = policy_signal(trace_steps, selected_model)
+    policy = policy_signal(trace_steps, selected_model, task=calibration_task)
     if policy:
         resp["clozn_policy"] = policy
     h._json(200, resp, extra_headers=extra_headers)

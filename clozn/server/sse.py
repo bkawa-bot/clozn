@@ -34,7 +34,7 @@ from clozn.server.http_policy import send_cors_headers
 
 
 def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample=True,
-             journal_messages=None, corrective_evidence=None):
+             journal_messages=None, corrective_evidence=None, task=None):
     """Stream one /v1/chat/completions reply as OpenAI-style `chat.completion.chunk` frames over SSE,
     then log the run. `handler` is the live BaseHTTPRequestHandler (needs .wfile + ._log_run).
 
@@ -99,7 +99,11 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample
     # Strict OpenAI clients ignore unknown fields while sidecars and Studio can correlate the exact run.
     t0 = time.time(); acc = []; memout = {}
     logged_messages = journal_messages if journal_messages is not None else messages
-    policy_meta = {"corrective_policy": corrective_evidence}
+    policy_meta = {}
+    if corrective_evidence is not None:
+        policy_meta["corrective_policy"] = corrective_evidence
+    if task is not None:
+        policy_meta["clozn_task"] = task
     sub = ctx.active_sub(handler)
     gen = sub.chat_stream(messages, max_new, mem_out=memout, **stream_kw)
     disconnect_error = None
@@ -151,7 +155,7 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample
         rid = handler._log_run("openai_api", logged_messages, "".join(acc), model, t0, trace=trace,
                                mem_out=memout, finish_reason=fr,
                                finish_reason_fallback=None if fr else openai_fr,
-                               extra_meta=policy_meta)
+                               extra_meta=policy_meta or None)
         if receipt and rid:                       # the exception-only footer, as one final content chunk
             try:
                 import clozn.runs.store as _runlog
@@ -173,7 +177,7 @@ def sse_chat(handler, messages, max_new, model, lens=None, receipt=False, sample
             policy_trace, _, _ = sanitize_steps(
                 trace, implicit_open=prompt_opens_think(memout.get("final_prompt"))
             )
-        policy = policy_signal(policy_trace, model)
+        policy = policy_signal(policy_trace, model, task=task)
         if policy:
             chunk({}, extension={"clozn_policy": policy})
         from clozn.runs.context_receipt import warnings_for

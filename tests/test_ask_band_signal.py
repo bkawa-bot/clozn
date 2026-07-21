@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from clozn.eval import store as eval_store                     # noqa: E402
@@ -19,11 +21,19 @@ from clozn.server import generation_gateway as gw              # noqa: E402
 
 
 MODEL = "fake-clozn-model"
-SAVED = {"model": MODEL, "score": "min", "policy": {"answer_at": 0.8, "ask_at": 0.4}}
+SAVED = {"model": MODEL, "set": "arith", "score": "min",
+         "policy": {"answer_at": 0.8, "ask_at": 0.4}}
 
 ASK_STEPS = [{"piece": "The", "conf": 0.95}, {"piece": " answer", "conf": 0.6}]     # min 0.6 -> ask
 ANSWER_STEPS = [{"piece": "The", "conf": 0.97}, {"piece": " answer", "conf": 0.9}]  # min 0.9 -> answer
 ABSTAIN_STEPS = [{"piece": "The", "conf": 0.2}, {"piece": " answer", "conf": 0.1}]  # min 0.1 -> abstain
+
+
+@pytest.fixture(autouse=True)
+def legacy_loader(monkeypatch):
+    # These original cases continue to pin the single-file compatibility path.
+    # Dedicated tests below install the indexed loader explicitly.
+    monkeypatch.delattr(eval_store, "load_profile", raising=False)
 
 
 def _save(tmp_path, monkeypatch, payload):
@@ -39,6 +49,8 @@ def test_ask_band_returns_the_signal(tmp_path, monkeypatch):
     assert out["score"] == 0.6
     assert out["answer_at"] == 0.8 and out["ask_at"] == 0.4
     assert out["score_aggregate"] == "min"
+    assert out["calibration_task"] == "arith"
+    assert out["calibration_model"] == MODEL
     assert "note" in out and "ask" in out["note"]
 
 
@@ -88,3 +100,44 @@ def test_ask_band_signal_alias_still_works(tmp_path, monkeypatch):
     assert gw.ask_band_signal is gw.policy_signal
     _save(tmp_path, monkeypatch, SAVED)
     assert gw.ask_band_signal(ASK_STEPS, MODEL)["band"] == "ask"
+
+
+def test_indexed_profile_selection_is_exact_and_never_falls_back(monkeypatch):
+    calls = []
+    profiles = {
+        "arith": dict(SAVED),
+        "medical": {**SAVED, "set": "medical", "policy": {"answer_at": 0.95, "ask_at": 0.7}},
+    }
+
+    def load_profile(model, task):
+        calls.append((model, task))
+        return profiles.get(task)
+
+    monkeypatch.setattr(eval_store, "load_profile", load_profile, raising=False)
+    monkeypatch.setattr(eval_store, "load", lambda: (_ for _ in ()).throw(AssertionError("no fallback")))
+
+    out = gw.policy_signal(ASK_STEPS, MODEL, task="medical")
+    assert out["band"] == "abstain"
+    assert out["calibration_task"] == "medical"
+    assert out["calibration_model"] == MODEL
+    assert gw.policy_signal(ASK_STEPS, MODEL, task="unknown") is None
+    assert calls == [(MODEL, "medical"), (MODEL, "unknown")]
+
+
+def test_indexed_no_task_asks_store_for_newest_exact_model(monkeypatch):
+    calls = []
+
+    def load_profile(model, task):
+        calls.append((model, task))
+        return dict(SAVED)
+
+    monkeypatch.setattr(eval_store, "load_profile", load_profile, raising=False)
+    out = gw.policy_signal(ASK_STEPS, MODEL)
+    assert out["band"] == "ask" and out["calibration_task"] == "arith"
+    assert calls == [(MODEL, None)]
+
+
+def test_legacy_explicit_task_requires_matching_saved_set(tmp_path, monkeypatch):
+    _save(tmp_path, monkeypatch, SAVED)
+    assert gw.policy_signal(ASK_STEPS, MODEL, task="arith")["band"] == "ask"
+    assert gw.policy_signal(ASK_STEPS, MODEL, task="medical") is None

@@ -158,7 +158,7 @@ function CalibrationCurve({ rec }){
   return html`<section class="mod calibration-panel">
     <div class="mod-h"><span class="led cyan"></span>
       <span class="cap">truth-tier calibration</span>
-      <span class="tail">${d.n || 0} probes · ${d.set || "unknown"} · ${d.score || "—"}</span></div>
+      <span class="tail">${d.n || 0} probes · ${d.task || d.set || "general"} · ${d.score || "—"}</span></div>
     <div class="calibration-body">
       <div class="actuary-statline">
         <span>ECE <b>${report.ece != null ? (+report.ece).toFixed(3) : "—"}</b></span>
@@ -180,7 +180,7 @@ function CalibrationCurve({ rec }){
         </div>`)}
       </div>` : html`<div class="none">no bins available</div>`}
       <p class="actuary-note">outcome-grounded: correctness on a labeled probe set, not the acceptance proxy.
-        ${d.model ? ` Model: ${d.model}.` : ""}</p>
+        ${d.model ? ` Model: ${d.model}.` : ""}${d.task ? ` Task profile: ${d.task}.` : ""}</p>
       ${d.saved_ago_s != null && html`<p class="actuary-note">saved ${Math.round(d.saved_ago_s)}s ago</p>`}
     </div>
   </section>`;

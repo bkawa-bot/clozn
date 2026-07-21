@@ -218,7 +218,7 @@ _POLICY_NOTES = {
 }
 
 
-def policy_signal(trace_steps, model: str | None) -> dict | None:
+def policy_signal(trace_steps, model: str | None, task: str | None = None) -> dict | None:
     """The selective-generation policy's verdict for one just-completed /v1/chat/completions reply, or
     None when there is nothing honest to say -- no calibration saved yet (`clozn eval --save`), the saved
     calibration doesn't match this model or carries no usable score aggregate, or this reply's confidence
@@ -237,7 +237,18 @@ def policy_signal(trace_steps, model: str | None) -> dict | None:
     try:
         from clozn.eval import policy as eval_policy, store as eval_store
         import clozn.runs.store as runlog
-        saved = eval_store.load()
+        load_profile = getattr(eval_store, "load_profile", None)
+        if callable(load_profile):
+            # The indexed store owns selection semantics: explicit task is exact;
+            # omitted task is the newest profile for the exact model.  A miss is
+            # final -- never borrow another task's thresholds.
+            saved = load_profile(model, task)
+        else:
+            saved = eval_store.load()
+            if task is not None:
+                legacy_task = (saved.get("task") or saved.get("set")) if isinstance(saved, dict) else None
+                if legacy_task != task:
+                    return None
         if not saved:
             return None
         trace = runlog.steps_to_trace(trace_steps)
@@ -253,6 +264,8 @@ def policy_signal(trace_steps, model: str | None) -> dict | None:
             "score_aggregate": verdict["score_aggregate"],
             "answer_at": verdict["answer_at"],
             "ask_at": verdict["ask_at"],
+            "calibration_task": (saved.get("task") or saved.get("set") or task),
+            "calibration_model": saved.get("model"),
             "note": _POLICY_NOTES[band],
         }
     except Exception:

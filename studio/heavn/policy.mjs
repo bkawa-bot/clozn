@@ -14,6 +14,7 @@ export function PolicyChip({ policy }){
   const band = String(policy.band);
   const summary = `clozn policy: ${band} band — score ${num(policy.score)}`
     + (policy.score_aggregate ? ` (${policy.score_aggregate})` : "")
+    + (policy.calibration_task ? ` · task ${policy.calibration_task}` : "")
     + " · this is a policy signal over the whole reply, not a per-token readout, and not a correctness verdict";
   return html`<details class="policy-chip" data-testid="policy-chip">
     <summary title=${summary}><i></i><span>policy · ${band}</span>${policy.score != null ? html`<b>${pct(policy.score)}</b>` : null}</summary>
@@ -21,6 +22,8 @@ export function PolicyChip({ policy }){
       <div class="policy-chip-row"><span>band</span><b>${band}</b></div>
       <div class="policy-chip-row"><span>score</span><b>${num(policy.score)}</b>
         ${policy.score_aggregate ? html`<i class="policy-chip-agg">${policy.score_aggregate}</i>` : null}</div>
+      ${policy.calibration_task ? html`<div class="policy-chip-row"><span>calibrated task</span><b>${policy.calibration_task}</b></div>` : null}
+      ${policy.calibration_model ? html`<div class="policy-chip-row"><span>calibrated model</span><b>${policy.calibration_model}</b></div>` : null}
       ${policy.ask_at != null ? html`<div class="policy-chip-row"><span>ask band from</span><b>&ge; ${num(policy.ask_at)}</b></div>` : null}
       ${policy.answer_at != null ? html`<div class="policy-chip-row"><span>answer band from</span><b>&ge; ${num(policy.answer_at)}</b></div>` : null}
       <p>${policy.note || "confidence on this reply fell in the calibrated ‘ask’ band — a policy signal over the whole reply, not a per-token readout, and not a correctness verdict."}</p>
