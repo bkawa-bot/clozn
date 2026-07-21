@@ -88,6 +88,7 @@ from clozn.cli.commands.connect import add_subparser as _add_connect            
 from clozn.cli.commands.retry import add_subparser as _add_retry                                 # noqa: E402
 from clozn.cli.commands.diagnose import add_subparser as _add_diagnose                           # noqa: E402
 from clozn.cli.commands.memory import add_subparser as _add_memory                               # noqa: E402
+from clozn.cli.commands.regression_suite import add_subparser as _add_regression_suite            # noqa: E402
 
 
 def build_parser():
@@ -225,6 +226,7 @@ def build_parser():
     _add_retry(sub)             # `clozn retry last` — prompt-first corrective compare + scoped undo
     _add_diagnose(sub)          # `clozn diagnose last` — evidence-only latency/cutoff diagnosis
     _add_memory(sub)            # `clozn memory used last` — evidence-only memory usage receipt
+    _add_regression_suite(sub)  # `clozn suite create` — promote captured app runs into Model CI cases
     sub.add_parser("version", help="print the installed clozn version (+ git commit if available)"
                    ).set_defaults(fn=cmd_version)
     pdoc = sub.add_parser("doctor", help="diagnose this install: engine binary, models, studio assets, "

@@ -79,6 +79,37 @@ def test_contains_miss_fails():
     assert case.assertions[0]["status"] == "fail"
 
 
+def test_promoted_multiturn_case_replays_messages_and_decode_settings():
+    class MessageClient:
+        def __init__(self):
+            self.call = None
+
+        def chat(self, prompt, **kwargs):
+            self.call = (prompt, kwargs)
+            return _run("run_new", "The answer is 4.", max_tokens=64)
+
+    client = MessageClient()
+    result = ci.run_suite({"cases": [{
+        "name": "follow-up",
+        "messages": [
+            {"role": "system", "content": "Answer carefully."},
+            {"role": "user", "content": "What is two plus two?"},
+        ],
+        "model": "clozn",
+        "max_tokens": 64,
+        "sampling": {"temperature": 0.7, "top_p": 0.9, "seed": 42},
+        "expect": {"equals": "The answer is 4."},
+    }]}, client)
+
+    assert result.case("follow-up").status == "pass"
+    assert client.call == (
+        "What is two plus two?",
+        {"extra_messages": [{"role": "system", "content": "Answer carefully."}],
+         "max_tokens": 64, "model": "clozn", "temperature": 0.7, "top_p": 0.9,
+         "seed": 42},
+    )
+
+
 def test_not_contains_single_string_is_auto_wrapped():
     client = FakeClient({"q": _run("run_1", "Paris is the capital of France.")})
     result = ci.run_suite(
@@ -411,6 +442,26 @@ def test_client_chat_uses_clozn_run_id_when_present():
     run = client.chat("What is the capital of France?")
     assert run["id"] == "run_direct"
     assert ("GET", "/runs") not in calls    # resolved directly -- no polling needed
+
+
+def test_client_chat_forwards_frozen_sampling_fields():
+    client = ci.Client("http://fake.local")
+    request_body = {}
+
+    def fake_request(method, path, body=None):
+        if (method, path) == ("POST", "/v1/chat/completions"):
+            request_body.update(body)
+            return {"clozn_run_id": "run_direct"}
+        if (method, path) == ("GET", "/runs/run_direct"):
+            return _run("run_direct", "answer")
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    client._request = fake_request
+    client.chat("question", temperature=0.7, top_p=0.9, seed=42)
+
+    assert request_body["temperature"] == 0.7
+    assert request_body["top_p"] == 0.9
+    assert request_body["seed"] == 42
 
 
 def test_client_chat_falls_back_to_newest_run_polling_when_run_id_absent():

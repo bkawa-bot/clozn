@@ -121,9 +121,11 @@ class Client:
     Uses only `urllib`/`json` from the standard library -- no `requests`, no third-party HTTP client.
     """
 
-    def __init__(self, base_url: str, *, timeout: float = 30.0):
+    def __init__(self, base_url: str, *, timeout: float = 30.0,
+                 headers: dict[str, str] | None = None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
 
     # ---- the one seam ------------------------------------------------------------------------------
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
@@ -132,7 +134,9 @@ class Client:
         possible) and `ClientError` on a transport-level failure (server unreachable, timeout, ...)."""
         url = self.base_url + path
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        headers = {"Content-Type": "application/json"} if data is not None else {}
+        headers = dict(self.headers)
+        if data is not None:
+            headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -150,7 +154,8 @@ class Client:
 
     # ---- public API ---------------------------------------------------------------------------------
     def chat(self, prompt: str, *, max_tokens: int = 256, model: str = "clozn-qwen",
-             extra_messages: list[dict] | None = None) -> dict:
+             extra_messages: list[dict] | None = None, temperature: float | None = None,
+             top_p: float | None = None, seed: int | None = None) -> dict:
         """POST /v1/chat/completions (non-stream), then resolve and return the FULL run record (contracts
         §2 shape) that call produced -- not the OpenAI-shaped completion envelope itself.
 
@@ -167,6 +172,9 @@ class Client:
         """
         messages = list(extra_messages or []) + [{"role": "user", "content": prompt}]
         body = {"messages": messages, "max_tokens": max_tokens, "model": model, "stream": False}
+        for key, value in (("temperature", temperature), ("top_p", top_p), ("seed", seed)):
+            if value is not None:
+                body[key] = value
         resp = self._request("POST", "/v1/chat/completions", body)
         run_id = resp.get("clozn_run_id") if isinstance(resp, dict) else None
         if not run_id:
@@ -381,12 +389,43 @@ def run_case(case, client) -> CaseResult:
     name = name if isinstance(name, str) and name else "(unnamed case)"
 
     prompt = case.get("prompt")
+    messages = case.get("messages")
+    extra_messages = None
+    if messages is not None:
+        if (not isinstance(messages, list) or not messages
+                or any(not isinstance(message, dict)
+                       or message.get("role") not in ("system", "developer", "user", "assistant")
+                       or not isinstance(message.get("content"), str) for message in messages)):
+            return CaseResult(name=name, run_id=None, status="error",
+                              error="case messages must be supported text message objects")
+        if isinstance(prompt, str):
+            return CaseResult(name=name, run_id=None, status="error",
+                              error="case must define prompt or messages, not both")
+        last_user = next((index for index in range(len(messages) - 1, -1, -1)
+                          if messages[index].get("role") == "user"), None)
+        if last_user is None or last_user != len(messages) - 1:
+            return CaseResult(name=name, run_id=None, status="error",
+                              error="case messages must end with a user message")
+        prompt = messages[last_user]["content"]
+        extra_messages = [dict(message) for message in messages[:last_user]]
     if not isinstance(prompt, str) or not prompt.strip():
         return CaseResult(name=name, run_id=None, status="error",
-                           error="case has no non-empty 'prompt'")
+                          error="case has no non-empty prompt or messages")
 
     try:
-        run = client.chat(prompt)
+        call_kw = {}
+        if extra_messages:
+            call_kw["extra_messages"] = extra_messages
+        if isinstance(case.get("max_tokens"), int) and not isinstance(case.get("max_tokens"), bool):
+            call_kw["max_tokens"] = case["max_tokens"]
+        if isinstance(case.get("model"), str) and case["model"]:
+            call_kw["model"] = case["model"]
+        sampling = case.get("sampling")
+        if isinstance(sampling, dict):
+            for key in ("temperature", "top_p", "seed"):
+                if sampling.get(key) is not None:
+                    call_kw[key] = sampling[key]
+        run = client.chat(prompt, **call_kw)
     except Exception as e:
         return CaseResult(name=name, run_id=None, status="error",
                            error=f"chat() failed: {type(e).__name__}: {e}")
