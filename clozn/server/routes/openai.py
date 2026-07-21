@@ -1,5 +1,6 @@
 """Public OpenAI API plus the namespaced Clozn generation event stream."""
 import json
+import os
 import secrets
 import time
 from collections.abc import Mapping
@@ -351,12 +352,19 @@ def try_post(h, p, body):
     if structured:
         from clozn.server.structured_io import (
             normalize_and_lower_messages, require_qualification,
+            resolve_qualification_registry,
         )
         try:
             if structured.get("mode"):
+                active_identity = _active_identity(sub)
                 qualification = require_qualification(
-                    _active_identity(sub), structured["mode"],
+                    active_identity, structured["mode"],
                     runtime_pipeline=_native_runtime_pipeline(sub),
+                    registry=resolve_qualification_registry(
+                        active_identity,
+                        artifact_root=(os.environ.get("CLOZN_ARTIFACTS_DIR") or
+                                       os.path.join(ctx.CLOZN_DIR, "artifacts")),
+                    ),
                 )
                 if not callable(getattr(sub, "_complete_chat_native", None)):
                     raise StructuredIOError(

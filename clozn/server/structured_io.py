@@ -20,6 +20,7 @@ subset rather than a claim to implement all of draft 2020-12.  Unknown keywords 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -1199,6 +1200,72 @@ def load_qualification_registry(*, environ: Mapping[str, str] | None = None) -> 
               code="qualification_registry_invalid", param=None,
               evidence={"environment": QUALIFICATIONS_ENV, "path": path})
     return validate_qualification_registry(registry)
+
+
+@lru_cache(maxsize=8)
+def _cached_gguf_identity(path: str, size: int, mtime_ns: int) -> dict[str, Any]:
+    """Read immutable GGUF metadata once per exact on-disk file version."""
+    del size, mtime_ns  # They are cache-key material; gguf_identity reads the path itself.
+    from clozn.artifacts.contracts import gguf_identity
+    return gguf_identity(path)
+
+
+def resolve_qualification_registry(
+    identity: Mapping[str, Any] | None,
+    *,
+    artifact_root: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Resolve the explicit registry or one installed exact-model chat-I/O artifact.
+
+    Explicit configuration is exclusive.  Without it, the installed artifact is
+    revalidated on every structured request so removal, ambiguity, or evidence
+    tampering cannot silently retain authorization.  Only the expensive GGUF header
+    identity is cached, keyed by the file's size and mtime.
+    """
+    environ = os.environ if environ is None else environ
+    if str(environ.get(QUALIFICATIONS_ENV) or "").strip():
+        return load_qualification_registry(environ=environ)
+
+    identity = identity if isinstance(identity, Mapping) else {}
+    model_path = identity.get("model_path")
+    live_sha = identity.get("model_sha256")
+    fingerprint = identity.get("template_fingerprint")
+    if not all(isinstance(value, str) and value for value in (
+            model_path, live_sha, fingerprint)):
+        return _empty_registry()
+
+    resolved = os.path.abspath(os.path.expanduser(model_path))
+    try:
+        stat = os.stat(resolved)
+        model_identity = _cached_gguf_identity(resolved, stat.st_size, stat.st_mtime_ns)
+    except Exception:
+        return _empty_registry()
+    if str(model_identity.get("sha256") or "").lower() != live_sha.lower():
+        return _empty_registry()
+
+    root = artifact_root or str(environ.get("CLOZN_ARTIFACTS_DIR") or "").strip()
+    if not root:
+        root = os.path.join(os.path.expanduser("~"), ".clozn", "artifacts")
+    try:
+        from clozn.artifacts.contracts import (
+            ArtifactContractError, find_compatible_chat_io_profile,
+        )
+        profile = find_compatible_chat_io_profile(
+            model_identity, fingerprint, root,
+        )
+    except ArtifactContractError as exc:
+        _fail(
+            f"installed structured-I/O qualification artifact is invalid: {exc}",
+            code="qualification_registry_invalid", param=None,
+            evidence={"artifact_root": os.path.abspath(os.path.expanduser(root))},
+        )
+    if profile is None:
+        return _empty_registry()
+    return validate_qualification_registry({
+        "schema_version": QUALIFICATION_SCHEMA,
+        "entries": [profile["registry_entry"]],
+    })
 
 
 def require_qualification(identity: Mapping[str, Any] | None, feature: str, *,
