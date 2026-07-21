@@ -1,15 +1,14 @@
 # Clozn
 
-**A local-first, glass-box runtime for the models you run yourself — view, steer, and *prove*.**
-Watch a model think (per-token confidence + the alternatives it weighed), steer its tone, carry memory
-as readable cards, and get **causal receipts**: teacher-force a stored answer back through the model to
-measure *which* memory it actually leaned on, and by how much. Read a per-token **J-lens**: a fitted
-linear lens, applied forward on the GGUF's own head, reads what the model was "disposed to say" at each
-position — not a decode of its literal thought (a linear lens always emits *something*). The core runtime
-has passed basic/deep qualification across five autoregressive GGUF families; deeper white-box writes and
-optional dials/lenses remain model-qualified. Ollama's structural opposite: not a black box you prompt, a
-glass box you inspect — and can hold to account. See [model support](docs/MODEL_SUPPORT.md) for the exact
-evidence boundary.
+**Model CI and an inspectable local runtime for the GGUFs you already use.** Compare a base model with a
+fine-tune, run target + guard experiments, and fail CI on regressions with per-token receipts. Then serve
+the model through familiar OpenAI/Ollama-compatible APIs: prompts, responses, memory, steering, timings,
+and exact rendered context become inspectable runs without requiring every user to live in Studio.
+
+For deeper work, Clozn can teacher-force a stored answer to measure which supplied memory it depended on,
+capture token alternatives, apply qualified interventions, and attach model-specific J-lens readouts.
+These are evidence tools—not a claim to decode literal thought—and white-box capabilities fail closed
+unless the exact artifact is qualified. See [model support](docs/MODEL_SUPPORT.md) for the boundary.
 
 `clozn` = `cloze` (the engine inside) + *cozen* (to deceive — the illusion it reveals).
 
@@ -44,6 +43,23 @@ clozn smoke qwen --deep                   # also exercise forced receipts and re
 smoke owns the stack it starts, verifies that the private worker can be replaced without changing the
 public gateway, and stops the complete process tree when finished.
 
+## Model CI
+
+Start with the question fine-tune authors actually have: did the candidate change, what improved, and
+what regressed?
+
+```bash
+clozn diff-model base.gguf tuned.gguf --runs 8 --both
+clozn experiment run examples/experiment.v0.json --out result.json
+clozn ci check --experiment result.json --min-target-gains 1 --max-guard-regressions 0
+```
+
+`diff-model` refuses mismatched tokenizers and labels its verdict as a sample-based screen, not proof of
+quality. Experiment artifacts retain each instrumented run; the CI gate validates their matrix and
+identity evidence, recomputes comparisons from raw cells, and returns a deterministic exit code. See the
+[worked Qwen reasoning-SFT case study](docs/MODEL_DIFF_CASE_STUDY_QWEN_REASONING.md) for a real two-GGUF
+run on a 16 GB Mac.
+
 Chat templates come from each model's own GGUF (Qwen / Llama-3 / Mistral / Gemma / …), applied
 engine-side, so pulled models chat coherently — not just Qwen. Drop the prompt — `clozn run llama-1b` —
 for an interactive chat (multi-turn; `/reset` clears, `/bye` quits).
@@ -70,9 +86,11 @@ clozn branch                              # re-run from the most uncertain token
 clozn test cases.json                     # run-level assertions over the receipt/replay seams
 ```
 
-`clozn trace` and `clozn inspect` read the same SQLite journal that heavn uses. OpenAI responses expose
-the exact id as `clozn_run_id` and `X-Clozn-Run-Id`; `inspect` assembles confidence, active influences,
-and captured concepts locally, falling back to a running gateway only when the id is not in this journal.
+`clozn trace` and `clozn inspect` read the same SQLite journal that heavn uses. Non-streaming OpenAI chat
+exposes the exact id as `clozn_run_id` and `X-Clozn-Run-Id`; legacy text completions use the header while
+keeping their standard body shape. Streaming requests are journaled but cannot expose a post-generation
+run id in already-committed headers yet. `inspect` assembles confidence, active influences, and captured
+concepts locally, falling back to a running gateway only when the id is not in this journal.
 Queryable run
 metadata lives in `~/.clozn/runs/runs.sqlite3`; large traces are immutable, content-addressed blobs under
 `~/.clozn/runs/blobs/sha256`. To import an old beta JSON journal once, run `clozn migrate-runs`.

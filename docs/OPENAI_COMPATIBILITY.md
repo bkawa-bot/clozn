@@ -86,11 +86,15 @@ unless they carry the neutral values defined in `clozn/server/openai_compat.py`.
 ## Response boundary
 
 - Chat and completion response objects/chunks use the standard object names and one choice at index 0.
-- Non-streaming chat may add `clozn_run_id` and `X-Clozn-Run-Id`; opt-in Clozn fields are additive.
+- Every accepted chat or legacy completion request crosses Clozn's instrumented substrate and is written
+  to the local run journal with its rendered prompt, applied memory/dials, trace, and finish/failure state.
+- Non-streaming chat may add `clozn_run_id` and `X-Clozn-Run-Id`; non-streaming legacy completions expose
+  `X-Clozn-Run-Id` while keeping the standard body shape. Opt-in chat fields are additive.
 - Token usage is omitted when unknown. Clozn no longer fabricates zero prompt/completion token counts.
 - Finish reasons map worker EOS to `stop` and token limits to `length`. A worker failure is an error, never a
   successful `stop`.
-- Streaming chat cannot return a run id in headers because the run is persisted after headers are sent.
+- Streaming chat/completions cannot return a run id in headers because the run is persisted after headers
+  are sent. They are still journaled; latest-by-client/session lookup is the remaining association work.
 
 Unsupported request example:
 
@@ -113,3 +117,5 @@ Unsupported request example:
 - CI installs `openai>=1` in the CPU Python lane, so the SDK integration test cannot silently skip there.
 - `tests/test_runtime_architecture.py` and `tests/test_product_smoke.py` guard the standard-vs-native stream
   envelope boundary.
+- `tests/test_legacy_completion_instrumented.py` drives the real HTTP handler with a model-free substrate
+  and verifies memory/dial/rendered-prompt/trace capture plus success, worker-failure, and disconnect runs.
