@@ -1,10 +1,11 @@
 """commands.ci_check -- `clozn ci baseline` / `clozn ci check` (Phase-1 §4.4, "Headless CI gate", PRODUCT_
-ROADMAP.md: "'CI' isn't CI until a pipeline can fail on it"): a DETERMINISTIC gate over the EXISTING
-primitives -- `clozn test-model` (clozn.eval.golden), the tiny-test harness (clozn.testkit), and
-`clozn diff-model` (clozn.cli.commands.diff_model) -- with no new orchestration layer of its own. Every
-number this module measures comes from calling one of those three, unmodified; this module's own job is
-recording a BASELINE (the budgets a later run must clear) and then CHECKING a model against it, printing a
-compact report, writing a machine-readable one, and returning one of exactly four exit codes.
+ROADMAP.md: "'CI' isn't CI until a pipeline can fail on it"). It supports two deterministic inputs:
+
+* `--baseline`: the original gate over existing `test-model`, tiny-test, and `diff-model` primitives.
+* `--experiment`: a completed `clozn.experiment.result.v0` artifact. Comparisons are recomputed from its
+  underlying case x variant x seed cells, not trusted from its display summary.
+
+Both modes print a compact report, can write a machine-readable report, and use the same exit codes.
 
 WHY NOT `clozn.testkit.ci` -- that module (clozn/testkit/ci.py) is a DIFFERENT, pre-existing thing: a
 live suite orchestrator (Client/run_case/run_suite/diff_suites) that calls a running gateway's /v1/chat/
@@ -72,8 +73,8 @@ sha MISMATCH means at check time:
          run at all -- "FAILED-with-reason", per this task's honesty requirement, never a silent skip --
          and the degenerate case of a baseline with NO enabled checks, which fails rather than vacuously
          passing: a gate that checks nothing is a misconfiguration, not a clean bill of health)
-    2 -- execution error: the baseline file couldn't be loaded/parsed, or the model argument couldn't even
-         be resolved to a file -- i.e. the gate never got far enough to evaluate a single check
+    2 -- execution error: the input file couldn't be loaded/parsed/validated, or a baseline-mode model
+         couldn't be resolved -- i.e. the gate never got far enough to evaluate a single check
     3 -- identity-policy refusal (see above) -- checked BEFORE any check runs, since it's a precondition
          on the whole gate, not a budget any individual check enforces
 
@@ -83,7 +84,8 @@ deliberately NO latency/throughput budget in v0 (those are measured-machine-depe
 CI runners; a perf gate belongs in a dedicated benchmark job, not this correctness gate).
 
 ============================================================================================ TEST COVERAGE
-Model-free throughout (mirrors tests/test_diff_model.py's own discipline): `identity_policy_check` is pure
+Model-free throughout (mirrors tests/test_diff_model.py's own discipline): the experiment gate and
+`identity_policy_check` are pure
 and tested directly; `run_golden_check` is tested against FIXTURE `clozn.eval.golden.run_and_grade`/
 `.engine_health` outputs (mirrors tests/test_cli_test_model.py's own monkeypatch target); `run_tiny_check`
 is tested against a REAL tiny-test spec file + an isolated run store (mirrors tests/test_testkit_cli.py's
@@ -97,6 +99,7 @@ exercised on a throwaway parser and via `build_parser()`.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -107,6 +110,8 @@ from clozn.cli import formatting as fmt
 
 _DEFAULT_URL = "http://127.0.0.1:8080"
 SCHEMA_VERSION = 1
+EXPERIMENT_RESULT_SCHEMA = "clozn.experiment.result.v0"
+EXPERIMENT_STATUSES = frozenset({"pass", "fail", "error", "unscored"})
 
 
 class CIIdentityRefusal(Exception):
@@ -115,6 +120,10 @@ class CIIdentityRefusal(Exception):
     BEFORE any of the three checks run (see module docstring's EXIT CODE CONTRACT) and caught inside
     `cmd_ci_check` itself -- it must never reach `clozn.cli.main`'s generic `CloznError` handler, which
     only knows how to return 1, not this module's own 4-way exit-code contract."""
+
+
+class CIExperimentArtifactError(ValueError):
+    """The supplied experiment result cannot be gated deterministically."""
 
 
 def _now_iso() -> str:
@@ -275,6 +284,202 @@ def identity_policy_check(baseline_identity: dict, pin_model: bool, current_iden
         out["ok"] = False
         out["reason"] = reason
     return out
+
+
+# ================================================================================ experiment result ===
+
+def _experiment_manifest_digest(manifest: dict) -> str:
+    canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _validated_experiment_cells(result: dict) -> tuple[dict, list[dict], list[str], list[int]]:
+    """Return the normalized manifest and complete v0 cell matrix, or reject the artifact.
+
+    CI deliberately derives comparisons from cells rather than trusting ``result.summary``.  Exact
+    Cartesian coverage and unique cell keys are required; otherwise a missing failure could look like
+    a clean gate.  This is an execution/input error (exit 2), not a budget failure.
+    """
+    from clozn.experiments import suite as experiment_suite
+
+    if not isinstance(result, dict) or result.get("schema_version") != EXPERIMENT_RESULT_SCHEMA:
+        raise CIExperimentArtifactError(
+            f"schema_version must be {EXPERIMENT_RESULT_SCHEMA!r}")
+    try:
+        manifest = experiment_suite.validate_manifest(result.get("manifest"))
+    except experiment_suite.ManifestError as exc:
+        raise CIExperimentArtifactError(f"invalid embedded manifest: {exc}") from exc
+
+    seeds = result.get("seeds")
+    if (not isinstance(seeds, list) or not seeds
+            or any(not isinstance(seed, int) or isinstance(seed, bool) for seed in seeds)
+            or len(set(seeds)) != len(seeds)):
+        raise CIExperimentArtifactError("seeds must be a non-empty list of unique integers")
+    variants = [variant["name"] for variant in manifest["variants"]]
+    expected = {
+        (suite_name, case["name"], variant, seed)
+        for suite_name in ("target", "guard")
+        for case in manifest["suites"][suite_name]["cases"]
+        for variant in variants
+        for seed in seeds
+    }
+    cells = result.get("cells")
+    if not isinstance(cells, list):
+        raise CIExperimentArtifactError("cells must be a list")
+    by_key = {}
+    for index, cell in enumerate(cells):
+        if not isinstance(cell, dict):
+            raise CIExperimentArtifactError(f"cells[{index}] must be an object")
+        key = (cell.get("suite"), cell.get("case"), cell.get("variant"), cell.get("seed"))
+        if key not in expected:
+            raise CIExperimentArtifactError(f"cells[{index}] has an unexpected matrix key: {key!r}")
+        if key in by_key:
+            raise CIExperimentArtifactError(f"duplicate experiment cell: {key!r}")
+        if cell.get("status") not in EXPERIMENT_STATUSES:
+            raise CIExperimentArtifactError(
+                f"cells[{index}].status must be one of {sorted(EXPERIMENT_STATUSES)}")
+        by_key[key] = cell
+    missing = expected - set(by_key)
+    if missing:
+        preview = ", ".join(repr(key) for key in sorted(missing, key=repr)[:3])
+        raise CIExperimentArtifactError(
+            f"experiment cell matrix is incomplete: {len(missing)} missing ({preview})")
+    return manifest, list(cells), variants, list(seeds)
+
+
+def gate_experiment_result(*, result: dict, max_execution_errors: int = 0,
+                           max_target_regressions: int = 0,
+                           max_guard_regressions: int = 0,
+                           min_target_gains: int = 0,
+                           require_run_identity: bool = False) -> dict:
+    """Deterministically gate a ``clozn.experiment.result.v0`` artifact.
+
+    Regression/gain counts are paired by case and seed and recomputed from cells.  Budgets apply to
+    every candidate variant independently, so one strong variant cannot hide another variant's
+    regression.  Execution errors are bounded across the whole artifact.  Integrity always requires
+    exact manifest hashing and matching cell/run IDs; ``require_run_identity`` additionally requires a
+    model sha for every non-error cell.  When identity is present, it must be stable within a variant.
+    """
+    budgets = {
+        "max_execution_errors": max_execution_errors,
+        "max_target_regressions": max_target_regressions,
+        "max_guard_regressions": max_guard_regressions,
+        "min_target_gains": min_target_gains,
+    }
+    for name, value in budgets.items():
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise CIExperimentArtifactError(f"{name} must be a non-negative integer")
+
+    manifest, cells, variants, seeds = _validated_experiment_cells(result)
+    baseline = manifest["baseline_variant"]
+    candidates = [variant for variant in variants if variant != baseline]
+    by_key = {(cell["suite"], cell["case"], cell["seed"], cell["variant"]): cell for cell in cells}
+
+    integrity_findings = []
+    expected_digest = _experiment_manifest_digest(manifest)
+    if result.get("manifest_sha256") != expected_digest:
+        integrity_findings.append({
+            "kind": "manifest_sha256_mismatch", "expected": expected_digest,
+            "observed": result.get("manifest_sha256"),
+        })
+
+    variant_shas: dict[str, set[str]] = {variant: set() for variant in variants}
+    for cell in cells:
+        if cell["status"] == "error":
+            continue
+        run_id, run = cell.get("run_id"), cell.get("run")
+        key = {name: cell[name] for name in ("suite", "case", "variant", "seed")}
+        if not isinstance(run_id, str) or not run_id:
+            integrity_findings.append({"kind": "missing_run_id", **key})
+            continue
+        if not isinstance(run, dict):
+            integrity_findings.append({"kind": "missing_run", "run_id": run_id, **key})
+            continue
+        if run.get("id") != run_id:
+            integrity_findings.append({"kind": "run_id_mismatch", "cell_run_id": run_id,
+                                       "embedded_run_id": run.get("id"), **key})
+        identity = run.get("identity")
+        sha = identity.get("model_sha256") if isinstance(identity, dict) else None
+        if isinstance(sha, str) and sha:
+            variant_shas[cell["variant"]].add(sha)
+        elif require_run_identity:
+            integrity_findings.append({"kind": "missing_model_sha256", "run_id": run_id, **key})
+    for variant, shas in variant_shas.items():
+        if len(shas) > 1:
+            integrity_findings.append({"kind": "variant_identity_changed", "variant": variant,
+                                       "model_sha256_values": sorted(shas)})
+
+    errors = [
+        {"suite": cell["suite"], "case": cell["case"], "variant": cell["variant"],
+         "seed": cell["seed"], "error": cell.get("error")}
+        for cell in cells if cell["status"] == "error"
+    ]
+    comparisons = {}
+    for candidate in candidates:
+        row = {"target_gains": [], "target_regressions": [], "guard_regressions": []}
+        for suite_name in ("target", "guard"):
+            for case in manifest["suites"][suite_name]["cases"]:
+                for seed in seeds:
+                    base = by_key[(suite_name, case["name"], seed, baseline)]
+                    current = by_key[(suite_name, case["name"], seed, candidate)]
+                    label = {"case": case["name"], "seed": seed,
+                             "baseline_status": base["status"], "candidate_status": current["status"]}
+                    if suite_name == "target" and base["status"] == "fail" and current["status"] == "pass":
+                        row["target_gains"].append(label)
+                    # A previously-passing assertion becoming unscored/error is not proof it still holds.
+                    if base["status"] == "pass" and current["status"] != "pass":
+                        row[f"{suite_name}_regressions"].append(label)
+        comparisons[candidate] = row
+
+    def _variant_budget_check(metric: str, budget_name: str, comparator) -> dict:
+        counts = {variant: len(row[metric]) for variant, row in comparisons.items()}
+        offenders = [{"variant": variant, **item}
+                     for variant, row in comparisons.items() for item in row[metric]]
+        budget = budgets[budget_name]
+        failed = [variant for variant, count in counts.items() if not comparator(count, budget)]
+        return {
+            "ran": True, "passed": not failed, "budget": {budget_name: budget, "scope": "per candidate"},
+            "observed": {"by_variant": counts},
+            "reason": None if not failed else f"budget violated by variant(s): {', '.join(failed)}",
+            "worst_offenders": offenders[:20],
+        }
+
+    checks = {
+        "artifact_integrity": {
+            "ran": True, "passed": not integrity_findings,
+            "budget": {"manifest_digest_match": True, "cell_run_id_match": True,
+                       "require_run_identity": bool(require_run_identity),
+                       "stable_identity_within_variant": True},
+            "observed": {"findings": len(integrity_findings),
+                         "identity_sha256_count_by_variant": {k: len(v) for k, v in variant_shas.items()}},
+            "reason": None if not integrity_findings else f"{len(integrity_findings)} integrity finding(s)",
+            "worst_offenders": integrity_findings[:20],
+        },
+        "execution_errors": {
+            "ran": True, "passed": len(errors) <= max_execution_errors,
+            "budget": {"max_execution_errors": max_execution_errors, "scope": "whole artifact"},
+            "observed": {"count": len(errors)},
+            "reason": (None if len(errors) <= max_execution_errors else
+                       f"execution errors {len(errors)} > budget {max_execution_errors}"),
+            "worst_offenders": errors[:20],
+        },
+        "target_regressions": _variant_budget_check(
+            "target_regressions", "max_target_regressions", lambda count, budget: count <= budget),
+        "guard_regressions": _variant_budget_check(
+            "guard_regressions", "max_guard_regressions", lambda count, budget: count <= budget),
+        "target_gains": _variant_budget_check(
+            "target_gains", "min_target_gains", lambda count, budget: count >= budget),
+    }
+    failed = [name for name, check in checks.items() if not check["passed"]]
+    return {
+        "mode": "experiment", "overall": "fail" if failed else "pass",
+        "reason": f"budget violated: {', '.join(failed)}" if failed else None,
+        "artifact": {"schema_version": result.get("schema_version"),
+                     "experiment_id": result.get("experiment_id"), "name": result.get("name"),
+                     "manifest_sha256": result.get("manifest_sha256"), "baseline_variant": baseline,
+                     "candidate_variants": candidates, "cells": len(cells)},
+        "checks": checks, "generated_at": _now_iso(),
+    }
 
 
 # ======================================================================================= baseline build =
@@ -508,10 +713,15 @@ def format_ci_report(report: dict) -> str:
     lines = [f"clozn ci check -- overall: {report.get('overall', '?').upper()}"]
     if report.get("reason"):
         lines.append(f"  {report['reason']}")
-    pol = report.get("identity_policy") or {}
-    lines.append(f"  identity: pin_model={pol.get('pin_model')}  match={pol.get('match')}  "
-                f"baseline_sha256={_short(pol.get('baseline_sha256'))}  "
-                f"current_sha256={_short(pol.get('current_sha256'))}")
+    if report.get("mode") == "experiment":
+        artifact = report.get("artifact") or {}
+        lines.append(f"  experiment: {artifact.get('experiment_id')}  baseline={artifact.get('baseline_variant')}  "
+                     f"candidates={artifact.get('candidate_variants')}  cells={artifact.get('cells')}")
+    else:
+        pol = report.get("identity_policy") or {}
+        lines.append(f"  identity: pin_model={pol.get('pin_model')}  match={pol.get('match')}  "
+                    f"baseline_sha256={_short(pol.get('baseline_sha256'))}  "
+                    f"current_sha256={_short(pol.get('current_sha256'))}")
     for name, c in (report.get("checks") or {}).items():
         mark = "PASS" if c.get("passed") else "FAIL"
         lines.append(f"\n  [{mark}] {name}")
@@ -573,12 +783,16 @@ def add_subparser(sub):
     pb.add_argument("--cpu", action="store_true", help="force the CPU build for the diff check's two engines")
     pb.set_defaults(fn=cmd_ci_baseline)
 
-    pc = ci_sub.add_parser("check", help="run the checks a baseline declares against a model and gate on "
-                          "the recorded budgets -- exit 0 pass / 1 budget violated / 2 execution error / "
+    pc = ci_sub.add_parser("check", help="gate either a recorded baseline against a model or a versioned "
+                          "experiment result -- exit 0 pass / 1 budget violated / 2 execution error / "
                           "3 identity-policy refusal")
-    pc.add_argument("--baseline", required=True, metavar="FILE",
-                    help="baseline JSON written by `clozn ci baseline`")
-    pc.add_argument("model", help="the model under test (resolved like `clozn run`'s model arg)")
+    source = pc.add_mutually_exclusive_group(required=True)
+    source.add_argument("--baseline", metavar="FILE",
+                        help="baseline JSON written by `clozn ci baseline`")
+    source.add_argument("--experiment", metavar="RESULT.json",
+                        help="clozn.experiment.result.v0 artifact written by `clozn experiment run`")
+    pc.add_argument("model", nargs="?", help="the model under test for --baseline (resolved like `clozn "
+                    "run`'s model arg; omit with --experiment)")
     pc.add_argument("--url", default=_DEFAULT_URL, help="Clozn gateway base URL for the golden check "
                     "(default :8080)")
     pc.add_argument("--allow-model-change", action="store_true", dest="allow_model_change",
@@ -588,6 +802,16 @@ def add_subparser(sub):
                     help="also write the machine-readable report to this path")
     pc.add_argument("--json", action="store_true", help="print the report as JSON instead of the text summary")
     pc.add_argument("--cpu", action="store_true", help="force the CPU build for the diff check's two engines")
+    pc.add_argument("--max-execution-errors", type=int, default=0,
+                    help="experiment gate: maximum error cells across the artifact (default 0)")
+    pc.add_argument("--max-target-regressions", type=int, default=0,
+                    help="experiment gate: maximum paired target regressions per candidate (default 0)")
+    pc.add_argument("--max-guard-regressions", type=int, default=0,
+                    help="experiment gate: maximum paired guard regressions per candidate (default 0)")
+    pc.add_argument("--min-target-gains", type=int, default=0,
+                    help="experiment gate: minimum paired target gains per candidate (default 0)")
+    pc.add_argument("--require-run-identity", action="store_true",
+                    help="experiment gate: require model_sha256 evidence on every non-error cell")
     pc.set_defaults(fn=cmd_ci_check)
 
     return pci
@@ -595,7 +819,7 @@ def add_subparser(sub):
 
 def _cmd_ci_no_subcommand(_args):
     print("clozn ci: use `clozn ci baseline <out.json> <model>` or "
-          "`clozn ci check --baseline <file> <model>`")
+          "`clozn ci check --baseline <file> <model>` / `clozn ci check --experiment <result.json>`")
     return 2
 
 
@@ -644,20 +868,56 @@ def cmd_ci_check(args):
     from clozn._io import atomic_write_json
     from clozn.cli.commands.models import resolve_model
 
+    experiment_path = getattr(args, "experiment", None)
+    artifact_path = experiment_path or args.baseline
+    artifact_label = "experiment result" if experiment_path else "baseline"
     try:
-        with open(args.baseline, encoding="utf-8") as f:
-            baseline = json.load(f)
+        with open(artifact_path, encoding="utf-8") as f:
+            artifact = json.load(f)
     except OSError as e:
-        print(f"{fmt.BOLD}clozn ci check:{fmt.RST} could not read baseline {args.baseline!r}: {e}",
+        print(f"{fmt.BOLD}clozn ci check:{fmt.RST} could not read {artifact_label} {artifact_path!r}: {e}",
               file=sys.stderr)
         return 2
     except json.JSONDecodeError as e:
-        print(f"{fmt.BOLD}clozn ci check:{fmt.RST} baseline {args.baseline!r} is not valid JSON: {e}",
+        print(f"{fmt.BOLD}clozn ci check:{fmt.RST} {artifact_label} {artifact_path!r} is not valid JSON: {e}",
               file=sys.stderr)
         return 2
+
+    if experiment_path:
+        if args.model:
+            print(f"{fmt.BOLD}clozn ci check:{fmt.RST} MODEL is only valid with --baseline; "
+                  "omit it when using --experiment", file=sys.stderr)
+            return 2
+        try:
+            report = gate_experiment_result(
+                result=artifact, max_execution_errors=args.max_execution_errors,
+                max_target_regressions=args.max_target_regressions,
+                max_guard_regressions=args.max_guard_regressions,
+                min_target_gains=args.min_target_gains,
+                require_run_identity=args.require_run_identity,
+            )
+        except CIExperimentArtifactError as e:
+            print(f"{fmt.BOLD}clozn ci check:{fmt.RST} invalid experiment result: {e}", file=sys.stderr)
+            return 2
+        exit_code = 0 if report["overall"] == "pass" else 1
+        report["experiment_path"] = experiment_path
+        report["exit_code"] = exit_code
+        if args.json:
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            print(format_ci_report(report))
+        if args.report:
+            atomic_write_json(args.report, report, indent=2, default=str)
+        return exit_code
+
+    baseline = artifact
     if not isinstance(baseline, dict) or "checks" not in baseline:
         print(f"{fmt.BOLD}clozn ci check:{fmt.RST} {args.baseline!r} is not a `clozn ci baseline` "
               "artifact (missing 'checks')", file=sys.stderr)
+        return 2
+
+    if not args.model:
+        print(f"{fmt.BOLD}clozn ci check:{fmt.RST} MODEL is required with --baseline", file=sys.stderr)
         return 2
 
     try:

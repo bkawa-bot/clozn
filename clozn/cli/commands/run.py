@@ -160,7 +160,13 @@ def _run_turn(port, mode, text, max_tokens, gpu, model_name, prompt_for_trace, h
     print(f"{fmt.DIM}- {n} tok in {dt:.1f}s{rate} - {'GPU' if gpu else 'CPU'}{cut}{fmt.RST}", file=sys.stderr)
     # every CLI turn becomes an inspectable run -- finish_reason mirrors Studio's chat path (the engine's
     # real stop cause: "stop" on eos, "length" on truncation), not left null like before this fix.
-    _log_run_cli(model_name, prompt_for_trace, resp, steps, g0, finish_reason=finish, port=port)
+    # Keep the user-authored message readable in run.messages, but ALSO persist `text`: this is the
+    # exact, already-rendered string sent to /api/clozn/generate (including the family chat template and,
+    # in REPL mode, prior turns).  Gate 0 requires the journal to record what the model actually saw;
+    # replacing messages with template syntax would satisfy that mechanically while making the ordinary
+    # run view worse, so runlog's purpose-built final_prompt field carries the exact wire input instead.
+    _log_run_cli(model_name, prompt_for_trace, resp, steps, g0, finish_reason=finish, port=port,
+                 final_prompt=text)
     return resp
 
 
@@ -199,7 +205,8 @@ def _identity_for_port(port):
     return ident
 
 
-def _log_run_cli(model_name, prompt, resp, steps, started, finish_reason=None, port=None):
+def _log_run_cli(model_name, prompt, resp, steps, started, finish_reason=None, port=None,
+                 final_prompt=None):
     """Write this CLI turn to the Run Log so `clozn run`/REPL turns show up in the Studio alongside chats.
     runlog.py lives in clozn.runs (a sibling of this stdlib-only CLI) and is itself stdlib-only, so we
     import it directly. Logging must NEVER break a run -- swallow everything."""
@@ -209,9 +216,11 @@ def _log_run_cli(model_name, prompt, resp, steps, started, finish_reason=None, p
         # the on-disk trace schema stays one contract shared with the engine-chat capture (issue B3).
         trace = runlog.steps_to_trace(steps)
         identity = _identity_for_port(port) if port else {}
+        messages = [{"role": "user", "content": prompt}]
         runlog.record(source="cli", client="cli", model=model_name, substrate="engine",
-                      messages=[{"role": "user", "content": prompt}], response=resp,
-                      trace=trace, started=started, finish_reason=finish_reason, identity=identity)
+                      messages=messages, response=resp, trace=trace, started=started,
+                      finish_reason=finish_reason, identity=identity,
+                      assembled_messages=messages, final_prompt=final_prompt)
     except Exception:
         pass
 

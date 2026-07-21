@@ -123,12 +123,37 @@ def test_ci_baseline_parses_overrides():
 def test_ci_check_defaults():
     ns = build_parser().parse_args(["ci", "check", "--baseline", "b.json", "model.gguf"])
     assert ns.baseline == "b.json" and ns.model == "model.gguf"
+    assert ns.experiment is None
     assert ns.url == ci._DEFAULT_URL
     assert ns.allow_model_change is False
     assert ns.report is None
     assert ns.json is False
     assert ns.cpu is False
+    assert ns.max_execution_errors == 0
+    assert ns.max_target_regressions == 0
+    assert ns.max_guard_regressions == 0
+    assert ns.min_target_gains == 0
+    assert ns.require_run_identity is False
     assert ns.fn is ci.cmd_ci_check
+
+
+def test_ci_check_experiment_parses_without_model():
+    ns = build_parser().parse_args([
+        "ci", "check", "--experiment", "result.json", "--max-execution-errors", "1",
+        "--max-target-regressions", "2", "--max-guard-regressions", "3",
+        "--min-target-gains", "4", "--require-run-identity",
+    ])
+    assert ns.experiment == "result.json" and ns.baseline is None and ns.model is None
+    assert (ns.max_execution_errors, ns.max_target_regressions,
+            ns.max_guard_regressions, ns.min_target_gains) == (1, 2, 3, 4)
+    assert ns.require_run_identity is True
+
+
+def test_ci_check_rejects_both_artifact_sources():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([
+            "ci", "check", "--baseline", "baseline.json", "--experiment", "result.json", "model.gguf",
+        ])
 
 
 def test_ci_check_requires_baseline_flag():
@@ -171,6 +196,144 @@ def test_identity_policy_pinned_missing_sha_refuses_with_unverifiable_wording():
     out = ci.identity_policy_check({"model_sha256": None}, True, {"model_sha256": "bbb"}, False)
     assert out["ok"] is False
     assert "could not be verified" in out["reason"]
+
+
+# ====================================================================================== experiment artifact
+
+def _experiment_result(statuses=None, *, identities=True):
+    statuses = statuses or {
+        ("target", "base"): "fail", ("target", "candidate"): "pass",
+        ("guard", "base"): "pass", ("guard", "candidate"): "pass",
+    }
+    manifest = {
+        "schema_version": "clozn.experiment.v0", "name": "ci fixture", "seeds": [0],
+        "defaults": {"model": "clozn"}, "baseline_variant": "base",
+        "variants": [{"name": "base", "kind": "base"},
+                     {"name": "candidate", "kind": "tuned"}],
+        "suites": {
+            "target": {"cases": [{"name": "target-case", "prompt": "target", "expect": {}}]},
+            "guard": {"cases": [{"name": "guard-case", "prompt": "guard", "expect": {}}]},
+        },
+    }
+    cells = []
+    for suite_name, case_name in (("target", "target-case"), ("guard", "guard-case")):
+        for variant in ("base", "candidate"):
+            status = statuses[(suite_name, variant)]
+            run_id = f"run_{suite_name}_{variant}"
+            run = None if status == "error" else {"id": run_id, "model": variant}
+            if run is not None and identities:
+                run["identity"] = {"model_sha256": f"sha-{variant}"}
+            cells.append({"suite": suite_name, "case": case_name, "variant": variant,
+                          "variant_kind": "base" if variant == "base" else "tuned", "seed": 0,
+                          "status": status, "run_id": None if status == "error" else run_id,
+                          "response": "reply", "assertions": [], "error": "boom" if status == "error" else None,
+                          "run": run})
+    return {
+        "schema_version": ci.EXPERIMENT_RESULT_SCHEMA, "experiment_id": "exp_fixture", "name": "ci fixture",
+        "manifest_sha256": ci._experiment_manifest_digest(manifest), "manifest": manifest,
+        "seeds": [0], "cells": cells,
+        # Deliberately false: the gate must derive comparisons from cells, not trust this summary.
+        "summary": {"comparisons": [{"variant": "candidate", "target_gains": [],
+                                      "target_regressions": [], "guard_regressions": []}]},
+    }
+
+
+def test_gate_experiment_result_passes_and_recomputes_target_gain():
+    report = ci.gate_experiment_result(result=_experiment_result(), min_target_gains=1,
+                                       require_run_identity=True)
+    assert report["overall"] == "pass"
+    assert report["artifact"]["baseline_variant"] == "base"
+    assert report["checks"]["target_gains"]["observed"]["by_variant"] == {"candidate": 1}
+    assert report["checks"]["artifact_integrity"]["passed"] is True
+
+
+def test_gate_experiment_result_target_regression_fails_per_candidate():
+    statuses = {("target", "base"): "pass", ("target", "candidate"): "fail",
+                ("guard", "base"): "pass", ("guard", "candidate"): "pass"}
+    report = ci.gate_experiment_result(result=_experiment_result(statuses))
+    check = report["checks"]["target_regressions"]
+    assert report["overall"] == "fail" and check["passed"] is False
+    assert check["observed"]["by_variant"] == {"candidate": 1}
+    assert check["worst_offenders"][0]["case"] == "target-case"
+
+
+def test_gate_experiment_result_guard_regression_includes_unscored():
+    statuses = {("target", "base"): "fail", ("target", "candidate"): "pass",
+                ("guard", "base"): "pass", ("guard", "candidate"): "unscored"}
+    report = ci.gate_experiment_result(result=_experiment_result(statuses))
+    assert report["checks"]["guard_regressions"]["passed"] is False
+    assert report["checks"]["guard_regressions"]["observed"]["by_variant"] == {"candidate": 1}
+
+
+def test_gate_experiment_result_budgets_can_allow_regression():
+    statuses = {("target", "base"): "pass", ("target", "candidate"): "fail",
+                ("guard", "base"): "pass", ("guard", "candidate"): "fail"}
+    report = ci.gate_experiment_result(result=_experiment_result(statuses),
+                                       max_target_regressions=1, max_guard_regressions=1)
+    assert report["overall"] == "pass"
+
+
+def test_gate_experiment_result_execution_errors_are_bounded():
+    statuses = {("target", "base"): "fail", ("target", "candidate"): "error",
+                ("guard", "base"): "pass", ("guard", "candidate"): "pass"}
+    result = _experiment_result(statuses)
+    failed = ci.gate_experiment_result(result=result)
+    allowed = ci.gate_experiment_result(result=result, max_execution_errors=1)
+    assert failed["checks"]["execution_errors"]["passed"] is False
+    assert allowed["checks"]["execution_errors"]["passed"] is True
+
+
+def test_gate_experiment_result_minimum_target_gain_is_enforced():
+    report = ci.gate_experiment_result(result=_experiment_result(), min_target_gains=2)
+    assert report["overall"] == "fail"
+    assert report["checks"]["target_gains"]["passed"] is False
+
+
+def test_gate_experiment_result_requires_identity_only_when_requested():
+    result = _experiment_result(identities=False)
+    permissive = ci.gate_experiment_result(result=result)
+    strict = ci.gate_experiment_result(result=result, require_run_identity=True)
+    assert permissive["checks"]["artifact_integrity"]["passed"] is True
+    assert strict["checks"]["artifact_integrity"]["passed"] is False
+    assert strict["checks"]["artifact_integrity"]["worst_offenders"][0]["kind"] == "missing_model_sha256"
+
+
+def test_gate_experiment_result_rejects_identity_change_within_variant():
+    result = _experiment_result()
+    candidate_cells = [cell for cell in result["cells"] if cell["variant"] == "candidate"]
+    candidate_cells[1]["run"]["identity"]["model_sha256"] = "different-sha"
+    report = ci.gate_experiment_result(result=result)
+    findings = report["checks"]["artifact_integrity"]["worst_offenders"]
+    assert any(item["kind"] == "variant_identity_changed" for item in findings)
+
+
+def test_gate_experiment_result_manifest_digest_mismatch_fails_integrity():
+    result = _experiment_result()
+    result["manifest_sha256"] = "tampered"
+    report = ci.gate_experiment_result(result=result)
+    assert report["overall"] == "fail"
+    assert report["checks"]["artifact_integrity"]["worst_offenders"][0]["kind"] == \
+        "manifest_sha256_mismatch"
+
+
+@pytest.mark.parametrize("mutation", ["wrong_schema", "missing_cell", "duplicate_cell", "bad_status"])
+def test_gate_experiment_result_rejects_malformed_artifact(mutation):
+    result = _experiment_result()
+    if mutation == "wrong_schema":
+        result["schema_version"] = "something.else"
+    elif mutation == "missing_cell":
+        result["cells"].pop()
+    elif mutation == "duplicate_cell":
+        result["cells"].append(dict(result["cells"][0]))
+    else:
+        result["cells"][0]["status"] = "maybe"
+    with pytest.raises(ci.CIExperimentArtifactError):
+        ci.gate_experiment_result(result=result)
+
+
+def test_gate_experiment_result_rejects_negative_budget():
+    with pytest.raises(ci.CIExperimentArtifactError, match="non-negative integer"):
+        ci.gate_experiment_result(result=_experiment_result(), max_execution_errors=-1)
 
 
 # ================================================================================================= run_golden_check
@@ -607,8 +770,10 @@ def test_cmd_ci_baseline_bad_model_raises_cloznerror(iso):
 # =============================================================================================== cmd_ci_check
 
 def _check_args(**overrides):
-    base = dict(baseline=None, model=None, url=ci._DEFAULT_URL, allow_model_change=False,
-               report=None, json=False, cpu=False)
+    base = dict(baseline=None, experiment=None, model=None, url=ci._DEFAULT_URL,
+               allow_model_change=False, report=None, json=False, cpu=False,
+               max_execution_errors=0, max_target_regressions=0, max_guard_regressions=0,
+               min_target_gains=0, require_run_identity=False)
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -741,3 +906,56 @@ def test_cmd_ci_check_json_stdout(iso, monkeypatch, capsys):
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["overall"] == "pass"
+
+
+def test_cmd_ci_check_experiment_exit_0_without_model(iso, capsys):
+    path = str(iso / "experiment.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_experiment_result(), f)
+    rc = ci.cmd_ci_check(_check_args(experiment=path, min_target_gains=1))
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "overall: PASS" in output and "experiment: exp_fixture" in output
+
+
+def test_cmd_ci_check_experiment_exit_1_and_writes_report(iso):
+    statuses = {("target", "base"): "pass", ("target", "candidate"): "fail",
+                ("guard", "base"): "pass", ("guard", "candidate"): "pass"}
+    path, report_path = str(iso / "experiment.json"), str(iso / "report.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_experiment_result(statuses), f)
+    rc = ci.cmd_ci_check(_check_args(experiment=path, report=report_path))
+    assert rc == 1
+    with open(report_path, encoding="utf-8") as f:
+        report = json.load(f)
+    assert report["mode"] == "experiment" and report["exit_code"] == 1
+    assert report["experiment_path"] == path
+
+
+def test_cmd_ci_check_experiment_invalid_schema_exit_2(iso, capsys):
+    result = _experiment_result()
+    result["schema_version"] = "wrong"
+    path = str(iso / "experiment.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(result, f)
+    rc = ci.cmd_ci_check(_check_args(experiment=path))
+    assert rc == 2
+    assert "invalid experiment result" in capsys.readouterr().err
+
+
+def test_cmd_ci_check_experiment_rejects_model_argument(iso, capsys):
+    path = str(iso / "experiment.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_experiment_result(), f)
+    rc = ci.cmd_ci_check(_check_args(experiment=path, model="model.gguf"))
+    assert rc == 2
+    assert "only valid with --baseline" in capsys.readouterr().err
+
+
+def test_cmd_ci_check_baseline_without_model_exit_2(iso, capsys):
+    path = str(iso / "baseline.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"checks": {}}, f)
+    rc = ci.cmd_ci_check(_check_args(baseline=path))
+    assert rc == 2
+    assert "MODEL is required" in capsys.readouterr().err

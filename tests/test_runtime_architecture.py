@@ -428,29 +428,37 @@ class RuntimeBoundaryTests(unittest.TestCase):
             app.RUNTIME_KIND = old_kind
             temp.cleanup()
 
-    def test_openai_stream_filters_native_worker_events(self):
-        frames = [
-            b'data: {"type":"tokens_committed","items":[{"piece":"hel"}]}\n',
-            b'data: {"type":"step_lens","pieces":["x"]}\n',
-            b'data: {"type":"tokens_committed","items":[{"piece":"lo"}]}\n',
-            b'data: {"type":"gen_finished","reason":"eos"}\n',
-            b'data: [DONE]\n',
-        ]
-        response = FakeResponse(frames)
-        original = generation_gateway._request
-        generation_gateway._request = lambda body: response
+    def test_openai_completion_stream_uses_instrumented_substrate_and_standard_chunks(self):
+        class CompletionSubstrate:
+            def chat(self, messages, max_new=256, sample=True, trace_out=None, mem_out=None):
+                return "hello"
+
+            def chat_stream(self, messages, max_new=256, mem_out=None, sample=True):
+                if mem_out is not None:
+                    mem_out.update(mode="prompt", applied=[], assembled_messages=list(messages),
+                                   final_prompt="<rendered>hi</rendered>")
+                yield "hel"
+                yield "lo"
+
+            def last_finish_reason(self):
+                return "stop"
+
+            def last_stream_trace(self):
+                return []
+
+        original = app.SUB
+        app.SUB = CompletionSubstrate()
         handler = CaptureHandler()
         try:
             generation_gateway.openai_completion(handler, {"prompt": "hi", "stream": True, "model": "m"})
         finally:
-            generation_gateway._request = original
+            app.SUB = original
         wire = handler.wfile.getvalue().decode("utf-8")
         self.assertIn('"text": "hel"', wire)
         self.assertIn('"text": "lo"', wire)
         self.assertNotIn("tokens_committed", wire)
         self.assertNotIn("step_lens", wire)
         self.assertTrue(wire.endswith("data: [DONE]\n\n"))
-        self.assertTrue(response.closed)
 
     def test_native_stream_preserves_clozn_events(self):
         frame = b'data: {"type":"tokens_committed","items":[{"piece":"x"}]}\n\n'

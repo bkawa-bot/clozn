@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import secrets
 import time
 import urllib.error
 import urllib.request
@@ -200,27 +201,172 @@ def native_completion(handler, body: dict) -> None:
         response.close()
 
 
-def _finish_reason(frame: dict) -> str | None:
-    reason = frame.get("reason")
-    if reason == "eos":
-        return "stop"
-    if reason:
-        return "length"
-    return None
+def _completion_messages(prompt: str) -> list[dict[str, str]]:
+    """Represent a legacy text prompt at the shared, message-based substrate seam.
+
+    The public route remains OpenAI's legacy ``prompt -> text`` API.  Inside Clozn,
+    however, using the same user-turn representation as every other compatibility
+    entrance is what makes memory assembly, steering, rendered-prompt capture, token
+    traces, and journaling impossible to bypass.
+    """
+    return [{"role": "user", "content": prompt}]
 
 
-def _completion_chunk(text: str, model: str, finish_reason=None) -> dict:
-    return {
-        "id": "cmpl-clozn",
-        "object": "text_completion",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [{"text": text, "index": 0, "logprobs": None, "finish_reason": finish_reason}],
-    }
+def _completion_sample(body: dict):
+    """Translate the validated legacy sampling vocabulary to Substrate.chat's contract."""
+    sample = {key: body[key] for key in ("temperature", "top_p", "top_k", "seed")
+              if key in body}
+    if "rep_penalty" in body:
+        sample["repeat_penalty"] = body["rep_penalty"]
+    # No explicit fields means Clozn's configured interactive sampling, just like
+    # /v1/chat/completions.  A dict containing temperature=0 remains explicit and
+    # resolves to greedy in EngineSubstrate.
+    return sample or True
+
+
+def _stream_completion(handler, messages: list, *, model: str, max_tokens: int,
+                       sample) -> None:
+    """Instrumented OpenAI legacy-completion SSE stream.
+
+    Generation crosses ``Substrate.chat_stream`` and the completed/failed/abandoned
+    turn is journaled exactly once.  The serializer intentionally emits only standard
+    ``text_completion`` chunks: native worker frames and Clozn trace frames never leak
+    onto a compatibility endpoint.
+
+    A streaming run id cannot be sent as an HTTP header because the header is committed
+    before generation, while the journal creates the id after generation.  Nor is a
+    proprietary trailing chunk injected into this strict legacy wire shape.  The run is
+    still persisted and can be associated through the server-side latest-run/session
+    side channel when that Phase-2 facility lands.
+    """
+    sub = ctx.active_sub(handler)
+    started = time.time()
+    memout: dict = {}
+    acc: list[str] = []
+    stream_id = "cmpl-" + secrets.token_hex(8)
+    created = int(time.time())
+    extra_meta = {"compatibility_api": "openai", "openai_operation": "completion"}
+
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    send_cors_headers(handler)
+    handler.end_headers()
+
+    def write_chunk(text: str, finish_reason=None) -> None:
+        chunk = {
+            "id": stream_id,
+            "object": "text_completion",
+            "created": created,
+            "model": model,
+            "choices": [{"text": text, "index": 0, "logprobs": None,
+                         "finish_reason": finish_reason}],
+        }
+        handler.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode("utf-8"))
+        handler.wfile.flush()
+
+    gen = None
+    disconnect_error = None
+    try:
+        if getattr(sub, "chat_stream", None):
+            import inspect
+            try:
+                params = inspect.signature(sub.chat_stream).parameters
+            except Exception:
+                params = {}
+            stream_kw = {"mem_out": memout}
+            if "sample" in params:
+                stream_kw["sample"] = sample
+            gen = sub.chat_stream(messages, max_tokens, **stream_kw)
+            for piece in gen:
+                text = str(piece)
+                acc.append(text)
+                try:
+                    write_chunk(text)
+                except OSError as exc:
+                    disconnect_error = exc
+                    break
+        else:
+            # A custom/lab substrate may implement only chat().  Keep the request on
+            # the instrumented seam and emit its completed text as one standard chunk.
+            try:
+                generated = instrumented_chat(
+                    handler, messages, model=model, max_tokens=max_tokens, sample=sample,
+                    source="openai_api",
+                    extra_meta={**extra_meta, "requested_stream": True},
+                )
+            except Exception as exc:
+                # instrumented_chat already journaled the failure exactly once.
+                error = {"error": {"message": str(exc), "type": "upstream_error"}}
+                try:
+                    handler.wfile.write(("data: " + json.dumps(error) + "\n\n").encode("utf-8"))
+                    handler.wfile.write(b"data: [DONE]\n\n")
+                    handler.wfile.flush()
+                except OSError:
+                    pass
+                return
+            acc.append(generated.reply)
+            try:
+                write_chunk(generated.reply)
+                write_chunk("", generated.public_finish_reason)
+                handler.wfile.write(b"data: [DONE]\n\n")
+                handler.wfile.flush()
+            except OSError:
+                pass
+            return
+
+        if disconnect_error is not None:
+            req_ctx = getattr(sub, "_request", None)
+            if req_ctx is not None and hasattr(req_ctx, "cancel"):
+                req_ctx.cancel()
+            handler._log_run(
+                "openai_api", messages, "".join(acc), model, started,
+                error=f"client disconnected mid-stream: {disconnect_error}", mem_out=memout,
+                extra_meta={**extra_meta, "stream_failure": "client_disconnected"},
+            )
+            return
+
+        finish = sub.last_finish_reason() if hasattr(sub, "last_finish_reason") else None
+        public_finish = ctx._openai_finish_reason(finish)
+        trace = sub.last_stream_trace() if hasattr(sub, "last_stream_trace") else None
+        handler._log_run(
+            "openai_api", messages, "".join(acc), model, started, trace=trace,
+            mem_out=memout, finish_reason=finish,
+            finish_reason_fallback=None if finish else public_finish,
+            extra_meta=extra_meta,
+        )
+        try:
+            write_chunk("", public_finish)
+            handler.wfile.write(b"data: [DONE]\n\n")
+            handler.wfile.flush()
+        except OSError:
+            # The model completed and the durable run above is already accurate; a
+            # disconnect while delivering the terminal marker must not create a
+            # second contradictory failure run.
+            return
+    except Exception as exc:
+        handler._log_run(
+            "openai_api", messages, "".join(acc), model, started, error=str(exc),
+            mem_out=memout,
+            extra_meta={**extra_meta, "stream_failure": "worker_disconnected"},
+        )
+        try:
+            error = {"error": {"message": str(exc), "type": "upstream_error"}}
+            handler.wfile.write(("data: " + json.dumps(error) + "\n\n").encode("utf-8"))
+            handler.wfile.write(b"data: [DONE]\n\n")
+            handler.wfile.flush()
+        except OSError:
+            pass
+    finally:
+        if gen is not None and hasattr(gen, "close"):
+            try:
+                gen.close()
+            except Exception:
+                pass
 
 
 def openai_completion(handler, body: dict) -> None:
-    """Strict OpenAI text-completion view over the worker's richer event protocol."""
+    """Strict OpenAI text-completion view over Clozn's instrumented substrate."""
     from clozn.server.openai_compat import CompatibilityError, normalize_completion_request
     try:
         body = normalize_completion_request(body)
@@ -229,83 +375,37 @@ def openai_completion(handler, body: dict) -> None:
                                       "param": exc.param, "code": exc.code}})
         return
     model = str(body.get("model") or model_id())
+    messages = _completion_messages(body["prompt"])
+    max_tokens = int(body.get("max_tokens", 256))
+    sample = _completion_sample(body)
+    sub = ctx.active_sub(handler)
+    if not (sub and getattr(sub, "chat", None)):
+        handler._json(503, {"error": {"message": "model worker unavailable",
+                                      "type": "service_unavailable"}})
+        return
+    if body.get("stream"):
+        _stream_completion(handler, messages, model=model, max_tokens=max_tokens, sample=sample)
+        return
     try:
-        response = _request(body)
+        generated = instrumented_chat(
+            handler, messages, model=model, max_tokens=max_tokens, sample=sample,
+            source="openai_api",
+            extra_meta={"compatibility_api": "openai", "openai_operation": "completion"},
+        )
     except Exception as exc:
         _error(handler, exc)
         return
-    try:
-        if body.get("stream"):
-            handler.send_response(200)
-            handler.send_header("Content-Type", "text/event-stream")
-            handler.send_header("Cache-Control", "no-cache")
-            send_cors_headers(handler)
-            handler.end_headers()
-            finish = None
-            emitted_text = False
-            try:
-                for raw in response:
-                    line = raw.decode("utf-8", "replace").strip()
-                    if not line.startswith("data:"):
-                        continue
-                    payload = line[5:].strip()
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        frame = json.loads(payload)
-                    except Exception:
-                        continue
-                    if frame.get("type") == "tokens_committed":
-                        for item in frame.get("items") or []:
-                            chunk = _completion_chunk(str(item.get("piece") or ""), model)
-                            handler.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode("utf-8"))
-                            handler.wfile.flush()
-                            emitted_text = True
-                    elif frame.get("type") == "gen_finished":
-                        finish = _finish_reason(frame)
-                    elif frame.get("object") == "text_completion":
-                        choice = (frame.get("choices") or [{}])[0]
-                        # AR streams already emitted token pieces; diffusion streams generally expose
-                        # their assembled board only in this final standard-shaped frame.
-                        if not emitted_text and choice.get("text"):
-                            chunk = _completion_chunk(str(choice["text"]), model)
-                            handler.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode("utf-8"))
-                            handler.wfile.flush()
-                            emitted_text = True
-                        finish = choice.get("finish_reason") or finish
-            except Exception as exc:
-                error = {"error": {"message": str(exc), "type": "upstream_error"}}
-                try:
-                    handler.wfile.write(("data: " + json.dumps(error) + "\n\n").encode("utf-8"))
-                    handler.wfile.write(b"data: [DONE]\n\n")
-                    handler.wfile.flush()
-                except Exception:
-                    pass
-                return
-            final = _completion_chunk("", model, finish or "stop")
-            handler.wfile.write(("data: " + json.dumps(final) + "\n\n").encode("utf-8"))
-            handler.wfile.write(b"data: [DONE]\n\n")
-            handler.wfile.flush()
-            return
-
-        upstream = json.loads(response.read().decode("utf-8"))
-        choice = (upstream.get("choices") or [{}])[0]
-        normalized = {
-            "id": str(upstream.get("id") or "cmpl-clozn"),
-            "object": "text_completion",
-            "created": int(upstream.get("created") or time.time()),
-            "model": model,
-            "choices": [{
-                "text": str(choice.get("text") or ""),
-                "index": 0,
-                "logprobs": choice.get("logprobs"),
-                "finish_reason": choice.get("finish_reason") or "stop",
-            }],
-        }
-        if upstream.get("usage") is not None:
-            normalized["usage"] = upstream["usage"]
-        handler._json(200, normalized)
-    except Exception as exc:
-        _error(handler, exc)
-    finally:
-        response.close()
+    response = {
+        "id": "cmpl-" + secrets.token_hex(8),
+        "object": "text_completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "text": generated.reply,
+            "index": 0,
+            "logprobs": None,
+            "finish_reason": generated.public_finish_reason,
+        }],
+    }
+    headers = {"X-Clozn-Run-Id": generated.run_id} if generated.run_id else None
+    handler._json(200, response, extra_headers=headers)
