@@ -59,6 +59,8 @@ class RequestContext:
       request_id          -- new_request_id(), for log correlation.
       sampling             -- ctx._resolve_sampling()'s dict, or None for the greedy/forced-deterministic path.
       generation_meta      -- ctx._engine_generation_meta(...)'s reproducibility block (what _last_generation_meta aliases).
+      generation_timing    -- worker-measured aggregate decode timing from its terminal gen_finished
+                              event; empty when that event was unavailable or the final reply was retried.
       memory_manifest       -- a snapshot of mem_out once the call has finished mutating it (prompt-mode block/
                               applied cards/gate/anchored bag(s)); the LIVE mem_out dict remains the primary,
                               already-per-call-isolated channel (callers own and read it directly) -- this is
@@ -89,6 +91,7 @@ class RequestContext:
     request_id: str = field(default_factory=new_request_id)
     sampling: dict | None = None
     generation_meta: dict = field(default_factory=dict)
+    generation_timing: dict = field(default_factory=dict)
     memory_manifest: dict = field(default_factory=dict)
     steering_snapshot: dict = field(default_factory=dict)
     trace: list = field(default_factory=list)

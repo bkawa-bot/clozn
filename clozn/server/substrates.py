@@ -601,12 +601,18 @@ class EngineSubstrate(Substrate):
             self.engine, prompt, max_new, kw, **traced_kw)
         if isinstance(usage.get("prompt_tokens"), int):
             req.prompt_tokens = usage["prompt_tokens"]
+        req.generation_timing = dict(usage.get("generation_timing") or {})
         req.finish_reason = finish                          # stash for last_finish_reason() (the log path)
         req.diverged, req.diverged_at = divinfo             # stash for last_divergence()
         if comp is not None:                                 # LOOP GUARD: only when anchored memory was
             reply_raw, steps, finish = ctx._anchored_loop_guard(  # ACTUALLY injected this turn (comp is not
                 self.engine, prompt, max_new, kw, samp, comp, reply_raw, steps, finish, mem_out)
             req.finish_reason = finish                      # None) -- see ctx._anchored_loop_guard's docstring
+            if mem_out is not None and mem_out.get("anchored_loop_guard"):
+                # The guard may have replaced the first generation with one or two retries.  Those older
+                # helper calls do not return timing, so discard the initial pass's timing rather than attach
+                # it to a different final reply.
+                req.generation_timing = {}
         if trace_out is not None:
             trace_out.extend(steps)
         req.trace = list(steps)
@@ -713,6 +719,7 @@ class EngineSubstrate(Substrate):
             native_events = []
         import clozn.runs.store as runlog
         steps = runlog.accumulate_ar_events(native_events)
+        req.generation_timing = runlog.generation_timing_from_frames(native_events)
         req.trace = list(steps)
         if trace_out is not None:
             trace_out.extend(steps)
@@ -910,6 +917,8 @@ class EngineSubstrate(Substrate):
         meta = ctx._engine_generation_meta()
         meta.update(dict(health_meta))
         meta.update(getattr(self, "_last_generation_meta", None) or {})
+        request = getattr(self, "_request", None)
+        meta.update(dict(getattr(request, "generation_timing", None) or {}))
         prompt_tokens = getattr(self, "_last_prompt_tokens", None)
         if isinstance(prompt_tokens, int):
             meta["prompt_tokens"] = prompt_tokens
@@ -1077,6 +1086,10 @@ class EngineSubstrate(Substrate):
                 req.finish_reason = runlog.finish_reason_from_frames(frames)
             except Exception:
                 req.finish_reason = None
+            try:
+                req.generation_timing = runlog.generation_timing_from_frames(frames)
+            except Exception:
+                req.generation_timing = {}
             # LOOP GUARD, streaming twin: the engine sets the anchored
             # steer at generation-START (body["steer_vec"] above) and every piece is yielded to the
             # caller live over SSE -- by the time this `finally` runs, the client has ALREADY received
@@ -1240,6 +1253,10 @@ def _engine_complete_traced(engine, prompt, max_tokens, kw, sample=None, usage_o
         if not text:                                        # no final frame text -> reassemble from the pieces
             text = "".join(s.get("piece", "") for s in steps)
         if steps or text:
+            if usage_out is not None:
+                timing = runlog.generation_timing_from_frames(frames)
+                if timing:
+                    usage_out["generation_timing"] = timing
             return text, steps, finish, (diverged, diverged_at)
     except Exception:
         pass

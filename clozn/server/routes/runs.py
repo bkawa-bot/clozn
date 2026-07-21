@@ -114,6 +114,16 @@ def try_get(h, p):
         from clozn.runs import timeline as run_timeline
         h._json(200, {"run_id": rid, "events": run_timeline.timeline(run)})
         return True
+    if p.startswith("/runs/") and p.endswith("/diagnosis"):  # evidence-only slow/cutoff explanation
+        import clozn.runs.store as runlog
+        rid = p[len("/runs/"):-len("/diagnosis")]
+        run = runlog.get_run(rid)
+        if not run:
+            h._json(404, {"error": "run not found"})
+            return True
+        from clozn.runs.diagnosis import diagnose
+        h._json(200, diagnose(run, related_runs=runlog.iter_runs(limit=200)))
+        return True
     if p.startswith("/runs/") and p.endswith("/lineage"):   # branch/replay ancestry + child tree
         import clozn.runs.store as runlog
         rid = p[len("/runs/"):-len("/lineage")]

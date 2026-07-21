@@ -253,6 +253,34 @@ def finish_reason_from_frames(frames) -> str | None:
     return reason
 
 
+def generation_timing_from_frames(frames) -> dict:
+    """Return the worker's aggregate decode timing from the last ``gen_finished`` frame.
+
+    The C++ worker measures this directly.  Keep the names explicit when the values enter a run's
+    metadata so consumers do not mistake generation time for the gateway's end-to-end duration.
+    Invalid or absent fields are omitted rather than estimated.
+    """
+    timing = {}
+    for obj in frames or []:
+        if not isinstance(obj, dict) or obj.get("type") != "gen_finished":
+            continue
+        wall_ms = obj.get("wall_ms")
+        new_tokens = obj.get("new_tokens")
+        steps_total = obj.get("steps_total")
+        tok_per_s = obj.get("tok_per_s")
+        if (isinstance(wall_ms, (int, float)) and not isinstance(wall_ms, bool)
+                and math.isfinite(float(wall_ms)) and wall_ms >= 0):
+            timing["generation_duration_ms"] = wall_ms
+        if isinstance(new_tokens, int) and not isinstance(new_tokens, bool) and new_tokens >= 0:
+            timing["generation_tokens"] = new_tokens
+        if isinstance(steps_total, int) and not isinstance(steps_total, bool) and steps_total >= 0:
+            timing["generation_steps"] = steps_total
+        if (isinstance(tok_per_s, (int, float)) and not isinstance(tok_per_s, bool)
+                and math.isfinite(float(tok_per_s)) and tok_per_s >= 0):
+            timing["generation_tokens_per_second"] = tok_per_s
+    return timing
+
+
 def _norm_trace(trace) -> dict:
     """Coerce whatever a caller passes for `trace` into the stored shape."""
     if isinstance(trace, list):
