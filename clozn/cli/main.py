@@ -61,9 +61,9 @@ from clozn.cli.commands.models import format_throughput                         
 from clozn.cli.commands.run import cmd_run                                                    # noqa: E402
 from clozn.cli.commands.serve import cmd_serve, cmd_ps, cmd_stop                              # noqa: E402
 from clozn.cli.commands.studio import cmd_studio                                              # noqa: E402
-from clozn.cli.commands.explain import (cmd_explain, cmd_inspect, cmd_trace, cmd_branch,       # noqa: E402
-                                        format_explain, format_narrate, _fetch_explain, _fetch_narrate,
-                                        _last_run_id, _verified_tag)
+from clozn.cli.commands.explain import (cmd_explain, cmd_inspect, cmd_trace, cmd_branch, cmd_prove,  # noqa: E402
+                                        format_explain, format_narrate, format_prove, _fetch_explain,
+                                        _fetch_narrate, _fetch_prove, _last_run_id, _verified_tag)
 from clozn.cli.commands.preferences import cmd_preferences, format_preferences                # noqa: E402
 from clozn.cli.commands.test import cmd_test                                                  # noqa: E402
 from clozn.cli.commands.quant_check import cmd_quant_check, add_subparser as _add_quant_check  # noqa: E402,F401
@@ -188,6 +188,24 @@ def build_parser():
                     "it overclaims. Opt-in -- unlike the rest of `explain`, this GENERATES (two model calls; "
                     "needs a running Clozn gateway)")
     pe.set_defaults(fn=cmd_explain)
+    pv = sub.add_parser("prove", help="leave-one-out causal receipts for a run's active influences, "
+                        "+ opt-in coalition/Shapley credit (needs a running Clozn gateway)")
+    pv.add_argument("run_id", nargs="?", default=None, help="run id, as shown in the Studio's Runs list")
+    pv.add_argument("--last", action="store_true", help="use the most recently recorded run")
+    pv.add_argument("--port", type=int, default=0, help="Clozn gateway port (default 8080)")
+    pv.add_argument("--mode", default="regen", choices=["regen", "forced", "both"],
+                    help="receipt mode (default regen -- both-arms-greedy regeneration)")
+    pv.add_argument("--coalitions", action="store_true",
+                    help="opt-in (docs/PRODUCT_ROADMAP.md §8 tail): pairwise coalition deltas, a Shapley "
+                         "approximation, and the interaction gap, on top of the default leave-one-out "
+                         "receipts above. Never changes the default output when omitted.")
+    pv.add_argument("--coalitions-batch", dest="coalitions_batch", default="auto",
+                    choices=["auto", "off", "approximate"],
+                    help="batching policy for coalition arms through a substrate's optional /v1/branch-"
+                         "backed batching hook (default auto: trust only a self-certified-exact substrate, "
+                         "cross-check an uncertified one against sequential, else run sequential)")
+    pv.add_argument("--json", action="store_true", help="print the raw receipts JSON")
+    pv.set_defaults(fn=cmd_prove)
     pi = sub.add_parser("inspect", help="inspect a returned clozn_run_id (local journal first; no generation)")
     pi.add_argument("run_id", nargs="?", default=None, help="clozn_run_id from an API response/header")
     pi.add_argument("--last", action="store_true", help="inspect the most recent organic run")

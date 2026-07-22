@@ -429,6 +429,96 @@ def format_narrate(obj: dict) -> str:
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------- prove (M2 display; core.py assembles)
+# `clozn prove <run_id>` renders the Studio's already-shipped POST /runs/<id>/receipts (clozn.receipts.core.
+# prove_all: leave-one-out receipts + the pairwise redundancy guard) as a terminal view -- this route
+# previously had NO CLI front door at all (only the Studio UI / a raw curl could reach it). The opt-in
+# `--coalitions` flag additionally requests the Phase-8-tail coalition/Shapley credit report
+# (clozn.receipts.coalition) alongside it; never changes the default receipts shape when omitted.
+
+def _fetch_prove(port: int, run_id: str, *, mode: str, coalitions: bool, coalitions_batch: str) -> dict:
+    """POST /runs/<id>/receipts on the Studio backend -- regenerates both-arms-greedy for every fired
+    influence (and, opted in, the coalition/Shapley arms), so it gets the same longer timeout as
+    _fetch_narrate. A clean CloznError (one line, no traceback) when the gateway isn't up, the run doesn't
+    resolve, or its model worker isn't ready (503), matching this file's other _fetch_* helpers."""
+    from clozn.cli import main as ctx
+    url = f"http://127.0.0.1:{port}/runs/{run_id}/receipts"
+    body = json.dumps({"mode": mode, "coalitions": bool(coalitions),
+                       "coalitions_batch": coalitions_batch}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error", str(e))
+        except Exception:
+            msg = str(e)
+        raise ctx.CloznError(f"prove failed ({e.code}): {msg}")
+    except urllib.error.URLError as e:
+        raise ctx.CloznError(
+            f"couldn't reach the Clozn gateway on port {port} ({e.reason}). "
+            "Start it first:  clozn serve <model>"
+        )
+    except Exception as e:
+        raise ctx.CloznError(f"prove failed: {e}")
+
+
+def _format_receipt_line(rec: dict) -> str:
+    inf = rec.get("influence") or {}
+    label = f"card {inf.get('card_id')}" if inf.get("card_id") else (
+        f"dial {inf.get('dial')}" if inf.get("dial") else "influence")
+    tag = "changed" if rec.get("has_effect") else "no effect"
+    verified = "" if rec.get("causal_verified") else "  (not verified -- see ablation_note)"
+    return f"  [{tag}] {label}{verified}"
+
+
+def format_prove(out: dict) -> str:
+    """The M2 prove-all response object -> the terminal render. Pure: no I/O, no server, no model --
+    mirrors format_explain/format_narrate's contract exactly, so a canned dict renders identically to a
+    live response. Never raises: a malformed section degrades to a one-line notice instead of losing the
+    rest, same discipline as this file's other format_* functions."""
+    out = out if isinstance(out, dict) else {}
+    lines = [f"{fmt.BOLD}prove{fmt.RST}  run {out.get('run_id') or '?'}  {fmt.DIM}leave-one-out + redundancy "
+            f"guard{fmt.RST}", "-" * 62]
+    try:
+        receipts = [r for r in fmt._as_list(out.get("receipts")) if isinstance(r, dict)]
+        if not receipts:
+            lines.append(f"  {fmt.DIM}no fired influences on this run to prove{fmt.RST}")
+        else:
+            lines.extend(_format_receipt_line(r) for r in receipts)
+        for pair in fmt._as_list(out.get("redundant_pairs")):
+            if isinstance(pair, dict):
+                lines.append(f"  {fmt.DIM}redundant pair: {pair.get('redundant')} -- {pair.get('note', '')}{fmt.RST}")
+    except Exception:
+        lines.append(f"  {fmt.DIM}couldn't render the receipts{fmt.RST}")
+    coalitions = out.get("coalitions")
+    if isinstance(coalitions, dict):
+        lines.append("")
+        try:
+            from clozn.receipts.coalition import format_report
+            lines.append(format_report(coalitions))
+        except Exception:
+            lines.append(f"  {fmt.DIM}couldn't render the coalition/Shapley report{fmt.RST}")
+    lines.append("-" * 62)
+    return "\n".join(lines)
+
+
+def cmd_prove(args):
+    from clozn.cli import main as ctx
+    rid = _last_run_id() if args.last else args.run_id
+    if not rid:
+        raise ctx.CloznError("give a run id, or pass --last for the most recent one "
+                             "(see ids in the Studio's Runs list, or run something first:  clozn run qwen \"...\")")
+    port = args.port or 8080
+    out = _fetch_prove(port, rid, mode=args.mode, coalitions=args.coalitions,
+                       coalitions_batch=args.coalitions_batch)
+    if args.json:
+        print(json.dumps(out, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(format_prove(out))
+
+
 def cmd_explain(args):
     from clozn.cli import main as ctx
     rid = _last_run_id() if args.last else args.run_id

@@ -61,6 +61,10 @@ def try_post(h, p, body):
         if mode not in ("regen", "forced", "both"):
             h._json(400, {"error": "mode must be one of regen|forced|both"})
             return True
+        coalitions_batch = str(body.get("coalitions_batch") or "auto")
+        if coalitions_batch not in ("auto", "off", "approximate"):
+            h._json(400, {"error": "coalitions_batch must be one of auto|off|approximate"})
+            return True
         # regen/both regenerate both arms through the product model; forced-only never generates
         # (S3: teacher-forced /score on the worker) -- no chat needed.
         if mode in ("regen", "both") and not (ctx.active_sub(h) and getattr(ctx.active_sub(h), "chat", None)):
@@ -68,7 +72,12 @@ def try_post(h, p, body):
             return True
         from clozn import receipts
         try:
-            h._json(200, receipts.prove_all(run, ctx.active_sub(h), mode=mode))
+            # `coalitions` (opt-in, default False -- see docs/PRODUCT_ROADMAP.md §8 tail): pairwise
+            # coalition deltas + a Shapley approximation + the interaction gap, alongside the default
+            # leave-one-out receipts above. Never changes the default response shape when omitted.
+            h._json(200, receipts.prove_all(run, ctx.active_sub(h), mode=mode,
+                                            coalitions=bool(body.get("coalitions", False)),
+                                            coalitions_batch=coalitions_batch))
         except Exception as e:
             h._json(500, {"error": f"receipts failed: {type(e).__name__}: {e}"})
         return True
