@@ -336,7 +336,10 @@ def test_end_to_end_reaches_the_engine_through_the_real_substrate(tmp_path, monk
     fe = FakeEngine()
     monkeypatch.setattr(cs, "ENGINE", fe)
     monkeypatch.setattr(cs, "ENGINE_STEER", None)
-    monkeypatch.setattr(cs, "_prompt_block_for", lambda mem, last_user, strength=None: (None, [], 0.0))
+    # request_scope: the kwarg added by the app/project memory-scoping change (f1c1236); the
+    # rewrite route now passes it through chat(), so the fake must accept it.
+    monkeypatch.setattr(cs, "_prompt_block_for",
+                        lambda mem, last_user, strength=None, request_scope=None: (None, [], 0.0))
     sub = cs.EngineSubstrate()
     monkeypatch.setattr(cs, "SUB", sub)
 

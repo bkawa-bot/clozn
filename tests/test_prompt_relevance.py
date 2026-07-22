@@ -38,7 +38,10 @@ def test_prompt_relevance_degrades_to_empty_when_embedder_unavailable(monkeypatc
 
 def _fixed_cards(cards, gate, rel, monkeypatch):
     """Wire _prompt_block_for's collaborators to fixed values so only the relevance-attach logic is under test."""
-    monkeypatch.setattr(cs, "_prompt_mem_cards", lambda mem, exclude=(): [dict(c) for c in cards])
+    # accepts the request_scope kwarg added by the app/project memory-scoping change (f1c1236);
+    # these relevance tests are scope-agnostic, so the fake ignores it.
+    monkeypatch.setattr(cs, "_prompt_mem_cards",
+                        lambda mem, exclude=(), request_scope=None: [dict(c) for c in cards])
     monkeypatch.setattr(cs, "_prompt_gate", lambda lu, texts: gate)
     monkeypatch.setattr(cs, "_prompt_relevance", lambda lu, texts: rel)
     monkeypatch.setattr(cs, "PROMPT_GATE_MIN", 0.1)
