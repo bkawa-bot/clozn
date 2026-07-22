@@ -6,6 +6,7 @@ import builtins
 
 from clozn.eval import bench, store as eval_store
 from clozn.cli.main import build_parser
+from clozn.cli.commands import eval as eval_cmd
 from clozn.cli.commands.eval import cmd_eval
 
 
@@ -155,3 +156,100 @@ def test_save_refuses_to_create_a_cross_model_profile_without_active_model(monke
     ns = build_parser().parse_args(["eval", "--save", "--task", "Customer Support"])
     assert cmd_eval(ns) == 1
     assert "no active model identity" in capsys.readouterr().out
+
+
+# ======================================================================== `clozn eval policy show`
+
+def test_policy_subcommands_are_registered_and_route_correctly():
+    p = build_parser()
+    bare = p.parse_args(["eval", "policy"])
+    assert bare.fn is eval_cmd._no_policy_command
+    show = p.parse_args(["eval", "policy", "show", "--model", "m", "--task", "t", "--json"])
+    assert show.fn is eval_cmd._cmd_policy_show
+    assert show.model == "m" and show.task == "t" and show.json is True
+    assert show.url.endswith(":8080")
+
+
+def test_policy_bare_prints_usage_hint(capsys):
+    assert eval_cmd._no_policy_command(None) == 2
+    assert "clozn eval policy show" in capsys.readouterr().out
+
+
+_POLICY = {"model": "m1", "task": "chat", "set": "arith", "score": "min", "n": 40, "unmatched": 2,
+          "saved_ts": 1000.0,
+          "policy": {"answer_at": 0.8, "ask_at": 0.4, "achievable": True, "target_error": 0.05,
+                     "summary": {"n_answer": 30, "n_ask": 8, "n_abstain": 2, "coverage": 0.75,
+                                "answered_error": 0.02}}}
+
+
+def test_policy_show_uses_explicit_model_and_task(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(eval_store, "load_profile",
+                        lambda model, task: calls.append((model, task)) or dict(_POLICY), raising=False)
+    ns = build_parser().parse_args(["eval", "policy", "show", "--model", "m1", "--task", "chat"])
+    assert eval_cmd._cmd_policy_show(ns) == 0
+    assert calls == [("m1", "chat")]
+    text = capsys.readouterr().out
+    assert "Active policy: model=m1  task=chat" in text
+    assert "answer_at=0.8  ask_at=0.4" in text
+    assert "token-probability based" in text and "NOT an internal/white-box signal" in text
+    assert "hard-tail" in text
+    assert "not a live fact-check" in text
+
+
+def test_policy_show_json_output(monkeypatch, capsys):
+    monkeypatch.setattr(eval_store, "load_profile", lambda model, task: dict(_POLICY), raising=False)
+    ns = build_parser().parse_args(["eval", "policy", "show", "--model", "m1", "--json"])
+    assert eval_cmd._cmd_policy_show(ns) == 0
+    import json
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["available"] is True
+    assert payload["answer_at"] == 0.8 and payload["ask_at"] == 0.4
+    assert payload["model"] == "m1" and payload["task"] == "chat"
+
+
+def test_policy_show_auto_detects_live_model(monkeypatch, capsys):
+    monkeypatch.setattr(eval_cmd, "_detect_live_model", lambda url: "live-model")
+    calls = []
+    monkeypatch.setattr(eval_store, "load_profile",
+                        lambda model, task: calls.append((model, task)) or dict(_POLICY), raising=False)
+    ns = build_parser().parse_args(["eval", "policy", "show"])
+    assert eval_cmd._cmd_policy_show(ns) == 0
+    assert calls == [("live-model", None)]
+    assert "model detected live" in capsys.readouterr().out
+
+
+def test_policy_show_falls_back_to_the_one_saved_profile_when_no_live_model(monkeypatch, capsys):
+    monkeypatch.setattr(eval_cmd, "_detect_live_model", lambda url: None)
+    monkeypatch.setattr(eval_store, "list_profiles", lambda: [dict(_POLICY)])
+    ns = build_parser().parse_args(["eval", "policy", "show"])
+    assert eval_cmd._cmd_policy_show(ns) == 0
+    assert "no live model detected" in capsys.readouterr().out
+
+
+def test_policy_show_refuses_to_guess_among_several_profiles(monkeypatch, capsys):
+    monkeypatch.setattr(eval_cmd, "_detect_live_model", lambda url: None)
+    monkeypatch.setattr(eval_store, "list_profiles", lambda: [dict(_POLICY), {**_POLICY, "model": "m2"}])
+    ns = build_parser().parse_args(["eval", "policy", "show"])
+    assert eval_cmd._cmd_policy_show(ns) == 1
+    text = capsys.readouterr().out
+    assert "2 saved profiles exist" in text and "pass --model" in text
+
+
+def test_policy_show_reports_no_profile_for_resolved_model(monkeypatch, capsys):
+    monkeypatch.setattr(eval_store, "load_profile", lambda model, task: None, raising=False)
+    ns = build_parser().parse_args(["eval", "policy", "show", "--model", "ghost-model"])
+    assert eval_cmd._cmd_policy_show(ns) == 1
+    text = capsys.readouterr().out
+    assert "no calibration profile saved for model='ghost-model'" in text
+    assert "clozn eval --wizard --save" in text
+
+
+def test_policy_show_rejects_a_malformed_task(capsys):
+    ns = build_parser().parse_args(["eval", "policy", "show", "--model", "m1", "--task", "bad\ntask"])
+    assert eval_cmd._cmd_policy_show(ns) == 2
+    assert "task must be" in capsys.readouterr().out
+
+
+def test_detect_live_model_never_raises_and_returns_none_on_any_failure():
+    assert eval_cmd._detect_live_model("http://127.0.0.1:1", timeout=0.2) is None

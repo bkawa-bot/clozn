@@ -24,6 +24,12 @@ MANIFEST_SCHEMA = "clozn.experiment.v0"
 RESULT_SCHEMA = "clozn.experiment.result.v0"
 VARIANT_KINDS = frozenset({"base", "tuned", "quant", "prompt", "dial"})
 DEFAULT_URL = "http://127.0.0.1:8080"
+# Phase 4.4 (docs/PRODUCT_ROADMAP.md §7 item 4, "statistical rigor + evidence labels as product"): the one
+# metric a manifest author predeclares as their primary comparison BEFORE looking at results, so a stats
+# report (clozn.experiments.stats) can honestly separate "the one test we said mattered" from every other
+# exploratory comparison. 'pass_rate' is the only kind for now (suite._summarize's own aggregate metric);
+# extend this set, never silently accept an unlisted metric name.
+PRIMARY_METRIC_KINDS = frozenset({"pass_rate"})
 
 
 class ManifestError(ValueError):
@@ -101,6 +107,23 @@ def validate_manifest(raw: dict) -> dict:
     if baseline not in names:
         raise ManifestError("baseline_variant must name one of variants")
     manifest["baseline_variant"] = baseline
+
+    # Backward compatibility: only touch the key when the author actually declared it. Every manifest
+    # saved before this field existed has no "primary_metric" key at all; leaving the key absent (rather
+    # than defaulting it to None here) keeps _manifest_digest identical for those old manifests, so an
+    # already-saved clozn.experiment.result.v0 artifact's manifest_sha256 still validates after this change.
+    if "primary_metric" in manifest:
+        primary_metric = manifest["primary_metric"]
+        if primary_metric is not None:
+            if not isinstance(primary_metric, dict):
+                raise ManifestError("primary_metric must be an object with 'suite' and 'metric'")
+            pm_suite = primary_metric.get("suite")
+            if pm_suite not in ("target", "guard"):
+                raise ManifestError("primary_metric.suite must be 'target' or 'guard'")
+            pm_metric = primary_metric.get("metric")
+            if pm_metric not in PRIMARY_METRIC_KINDS:
+                raise ManifestError(f"primary_metric.metric must be one of {sorted(PRIMARY_METRIC_KINDS)}")
+            manifest["primary_metric"] = {"suite": pm_suite, "metric": pm_metric}
 
     suites = manifest.get("suites")
     if not isinstance(suites, dict):

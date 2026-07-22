@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 from pathlib import Path
 import shutil
@@ -11,7 +12,7 @@ import uuid
 
 from clozn._io import atomic_write_json
 from clozn.cli.main import CloznError
-from clozn.experiments import suite
+from clozn.experiments import stats, suite
 
 
 def add_subparser(sub):
@@ -35,6 +36,18 @@ def add_subparser(sub):
     show.add_argument("--seed", type=int, default=None)
     show.add_argument("--json", action="store_true")
     show.set_defaults(fn=cmd_show)
+
+    stats_p = commands.add_parser(
+        "stats", help="paired bootstrap CIs, seed aggregation, and multiple-comparison honesty over a result")
+    stats_p.add_argument("result", help="clozn.experiment.result.v0 JSON artifact")
+    stats_p.add_argument("--alpha", type=float, default=stats.DEFAULT_ALPHA,
+                         help=f"raw per-comparison alpha before Bonferroni adjustment (default {stats.DEFAULT_ALPHA})")
+    stats_p.add_argument("--resamples", type=int, default=stats.DEFAULT_RESAMPLES, dest="resamples",
+                         help=f"bootstrap resample count (default {stats.DEFAULT_RESAMPLES})")
+    stats_p.add_argument("--seed", type=int, default=0, help="bootstrap RNG seed, for an exactly "
+                         "reproducible report (default 0)")
+    stats_p.add_argument("--json", action="store_true", help="print the full stats report as JSON")
+    stats_p.set_defaults(fn=cmd_stats)
 
     export = commands.add_parser("export", help="export a completed experiment to EEE/HF or an eval runner")
     export.add_argument("result", help="clozn.experiment.result.v0 JSON artifact")
@@ -95,6 +108,23 @@ def cmd_show(args):
                                                     variant=args.variant, seed=args.seed)))
     else:
         print(suite.format_summary(result))
+    return 0
+
+
+def cmd_stats(args):
+    try:
+        result = suite.load_result(args.result)
+    except suite.ManifestError as exc:
+        raise CloznError(f"could not read experiment result: {exc}") from exc
+    if not math.isfinite(args.alpha) or not (0.0 < args.alpha < 1.0):
+        raise CloznError("--alpha must be a finite number strictly between 0 and 1")
+    if args.resamples < 100:
+        raise CloznError("--resamples must be at least 100 for a stable bootstrap")
+    report = stats.stats_report(result, alpha=args.alpha, n_resamples=args.resamples, seed=args.seed)
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print(stats.format_stats_report(report))
     return 0
 
 
