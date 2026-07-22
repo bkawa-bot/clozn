@@ -89,6 +89,27 @@ def test_harvest_parses_response():
     assert method == "POST" and path == "/harvest" and body["layer"] == 3
 
 
+def test_score_forwards_attn_knockout_verbatim():
+    """Phase 4.2 (roadmap §7 item 2): score() must pass attn_knockout specs through to the wire body
+    unmodified -- the engine validates/refuses them, this client does not second-guess the shape."""
+    eng = _Stub([{"n_prompt": 2, "n_cont": 1, "tokens": [], "sum_logprob": -0.5}])
+    knockouts = [{"layer": 2, "queries": [3, 4], "keys": [0, 1], "renormalize": True}]
+    eng.score(prompt="hi", continuation_ids=[7], attn_knockout=knockouts)
+    method, path, body = eng.calls[0]
+    assert method == "POST" and path == "/score"
+    assert body["attn_knockout"] == knockouts
+    # a copy, not the same list object -- the caller's list must not be aliased into the wire body
+    assert body["attn_knockout"] is not knockouts
+    assert body["attn_knockout"][0] is not knockouts[0]
+
+
+def test_score_omits_attn_knockout_when_absent():
+    eng = _Stub([{"n_prompt": 2, "n_cont": 1, "tokens": [], "sum_logprob": -0.5}])
+    eng.score(prompt="hi", continuation_ids=[7])
+    _method, _path, body = eng.calls[0]
+    assert "attn_knockout" not in body
+
+
 def test_unembed_row_sends_token_id_and_parses():
     eng = _Stub([{"token_id": 42, "piece": " ocean", "d_model": 4, "vector": [1.0, 2.0, 3.0, 4.0]}])
     r = eng.unembed_row(42)
