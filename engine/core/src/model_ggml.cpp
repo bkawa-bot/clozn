@@ -64,6 +64,16 @@ void GgmlAdapter::init_context(int n_ctx) {
     cp.n_batch = n_ctx_;
     cp.n_ubatch = n_ctx_;  // single ubatch: a whole segment decodes in one pass
     cp.n_seq_max = 16;     // Phase 2.2: batched multi-sequence decode (up to 16 branches)
+    // UNIFIED KV (2026-07-22, found by the 2.8 tool-loop repro): without this, llama.cpp SPLITS
+    // n_ctx across n_seq_max -- 4096/16 = a 256-token cap PER SEQUENCE ("n_ctx_seq (256)" at
+    // boot), and any single-sequence request crossing ~256 effective tokens dies inside
+    // llama_decode with "failed to find a memory slot" (observed: ~20% of tool-call
+    // continuations; the first workload long enough to cross it). ar_forward's n_ctx_ guard and
+    // the context receipts all reason about the FULL window, which unified restores: one shared
+    // 4096-cell pool across sequences -- a lone request may use all of it, and the 16 branch
+    // sequences share it (their TOTAL, not each, is bounded by n_ctx -- the honest budget for
+    // batched branching anyway).
+    cp.kv_unified = true;
     // Flash attention fuses the softmax inside the kernel, so "kq_soft_max-<il>" never
     // materializes and attention KNOCKOUT is impossible. Default stays AUTO (fast); a server
     // started with --no-flash-attn gets the explicit materialized path instead.
