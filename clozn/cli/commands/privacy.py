@@ -1,9 +1,20 @@
 """User-facing local-only policy and outbound-attempt audit ledger."""
 from __future__ import annotations
 
+import argparse
 import json
 
 from clozn.cli import main as ctx
+
+
+def _positive_days(value: str) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("--days must be a positive integer") from None
+    if number <= 0:
+        raise argparse.ArgumentTypeError("--days must be a positive integer")
+    return number
 
 
 def cmd_local_only(args) -> int:
@@ -45,6 +56,32 @@ def cmd_outbound(args) -> int:
     return 0
 
 
+def cmd_retention(args) -> int:
+    from clozn.runs import retention_policy
+    if args.off and args.days is not None:
+        raise ctx.CloznError("--off and --days are mutually exclusive")
+    if args.off:
+        report = retention_policy.set_policy(None)
+    elif args.days is not None:
+        try:
+            report = retention_policy.set_policy(args.days)
+        except ValueError as exc:
+            raise ctx.CloznError(str(exc)) from None
+    else:
+        report = retention_policy.get_policy()
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+    days = report.get("days")
+    if days:
+        print(f"retention policy - delete runs older than {days} day(s) the next time "
+              f"`clozn migrate --gc` runs")
+    else:
+        print("retention policy - off (no age-based deletion; `clozn migrate --gc` only "
+              "collects unreferenced trace blobs)")
+    return 0
+
+
 def cmd_verify_offline(args) -> int:
     from clozn import network_policy
     report = network_policy.verify_offline(since=args.since)
@@ -78,7 +115,16 @@ def add_subparser(subparsers):
     verify.add_argument("--since", help="only consider ledger entries at/after this ISO timestamp")
     verify.add_argument("--json", action="store_true")
     verify.set_defaults(fn=cmd_verify_offline)
+
+    retention = commands.add_parser(
+        "retention", help="set, clear, or inspect the delete-on-GC age-based retention policy")
+    retention.add_argument("--days", type=_positive_days, default=None,
+                           help="delete runs older than this many days the next time "
+                                "`clozn migrate --gc` runs")
+    retention.add_argument("--off", action="store_true", help="clear the age-based retention policy")
+    retention.add_argument("--json", action="store_true")
+    retention.set_defaults(fn=cmd_retention)
     return parser
 
 
-__all__ = ["add_subparser", "cmd_local_only", "cmd_outbound", "cmd_verify_offline"]
+__all__ = ["add_subparser", "cmd_local_only", "cmd_outbound", "cmd_retention", "cmd_verify_offline"]

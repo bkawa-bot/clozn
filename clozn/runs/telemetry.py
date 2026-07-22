@@ -2,11 +2,53 @@
 
 The public functions in this module only transform already-selected run dictionaries or write the
 resulting JSONL to a local file.  There is deliberately no collector URL, HTTP client, environment
-auto-discovery, or background sender here.
+auto-discovery, or background sender here -- ``clozn runs export-otel`` writes exactly one local file and
+nothing else ever leaves the machine through this module.
 
 Each JSONL line is one OTLP/JSON ``TracesData`` object, matching the OpenTelemetry file-export format.
 It contains one root span with OpenInference LLM semantic attributes.  Prompt, message, response,
-reasoning, and summary text are absent by default; callers must explicitly request content.
+reasoning, and summary text are absent by default; callers must explicitly request content via
+``include_content=True`` (CLI: ``--include-content``).
+
+Field mapping (stored run -> OTLP/OpenInference span), see :func:`run_to_span`:
+
+=====================================  ===================================  =========================
+Run field                              Span field / attribute               Notes
+=====================================  ===================================  =========================
+``id``                                 ``spanId`` (+ ``traceId``)           Both are a stable SHA-256
+                                                                             of ``(schema, kind, id)`` --
+                                                                             same run id always yields
+                                                                             the same ids, no run state.
+``timing.started_at``/``created_ts``   ``startTimeUnixNano``                First present value wins.
+``timing.ended_at``/``duration_ms``    ``endTimeUnixNano``                  Derived if only a duration
+                                                                             is recorded.
+``model`` / ``meta.model_file``        ``llm.model_name``                   A local absolute path is
+                                                                             reduced to its filename.
+``finish_reason``                      ``llm.finish_reason``
+``error`` (presence)                   ``status.code`` (2=error, 1=ok)      ``clozn.run.status`` mirrors
+                                                                             this as a string.
+``meta.<sampler keys>``                ``llm.invocation_parameters``        JSON-encoded object; only
+                                                                             the known sampler keys.
+``meta.<timing keys>``                 ``clozn.timing.<key>``               Load/prefill/eval durations.
+``identity.model_sha256`` etc.         ``clozn.identity.*``                 Reproduction identity only;
+                                                                             never a local file path.
+``messages``/``assembled_messages``    ``llm.input_messages.<i>.message.*`` ``.role`` always included;
+                                                                             ``.content`` only with
+                                                                             ``include_content=True``.
+``response``                           ``llm.output_messages.0.message.*``  Same content gating.
+``final_prompt``/``prompt``            ``input.value``                      Only when there are no
+                                                                             structured messages, and
+                                                                             only with content included.
+(n/a)                                  ``clozn.content.policy``             ``"omitted"``, ``"included"``,
+                                                                             or ``"redacted"`` -- always
+                                                                             present, so a reader can
+                                                                             never mistake silence for an
+                                                                             empty run.
+=====================================  ===================================  =========================
+
+Everything not listed above (reasoning traces, memory cards, tool/output-contract detail, influence maps)
+is intentionally NOT exported -- OTel/OpenInference has no semantic slot for it, and guessing one would
+misrepresent clozn-specific evidence as a generic LLM span.
 """
 from __future__ import annotations
 

@@ -13,6 +13,7 @@ for that check, not a crash that hides the rest of the report.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -21,6 +22,14 @@ import sys
 CLOZN_MIN_PYTHON = (3, 11)   # mirrors pyproject.toml's requires-python -- keep the two in sync by hand
 
 _OK, _WARN, _FAIL = "OK", "WARN", "FAIL"
+
+# Commands that reach a non-loopback host BY DESIGN (HuggingFace downloads, remote GGUF header reads).
+# `--verify-offline` must never read as a blanket "this install is fully offline" -- it verifies that
+# nothing initiates outbound traffic *unexpectedly*; these two remain able to, on purpose, when invoked.
+_OUTBOUND_CAPABLE_COMMANDS = (
+    "clozn pull <model> -- downloads a GGUF from HuggingFace",
+    "clozn plan <owner/repo/file> -- reads a remote GGUF header over HTTP Range before any download",
+)
 
 
 def _check(label, status, detail=""):
@@ -142,19 +151,29 @@ def _check_engine() -> dict:
 
 
 def _check_offline() -> dict:
-    """Explicit trust check: local-only must be active and its guarded ledger window clean."""
+    """Explicit trust check: local-only must be active and its guarded ledger window clean.
+
+    This never claims the install is blanket "offline" -- a handful of commands reach the network BY
+    DESIGN (model downloads), and their names are always listed alongside the verdict so a passing check
+    is never mistaken for "nothing here can ever make a request."
+    """
+    known_outbound = list(_OUTBOUND_CAPABLE_COMMANDS)
     try:
         from clozn import network_policy
         report = network_policy.verify_offline()
     except Exception as error:
-        return _check("offline enforcement", _FAIL, f"verification could not run: {error}")
+        result = _check("offline enforcement", _FAIL, f"verification could not run: {error}")
+        result["known_outbound_capable_commands"] = known_outbound
+        return result
+    commands_note = "; unaffected by design: " + ", ".join(
+        cmd.split(" -- ")[0].strip() for cmd in known_outbound)
     if report.get("verified"):
         blocked = int(report.get("blocked_external_attempt_count") or 0)
         detail = f"active; {blocked} external attempt(s) blocked"
         since = report.get("since")
         if since:
             detail += f" since {since}"
-        result = _check("offline enforcement", _OK, detail)
+        result = _check("offline enforcement", _OK, detail + commands_note)
     else:
         reasons = []
         if report.get("local_only") is False:
@@ -169,11 +188,59 @@ def _check_offline() -> dict:
         if violations:
             reasons.append(f"{len(violations)} unblocked external attempt(s) in the ledger window")
         result = _check("offline enforcement", _FAIL,
-                        "; ".join(reasons) or str(report.get("reason") or "verification failed"))
+                        ("; ".join(reasons) or str(report.get("reason") or "verification failed"))
+                        + commands_note)
     # Machine-readable doctor output retains the exact evidence without exposing request content
     # (network_policy's ledger contract stores destination metadata only).
     result["evidence"] = report
+    result["known_outbound_capable_commands"] = known_outbound
     return result
+
+
+def _check_bind_loopback() -> dict:
+    """Static, code-shape verification (not a live network probe) that this CLI's own commands cannot bind
+    the public gateway or the private engine worker to anything but loopback.
+
+    Mirrors `_check_engine`'s static-source-read approach: reading `RuntimeConfig`'s default and `clozn
+    serve`'s registered argparse flags, plus a literal-text scan of `_launch_args`'s subprocess argv
+    construction (the function `spawn_engine` calls to build the private worker's command line), is a
+    fact about the CODE that ships, not a claim about whatever process happens to be running right now --
+    hand-editing these files, or launching the built engine binary directly outside `clozn serve`, is out
+    of scope and cannot be verified from here. Never FAILs: an install that can't be statically confirmed
+    still isn't necessarily broken, so this is WARN-or-OK like the rest of `doctor`.
+    """
+    try:
+        import dataclasses
+        import inspect
+
+        from clozn.cli.engine_process import _launch_args
+        from clozn.cli.main import build_parser
+        from clozn.cli.runtime_process import RuntimeConfig
+
+        gateway_default = next(
+            f.default for f in dataclasses.fields(RuntimeConfig) if f.name == "host")
+
+        parser = build_parser()
+        subparsers_action = next(
+            a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        serve_parser = subparsers_action.choices.get("serve")
+        serve_has_host_override = bool(serve_parser) and any(
+            "--host" in action.option_strings for action in serve_parser._actions)
+
+        engine_hardcodes_loopback = '"--host", "127.0.0.1"' in inspect.getsource(_launch_args)
+    except Exception as error:
+        return _check("gateway/engine bind", _WARN,
+                      f"could not statically verify loopback-only bind: {error}")
+
+    if gateway_default == "127.0.0.1" and not serve_has_host_override and engine_hardcodes_loopback:
+        return _check("gateway/engine bind", _OK,
+                      "loopback-only by construction: `clozn serve` exposes no --host override "
+                      "(RuntimeConfig.host defaults to 127.0.0.1) and the private engine worker's argv "
+                      "hardcodes --host 127.0.0.1 -- a code fact, not a live-process probe")
+    return _check("gateway/engine bind", _WARN,
+                  f"could not confirm loopback-only by construction (gateway default host="
+                  f"{gateway_default!r}, `clozn serve --host` override present={serve_has_host_override}, "
+                  f"engine argv hardcodes loopback={engine_hardcodes_loopback})")
 
 
 def _run_all(*, verify_offline: bool = False) -> list:
@@ -186,6 +253,7 @@ def _run_all(*, verify_offline: bool = False) -> list:
         _check_engine(),
     ]
     if verify_offline:
+        checks.append(_check_bind_loopback())
         checks.append(_check_offline())
     return checks
 

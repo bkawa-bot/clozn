@@ -6,20 +6,25 @@ shell wires flags through correctly and prints/raises what it should.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import os
 import sys
+import time
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import clozn.cli.commands.migrate as mig  # noqa: E402
-import clozn.runs.store as store          # noqa: E402
+import clozn.cli.commands.migrate as mig       # noqa: E402
+import clozn.runs.retention_policy as retention_policy  # noqa: E402
+import clozn.runs.store as store               # noqa: E402
 
 
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(retention_policy, "POLICY_PATH", str(tmp_path / "retention_policy.json"))
+    monkeypatch.delenv(retention_policy.POLICY_ENV, raising=False)
     return tmp_path
 
 
@@ -163,3 +168,65 @@ def test_cmd_migrate_gc_text_output_reports_kept_and_deleted(isolated, capsys):
     assert "blob GC" in text
     assert "keep:" in text
     assert "actually deleted: 0" in text
+
+
+# ==================================================================== --gc + age-based retention policy
+
+def _record_with_age(days_old: float):
+    run_id = store.record(source="cli", messages=[{"role": "user", "content": "x"}], response="y",
+                          trace={"tokens": [str(days_old)], "confidence": [0.9]})
+    with closing(store._connect()) as db, db:
+        db.execute("UPDATE runs SET recorded_ts=? WHERE id=?",
+                   (time.time() - days_old * 86400, run_id))
+    return run_id
+
+
+def test_cmd_migrate_gc_without_a_policy_is_unaffected(isolated, capsys):
+    _record_with_age(400)  # very old, but no retention policy is set
+    args = argparse.Namespace(dry_run=False, gc=True, json=True)
+    rc = mig.cmd_migrate(args)
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "retention" not in out  # byte-identical to pre-retention-policy output
+
+
+def test_cmd_migrate_gc_dry_run_previews_retention_without_deleting(isolated, capsys):
+    old = _record_with_age(40)
+    _record_with_age(1)
+    retention_policy.set_policy(30)
+
+    args = argparse.Namespace(dry_run=True, gc=True, json=True)
+    rc = mig.cmd_migrate(args)
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["retention"]["dry_run"] is True
+    assert out["retention"]["run_ids"] == [old]
+    assert store.get_run(old) is not None
+
+
+def test_cmd_migrate_gc_applies_retention_then_collects_the_freed_blob(isolated, capsys):
+    old = _record_with_age(40)
+    new = _record_with_age(1)
+    retention_policy.set_policy(30)
+
+    args = argparse.Namespace(dry_run=False, gc=True, json=True)
+    rc = mig.cmd_migrate(args)
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["retention"]["deleted_count"] == 1
+    assert out["retention"]["run_ids"] == [old]
+    assert store.get_run(old) is None
+    assert store.get_run(new) is not None
+    # The old run's now-orphaned trace blob was collected in this SAME --gc call.
+    assert any(entry["digest"] for entry in out["deleted"])
+
+
+def test_cmd_migrate_gc_text_output_mentions_retention_when_policy_set(isolated, capsys):
+    _record_with_age(40)
+    retention_policy.set_policy(30)
+    args = argparse.Namespace(dry_run=False, gc=True, json=False)
+    rc = mig.cmd_migrate(args)
+    assert rc == 0
+    text = capsys.readouterr().out
+    assert "retention policy" in text
+    assert "blob GC" in text

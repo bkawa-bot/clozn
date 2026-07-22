@@ -26,12 +26,20 @@ def _print_receipt(receipt: dict, *, as_json: bool) -> None:
     run_id = receipt.get("run_id") or ""
     status = receipt.get("status") or ("complete" if receipt.get("ok") else "not found")
     print(f"{action} - {run_id} ({status})".strip())
+    redaction = receipt.get("redaction") or {}
+    if redaction.get("status") == "literal_redacted":
+        print(f"  {redaction.get('literal_count', 0)} literal(s), "
+              f"{redaction.get('replacement_count', 0)} occurrence(s) replaced; trace blob untouched")
+    cascade_count = receipt.get("cascade_deleted_count")
+    if cascade_count:
+        print(f"  cascade: {cascade_count} child/descendant run(s) also deleted")
 
 
 def cmd_redact(args) -> int:
     from clozn.runs import mutations
+    literals = list(args.literal) if getattr(args, "literal", None) else None
     try:
-        receipt = mutations.redact_run(args.run_id)
+        receipt = mutations.redact_run(args.run_id, literals=literals)
     except mutations.MutationError as exc:
         raise ctx.CloznError(f"run redaction failed: {exc}") from None
     if not receipt.get("ok"):
@@ -45,7 +53,10 @@ def cmd_delete(args) -> int:
         raise ctx.CloznError("run deletion is permanent; re-run with --yes")
     from clozn.runs import mutations
     try:
-        receipt = mutations.delete_run(args.run_id)
+        receipt = mutations.delete_run(args.run_id, cascade=bool(args.cascade))
+    except mutations.RunHasChildrenError as exc:
+        raise ctx.CloznError(f"run deletion refused: {exc}; re-run with --cascade to delete them too") \
+            from None
     except mutations.MutationError as exc:
         raise ctx.CloznError(f"run deletion failed: {exc}") from None
     if not receipt.get("ok"):
@@ -121,12 +132,16 @@ def add_subparser(subparsers):
 
     redact = commands.add_parser("redact", help="replace one run's private content with a tombstone")
     redact.add_argument("run_id")
+    redact.add_argument("--literal", action="append", default=[], metavar="TEXT",
+                        help="redact only this exact substring (repeatable); default is a full tombstone")
     redact.add_argument("--json", action="store_true")
     redact.set_defaults(fn=cmd_redact)
 
     delete = commands.add_parser("delete", help="permanently delete one exact run")
     delete.add_argument("run_id")
     delete.add_argument("--yes", action="store_true", help="confirm permanent deletion")
+    delete.add_argument("--cascade", action="store_true",
+                        help="also delete replay/branch children instead of refusing")
     delete.add_argument("--json", action="store_true")
     delete.set_defaults(fn=cmd_delete)
 
