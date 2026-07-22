@@ -121,8 +121,10 @@ def test_one_baseline_exact_continuation_assembled_preference_and_bidirectional_
     assert out["matrix_shape"] == [3, 2]
     assert out["matrix"] == [[0.1, 0.05], [1.0, -0.1], [0.0, 1.0]]
 
-    # One baseline plus one matched-control score per selected prompt span.
-    assert len(sub.calls) == 1 + len(out["prompt_spans"])
+    # One baseline plus one matched-control score per selected prompt span, plus one bounded
+    # joint-ablation call since the sky and grass spans both clear the floor here (redundant-pair check).
+    assert out["redundancy_check"]["performed"] is True
+    assert len(sub.calls) == 1 + len(out["prompt_spans"]) + 1
     assert out["timing"]["score_calls"] == len(sub.calls)
     assert all(call["continuation_ids"] == [101, 102] for call in sub.calls)
     assert all(call["continuation"] is None for call in sub.calls)
@@ -184,6 +186,32 @@ def test_run_is_not_mutated_and_evidence_is_stable():
     assert first["answer_spans"][1]["start"] == 4
 
 
+class _OffsetClock:
+    """A clock that never agrees with itself between two calls, timing-wise -- proves artifact_sha256
+    is truly independent of wall-clock jitter, unlike StepClock() instances re-created identically."""
+    def __init__(self, start: float, step: float):
+        self.value = start
+        self.step = step
+
+    def __call__(self):
+        value = self.value
+        self.value += self.step
+        return value
+
+
+def test_artifact_hash_is_stable_across_different_wall_clock_timings():
+    """redundancy_check nests its own score_ms (machine-dependent) -- it must be stripped from the
+    digest input exactly like the top-level timing block, or artifact_sha256 would silently vary run to
+    run on the same evidence purely from timing jitter."""
+    run = _run()
+    first = context_answer_influence(run, FakeScoreSub(_influence_scores), clock=_OffsetClock(1.0, 0.01))
+    second = context_answer_influence(run, FakeScoreSub(_influence_scores), clock=_OffsetClock(500.0, 0.37))
+
+    assert first["timing"] != second["timing"]
+    assert first["redundancy_check"]["score_ms"] != second["redundancy_check"]["score_ms"]
+    assert first["artifact_sha256"] == second["artifact_sha256"]
+
+
 def test_response_text_fallback_reuses_the_exact_recorded_continuation():
     run = _run()
     run["trace"] = {}
@@ -220,6 +248,117 @@ def test_failed_intervention_does_not_masquerade_as_a_complete_map():
     assert out["failed_context_span_id"] == "p.m000.c000"
     assert out["completed_context_span_ids"] == []
     assert "matrix" not in out and "links" not in out
+
+
+def test_coarse_to_fine_refinement_splits_only_the_strongest_clearing_span():
+    run = _run()
+    run["assembled_messages"] = [
+        {"role": "user", "content": "Cats are fuzzy. Dogs are loyal. Birds can fly."},
+    ]
+
+    def scores(messages, _block):
+        text = "\n".join(m.get("content", "") for m in messages)
+        if "Cats are fuzzy." not in text:
+            return [-2.0, -0.2]
+        if "Dogs are loyal." not in text:
+            return [-0.11, -0.21]
+        if "Birds can fly." not in text:
+            return [-0.1, -0.2]
+        return [-0.1, -0.2]
+
+    out = context_answer_influence(run, FakeScoreSub(scores), max_context_spans=1,
+                                   check_redundant_pair=False, clock=StepClock())
+    assert out["status"] == "ok"
+    coarse = next(s for s in out["prompt_spans"] if s["level"] == "coarse")
+    fine = [s for s in out["prompt_spans"] if s["level"] == "fine"]
+    assert coarse["child_unit_count"] == 3
+    assert len(fine) == 3
+    assert all(s["parent_id"] == coarse["id"] for s in fine)
+    assert len(out["prompt_spans"]) == 4
+    assert out["matrix_shape"] == [4, 2]
+
+    cats = next(s for s in fine if "Cats" in s["text"])
+    dogs = next(s for s in fine if "Dogs" in s["text"])
+    birds = next(s for s in fine if "Birds" in s["text"])
+    assert out["matrix"][out["prompt_spans"].index(cats)] == [1.9, 0.0]
+    assert out["matrix"][out["prompt_spans"].index(dogs)] == [0.01, 0.01]
+    assert out["matrix"][out["prompt_spans"].index(birds)] == [0.0, 0.0]
+
+    refinement = out["selection"]["refinement"]
+    assert refinement["refined_context_span_ids"] == [coarse["id"]]
+    assert refinement["fine_span_count"] == 3
+
+    # The refined coarse parent stays in the full matrix/links (never discarded) but the top-ranked
+    # display list for the answer prefers the strictly more specific fine child that actually carried
+    # the effect, rather than double-counting the same text at two granularities.
+    top = out["summary"]["answer_to_context"][0]
+    assert top["top_context_span_ids"][0] == cats["id"]
+    assert coarse["id"] not in top["top_context_span_ids"]
+    assert coarse["id"] not in out["summary"]["answer_span_ids_without_clear_source"]
+
+    # One baseline, one coarse arm, three fine arms -- refinement is bounded and reused the baseline.
+    assert len(out["prompt_spans"]) == 4
+    assert out["timing"]["score_calls"] == 5
+
+
+def test_refinement_is_skipped_when_the_strongest_span_is_already_atomic():
+    run = _run()
+    sub = FakeScoreSub(_influence_scores)
+    out = context_answer_influence(run, sub, check_redundant_pair=False, clock=StepClock())
+    # Every coarse span in the default fixture is already a single sentence -- there is nothing finer
+    # to split, so no "level": "fine" spans should appear and the call budget stays coarse-only.
+    assert all(span["level"] == "coarse" for span in out["prompt_spans"])
+    assert out["selection"]["refinement"]["refined_context_span_ids"] == []
+    assert out["selection"]["refinement"]["fine_span_count"] == 0
+    assert len(sub.calls) == 1 + len(out["prompt_spans"])
+
+
+def test_redundant_pair_check_measures_joint_replacement_of_the_two_strongest_spans():
+    run = _run()
+    sub = FakeScoreSub(_influence_scores)
+    out = context_answer_influence(run, sub, clock=StepClock())
+
+    redundancy = out["redundancy_check"]
+    assert redundancy["performed"] is True
+    sky_id = next(span["id"] for span in out["prompt_spans"] if "sky" in span["text"])
+    grass_id = next(span["id"] for span in out["prompt_spans"] if "grass" in span["text"].lower())
+    assert sorted(redundancy["context_span_ids"]) == sorted([sky_id, grass_id])
+    assert len(redundancy["per_answer_token"]) == 2
+    first, second = redundancy["per_answer_token"]
+    assert (first["individual_sum_nats"], first["joint_delta_nats"], first["interaction_nats"]) == (
+        1.0, 1.0, 0.0,
+    )
+    assert (second["individual_sum_nats"], second["joint_delta_nats"], second["interaction_nats"]) == (
+        0.9, -0.1, -1.0,
+    )
+    assert "percentage of total explanation" in redundancy["claim_limit"]
+    assert len(sub.calls) == 1 + len(out["prompt_spans"]) + 1
+    assert out["timing"]["redundancy_check_ms"] >= 0.0
+
+
+def test_redundant_pair_check_is_honest_when_fewer_than_two_spans_clear():
+    run = _run()
+    run["assembled_messages"] = [{"role": "user", "content": "A weak source."}]
+    sub = FakeScoreSub(lambda messages, block: (
+        [-0.1, -0.2] if "A weak source." in str(messages) else [-0.11, -0.21]
+    ))
+    out = context_answer_influence(run, sub, clock=StepClock())
+    assert out["redundancy_check"] == {
+        "performed": False,
+        "reason": "fewer than two context spans clear the measurement floor",
+    }
+    assert len(sub.calls) == 1 + len(out["prompt_spans"])
+
+
+def test_redundant_pair_check_can_be_disabled():
+    run = _run()
+    sub = FakeScoreSub(_influence_scores)
+    out = context_answer_influence(run, sub, check_redundant_pair=False, clock=StepClock())
+    assert out["redundancy_check"] == {
+        "performed": False,
+        "reason": "redundant-pair check disabled for this call",
+    }
+    assert len(sub.calls) == 1 + len(out["prompt_spans"])
 
 
 def test_legacy_prompt_block_is_a_real_replaceable_source():

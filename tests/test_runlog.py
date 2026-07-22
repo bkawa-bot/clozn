@@ -5,6 +5,8 @@ computed (a run carrying a memory card gets 'memory'; a low-confidence trace get
 and that pruning keeps <= KEEP runs. The store is isolated by pointing runlog.RUNS_DIR at a pytest tmp dir
 at runtime -- RUNS_DIR is a module global, so we don't need to (and per I3 must not) edit runlog.py.
 """
+from contextlib import closing
+import json
 import os
 import sys
 
@@ -548,6 +550,114 @@ def test_trace_write_failure_does_not_orphan_a_half_written_blob_file(store, mon
     rec = store.get_run(rid)
     digest = rec["trace"]["sha256"]
     assert not os.path.isfile(store._blob_path(digest))
+
+
+# -------- Phase 3.7 persistence: the influence map shares the trace blob machinery (store._pack) --------
+
+def _attach_influence_map(store, rid: str, influence_map: dict) -> None:
+    run = store.get_run(rid)
+    run["influence_map"] = influence_map
+    assert store.replace_run(run)
+
+
+def test_influence_map_persists_as_a_blob_and_round_trips(store):
+    import glob
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a")
+    influence_map = {
+        "schema": "clozn.context_answer_influence.v1", "status": "ok", "available": True,
+        "prompt_spans": [{"id": "p.m000.c000", "text": "context"}],
+        "answer_spans": [{"id": "a.t0000", "text": "answer"}],
+        "matrix": [[0.42]],
+    }
+    _attach_influence_map(store, rid, influence_map)
+
+    rec = store.get_run(rid)
+    assert rec["influence_map"] == influence_map
+
+    # It really did go through the blob path, not stay inline in the row.
+    with closing(store._connect()) as db:
+        row = db.execute("SELECT payload_json FROM runs WHERE id=?", (rid,)).fetchone()
+    raw = json.loads(row["payload_json"])
+    assert "influence_map" not in raw
+    assert raw["influence_map_ref"]["sha256"]
+    # One blob for the (empty) trace this run carries, one for the influence map -- each content-addressed.
+    blobs = glob.glob(os.path.join(runlog.RUNS_DIR, "blobs", "sha256", "**", "*.json"), recursive=True)
+    assert len(blobs) == 2
+    assert store._blob_path(raw["influence_map_ref"]["sha256"]) in blobs
+
+
+def test_influence_map_absent_by_default_not_empty(store):
+    """A run that never had a map computed carries no influence_map key at all -- unlike trace (always
+    {} when absent), influence_map's presence itself is the "was this ever computed" signal."""
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a")
+    rec = store.get_run(rid)
+    assert "influence_map" not in rec
+
+
+def test_corrupt_influence_map_blob_is_surfaced_not_silently_empty(store):
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a")
+    _attach_influence_map(store, rid, {"schema": "clozn.context_answer_influence.v1", "matrix": [[1.0]]})
+    with closing(store._connect()) as db:
+        row = db.execute("SELECT payload_json FROM runs WHERE id=?", (rid,)).fetchone()
+    digest = json.loads(row["payload_json"])["influence_map_ref"]["sha256"]
+    with open(store._blob_path(digest), "w", encoding="utf-8") as handle:
+        handle.write('{"schema": "TAMPERED"}')
+
+    corrupt = store.get_run(rid)["influence_map"]
+    assert corrupt.get("unavailable") == "influence map blob corrupt (digest mismatch)"
+    assert "TAMPERED" not in str(corrupt)
+
+
+def test_missing_influence_map_blob_is_surfaced_not_silently_empty(store):
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a")
+    _attach_influence_map(store, rid, {"schema": "clozn.context_answer_influence.v1", "matrix": [[1.0]]})
+    with closing(store._connect()) as db:
+        row = db.execute("SELECT payload_json FROM runs WHERE id=?", (rid,)).fetchone()
+    digest = json.loads(row["payload_json"])["influence_map_ref"]["sha256"]
+    os.remove(store._blob_path(digest))
+
+    gone = store.get_run(rid)["influence_map"]
+    assert gone.get("unavailable") == "influence map blob missing"
+    assert gone.get("sha256")
+
+
+def test_influence_map_write_failure_persists_the_run_and_flags_it_distinctly_from_trace(store, monkeypatch):
+    """A disk hiccup writing the influence-map blob must not sink the run OR the trace, and must be
+    flagged under its own name so it's never confused with a trace evidence failure."""
+    def _broken_write(path, obj, **kwargs):
+        raise OSError("simulated disk full")
+
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a",
+                       trace={"tokens": ["a"], "confidence": [0.9]})
+    run = store.get_run(rid)
+    run["influence_map"] = {"schema": "clozn.context_answer_influence.v1", "matrix": [[1.0]]}
+    monkeypatch.setattr(store, "atomic_write_json", _broken_write)
+    assert store.replace_run(run)
+    monkeypatch.undo()
+
+    rec = store.get_run(rid)
+    assert rec["response"] == "a"
+    assert "unavailable" not in rec["trace"]                # the trace blob write was never touched
+    assert rec["influence_map"].get("unavailable", "").startswith("influence map evidence write failed")
+    assert "influence-evidence-missing" in rec["flags"]
+    assert "evidence-missing" not in rec["flags"]           # distinct from the trace-failure flag
+    assert "influence_evidence_write_failed" in rec["meta"]
+    assert "simulated disk full" in rec["meta"]["influence_evidence_write_failed"]
+
+
+def test_legacy_inline_influence_map_still_reads_back(store):
+    """A row written before blob-backed persistence existed (influence_map inline in payload_json, no
+    _ref) must still read back exactly -- unpack only resolves a ref when one is present."""
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "q"}], response="a")
+    with closing(store._connect()) as db, db:
+        row = db.execute("SELECT payload_json FROM runs WHERE id=?", (rid,)).fetchone()
+        payload = json.loads(row["payload_json"])
+        payload["influence_map"] = {"schema": "clozn.context_answer_influence.v1", "matrix": [[0.1]]}
+        db.execute("UPDATE runs SET payload_json=? WHERE id=?",
+                  (json.dumps(payload), rid))
+
+    rec = store.get_run(rid)
+    assert rec["influence_map"] == {"schema": "clozn.context_answer_influence.v1", "matrix": [[0.1]]}
 
 
 def test_list_runs_newest_first(store):

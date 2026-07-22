@@ -380,12 +380,21 @@ def _influence_section(bundle: dict) -> tuple[str, str]:
                 f'{_esc(message)}</div>')
         return _mod("blue", "context ↔ answer influence", tag, body), ""
 
+    raw_prompt_spans = [span for span in _list(influence.get("prompt_spans")) if isinstance(span, dict)]
+    # Coarse-to-fine refinement (Phase 3.7) can push the measured span count above the display cap --
+    # prioritize spans with at least one clearing link (a stable sort keeps every group's relative order)
+    # so the interesting evidence a refinement pass just surfaced is never the part silently dropped.
+    clearing_span_ids = {
+        str(link.get("context_span_id")) for link in _list(influence.get("links"))
+        if isinstance(link, dict) and link.get("clears_floor") is True
+    }
+    prioritized_prompt_spans = sorted(
+        raw_prompt_spans, key=lambda span: str(span.get("id")) not in clearing_span_ids,
+    )
     prompt_items = []
     prompt_truncated = False
     seen_prompt_ids = set()
-    for span in _list(influence.get("prompt_spans"))[:MAX_INFLUENCE_CONTEXT_SPANS]:
-        if not isinstance(span, dict):
-            continue
+    for span in prioritized_prompt_spans[:MAX_INFLUENCE_CONTEXT_SPANS]:
         span_id = str(span.get("id") or "")
         text = str(span.get("text") or "")
         if not span_id or not text or span_id in seen_prompt_ids:
@@ -395,6 +404,7 @@ def _influence_section(bundle: dict) -> tuple[str, str]:
         cut = len(shown) < len(text)
         prompt_truncated = prompt_truncated or cut
         prompt_items.append({"id": span_id, "span": span, "text": shown, "cut": cut})
+    prompt_spans_omitted_by_cap = len(raw_prompt_spans) > len(prompt_items)
 
     answer_items = []
     answer_truncated = False
@@ -538,7 +548,28 @@ def _influence_section(bundle: dict) -> tuple[str, str]:
     if omitted:
         notes.append(f"{omitted} recorded prompt source(s) were outside the bounded measurement; "
                      "the card makes no influence claim for them.")
-    if prompt_truncated or answer_truncated or len(raw_answer_spans) > len(answer_items):
+    redundancy = _dict(influence.get("redundancy_check"))
+    if redundancy.get("performed") is True:
+        pair_labels = [
+            f"context {prompt_index[str(span_id)] + 1}"
+            for span_id in _list(redundancy.get("context_span_ids"))
+            if str(span_id) in prompt_index
+        ]
+        if len(pair_labels) == 2:
+            interactions = [
+                _float(item.get("interaction_nats")) for item in _list(redundancy.get("per_answer_token"))
+                if isinstance(item, dict)
+            ]
+            interactions = [value for value in interactions if value is not None]
+            strongest = max((abs(value) for value in interactions), default=None)
+            strength_copy = f"; strongest measured interaction {strongest:.3f} nats" if strongest is not None else ""
+            notes.append(
+                f"Redundant-pair check: {pair_labels[0]} and {pair_labels[1]} were replaced together in "
+                f"one bounded joint control{strength_copy} — near zero means the two behaved additively, "
+                "large means they overlapped; never a percentage of total explanation."
+            )
+    if (prompt_truncated or answer_truncated or prompt_spans_omitted_by_cap
+            or len(raw_answer_spans) > len(answer_items)):
         notes.append("The interactive view was truncated for receipt size; the complete measured "
                      "artifact remains in the JSON export.")
     state = "".join(f'<div class="imap-state">{_esc(note)}</div>' for note in notes)

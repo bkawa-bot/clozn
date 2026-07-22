@@ -731,7 +731,7 @@ _runs_fallback_routes = _types.SimpleNamespace(try_get=_runs_routes.try_get_fall
 _GET_ROUTES = [_static_routes, _health_routes, _runs_routes, _memory_routes, _receipts_routes,
               _timetravel_routes, _profiles_routes, _ollama_routes, _openai_routes, _engine_routes,
               _journal_routes, _card_routes, _anchored_routes, _diff_routes, _receipt_link_routes,
-              _runs_fallback_routes]
+              _influence_map_routes, _runs_fallback_routes]
 _POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes,
                _corrective_retry_routes, _replay_routes,
                _timetravel_routes, _profiles_routes, _preferences_routes, _feedback_routes,

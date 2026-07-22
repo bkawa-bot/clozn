@@ -202,6 +202,47 @@ def test_influence_map_below_floor_and_unavailable_states_are_explicit():
     assert "teacher-forced scoring was not available" in unavailable_out
 
 
+def test_influence_map_surfaces_the_redundant_pair_check_honestly():
+    influence = _influence_map()
+    influence["redundancy_check"] = {
+        "performed": True,
+        "context_span_ids": ["p.m000.c000", "p.m001.c000"],
+        "per_answer_token": [
+            {"answer_span_id": "a.t0000", "individual_sum_nats": 1.0, "joint_delta_nats": 0.2,
+             "interaction_nats": -0.8},
+        ],
+    }
+    out = render_card(_bundle_with_influence(influence))
+    assert "Redundant-pair check: context 1 and context 2" in out
+    assert "strongest measured interaction 0.800 nats" in out
+    assert "never a percentage of total explanation" in out
+
+
+def test_influence_map_omits_the_redundancy_note_when_not_performed():
+    influence = _influence_map()
+    influence["redundancy_check"] = {"performed": False, "reason": "fewer than two context spans clear"}
+    out = render_card(_bundle_with_influence(influence))
+    assert "Redundant-pair check" not in out
+
+
+def test_influence_map_prompt_spans_prioritize_clearing_ones_when_over_the_display_cap():
+    """Coarse-to-fine refinement (Phase 3.7) can push the measured prompt-span count above the card's
+    display cap. A naive positional slice would silently drop whichever spans land past the cap -- this
+    proves the card instead keeps every clearing span, moving non-clearing filler out of the way first."""
+    influence = _influence_map()
+    filler = [
+        {"id": f"p.filler{i:03d}", "role": "user", "source_kind": "assembled_message", "text": f"filler {i}"}
+        for i in range(7)
+    ]
+    influence["prompt_spans"] = filler + influence["prompt_spans"]
+    out = render_card(_bundle_with_influence(influence))
+    # Both real, clearing spans still render even though 9 total spans exceed the cap of 8 -- a naive
+    # `[:8]` positional slice would have cut the second one.
+    assert "Answer with the capital only." in out
+    assert "What is the capital of France?" in out
+    assert "interactive view was truncated for receipt size" in out
+
+
 def test_influence_map_answer_surface_is_bounded_and_says_when_truncated():
     influence = _influence_map(clear=False)
     influence["answer_spans"] = [

@@ -57,13 +57,24 @@ def test_redact_replaces_content_with_tombstone_and_cleans_trace(isolated):
     _, raw = _raw(run_id)
     digest = raw["trace_ref"]["sha256"]
     path = store._blob_path(digest)
+    # The influence map is potentially-large derived evidence and goes through the SAME blob
+    # machinery as trace (store._pack), keyed by influence_map_ref -- it must never be lost
+    # (regular GC path) AND must be scrubbed immediately on redaction (privacy path), exactly like trace.
+    influence_digest = raw["influence_map_ref"]["sha256"]
+    influence_path = store._blob_path(influence_digest)
+    assert os.path.isfile(influence_path)
+    with open(influence_path, encoding="utf-8") as handle:
+        assert "private influence" in handle.read()
 
     result = mutations.redact_run(run_id)
 
     assert result["trace_cleanup"] == {"status": "deleted", "sha256": digest}
     assert not os.path.exists(path)
+    assert result["influence_map_cleanup"] == {"status": "deleted", "sha256": influence_digest}
+    assert not os.path.exists(influence_path)
     redacted = store.get_run(run_id)
     assert redacted["redaction"]["schema"] == mutations.REDACTION_SCHEMA
+    assert redacted["redaction"]["influence_evidence_removed"] is True
     assert redacted["flags"] == ["redacted"]
     assert redacted["messages"] == [] and redacted["response"] == ""
     assert redacted["reasoning"] == {} and redacted["output_contract"] == {}

@@ -37,10 +37,18 @@ def _require_run_id(run_id: Any) -> str:
     return run_id
 
 
-def _trace_digest(payload: Any) -> str | None:
-    ref = payload.get("trace_ref") if isinstance(payload, dict) else None
+def _blob_digest(payload: Any, key: str) -> str | None:
+    ref = payload.get(key) if isinstance(payload, dict) else None
     digest = ref.get("sha256") if isinstance(ref, dict) else None
     return digest if isinstance(digest, str) and _DIGEST_RE.fullmatch(digest) else None
+
+
+def _trace_digest(payload: Any) -> str | None:
+    return _blob_digest(payload, "trace_ref")
+
+
+def _influence_map_digest(payload: Any) -> str | None:
+    return _blob_digest(payload, "influence_map_ref")
 
 
 def _begin(db: sqlite3.Connection) -> None:
@@ -72,6 +80,7 @@ def _tombstone(row: sqlite3.Row, payload: dict | None) -> dict:
         "redacted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "removed_fields": list(_REMOVED_FIELDS),
         "trace_evidence_removed": _trace_digest(payload) is not None,
+        "influence_evidence_removed": _influence_map_digest(payload) is not None,
         "source_payload_readable": bool(payload),
     }
     identity = payload.get("identity")
@@ -100,7 +109,10 @@ def _tombstone(row: sqlite3.Row, payload: dict | None) -> dict:
     }
 
 
-def _cleanup_trace(digest: str | None) -> dict[str, Any]:
+def _cleanup_blob(digest: str | None) -> dict[str, Any]:
+    """Synchronously remove one content-addressed blob (trace or influence-map) IF nothing else still
+    references it -- the immediate counterpart to the deferred, explicitly-requested `clozn migrate --gc`
+    sweep. Generic over which ref key produced the digest; `gc._referenced_digests` already scans both."""
     if digest is None:
         return {"status": "not_applicable", "sha256": None}
     path, root = store._blob_path(digest), store._blob_root()
@@ -141,6 +153,7 @@ def redact_run(run_id: str) -> dict[str, Any]:
     run_id = _require_run_id(run_id)
     store._ensure()
     digest = None
+    influence_digest = None
     try:
         with closing(store._connect()) as db:
             _begin(db)
@@ -157,6 +170,7 @@ def redact_run(run_id: str) -> dict[str, Any]:
                                   "already_redacted": True, "redaction": dict(existing)}
                     else:
                         digest = _trace_digest(payload)
+                        influence_digest = _influence_map_digest(payload)
                         redacted = _tombstone(row, payload)
                         encoded = json.dumps(redacted, ensure_ascii=False, sort_keys=True,
                                              separators=(",", ":"), allow_nan=False)
@@ -177,9 +191,10 @@ def redact_run(run_id: str) -> dict[str, Any]:
     except Exception as exc:
         raise MutationError(
             f"could not redact run {run_id!r}: {type(exc).__name__}: {exc}") from None
-    result["trace_cleanup"] = (_cleanup_trace(digest)
-                               if result.get("ok") and not result.get("already_redacted")
-                               else {"status": "not_applicable", "sha256": None})
+    not_applicable = {"status": "not_applicable", "sha256": None}
+    applicable = result.get("ok") and not result.get("already_redacted")
+    result["trace_cleanup"] = _cleanup_blob(digest) if applicable else not_applicable
+    result["influence_map_cleanup"] = _cleanup_blob(influence_digest) if applicable else not_applicable
     return result
 
 
@@ -188,6 +203,7 @@ def delete_run(run_id: str) -> dict[str, Any]:
     run_id = _require_run_id(run_id)
     store._ensure()
     digest = None
+    influence_digest = None
     try:
         with closing(store._connect()) as db:
             _begin(db)
@@ -197,7 +213,9 @@ def delete_run(run_id: str) -> dict[str, Any]:
                 if row is None:
                     raise MutationError(f"run {run_id!r} was not found")
                 else:
-                    digest = _trace_digest(_load_payload(row["payload_json"]))
+                    payload = _load_payload(row["payload_json"])
+                    digest = _trace_digest(payload)
+                    influence_digest = _influence_map_digest(payload)
                     db.execute("DELETE FROM runs WHERE id=?", (run_id,))
                     result = {"ok": True, "action": "delete", "run_id": run_id}
             except BaseException as exc:
@@ -210,8 +228,9 @@ def delete_run(run_id: str) -> dict[str, Any]:
     except Exception as exc:
         raise MutationError(
             f"could not delete run {run_id!r}: {type(exc).__name__}: {exc}") from None
-    result["trace_cleanup"] = (_cleanup_trace(digest) if result.get("ok")
-                               else {"status": "not_applicable", "sha256": None})
+    not_applicable = {"status": "not_applicable", "sha256": None}
+    result["trace_cleanup"] = _cleanup_blob(digest) if result.get("ok") else not_applicable
+    result["influence_map_cleanup"] = _cleanup_blob(influence_digest) if result.get("ok") else not_applicable
     return result
 
 

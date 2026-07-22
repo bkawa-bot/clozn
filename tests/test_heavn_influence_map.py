@@ -51,6 +51,17 @@ def test_influence_map_preserves_evidence_floor_and_claim_boundaries():
     assert "percent" not in component.lower()
 
 
+def test_influence_map_surfaces_refinement_and_redundancy_check_in_the_footer():
+    replay = _read("modules/replay.mjs")
+    assert "artifact.selection.refinement" in replay
+    assert "auto-refined into finer sub-spans" in replay
+    assert "artifact.redundancy_check" in replay
+    assert "redundant-pair check" in replay
+    component = replay[replay.index("function InfluenceMap"):replay.index("function SpanForensics")]
+    assert "percentage" not in component.lower()
+    assert "percent" not in component.lower()
+
+
 def test_influence_map_styles_encode_strength_and_absence_accessibly():
     theme = _read("theme.css")
     for selector in (

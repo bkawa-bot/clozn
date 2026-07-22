@@ -126,6 +126,51 @@ def test_collect_live_with_nothing_to_delete_is_a_safe_no_op(isolated):
     assert len(result["keep"]) == 1
 
 
+# ------------------------------------------------------- Phase 3.7: influence-map blobs, same namespace
+
+def test_referenced_influence_map_blob_survives_gc(isolated):
+    """The persisted context<->answer influence-map artifact shares the trace blob's content-addressed
+    namespace (store._pack's influence_map_ref) -- GC must protect it exactly like a trace blob as long
+    as a run still references it."""
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hey")
+    run = store.get_run(rid)
+    run["influence_map"] = {"schema": "clozn.context_answer_influence.v1", "matrix": [[0.5]]}
+    assert store.replace_run(run)
+    with closing(store._connect()) as db:
+        row = db.execute("SELECT payload_json FROM runs WHERE id=?", (rid,)).fetchone()
+    influence_digest = json.loads(row["payload_json"])["influence_map_ref"]["sha256"]
+    influence_path = store._blob_path(influence_digest)
+    assert os.path.isfile(influence_path)
+
+    result = gc.collect(dry_run=False)
+
+    assert influence_digest not in {e["digest"] for e in result["deleted"]}
+    assert os.path.isfile(influence_path)
+
+
+def test_orphaned_influence_map_blob_is_collected_once_unreferenced(isolated):
+    rid = store.record(source="cli", messages=[{"role": "user", "content": "hi"}], response="hey")
+    run = store.get_run(rid)
+    run["influence_map"] = {"schema": "clozn.context_answer_influence.v1", "matrix": [[0.5]]}
+    assert store.replace_run(run)
+    with closing(store._connect()) as db:
+        row = db.execute("SELECT payload_json FROM runs WHERE id=?", (rid,)).fetchone()
+    influence_digest = json.loads(row["payload_json"])["influence_map_ref"]["sha256"]
+    influence_path = store._blob_path(influence_digest)
+
+    # Replace the run again WITHOUT an influence_map -- the old blob is now orphaned, same as a trace
+    # blob left behind by a replaced run.
+    run2 = store.get_run(rid)
+    run2.pop("influence_map", None)
+    assert store.replace_run(run2)
+    assert os.path.isfile(influence_path)                # untouched until GC actually runs
+
+    result = gc.collect(dry_run=False)
+
+    assert influence_digest in {e["digest"] for e in result["deleted"]}
+    assert not os.path.isfile(influence_path)
+
+
 # ======================================================================================= referenced-blob protection
 
 def test_referenced_blob_is_never_deleted_even_when_content_addressed_dedup_shares_it(isolated):

@@ -1,9 +1,10 @@
 """Blob garbage collection for the SQLite run store (BACKLOG §2).
 
-Every trace blob lives at `blobs/sha256/<xx>/<digest>.json`, content-addressed and referenced by exactly
-the `trace_ref.sha256` embedded in a run's `payload_json`. A blob becomes ORPHANED the moment its only
+Every blob (a run's trace, or its persisted Phase-3.7 context<->answer influence-map artifact) lives at
+`blobs/sha256/<xx>/<digest>.json`, content-addressed and referenced by exactly the `trace_ref.sha256` or
+`influence_map_ref.sha256` embedded in a run's `payload_json`. A blob becomes ORPHANED the moment its only
 referencing run row is gone -- pruned by `store._prune()` (KEEP=1000 rows), replaced by `replace_run()`
-with a different trace, or deleted by hand. Nothing has ever cleaned these up; they just accumulate.
+with a different trace/map, or deleted by hand. Nothing has ever cleaned these up; they just accumulate.
 
 This module never deletes anything on its own -- `store.py` does not import it, and nothing calls it
 except the `clozn migrate --gc` CLI path. That is intentional: blob deletion is a destructive,
@@ -37,10 +38,14 @@ from . import store
 _BLOB_REL_RE = re.compile(r"^([0-9a-f]{2})[/\\]([0-9a-f]{64})\.json$")
 
 
+_BLOB_REF_KEYS = ("trace_ref", "influence_map_ref")
+
+
 def _referenced_digests(db) -> set[str]:
-    """Every trace_ref.sha256 currently reachable from a run row. Parsed out of payload_json per row --
-    there is no separate indexed column for it (trace_ref lives inside the JSON document, see store._pack)
-    -- KEEP=1000 caps this at a small, cheap full scan."""
+    """Every trace_ref.sha256 or influence_map_ref.sha256 currently reachable from a run row. Both live
+    in the SAME content-addressed blobs/sha256 namespace (see store._pack), so one shared scan covers
+    both. Parsed out of payload_json per row -- there is no separate indexed column for either (they live
+    inside the JSON document) -- KEEP=1000 caps this at a small, cheap full scan."""
     out: set[str] = set()
     rows = db.execute("SELECT payload_json FROM runs").fetchall()
     for row in rows:
@@ -48,10 +53,12 @@ def _referenced_digests(db) -> set[str]:
             payload = json.loads(row["payload_json"])
         except Exception:
             continue                                    # a corrupt row references nothing we can trust
-        ref = (payload or {}).get("trace_ref") or {}
-        digest = ref.get("sha256") if isinstance(ref, dict) else None
-        if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
-            out.add(digest)
+        payload = payload or {}
+        for key in _BLOB_REF_KEYS:
+            ref = payload.get(key) or {}
+            digest = ref.get("sha256") if isinstance(ref, dict) else None
+            if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+                out.add(digest)
     return out
 
 
