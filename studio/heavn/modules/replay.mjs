@@ -1915,6 +1915,11 @@ function InfluenceMap({ rec }){
           <span>Forced scoring · recorded continuation · ${artifact && artifact.timing && artifact.timing.score_calls != null ? artifact.timing.score_calls + " score calls" : "bounded matched controls"}</span>
           ${artifact && artifact.selection && (artifact.selection.omitted_source_ids || []).length
             ? html`<span>${artifact.selection.omitted_source_ids.length} older source(s) outside the bounded map</span>` : null}
+          ${artifact && artifact.selection && artifact.selection.refinement
+            && (artifact.selection.refinement.refined_context_span_ids || []).length
+            ? html`<span>${artifact.selection.refinement.refined_context_span_ids.length} span(s) auto-refined into finer sub-spans</span>` : null}
+          ${artifact && artifact.redundancy_check && artifact.redundancy_check.performed
+            ? html`<span>redundant-pair check: one bounded joint control on the two strongest spans</span>` : null}
           <button class="spd" disabled=${busy || !!rec._sample} onClick=${() => run(true)}>RECOMPUTE</button>
         </div>
       `}

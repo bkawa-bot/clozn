@@ -56,10 +56,18 @@ def _require_run_id(run_id: Any) -> str:
     return run_id
 
 
-def _trace_digest(payload: Any) -> str | None:
-    ref = payload.get("trace_ref") if isinstance(payload, dict) else None
+def _blob_digest(payload: Any, key: str) -> str | None:
+    ref = payload.get(key) if isinstance(payload, dict) else None
     digest = ref.get("sha256") if isinstance(ref, dict) else None
     return digest if isinstance(digest, str) and _DIGEST_RE.fullmatch(digest) else None
+
+
+def _trace_digest(payload: Any) -> str | None:
+    return _blob_digest(payload, "trace_ref")
+
+
+def _influence_map_digest(payload: Any) -> str | None:
+    return _blob_digest(payload, "influence_map_ref")
 
 
 def _begin(db: sqlite3.Connection) -> None:
@@ -161,6 +169,7 @@ def _tombstone(row: sqlite3.Row, payload: dict | None) -> dict:
         "redacted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "removed_fields": list(_REMOVED_FIELDS),
         "trace_evidence_removed": _trace_digest(payload) is not None,
+        "influence_evidence_removed": _influence_map_digest(payload) is not None,
         "source_payload_readable": bool(payload),
     }
     identity = payload.get("identity")
@@ -189,7 +198,10 @@ def _tombstone(row: sqlite3.Row, payload: dict | None) -> dict:
     }
 
 
-def _cleanup_trace(digest: str | None) -> dict[str, Any]:
+def _cleanup_blob(digest: str | None) -> dict[str, Any]:
+    """Synchronously remove one content-addressed blob (trace or influence-map) IF nothing else still
+    references it -- the immediate counterpart to the deferred, explicitly-requested `clozn migrate --gc`
+    sweep. Generic over which ref key produced the digest; `gc._referenced_digests` already scans both."""
     if digest is None:
         return {"status": "not_applicable", "sha256": None}
     path, root = store._blob_path(digest), store._blob_root()
@@ -245,6 +257,7 @@ def redact_run(run_id: str, *, literals: "list[str] | None" = None) -> dict[str,
         literals = cleaned
     store._ensure()
     digest = None
+    influence_digest = None
     try:
         with closing(store._connect()) as db:
             _begin(db)
@@ -263,6 +276,7 @@ def redact_run(run_id: str, *, literals: "list[str] | None" = None) -> dict[str,
                         result = _apply_literal_redaction(db, row, payload or {}, run_id, literals)
                     else:
                         digest = _trace_digest(payload)
+                        influence_digest = _influence_map_digest(payload)
                         redacted = _tombstone(row, payload)
                         encoded = json.dumps(redacted, ensure_ascii=False, sort_keys=True,
                                              separators=(",", ":"), allow_nan=False)
@@ -283,9 +297,13 @@ def redact_run(run_id: str, *, literals: "list[str] | None" = None) -> dict[str,
     except Exception as exc:
         raise MutationError(
             f"could not redact run {run_id!r}: {type(exc).__name__}: {exc}") from None
-    result["trace_cleanup"] = (_cleanup_trace(digest)
-                               if result.get("ok") and not result.get("already_redacted") and not literals
-                               else {"status": "not_applicable", "sha256": None})
+    # MERGE UNION (3.5 x 3.7): full-tombstone redaction cleans up BOTH content-addressed blobs;
+    # literal-scoped redaction leaves BOTH untouched -- either blob may be shared across runs,
+    # and the receipt states it (trace_untouched). Same rule, two evidence kinds.
+    not_applicable = {"status": "not_applicable", "sha256": None}
+    applicable = result.get("ok") and not result.get("already_redacted") and not literals
+    result["trace_cleanup"] = _cleanup_blob(digest) if applicable else not_applicable
+    result["influence_map_cleanup"] = _cleanup_blob(influence_digest) if applicable else not_applicable
     return result
 
 
@@ -322,7 +340,7 @@ def delete_run(run_id: str, *, cascade: bool = False) -> dict[str, Any]:
     if not isinstance(cascade, bool):
         raise MutationError("cascade must be a boolean")
     store._ensure()
-    digests: dict[str, "str | None"] = {}
+    digests: dict[str, "tuple[str | None, str | None]"] = {}   # target -> (trace, influence_map)
     deleted_ids: "list[str]" = []
     try:
         with closing(store._connect()) as db:
@@ -339,8 +357,11 @@ def delete_run(run_id: str, *, cascade: bool = False) -> dict[str, Any]:
                 for target in targets:
                     target_row = db.execute(
                         "SELECT payload_json FROM runs WHERE id=?", (target,)).fetchone()
-                    digests[target] = (_trace_digest(_load_payload(target_row["payload_json"]))
-                                       if target_row is not None else None)
+                    if target_row is not None:
+                        payload = _load_payload(target_row["payload_json"])
+                        digests[target] = (_trace_digest(payload), _influence_map_digest(payload))
+                    else:
+                        digests[target] = (None, None)
                 db.executemany("DELETE FROM runs WHERE id=?", [(target,) for target in targets])
                 deleted_ids = targets
                 result = {"ok": True, "action": "delete", "run_id": run_id, "cascade": cascade,
@@ -357,11 +378,16 @@ def delete_run(run_id: str, *, cascade: bool = False) -> dict[str, Any]:
             f"could not delete run {run_id!r}: {type(exc).__name__}: {exc}") from None
     if len(deleted_ids) <= 1:
         # The common, non-cascading case keeps its original single-object shape exactly.
-        result["trace_cleanup"] = _cleanup_trace(digests.get(run_id))
+        tr, inf = digests.get(run_id, (None, None))
+        result["trace_cleanup"] = _cleanup_blob(tr)
+        result["influence_map_cleanup"] = _cleanup_blob(inf)
     else:
         result["trace_cleanup"] = [
-            dict(_cleanup_trace(digests.get(target)), run_id=target) for target in deleted_ids
-        ]
+            dict(_cleanup_blob(digests.get(target, (None, None))[0]), run_id=target)
+            for target in deleted_ids]
+        result["influence_map_cleanup"] = [
+            dict(_cleanup_blob(digests.get(target, (None, None))[1]), run_id=target)
+            for target in deleted_ids]
         result["cascade_deleted_count"] = len(deleted_ids) - 1
     return result
 

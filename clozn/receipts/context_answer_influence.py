@@ -32,6 +32,11 @@ from .forced import _FORCED_MEAN_THRESHOLD, _forced_deltas, _matched_length_fill
 SCHEMA = "clozn.context_answer_influence.v1"
 DEFAULT_MAX_CONTEXT_SPANS = 8
 DEFAULT_TARGET_CHUNK_CHARS = 600
+# Coarse-to-fine refinement: only the strongest coarse-clearing spans are ever split further, and only
+# by this much, so the map's total score-call count stays bounded and the timing gate stays honest.
+DEFAULT_MAX_REFINED_SOURCES = 2
+DEFAULT_MAX_FINE_SPANS_PER_SOURCE = 3
+DEFAULT_FINE_TARGET_CHUNK_CHARS = 150
 _CONTROL_RECIPE = "clozn.matched_length_neutral_filler.v1"
 
 _METHOD = {
@@ -42,6 +47,11 @@ _METHOD = {
     "sign": (
         "positive means the recorded context supported the answer token relative to the "
         "matched neutral replacement; negative means it suppressed the token"
+    ),
+    "segmentation": "coarse_source_aware_spans_v1_refined_coarse_to_fine_on_the_strongest_only",
+    "redundancy_check": (
+        "one bounded joint-ablation control on the two most strongly-clearing context spans, "
+        "reported as an interaction delta, never as an additive percentage"
     ),
     "claim_limit": (
         "behavioral dependence under a controlled prompt intervention; not a percentage, "
@@ -357,6 +367,82 @@ def _replace_span(messages: list, block: str | None, span: dict) -> tuple[list, 
     return copied, copied_block, control
 
 
+def _refine_span(span: dict, *, target_chunk_chars: int, max_fine_spans: int) -> list[dict]:
+    """Split one coarse span's own exact text into finer sentence/chunk sub-spans at a smaller
+    target size, expressed in the same absolute source coordinates the coarse span already uses.
+
+    Returns ``[]`` when the span is already atomic at the finer granularity -- coarse-to-fine
+    refinement never manufactures a fine span that would just duplicate its coarse parent.
+    """
+    local_ranges = _text_ranges(span["text"], target_chunk_chars=target_chunk_chars)
+    if len(local_ranges) <= 1:
+        return []
+    groups = _partition_units(local_ranges, min(max(1, int(max_fine_spans)), len(local_ranges)))
+    if len(groups) <= 1:
+        return []
+    fine_spans = []
+    for fine_index, group in enumerate(groups):
+        local_start, local_end = group[0]["start"], group[-1]["end"]
+        kind = group[0]["kind"] if len(group) == 1 else "chunk"
+        fine_spans.append({
+            "id": f"{span['id']}.f{fine_index:03d}",
+            "parent_id": span["id"],
+            "level": "fine",
+            "kind": kind,
+            "target": span["target"],
+            "message_index": span["message_index"],
+            "role": span["role"],
+            "source_kind": span["source_kind"],
+            "start": span["start"] + local_start,
+            "end": span["start"] + local_end,
+            "text": span["text"][local_start:local_end],
+            "child_unit_count": len(group),
+        })
+    return fine_spans
+
+
+def _replace_spans(messages: list, block: str | None, spans: list[dict]) -> tuple[list, str | None, list[dict]]:
+    """Replace MULTIPLE bounded spans in one arm, each with its own independent matched-length
+    neutral filler. Edits inside the same message/block text apply right-to-left so an earlier
+    replacement never shifts a later span's recorded offsets. Used only by the bounded redundant-pair
+    joint-ablation check -- every other arm still replaces exactly one span via ``_replace_span``.
+    """
+    copied = [dict(message) if isinstance(message, dict) else message for message in messages]
+    copied_block = block
+    controls: list[dict] = []
+
+    def _apply(text: str, group: list[dict]) -> str:
+        for span in sorted(group, key=lambda item: -item["start"]):
+            replacement = _matched_length_filler(span["end"] - span["start"])
+            text = text[:span["start"]] + replacement + text[span["end"]:]
+            controls.append({
+                "context_span_id": span["id"],
+                "kind": "matched_length_neutral_filler",
+                "recipe": _CONTROL_RECIPE,
+                "replacement_chars": len(replacement),
+                "source_chars": span["end"] - span["start"],
+                "length_preserved": len(replacement) == span["end"] - span["start"],
+                "replacement_sha256": hashlib.sha256(replacement.encode("utf-8")).hexdigest(),
+            })
+        return text
+
+    by_message: dict[int, list[dict]] = {}
+    block_spans = []
+    for span in spans:
+        if span["target"] == "block":
+            block_spans.append(span)
+        else:
+            by_message.setdefault(span["message_index"], []).append(span)
+    for index, group in by_message.items():
+        copied[index]["content"] = _apply(copied[index]["content"], group)
+    if block_spans:
+        copied_block = _apply(copied_block or "", block_spans)
+
+    order = [span["id"] for span in spans]
+    controls.sort(key=lambda control: order.index(control["context_span_id"]))
+    return copied, copied_block, controls
+
+
 def _validated_tokens(tokens: list) -> list[dict] | None:
     if not isinstance(tokens, list) or not tokens:
         return None
@@ -402,7 +488,8 @@ def _answer_spans(baseline: list[dict], recorded_answer: str) -> tuple[list[dict
     }
 
 
-def _summary(prompt_spans: list[dict], answer_spans: list[dict], links: list[dict]) -> dict:
+def _summary(prompt_spans: list[dict], answer_spans: list[dict], links: list[dict],
+            refined_span_ids: frozenset[str] = frozenset()) -> dict:
     answer_to_context = []
     no_clear = []
     for answer in answer_spans:
@@ -411,10 +498,15 @@ def _summary(prompt_spans: list[dict], answer_spans: list[dict], links: list[dic
         clear = [link for link in candidates if link["clears_floor"]]
         if not clear:
             no_clear.append(answer["id"])
+        # A refined coarse parent's own row stays in the full measured matrix/links and still counts
+        # toward "clear_source" (never silently downgraded) -- but its finer children are strictly
+        # more specific about the SAME source text, so the TOP-RANKED display list prefers them and
+        # only falls back to the parent when no fine child individually cleared the floor.
+        displayed = [link for link in clear if link["context_span_id"] not in refined_span_ids] or clear
         answer_to_context.append({
             "answer_span_id": answer["id"],
             "clear_source": bool(clear),
-            "top_context_span_ids": [link["context_span_id"] for link in clear[:3]],
+            "top_context_span_ids": [link["context_span_id"] for link in displayed[:3]],
         })
 
     context_to_answer = []
@@ -436,17 +528,94 @@ def _summary(prompt_spans: list[dict], answer_spans: list[dict], links: list[dic
     }
 
 
+def _redundancy_check(sub, conditions, messages, block, *, prompt_spans: list[dict], matrix: list[list],
+                      answer_spans: list[dict], baseline_tokens, baseline: list[dict], floor: float,
+                      clock) -> dict:
+    """One bounded joint-ablation control on the two most strongly-clearing DISTINCT context spans.
+
+    Both are replaced simultaneously in a single extra arm and the joint delta is compared, per answer
+    token, against the plain SUM of their two individually-measured deltas.  A near-zero interaction
+    means the two spans behaved roughly additively when replaced together; a large interaction means
+    they were redundant/overlapping (interacting) sources for that token.  This is a single honest
+    measurement of ONE pair, never a search over every pair, and never a claim that the two spans are
+    the model's only causes or that their effects sum to a percentage of anything.
+    """
+    ranked = sorted(
+        (
+            (max((abs(delta) for delta in row), default=0.0), span["id"], index)
+            for index, (span, row) in enumerate(zip(prompt_spans, matrix))
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
+    clearing = [item for item in ranked if item[0] >= floor]
+    if len(clearing) < 2:
+        return {"performed": False, "reason": "fewer than two context spans clear the measurement floor"}
+
+    (_mag_a, id_a, index_a), (_mag_b, id_b, index_b) = clearing[0], clearing[1]
+    span_a, span_b = prompt_spans[index_a], prompt_spans[index_b]
+    row_a, row_b = matrix[index_a], matrix[index_b]
+
+    arm_started = clock()
+    joint_messages, joint_block, joint_controls = _replace_spans(messages, block, [span_a, span_b])
+    joint_tokens, joint_ok = rederive.score_arm(
+        sub, conditions, messages=joint_messages, block=joint_block,
+        steer_strengths=conditions.get("steer_strengths") or {},
+    )
+    score_ms = _round(max(0.0, (clock() - arm_started) * 1000.0))
+    context_span_ids = [id_a, id_b]
+    if not joint_ok:
+        return {"performed": False, "reason": "the joint-control score call did not complete",
+                "context_span_ids": context_span_ids, "score_ms": score_ms}
+
+    joint_deltas = _forced_deltas(baseline_tokens, joint_tokens)
+    validated_joint = _validated_tokens(joint_tokens)
+    if joint_deltas is None or validated_joint is None or len(validated_joint) != len(baseline):
+        return {"performed": False, "reason": "the joint-control scorer returned a misaligned result",
+                "context_span_ids": context_span_ids, "score_ms": score_ms}
+
+    per_token = []
+    for answer_index, answer_span in enumerate(answer_spans):
+        individual_sum = _round(row_a[answer_index] + row_b[answer_index])
+        joint_delta = _round(joint_deltas[answer_index])
+        per_token.append({
+            "answer_span_id": answer_span["id"],
+            "individual_sum_nats": individual_sum,
+            "joint_delta_nats": joint_delta,
+            "interaction_nats": _round(joint_delta - individual_sum),
+        })
+    return {
+        "performed": True,
+        "context_span_ids": context_span_ids,
+        "controls": joint_controls,
+        "per_answer_token": per_token,
+        "score_ms": score_ms,
+        "claim_limit": (
+            "one bounded interaction measurement between the two most strongly-clearing measured "
+            "context spans; a near-zero interaction means their individually-measured effects were "
+            "roughly additive under joint replacement -- it is not evidence the two spans are the "
+            "model's only causes, and never a percentage of total explanation"
+        ),
+    }
+
+
 def context_answer_influence(run: dict, sub, *, max_context_spans: int = DEFAULT_MAX_CONTEXT_SPANS,
                              min_abs_delta_nats: float = _FORCED_MEAN_THRESHOLD,
                              target_chunk_chars: int = DEFAULT_TARGET_CHUNK_CHARS,
+                             max_refined_sources: int = DEFAULT_MAX_REFINED_SOURCES,
+                             max_fine_spans_per_source: int = DEFAULT_MAX_FINE_SPANS_PER_SOURCE,
+                             fine_target_chunk_chars: int = DEFAULT_FINE_TARGET_CHUNK_CHARS,
+                             check_redundant_pair: bool = True,
                              clock=time.perf_counter) -> dict:
     """Build one portable ``clozn.context_answer_influence.v1`` evidence object.
 
-    Successful maps make exactly ``1 + len(prompt_spans)`` score calls: one
-    baseline and one matched-control arm per context span.  Every call uses
-    ``rederive.score_arm`` and the same stored continuation; generation is never
-    invoked.  Failures are structured ``unavailable``/``error`` objects and
-    never raise into a receipt caller.
+    Successful maps make ``1 + len(prompt_spans)`` score calls: one baseline (reused for every arm)
+    and one matched-control arm per context span, coarse first.  Spans whose coarse arm clears the
+    measurement floor are automatically refined into up to ``max_fine_spans_per_source`` finer
+    sub-spans each (bounded to the ``max_refined_sources`` strongest), each scored with one more
+    reused-baseline arm and appended to the same matrix.  When at least two spans clear the floor, one
+    additional bounded joint-ablation arm checks the strongest redundant pair.  Every call uses
+    ``rederive.score_arm`` and the same stored continuation; generation is never invoked.  Failures are
+    structured ``unavailable``/``error`` objects and never raise into a receipt caller.
     """
     started = clock()
     run = run if isinstance(run, dict) else {}
@@ -516,10 +685,8 @@ def context_answer_influence(run: dict, sub, *, max_context_spans: int = DEFAULT
             )
 
         answer_spans, answer = _answer_spans(baseline, str(conditions.get("response") or ""))
-        matrix = []
-        controls = []
-        intervention_times = []
-        for span in prompt_spans:
+
+        def _score_one(span: dict) -> tuple[bool, list | None, dict, float]:
             arm_messages, arm_block, control = _replace_span(messages, block, span)
             arm_started = clock()
             arm_tokens, arm_ok = rederive.score_arm(
@@ -527,10 +694,21 @@ def context_answer_influence(run: dict, sub, *, max_context_spans: int = DEFAULT
                 steer_strengths=conditions.get("steer_strengths") or {},
             )
             arm_ms = max(0.0, (clock() - arm_started) * 1000.0)
-            intervention_times.append({"context_span_id": span["id"], "score_ms": _round(arm_ms)})
             raw_deltas = _forced_deltas(baseline_tokens, arm_tokens) if arm_ok else None
             validated_arm = _validated_tokens(arm_tokens) if arm_ok else None
             if raw_deltas is None or validated_arm is None or len(validated_arm) != len(baseline):
+                return False, None, control, arm_ms
+            row = [_round(delta) for delta in raw_deltas]
+            control["counterfactual_logprobs"] = [token["logprob"] for token in validated_arm]
+            return True, row, control, arm_ms
+
+        matrix = []
+        controls = []
+        intervention_times = []
+        for span in prompt_spans:
+            ok, row, control, arm_ms = _score_one(span)
+            intervention_times.append({"context_span_id": span["id"], "score_ms": _round(arm_ms)})
+            if not ok:
                 return _failed(
                     run, prompt_view=prompt_view, status="error", code="intervention_score_failed",
                     message=(f"matched-control scoring failed or did not align token-for-token for "
@@ -544,12 +722,62 @@ def context_answer_influence(run: dict, sub, *, max_context_spans: int = DEFAULT
                     answer=answer,
                     answer_spans=answer_spans,
                 )
-            row = [_round(delta) for delta in raw_deltas]
             matrix.append(row)
-            control["counterfactual_logprobs"] = [token["logprob"] for token in validated_arm]
             controls.append(control)
 
         floor = max(0.0, float(min_abs_delta_nats))
+
+        # Coarse-to-fine refinement: rank coarse spans by their own strongest cell, then split only
+        # the top max_refined_sources that CLEAR the floor into up to max_fine_spans_per_source finer
+        # sub-spans each (skipped when a span is already atomic at the finer grain). Automatic,
+        # source-aware, and bounded -- refinement never runs on a span that didn't already show a
+        # measured effect, and it never grows the map without limit.
+        refined_span_ids: list[str] = []
+        strongest_first = sorted(
+            (
+                (max((abs(delta) for delta in row), default=0.0), span["id"], index)
+                for index, (span, row) in enumerate(zip(prompt_spans, matrix))
+            ),
+            key=lambda item: (-item[0], item[1]),
+        )
+        for magnitude, _span_id, coarse_index in strongest_first:
+            if len(refined_span_ids) >= max(0, int(max_refined_sources)):
+                break
+            if magnitude < floor:
+                break
+            coarse_span = prompt_spans[coarse_index]
+            fine_spans = _refine_span(
+                coarse_span, target_chunk_chars=fine_target_chunk_chars,
+                max_fine_spans=max_fine_spans_per_source,
+            )
+            if len(fine_spans) < 2:
+                continue
+            for fine_span in fine_spans:
+                ok, row, control, arm_ms = _score_one(fine_span)
+                intervention_times.append({"context_span_id": fine_span["id"], "score_ms": _round(arm_ms)})
+                if not ok:
+                    return _failed(
+                        run, prompt_view=prompt_view, status="error", code="intervention_score_failed",
+                        message=(f"matched-control scoring failed or did not align token-for-token for "
+                                 f"fine context span {fine_span['id']}"),
+                        started=started, clock=clock,
+                        failed_context_span_id=fine_span["id"],
+                        completed_context_span_ids=[item["context_span_id"] for item in controls],
+                        prompt_sources=prompt_evidence["prompt_sources"],
+                        prompt_spans=[
+                            {key: value for key, value in span.items() if key != "target"}
+                            for span in prompt_spans
+                        ],
+                        selection=prompt_evidence["selection"],
+                        answer=answer,
+                        answer_spans=answer_spans,
+                    )
+                prompt_spans.append(fine_span)
+                matrix.append(row)
+                controls.append(control)
+            refined_span_ids.append(coarse_span["id"])
+        refined_span_ids = frozenset(refined_span_ids)
+
         links = []
         for context_index, (span, row) in enumerate(zip(prompt_spans, matrix)):
             for answer_index, (answer_span, delta) in enumerate(zip(answer_spans, row)):
@@ -565,23 +793,52 @@ def context_answer_influence(run: dict, sub, *, max_context_spans: int = DEFAULT
                     "clears_floor": magnitude >= floor,
                 })
 
+        # Bounded check: does the strongest redundant pair of context spans behave additively or
+        # overlap when replaced together? One extra score call at most, only when >= 2 spans clear.
+        redundancy = (
+            _redundancy_check(
+                sub, conditions, messages, block, prompt_spans=prompt_spans, matrix=matrix,
+                answer_spans=answer_spans, baseline_tokens=baseline_tokens, baseline=baseline,
+                floor=floor, clock=clock,
+            )
+            if check_redundant_pair else
+            {"performed": False, "reason": "redundant-pair check disabled for this call"}
+        )
+        redundancy_calls = 1 if "score_ms" in redundancy else 0
+
         thresholds = {
             "cell_abs_delta_nats": _round(floor),
             "source_clear_rule": "absolute signed cell delta meets or exceeds cell_abs_delta_nats",
             "calibration": "fixed_default_not_model_calibrated",
         }
+        final_prompt_spans_public = [
+            {key: value for key, value in span.items() if key != "target"}
+            for span in prompt_spans
+        ]
+        selection = dict(prompt_evidence["selection"])
+        selection["refinement"] = {
+            "strategy": "refine_strongest_clearing_coarse_spans_v1",
+            "max_refined_sources": max(0, int(max_refined_sources)),
+            "max_fine_spans_per_source": max(0, int(max_fine_spans_per_source)),
+            "fine_target_chunk_chars": max(1, int(fine_target_chunk_chars)),
+            "refined_context_span_ids": sorted(refined_span_ids),
+            "fine_span_count": sum(1 for span in prompt_spans if span.get("level") == "fine"),
+        }
         timing = {
             "baseline_ms": _round(baseline_ms),
             "interventions": intervention_times,
             "interventions_total_ms": _round(sum(item["score_ms"] for item in intervention_times)),
+            "redundancy_check_ms": redundancy.get("score_ms", 0.0),
             "total_ms": _round(max(0.0, (clock() - started) * 1000.0)),
-            "score_calls": 1 + len(prompt_spans),
+            "score_calls": 1 + len(prompt_spans) + redundancy_calls,
         }
         result = _base_result(run, prompt_view=prompt_view)
         result.update({
             "status": "ok",
             "available": True,
             **prompt_evidence,
+            "prompt_spans": final_prompt_spans_public,
+            "selection": selection,
             "offsets": {
                 "unit": "unicode_code_points",
                 "interval": "half_open",
@@ -607,12 +864,21 @@ def context_answer_influence(run: dict, sub, *, max_context_spans: int = DEFAULT
             "matrix_shape": [len(prompt_spans), len(answer_spans)],
             "matrix_complete": True,
             "links": links,
-            "summary": _summary(prompt_spans, answer_spans, links),
+            "summary": _summary(prompt_spans, answer_spans, links, refined_span_ids),
+            "redundancy_check": redundancy,
             "timing": timing,
         })
         # Timing varies by machine and is not evidence identity.  Everything else,
-        # including raw baseline/control scores and all links, is committed.
+        # including raw baseline/control scores and all links, is committed.  redundancy_check carries
+        # its own score_ms (machine-dependent) nested inside it, so it needs the same stripping as the
+        # top-level timing block -- otherwise wall-clock jitter would make artifact_sha256 non-reproducible
+        # for a byte-identical run.
         artifact_payload = {key: value for key, value in result.items() if key != "timing"}
+        if isinstance(artifact_payload.get("redundancy_check"), dict):
+            artifact_payload["redundancy_check"] = {
+                key: value for key, value in artifact_payload["redundancy_check"].items()
+                if key != "score_ms"
+            }
         result["artifact_sha256"] = _digest(artifact_payload)
         return result
     except Exception as exc:

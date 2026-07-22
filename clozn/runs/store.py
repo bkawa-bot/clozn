@@ -104,59 +104,88 @@ def _blob_path(digest: str) -> str:
     return os.path.join(_blob_root(), digest[:2], digest + ".json")
 
 
-def _store_trace(trace: dict) -> dict:
-    """Write the trace blob if it isn't already on disk (content-addressed dedup), returning its
-    trace_ref. BACKLOG §2 (evidence-write failures): the old code let an `atomic_write_json` failure
+def _store_blob(value: dict, *, kind: str) -> dict:
+    """Write a content-addressed JSON blob if it isn't already on disk, returning its ref. Shared by the
+    trace blob and the persisted context<->answer influence-map artifact (Phase 3.7): both are
+    potentially-large derived evidence that a run's queryable row shouldn't carry inline.
+    BACKLOG §2 (evidence-write failures): the old trace-only code let an `atomic_write_json` failure
     (disk full, permission error, ...) propagate all the way up through `_pack`/`_put`/`record`'s blanket
     `except Exception: return None` -- one write hiccup silently discarded the ENTIRE run (prompt,
     response, everything), with nothing but a bare None to show for it. We now catch the write failure
     HERE, log it, and hand it back via the ref itself (`write_failed`) so `_pack` can mark the run row
-    "evidence missing" and still persist everything else -- degrading honestly instead of vanishing."""
-    encoded = json.dumps(trace, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    evidence-missing and still persist everything else -- degrading honestly instead of vanishing."""
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
     path = _blob_path(digest)
     ref = {"sha256": digest, "media_type": "application/json", "bytes": len(encoded)}
     if not os.path.isfile(path):
         try:
-            atomic_write_json(path, trace, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            atomic_write_json(path, value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         except Exception as exc:
-            _log.warning("trace blob write failed (digest=%s, bytes=%d): %s: %s",
-                         digest, len(encoded), type(exc).__name__, exc)
+            _log.warning("%s blob write failed (digest=%s, bytes=%d): %s: %s",
+                         kind, digest, len(encoded), type(exc).__name__, exc)
             ref["write_failed"] = f"{type(exc).__name__}: {exc}"
     return ref
 
 
-def _load_trace(ref) -> dict:
-    """Load a trace blob, VERIFYING its SHA-256 against the recorded digest. A missing, unreadable, or
-    corrupt (digest-mismatch) blob is SURFACED as {"unavailable": <reason>, "sha256": ...} rather than
-    silently returned as an empty {} -- a run must never present "no trace" when the truth is "the causal
-    evidence was lost or tampered with." An absent/invalid ref (the run genuinely carried no trace) still
-    returns {} (honestly no trace, not corruption)."""
+def _load_blob(ref, *, kind: str) -> dict:
+    """Load a content-addressed JSON blob, VERIFYING its SHA-256 against the recorded digest. A missing,
+    unreadable, or corrupt (digest-mismatch) blob is SURFACED as {"unavailable": <reason>, "sha256": ...}
+    rather than silently returned as an empty {} -- a run must never present "no <kind>" when the truth is
+    "the evidence was lost or tampered with." An absent/invalid ref (the run genuinely carried none) still
+    returns {} (honestly none, not corruption)."""
     ref = ref or {}
     digest = str(ref.get("sha256") or "")
     write_failed = ref.get("write_failed")
     if write_failed:
-        # The write itself failed back in _store_trace (see that docstring) -- there is nothing useful to
+        # The write itself failed back in _store_blob (see that docstring) -- there is nothing useful to
         # try opening; we already know the verdict and must report exactly that, not a possibly-different
         # one derived from whatever partial/absent file happens to sit at this digest's path right now.
-        return {"unavailable": f"trace evidence write failed: {write_failed}", "sha256": digest or None}
+        return {"unavailable": f"{kind} evidence write failed: {write_failed}", "sha256": digest or None}
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         return {}
     try:
         with open(_blob_path(digest), "rb") as handle:
             raw = handle.read()
     except FileNotFoundError:
-        return {"unavailable": "trace blob missing", "sha256": digest}
+        return {"unavailable": f"{kind} blob missing", "sha256": digest}
     except Exception as exc:
-        return {"unavailable": f"trace blob unreadable: {type(exc).__name__}", "sha256": digest}
+        return {"unavailable": f"{kind} blob unreadable: {type(exc).__name__}", "sha256": digest}
     actual = hashlib.sha256(raw).hexdigest()
     if actual != digest:
-        return {"unavailable": "trace blob corrupt (digest mismatch)", "sha256": digest, "actual_sha256": actual}
+        return {"unavailable": f"{kind} blob corrupt (digest mismatch)", "sha256": digest, "actual_sha256": actual}
     try:
         value = json.loads(raw.decode("utf-8"))
     except Exception as exc:
-        return {"unavailable": f"trace blob not valid JSON: {type(exc).__name__}", "sha256": digest}
+        return {"unavailable": f"{kind} blob not valid JSON: {type(exc).__name__}", "sha256": digest}
     return value if isinstance(value, dict) else {}
+
+
+def _store_trace(trace: dict) -> dict:
+    return _store_blob(trace, kind="trace")
+
+
+def _load_trace(ref) -> dict:
+    return _load_blob(ref, kind="trace")
+
+
+def _store_influence_map(value: dict) -> dict:
+    return _store_blob(value, kind="influence map")
+
+
+def _load_influence_map(ref) -> dict:
+    return _load_blob(ref, kind="influence map")
+
+
+def _mark_blob_write_failure(payload: dict, ref: dict, *, flag: str, meta_key: str) -> None:
+    """Mirror a blob write failure onto the run's own flags/meta so it survives even though the
+    underlying evidence file didn't. Used for both the trace blob and the influence-map blob."""
+    if not ref.get("write_failed"):
+        return
+    payload["flags"] = sorted(set(payload.get("flags") or []) | {flag})
+    meta = dict(payload.get("meta") or {})
+    meta[meta_key] = ref["write_failed"]
+    payload["meta"] = meta
 
 
 def _pack(rec: dict) -> tuple[str, dict]:
@@ -165,17 +194,25 @@ def _pack(rec: dict) -> tuple[str, dict]:
     json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
     payload = dict(rec)
     trace_ref = _store_trace(payload.pop("trace", {}) or {})
-    if trace_ref.get("write_failed"):
-        # BACKLOG §2 honesty invariant: the run row still lands (losing the WHOLE run over a trace-write
-        # hiccup would be strictly worse), but it must never read back as "no trace" -- a plain {} would
-        # look identical to a run that genuinely carried none. Every surface that reads a run (Runs list
-        # via `flags`, run detail via `meta`, a future `clozn doctor`) gets the same honest marker, applied
-        # here once rather than re-derived per call site.
-        payload["flags"] = sorted(set(payload.get("flags") or []) | {"evidence-missing"})
-        meta = dict(payload.get("meta") or {})
-        meta["evidence_write_failed"] = trace_ref["write_failed"]
-        payload["meta"] = meta
+    # BACKLOG §2 honesty invariant: the run row still lands (losing the WHOLE run over a trace-write
+    # hiccup would be strictly worse), but it must never read back as "no trace" -- a plain {} would
+    # look identical to a run that genuinely carried none. Every surface that reads a run (Runs list
+    # via `flags`, run detail via `meta`, a future `clozn doctor`) gets the same honest marker, applied
+    # here once rather than re-derived per call site.
+    _mark_blob_write_failure(payload, trace_ref, flag="evidence-missing", meta_key="evidence_write_failed")
     payload["trace_ref"] = trace_ref
+
+    # Phase 3.7: the persisted context<->answer influence-map artifact is potentially-large derived
+    # evidence (a complete answer-token x context-span matrix) -- it goes through the same
+    # content-addressed blob machinery as trace, keyed by influence_map_ref, so the run row itself stays
+    # small. A run that never had a map computed carries no influence_map key at all (not an empty one).
+    influence_map_value = payload.pop("influence_map", None)
+    if isinstance(influence_map_value, dict) and influence_map_value:
+        influence_map_ref = _store_influence_map(influence_map_value)
+        _mark_blob_write_failure(payload, influence_map_ref, flag="influence-evidence-missing",
+                                 meta_key="influence_evidence_write_failed")
+        payload["influence_map_ref"] = influence_map_ref
+
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return serialized, payload
 
@@ -183,6 +220,9 @@ def _pack(rec: dict) -> tuple[str, dict]:
 def _unpack(payload_json: str) -> dict:
     rec = json.loads(payload_json)
     rec["trace"] = _load_trace(rec.pop("trace_ref", None))
+    influence_map_ref = rec.pop("influence_map_ref", None)
+    if influence_map_ref is not None:
+        rec["influence_map"] = _load_influence_map(influence_map_ref)
     return rec
 
 

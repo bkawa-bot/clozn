@@ -1,8 +1,36 @@
-"""Compute and attach the fast context↔answer influence map for a recorded run."""
+"""Compute/attach (POST) and export (GET) the fast context<->answer influence map for a recorded run."""
 from clozn.server import app as ctx
 
 
 _MAX_CONTEXT_SPANS = 8
+_SCHEMA = "clozn.context_answer_influence.v1"
+
+
+def try_get(h, p):
+    """GET /runs/<id>/influence-map -- the persistence/export path (Phase 3.7): return the already-
+    computed, versioned evidence object exactly as stored, never triggering a new scoring job. A pure
+    journal read, so it works even with no worker attached -- the counterpart to POST, which computes."""
+    if not (p.startswith("/runs/") and p.endswith("/influence-map")):
+        return False
+
+    rid = p[len("/runs/"):-len("/influence-map")]
+    import clozn.runs.store as runlog
+
+    run = runlog.get_run(rid)
+    if run is None:
+        h._json(404, {"error": "run not found"})
+        return True
+
+    stored = run.get("influence_map")
+    if not (isinstance(stored, dict) and stored.get("schema") == _SCHEMA):
+        h._json(404, {
+            "error": "no context-answer influence map has been computed for this run yet",
+            "schema": _SCHEMA,
+            "available": False,
+        })
+        return True
+    h._json(200, stored)
+    return True
 
 
 def _max_spans(body: dict) -> int:
@@ -33,7 +61,7 @@ def try_post(h, p, body):
     body = body if isinstance(body, dict) else {}
     cached = run.get("influence_map")
     if (isinstance(cached, dict)
-            and cached.get("schema") == "clozn.context_answer_influence.v1"
+            and cached.get("schema") == _SCHEMA
             and cached.get("available") is True and not body.get("refresh")):
         h._json(200, cached)
         return True
