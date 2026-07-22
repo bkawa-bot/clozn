@@ -101,6 +101,16 @@ void GgmlAdapter::set_attn_knockouts(const std::vector<AttnKnockout>& ks) {
 
 void GgmlAdapter::clear_attn_knockouts() { knockouts_.clear(); }
 
+void GgmlAdapter::set_attn_capture(int query_pos) {
+    attn_capture_query_ = query_pos;
+    attn_rows_.clear();
+}
+
+void GgmlAdapter::clear_attn_capture() {
+    attn_capture_query_ = -1;
+    attn_rows_.clear();
+}
+
 GgmlAdapter::~GgmlAdapter() {
     if (ctx_) llama_free(ctx_);  // the model is freed by GgmlModel when the last adapter releases it
     // backend intentionally left initialized (see note above).
@@ -135,10 +145,11 @@ bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
     // severs "query position q reads key position k at head h" -- the edge itself, rather than
     // the residual either end of it. Only exists with flash attention DISABLED.
     int ko_il = -1;
-    if (!knockouts_.empty() && std::strncmp(nm, "kq_soft_max-", 12) == 0)
+    if ((!knockouts_.empty() || attn_capture_query_ >= 0) &&
+        std::strncmp(nm, "kq_soft_max-", 12) == 0)
         ko_il = std::atoi(nm + 12);
     if (ko_il >= 0) {
-        bool want = false;
+        bool want = attn_capture_query_ >= 0;   // capture wants EVERY layer's tensor
         for (const AttnKnockout& k : knockouts_) if (k.layer == ko_il) { want = true; break; }
         if (want) {
             if (ask) return true;
@@ -146,6 +157,25 @@ bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
             const int n_q  = static_cast<int>(t->ne[1]);
             const int n_h  = static_cast<int>(t->ne[2]);
             std::vector<float> row(static_cast<size_t>(n_kv));
+            // CAPTURE first (read-only, head-mean), so a same-pass knockout never contaminates
+            // the recorded heatmap: the row read here is the model's own pre-intervention
+            // attention. Query index is relative to this decode segment (row = board pos - from),
+            // same mapping the residual write path uses below.
+            if (attn_capture_query_ >= 0) {
+                const int q = attn_capture_query_ - write_from_;
+                if (q >= 0 && q < n_q) {
+                    std::vector<float>& mean = attn_rows_[ko_il];
+                    mean.assign(static_cast<size_t>(n_kv), 0.0f);
+                    for (int h = 0; h < n_h; ++h) {
+                        const size_t off = ((static_cast<size_t>(h) * n_q) + q) * n_kv;
+                        ggml_backend_tensor_get(t, row.data(), off * sizeof(float),
+                                                row.size() * sizeof(float));
+                        for (int i = 0; i < n_kv; ++i) mean[static_cast<size_t>(i)] += row[i];
+                    }
+                    const float inv = 1.0f / static_cast<float>(n_h > 0 ? n_h : 1);
+                    for (float& v : mean) v *= inv;
+                }
+            }
             for (const AttnKnockout& k : knockouts_) {
                 if (k.layer != ko_il) continue;
                 for (int h = 0; h < n_h; ++h) {

@@ -126,6 +126,18 @@ public:
     bool knockout_available() const { return !flash_attn_; }
     int n_head() const { return n_head_; }
 
+    // Attention-row CAPTURE (R1 head-to-head): read (not modify) one query position's post-softmax
+    // attention row at every layer, averaged over heads -- the correlational signal the causal
+    // knockout ranking is compared against. Same materialization constraint as knockout (needs
+    // --no-flash-attn); same eval_cb interception point, read-only. Armed per-forward: set the
+    // query board position, run one /score, collect rows, cleared by the caller. The head-mean is
+    // the standard "attention heatmap" a viewer would see; per-head capture is deliberately NOT
+    // exposed until a product question needs it (32x the payload for no current consumer).
+    void set_attn_capture(int query_pos);           // board position whose row to capture
+    void clear_attn_capture();
+    // per-layer head-averaged rows, [n_layer][n_kv_at_capture]; empty vector at layers not seen
+    const std::map<int, std::vector<float>>& attn_rows() const { return attn_rows_; }
+
     // Standalone: load a fresh model + create a context over it (the original API).
     // device_logits_passthrough: when set AND the active-block logits land in a device buffer
     // AND no frozen boundary row is needed this pass, forward() returns the device-resident
@@ -357,6 +369,9 @@ private:
     std::vector<AttnKnockout> knockouts_;
     bool flash_attn_ = true;             // false => kq_soft_max materializes => knockout possible
     int n_head_ = 0;
+    // Attention-row capture (read-only sibling of knockouts_): -1 = disarmed.
+    int attn_capture_query_ = -1;
+    std::map<int, std::vector<float>> attn_rows_;   // layer -> head-mean row [n_kv]
     std::vector<float> diff_prefix_;     // [diff_m_ * n_embd] diffusion soft prefix, laid as a frozen block [0,diff_m_)
     int diff_m_ = 0;                     // diffusion prefix length (0 = none)
     // Multi-observer capture plane (Phase 2.3): eval_cb fills cap_bufs_ for every layer in the

@@ -3,6 +3,8 @@
 // fn re-binds local aliases so each handler body is byte-identical to the original.
 #include "httplib.h"
 
+#include <map>
+
 #include "server_context.hpp"
 
 namespace cloze {
@@ -420,6 +422,21 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
         // cutting the EDGE dodges both the re-supply problem and the unpatchable last layer.
         // Needs the server started with --no-flash-attn (else the softmax is fused and never
         // materializes) — refused cleanly rather than silently ignored.
+        // attn_capture: {"query": <board pos>} — READ (not modify) that query position's
+        // post-softmax attention row at every layer, head-averaged. The correlational heatmap the
+        // R1 head-to-head compares against knockout's causal ranking. Same --no-flash-attn
+        // constraint as knockout, same clean refusal.
+        int attn_capture_query = -1;
+        if (body.contains("attn_capture")) {
+            if (body["attn_capture"].is_object())
+                attn_capture_query = body["attn_capture"].value("query", -1);
+            if (attn_capture_query < 0) {
+                res.status = 400;
+                res.set_content(json{{"error", "attn_capture must be {query: <position >= 0>}"}}.dump(),
+                                "application/json");
+                return;
+            }
+        }
         std::vector<GgmlAdapter::AttnKnockout> knockouts;
         if (body.contains("attn_knockout")) {
             json ks = json::array();
@@ -478,6 +495,7 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
         try {
             ForwardResult fwd;
             CaptureFrame cap_frame;             // filled synchronously by the capture sink (if armed)
+            std::map<int, std::vector<float>> attn_rows_out;   // attn_capture rows, copied pre-cleanup
             std::vector<int> cap_layers_armed;  // layers that survived set_capture_layers validation
             {
                 ContextPool::Lease lease = pool.acquire();
@@ -492,6 +510,11 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                     if (writing) ad.clear_write();
                     if (capturing) { ad.set_capture_sink({}); ad.set_capture_layers({}); }
                     if (knocking) ad.clear_attn_knockouts();
+                    if (attn_capture_query >= 0) {
+                        // rows are copied into the response BEFORE cleanup runs on the success
+                        // path; on the throw path there is nothing to keep.
+                        ad.clear_attn_capture();
+                    }
                 };
                 try {
                     ad.set_causal(true);  // the AR forward needs causal attention (also => a clean KV)
@@ -550,7 +573,16 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                             throw std::invalid_argument("capture layers all out of range (1..n_layer-1)");
                         ad.set_capture_sink([&cap_frame](CaptureFrame&& f) { cap_frame = std::move(f); });
                     }
+                    if (attn_capture_query >= 0) {
+                        if (!ad.knockout_available())
+                            throw std::invalid_argument(
+                                "attn_capture requires the server to be started with --no-flash-attn "
+                                "(flash attention fuses the softmax, so the attention weights never "
+                                "materialize and there would be nothing to capture)");
+                        ad.set_attn_capture(attn_capture_query);
+                    }
                     fwd = ad.ar_forward_score(tokens, logits_for);
+                    if (attn_capture_query >= 0) attn_rows_out = ad.attn_rows();  // copy BEFORE cleanup
                     cleanup();
                 } catch (...) {
                     cleanup();
@@ -603,6 +635,16 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
             if (!knockouts.empty()) {
                 resp["knockout_applied"] = true;
                 resp["n_knockouts"] = static_cast<int>(knockouts.size());
+            }
+            if (attn_capture_query >= 0) {
+                // attn_rows: {"<layer>": [n_kv floats], ...} — the head-mean post-softmax row for
+                // the requested query position. Empty object (never fabricated zeros) if the
+                // position fell outside the decoded segment at every layer.
+                json ar = json::object();
+                for (const auto& lv : attn_rows_out)
+                    if (!lv.second.empty()) ar[std::to_string(lv.first)] = lv.second;
+                resp["attn_rows"] = ar;
+                resp["attn_capture_query"] = attn_capture_query;
             }
             if (!capture_layers.empty()) {
                 // captured: {"<layer>": {"<pos>": [n_embd floats], ...}, ...} — the residual rows the
