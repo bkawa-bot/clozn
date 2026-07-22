@@ -8,7 +8,7 @@ import pytest
 from clozn import network_policy
 from clozn.cli import main as cli
 from clozn.cli.commands import doctor
-from clozn.runs import store
+from clozn.runs import retention_policy, store
 
 
 @pytest.fixture
@@ -19,6 +19,8 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.delenv(network_policy.POLICY_ENV, raising=False)
     monkeypatch.delenv(network_policy.LEDGER_ENV, raising=False)
     monkeypatch.delenv(network_policy.LOCAL_ONLY_ENV, raising=False)
+    monkeypatch.setattr(retention_policy, "POLICY_PATH", str(tmp_path / "retention_policy.json"))
+    monkeypatch.delenv(retention_policy.POLICY_ENV, raising=False)
     return tmp_path
 
 
@@ -91,3 +93,51 @@ def test_telemetry_cli_omits_content_by_default_and_refuses_overwrite(isolated, 
     assert cli.main(["runs", "export-otel", "-", "--from-runs", run_id,
                      "--redact", "private"]) == 1
     assert "require include_content" in capsys.readouterr().err
+
+
+def test_runs_redact_literal_cli_scrubs_only_the_given_text(isolated, capsys):
+    run_id = _record("my token abc-123-secret is here")
+    assert cli.main(["runs", "redact", run_id, "--literal", "abc-123-secret", "--json"]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["redaction"]["schema"] == "clozn.run_literal_redaction.v1"
+    redacted = store.get_run(run_id)
+    assert redacted["messages"][0]["content"] == "my token [REDACTED] is here"
+    assert redacted["client"] == "sdk"  # unlike a full redact, everything else survives
+
+
+def test_runs_delete_refuses_children_then_succeeds_with_cascade(isolated, capsys):
+    parent = _record("parent", started=1.0)
+    child = store.record(
+        source="replay", client="sdk", model="local-model", substrate="engine",
+        messages=[{"role": "user", "content": "child"}], response="ok",
+        parent_run_id=parent, trace={"tokens": ["c"], "confidence": [0.5]}, started=2.0, ended=2.0,
+    )
+
+    assert cli.main(["runs", "delete", parent, "--yes"]) == 1
+    err = capsys.readouterr().err
+    assert "refused" in err and child in err and "--cascade" in err
+    assert store.get_run(parent) is not None
+
+    assert cli.main(["runs", "delete", parent, "--yes", "--cascade", "--json"]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert set(receipt["deleted_run_ids"]) == {parent, child}
+    assert store.get_run(parent) is None
+    assert store.get_run(child) is None
+
+
+def test_privacy_retention_cli_set_show_and_clear(isolated, capsys):
+    assert cli.main(["privacy", "retention", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["days"] is None
+
+    assert cli.main(["privacy", "retention", "--days", "14", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["days"] == 14
+
+    assert cli.main(["privacy", "retention"]) == 0
+    assert "14 day" in capsys.readouterr().out
+
+    assert cli.main(["privacy", "retention", "--off", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["days"] is None
+
+
+def test_privacy_retention_cli_rejects_conflicting_flags(isolated):
+    assert cli.main(["privacy", "retention", "--days", "14", "--off"]) == 1

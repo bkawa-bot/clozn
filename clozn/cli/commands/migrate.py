@@ -108,12 +108,36 @@ def _cmd_schema(args):
 
 
 def _cmd_gc(args):
-    from clozn.runs import gc
+    from clozn.runs import gc, mutations, retention_policy
 
-    result = gc.collect(dry_run=bool(getattr(args, "dry_run", False)))
-    if getattr(args, "json", False):
-        print(json.dumps(result, indent=2))
+    dry_run = bool(getattr(args, "dry_run", False))
+    as_json = bool(getattr(args, "json", False))
+
+    # The age-based `clozn privacy retention --days N` policy (if any) is the "delete-on-GC" half of
+    # retention: it runs first so any run it removes makes its trace blob unreferenced, which the blob GC
+    # right below then collects in the SAME `clozn migrate --gc` invocation. No policy set (the default)
+    # means this is a no-op and --gc's output is byte-identical to before this existed.
+    try:
+        policy = retention_policy.get_policy()
+    except Exception:
+        policy = {"days": None}
+    retention_result = mutations.prune_older_than(policy["days"], dry_run=dry_run) \
+        if policy.get("days") else None
+
+    result = gc.collect(dry_run=dry_run)
+    if as_json:
+        out = dict(result)
+        if retention_result is not None:
+            out["retention"] = retention_result
+        print(json.dumps(out, indent=2))
         return 0
+    if retention_result is not None:
+        verb = "would delete" if dry_run else "deleted"
+        print(f"retention policy (older than {policy['days']}d): {verb} "
+              f"{retention_result['delete_count']} run(s)")
+        if retention_result["orphaned_parent_refs"]:
+            print(f"  {len(retention_result['orphaned_parent_refs'])} retained run(s) would lose "
+                  f"their parent_run_id link")
     verb = "would delete" if result["dry_run"] else "deleted"
     print(f"blob GC: {result['total_blobs']} blob(s) on disk under {result['blob_root']}, "
           f"{result['referenced_count']} referenced digest(s) in the DB")
