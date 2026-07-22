@@ -264,6 +264,50 @@ def test_receipts_prove_all_happy_path_over_http_finds_the_redundant_pair(iso, m
     assert "approximation_note" in out and "perf_note" in out   # the documented-approximation SAY-SO
 
 
+def test_receipts_omits_coalitions_key_by_default(iso, monkeypatch):
+    """The opt-in flag (docs/PRODUCT_ROADMAP.md §8 tail) must never change the default response shape."""
+    memory_mode.set_mode("prompt")
+    card_a, card_b = "mem_a", "mem_b"
+    monkeypatch.setattr(cs, "SUB", FakeSub(mem=FakeMem(1.0), steer=FakeSteer({"warm": 0.5}),
+                                          concise_card_ids=[card_a, card_b]))
+    rid = runlog.record(source="studio_chat", client="studio", model="clozn-qwen", substrate="QwenSubstrate",
+                        messages=[{"role": "user", "content": "how's it going"}],
+                        response="SAMPLED, never a baseline",
+                        memory={"cards_applied": ["Be concise.", "Keep it short."],
+                               "applied_ids": [card_a, card_b], "mode": "prompt", "gate": 0.8},
+                        behavior={"active_dials": {"warm": 0.5}})
+    out = _post(f"/runs/{rid}/receipts", {})
+    assert "coalitions" not in out
+
+
+def test_receipts_coalitions_opt_in_returns_a_report_over_http(iso, monkeypatch):
+    memory_mode.set_mode("prompt")
+    card_a, card_b = "mem_a", "mem_b"
+    monkeypatch.setattr(cs, "SUB", FakeSub(mem=FakeMem(1.0), steer=FakeSteer({"warm": 0.5}),
+                                          concise_card_ids=[card_a, card_b]))
+    rid = runlog.record(source="studio_chat", client="studio", model="clozn-qwen", substrate="QwenSubstrate",
+                        messages=[{"role": "user", "content": "how's it going"}],
+                        response="SAMPLED, never a baseline",
+                        memory={"cards_applied": ["Be concise.", "Keep it short."],
+                               "applied_ids": [card_a, card_b], "mode": "prompt", "gate": 0.8},
+                        behavior={"active_dials": {"warm": 0.5}})
+    out = _post(f"/runs/{rid}/receipts", {"coalitions": True})
+    assert "error" not in out
+    coalitions = out["coalitions"]
+    assert coalitions["available"] is True
+    assert coalitions["n_influences"] == 3
+    assert set(coalitions["keys"]) == {f"card:{card_a}", f"card:{card_b}", "dial:warm"}
+    assert coalitions["shapley"]["class"] == "exact"          # N=3 <= EXACT_SHAPLEY_MAX_N
+    assert "interaction_gap" in coalitions and "note" in coalitions["interaction_gap"]
+    assert coalitions["batch_report"]["attempted"] is False    # FakeSub has no branch_coalitions
+
+
+def test_receipts_rejects_bad_coalitions_batch_value(iso):
+    rid = _seed_run()
+    out = _post(f"/runs/{rid}/receipts", {"coalitions_batch": "bogus"})
+    assert out == {"error": "coalitions_batch must be one of auto|off|approximate"}
+
+
 def test_receipts_no_fired_influences_is_a_clean_empty_200(iso):
     rid = _seed_run()                                       # no memory cards, dials ARE active though
     # strip the dial too, for a maximally bare manifest

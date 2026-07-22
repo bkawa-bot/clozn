@@ -106,8 +106,14 @@ def _fired_influences(manifest: dict):
     return influences, skipped
 
 
-def _prove_all_regen(run: dict, sub, *, manifest: dict | None = None) -> dict:
-    """Leave-one-out receipts for every fired influence, plus the pairwise redundancy guard."""
+def _prove_all_regen(run: dict, sub, *, manifest: dict | None = None, coalitions: bool = False,
+                     coalitions_batch: str = "auto") -> dict:
+    """Leave-one-out receipts for every fired influence, plus the pairwise redundancy guard.
+
+    `coalitions=True` (opt-in, default False -- NEVER changes the output above) additionally attaches a
+    `"coalitions"` key: pairwise coalition deltas, a Shapley approximation, and the interaction gap, per
+    `clozn.receipts.coalition` (docs/PRODUCT_ROADMAP.md §8 tail). Reuses the leave-one-out receipts already
+    computed here (never regenerates the solo arms a second time)."""
     out = {
         "run_id": run.get("id") if isinstance(run, dict) else None,
         "receipts": [],
@@ -139,6 +145,7 @@ def _prove_all_regen(run: dict, sub, *, manifest: dict | None = None) -> dict:
         baseline_ref = (baseline_child.get("generated_ids") or None) if _earlystop_enabled() else None
 
         per_key: dict = {}
+        solo_for_coalitions: dict = {}
         for inf in influences:
             changes = _ablation_changes(inf)
             ablated_child = _ablated_child(run, changes, sub, baseline_ref, baseline_reply) if changes else None
@@ -148,6 +155,13 @@ def _prove_all_regen(run: dict, sub, *, manifest: dict | None = None) -> dict:
             rec = _build_receipt(inf, baseline_child, ablated_child, changes)
             out["receipts"].append(rec)
             per_key[_key(inf)] = (inf, rec["has_effect"])
+            if coalitions:
+                solo_for_coalitions[_key(inf)] = {
+                    "reply": rec["ablated_reply"],
+                    "value": round((rec.get("delta") or {}).get("changed", 0) / 100.0, 6),
+                    "has_effect": rec["has_effect"],
+                    "_influence": inf,
+                }
 
         no_effect = [k for k, (_, eff) in per_key.items() if not eff]
         for i in range(len(no_effect)):
@@ -165,6 +179,14 @@ def _prove_all_regen(run: dict, sub, *, manifest: dict | None = None) -> dict:
                         "redundant": [ka, kb],
                         "note": "together they drive this; individually neither is load-bearing",
                     })
+
+        if coalitions and solo_for_coalitions:
+            from .coalition import coalition_report
+
+            out["coalitions"] = coalition_report(
+                run, sub, solo_results=solo_for_coalitions, baseline_reply=baseline_reply,
+                baseline_ref=baseline_ref, coalitions_batch=coalitions_batch,
+            )
         return out
     except Exception:
         return out
@@ -215,15 +237,21 @@ def receipt(run: dict, influence: dict, sub, *, mode: str = "regen") -> dict | N
     return out
 
 
-def prove_all(run: dict, sub, *, manifest: dict | None = None, mode: str = "regen") -> dict:
-    """Leave-one-out receipts for every fired influence."""
+def prove_all(run: dict, sub, *, manifest: dict | None = None, mode: str = "regen",
+             coalitions: bool = False, coalitions_batch: str = "auto") -> dict:
+    """Leave-one-out receipts for every fired influence.
+
+    `coalitions`/`coalitions_batch` are opt-in (default False/"auto") and only apply to `mode` "regen" or
+    "both" -- forced-mode scoring never generates, so there is no coalition arm to batch or run there. See
+    `_prove_all_regen`'s docstring."""
     mode = mode if mode in ("regen", "forced", "both") else "regen"
     if mode == "regen":
-        return _prove_all_regen(run, sub, manifest=manifest)
+        return _prove_all_regen(run, sub, manifest=manifest, coalitions=coalitions,
+                                coalitions_batch=coalitions_batch)
     forced_out = _forced_prove_all(run, sub, manifest)
     if mode == "forced":
         return forced_out
-    out = _prove_all_regen(run, sub, manifest=manifest)
+    out = _prove_all_regen(run, sub, manifest=manifest, coalitions=coalitions, coalitions_batch=coalitions_batch)
     out["mode"] = "both"
     out["forced_receipts"] = forced_out["forced_receipts"]
     if forced_out.get("skipped"):
