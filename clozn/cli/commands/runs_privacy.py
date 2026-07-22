@@ -125,6 +125,25 @@ def cmd_export_otel(args) -> int:
     return 0
 
 
+def cmd_export_bundle(args) -> int:
+    from clozn.runs import bundle_export
+    try:
+        manifest = bundle_export.export_bundle(
+            args.run_id, args.out, engine_url=args.engine_url, force=bool(args.force))
+    except bundle_export.BundleExportError as exc:
+        raise ctx.CloznError(f"bundle export failed: {exc}") from None
+    if args.json:
+        print(json.dumps(manifest, indent=2, ensure_ascii=False))
+    else:
+        artifacts = manifest.get("artifacts") or []
+        print(f"export bundle - {manifest.get('run_id')} -> {args.out} ({len(artifacts)} artifact(s))")
+        for artifact in artifacts:
+            print(f"  {artifact['path']:<24} {artifact['kind']:<22} sha256:{artifact['sha256'][:12]}...")
+        print("  open reproduce.ipynb to verify hashes offline and (optionally) re-check the score "
+              "against a live engine")
+    return 0
+
+
 def add_subparser(subparsers):
     parser = subparsers.add_parser("runs", help="manage local run-journal privacy and exports")
     commands = parser.add_subparsers(dest="runs_cmd")
@@ -168,7 +187,21 @@ def add_subparser(subparsers):
                           help="redact a literal from included content; repeatable")
     exported.add_argument("--force", action="store_true")
     exported.set_defaults(fn=cmd_export_otel)
+
+    bundled = commands.add_parser(
+        "export-bundle",
+        help="export a self-contained evidence directory + reproduction notebook for one run")
+    bundled.add_argument("run_id")
+    bundled.add_argument("--out", required=True, metavar="DIR", help="output bundle directory")
+    bundled.add_argument("--engine-url", default=None, metavar="URL",
+                         help="record this as the notebook's default engine URL for the optional "
+                              "live-reproduction cell (not contacted by this command itself)")
+    bundled.add_argument("--force", action="store_true",
+                         help="allow writing into an existing non-empty --out directory")
+    bundled.add_argument("--json", action="store_true")
+    bundled.set_defaults(fn=cmd_export_bundle)
     return parser
 
 
-__all__ = ["add_subparser", "cmd_delete", "cmd_export_otel", "cmd_redact", "cmd_retention"]
+__all__ = ["add_subparser", "cmd_delete", "cmd_export_bundle", "cmd_export_otel", "cmd_redact",
+          "cmd_retention"]
