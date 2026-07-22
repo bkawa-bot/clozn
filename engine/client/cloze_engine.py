@@ -619,7 +619,8 @@ class EngineClient:
 
     def score(self, prompt: Optional[str] = None, prompt_ids: Optional[Sequence[int]] = None,
               continuation_ids: Optional[Sequence[int]] = None, continuation: Optional[str] = None,
-              topk: int = 0, steer: Optional[dict] = None, steer_vec: Optional[ArrayLike] = None) -> dict:
+              topk: int = 0, steer: Optional[dict] = None, steer_vec: Optional[ArrayLike] = None,
+              attn_knockout: Optional[Sequence[Mapping[str, Any]]] = None) -> dict:
         """POST /score: teacher-forced per-token logprob of a continuation under given conditions --
         NEVER sampling (the reproduce-and-prove foundation).
         One causal decode of prompt++continuation on the engine reads back, for each continuation
@@ -633,6 +634,11 @@ class EngineClient:
         (the server flags this `boundary_approximate` in the response; treat it as approximate).
         `steer`/`steer_vec` mirror /v1/completions' dial path (a raw n_embd direction + {coef, layer}),
         so a scored call can reproduce a steered run's conditions.
+        `attn_knockout` (Phase 4.2, roadmap §7 item 2): zero or more {layer, queries, keys,
+        renormalize?} attention-edge cuts applied during THIS forward -- see
+        clozn.receipts.hook_vocabulary's kq_soft_max-<il> entry for exact semantics and the
+        --no-flash-attn requirement (GET /health.capabilities.attn_knockout). Passed through verbatim;
+        this client does not validate the specs (the engine does, and refuses cleanly).
 
         Returns {n_prompt, n_cont, tokens:[{id, piece, logprob, topk?}], sum_logprob}.
         """
@@ -649,6 +655,8 @@ class EngineClient:
             body["steer"] = steer
         if steer_vec is not None:
             body["steer_vec"] = flatten_values(steer_vec)
+        if attn_knockout is not None:
+            body["attn_knockout"] = [dict(spec) for spec in attn_knockout]
         return self._post("/score", body)
 
     def cancel(self, req_id: str) -> dict:
