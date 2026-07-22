@@ -299,6 +299,24 @@ def trace(prompt: str, continuation, target_idx: int, *,
         if screen_mode in ("auto", "jlens"):
             try:
                 J_by_layer = load_jlens_jacobians(jlens_dir, layers=budget.layers)
+                # QUALIFY the sidecar against THIS engine, not just load it: with jlens_dir=None
+                # the loader falls back to the default dir, which may hold a DIFFERENT model's J
+                # (measured: the Qwen 3584-dim J loaded cleanly against a Llama 4096-dim engine
+                # and exploded 16/16 cases downstream). A J whose d_model differs from the
+                # engine's own hidden size does not qualify -- same rule as the product
+                # artifact-contract path, applied at this research seam.
+                health = json.loads(urllib.request.urlopen(
+                    engine_url.rstrip("/") + "/health", timeout=10).read())
+                n_embd = int(health.get("n_embd") or 0)
+                j_dim = next(iter(J_by_layer.values())).shape[0] if J_by_layer else 0
+                if n_embd and j_dim and j_dim != n_embd:
+                    msg = (f"sidecar J is {j_dim}-dim but the engine's model is {n_embd}-dim "
+                           "(a different model's artifact)")
+                    if screen_mode == "jlens":
+                        return {"ok": False, "blocked": f"jlens screen requested but the sidecar "
+                                                        f"does not qualify: {msg}"}
+                    J_by_layer = None
+                    screen_note = f"{msg} -- downgraded to the mean-ablation screen"
             except (FileNotFoundError, ValueError, OSError) as e:
                 if screen_mode == "jlens":
                     return {"ok": False, "blocked": f"jlens screen requested but no sidecar "
