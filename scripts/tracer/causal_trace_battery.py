@@ -9,16 +9,27 @@ Design choices that keep this honest:
   * The headline metric is the S4 predicted-vs-observed scorecard SUMMED over prompts: the graph
     published per-node flip predictions from (delta_full, margin) before any generation ran.
 """
+import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
 
-sys.path.insert(0, r"C:\Users\brigi\src\clozn")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from clozn.analysis import tracer  # noqa: E402
 
-ENGINE = "http://127.0.0.1:8080"
-JL = r"C:\Users\brigi\.clozn\artifacts\jlens\qwen3.5-9b-v1"
+# Defaults preserve the original 2026-07-20 9B battery invocation exactly; --engine/--jlens/--tag
+# parametrize the SECOND-FAMILY run (R5): point at any engine, omit --jlens, and the tracer's
+# screen_mode="auto" downgrades loudly to the any-GGUF mean-ablation screen.
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--engine", default="http://127.0.0.1:8080")
+_ap.add_argument("--jlens", default=r"C:\Users\brigi\.clozn\artifacts\jlens\qwen3.5-9b-v1",
+                 help="J-lens sidecar dir; pass an empty string for the no-sidecar ablation screen")
+_ap.add_argument("--tag", default="battery", help="output filename tag")
+_args = _ap.parse_args()
+ENGINE = _args.engine
+JL = _args.jlens or None
 
 # (category, prompt, extra concepts, which continuation token index to trace)
 CASES = [
@@ -155,6 +166,10 @@ print(f"\nNODE TIERS overall: strong={sum(r['strong'] for r in ok)}, weak={sum(r
       f"marginal={sum(r['survivors']-r['strong']-r['weak'] for r in ok)} "
       f"(of {sum(r['survivors'] for r in ok)} that beat the median-based noise floor)")
 
-with open(r"C:\Users\brigi\AppData\Local\Temp\claude\C--Users-brigi-src-clozn\d351b6fa-f0ca-40d4-9b7a-377886b898e2\scratchpad\battery_results.json", "w") as f:
+_out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "runs", "experiments")
+os.makedirs(_out_dir, exist_ok=True)
+_out = os.path.join(_out_dir, f"causal_trace_battery_{_args.tag}.json")
+with open(_out, "w") as f:
     json.dump(results, f, indent=2)
-print("\nresults -> battery_results.json")
+print(f"\nresults -> {_out}")

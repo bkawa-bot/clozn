@@ -75,6 +75,7 @@ class TraceBudget:
     extra_concepts: list = field(default_factory=list)  # words beyond the target token itself
     max_edges: int = 8           # S3 path-patching pairs (4 arms each; 0 = skip S3)
     run_s4: bool = True          # S4 generation arms (patch + greedy decode + divergence check)
+    ablate_screen_arms: int = 64  # grid budget for screen_mode="ablate" (any-GGUF, no sidecar)
 
 
 # ====================================================================== pure math (fixture-tested)
@@ -253,10 +254,23 @@ def _unembed_row(engine_url: str, token_id: int) -> np.ndarray:
 
 def trace(prompt: str, continuation, target_idx: int, *,
           engine_url: str = DEFAULT_ENGINE, jlens_dir: Optional[str] = None,
-          budget: Optional[TraceBudget] = None, seed: int = 0) -> dict:
+          budget: Optional[TraceBudget] = None, seed: int = 0,
+          screen_mode: str = "auto") -> dict:
     """Trace the circuit behind continuation token `target_idx`. Returns the receipt dict
     (see notes/CIRCUIT_TRACER_DESIGN.md section 4); {"ok": False, "blocked": ...} on any
-    engine/data failure. `continuation` is token ids (exact, from a stored trace) or text."""
+    engine/data failure. `continuation` is token ids (exact, from a stored trace) or text.
+
+    `screen_mode`: how S0 nominates candidate sites.
+      * "jlens" -- dir(c) projections through the fitted J-lens sidecar (the original screen;
+        richer nominations + per-node legibility). Refuses if no sidecar qualifies.
+      * "ablate" -- a coarse mean-ablation sweep over a (layer x position) grid: sites are
+        nominated by their own measured causal delta. Works on ANY GGUF, no sidecar -- this is
+        what makes a second-model-family trace possible -- and is causal from the first step
+        (the jlens screen is correlational until S1 confirms). Cost: ~grid-size extra /score
+        arms. Per-node `legibility` is None in this mode (there is no named direction to
+        project onto) and `delta_dir` is None.
+      * "auto" -- jlens when a sidecar loads, ablate otherwise (the loud downgrade is recorded
+        in the receipt's config.screen_mode + config.screen_note)."""
     budget = budget or TraceBudget()
     rng = np.random.default_rng(seed)
     try:
@@ -277,27 +291,55 @@ def trace(prompt: str, continuation, target_idx: int, *,
         # ids from the baseline response, so every later arm scores the identical sequence.
         cont_ids = [int(t["id"]) for t in base["tokens"][: target_idx + 1]]
 
-        # ---- dir(c) directions at each lens layer -------------------------------------------
-        J_by_layer = load_jlens_jacobians(jlens_dir, layers=budget.layers)
-        layers = sorted(J_by_layer.keys())
+        # ---- screen selection: dir(c) through the sidecar, or the any-GGUF ablation grid -----
+        if screen_mode not in ("auto", "jlens", "ablate"):
+            return {"ok": False, "blocked": f"unknown screen_mode {screen_mode!r}"}
+        J_by_layer = None
+        screen_note = None
+        if screen_mode in ("auto", "jlens"):
+            try:
+                J_by_layer = load_jlens_jacobians(jlens_dir, layers=budget.layers)
+            except (FileNotFoundError, ValueError, OSError) as e:
+                if screen_mode == "jlens":
+                    return {"ok": False, "blocked": f"jlens screen requested but no sidecar "
+                                                    f"qualifies: {e}"}
+                screen_note = (f"no J-lens sidecar ({type(e).__name__}) -- downgraded to the "
+                               "mean-ablation screen; legibility unavailable")
+        screen_used = "jlens_dirs" if J_by_layer else "mean_ablation"
+
         concept_ids = {y_piece.strip() or repr(y_piece): y_id}
         concept_notes = []
-        for w in budget.extra_concepts:
-            cid, err = _resolve_concept(engine_url, w)
-            if cid is None:
-                concept_notes.append({"concept": w, "skipped": err})
-            else:
-                concept_ids[w] = cid
-        dirs_by_layer = {}
-        for L in layers:
-            dirs_by_layer[L] = {}
-            for label, cid in concept_ids.items():
-                w_row = _unembed_row(engine_url, cid)
-                dirs_by_layer[L][label] = dir_c_from_row(w_row, L, J_by_layer)
+        dirs_by_layer = None
+        if J_by_layer:
+            layers = sorted(J_by_layer.keys())
+            for w in budget.extra_concepts:
+                cid, err = _resolve_concept(engine_url, w)
+                if cid is None:
+                    concept_notes.append({"concept": w, "skipped": err})
+                else:
+                    concept_ids[w] = cid
+            dirs_by_layer = {}
+            for L in layers:
+                dirs_by_layer[L] = {}
+                for label, cid in concept_ids.items():
+                    w_row = _unembed_row(engine_url, cid)
+                    dirs_by_layer[L][label] = dir_c_from_row(w_row, L, J_by_layer)
+        else:
+            # No sidecar: a depth spread over the model's own layers. Capture (l_out-<il>) is
+            # valid on layers [1, n_layer-2] -- the last layer only materializes logit rows
+            # (inp_out_ids) and would silently capture nothing (the engine 400s on it).
+            health = json.loads(urllib.request.urlopen(
+                engine_url.rstrip("/") + "/health", timeout=10).read())
+            n_layer = int(health["n_layer"])
+            layers = sorted({max(1, min(n_layer - 2, int(round(n_layer * f))))
+                             for f in (0.15, 0.4, 0.65, 0.9)})
+            if budget.extra_concepts:
+                concept_notes.append({"concept": ",".join(budget.extra_concepts),
+                                      "skipped": "ablation screen has no directions; extra "
+                                                 "concepts are unused in this mode"})
 
-        # ---- S0: capture every site's residual (chunked), screen, mean rows ------------------
-        H_by_layer = {L: np.zeros((sites_end, len(next(iter(dirs_by_layer[L].values())))),
-                                  dtype=np.float32) for L in layers}
+        # ---- S0: capture every site's residual (chunked) + mean rows -------------------------
+        H_by_layer = {L: None for L in layers}
         for start in range(0, sites_end, budget.capture_chunk):
             chunk = list(range(start, min(start + budget.capture_chunk, sites_end)))
             r = _score(engine_url, prompt, cont_ids,
@@ -307,28 +349,70 @@ def trace(prompt: str, continuation, target_idx: int, *,
                 rows = cap.get(str(L)) or {}
                 for p in chunk:
                     if str(p) in rows:
-                        H_by_layer[L][p] = np.asarray(rows[str(p)], dtype=np.float32)
+                        row = np.asarray(rows[str(p)], dtype=np.float32)
+                        if H_by_layer[L] is None:
+                            H_by_layer[L] = np.zeros((sites_end, len(row)), dtype=np.float32)
+                        H_by_layer[L][p] = row
+        missing = [L for L in layers if H_by_layer[L] is None]
+        if missing:
+            return {"ok": False, "blocked": f"capture returned no rows for layer(s) {missing}"}
         mean_rows = {L: H_by_layer[L].mean(axis=0) for L in layers}
         force = [(L, sites_end - 1) for L in layers] + [(L, n_p - 1) for L in layers]
-        candidates = screen_candidates(H_by_layer, dirs_by_layer, budget.max_candidates, force)
 
-        # ---- S1: solo arms + controls --------------------------------------------------------
         def arm(write_specs) -> float:
             r = _score(engine_url, prompt, cont_ids, write=write_specs)
             return base_lp - _target_logprob(r, target_idx)   # positive = pushed TOWARD y
 
+        if dirs_by_layer:
+            candidates = screen_candidates(H_by_layer, dirs_by_layer, budget.max_candidates, force)
+        else:
+            # Mean-ablation grid screen: nominate sites by their own measured delta. Grid strided
+            # so the whole sweep stays within ~budget.ablate_screen_arms arms; forced sites always
+            # included. screen_score here IS a causal delta (unlike the jlens projection score).
+            per_layer = max(1, budget.ablate_screen_arms // max(1, len(layers)))
+            stride = max(1, -(-sites_end // per_layer))          # ceil division
+            grid = sorted({p for p in range(0, sites_end, stride)} |
+                          {p for _, p in force if 0 <= p < sites_end})
+            scored = []
+            for L in layers:
+                for p in grid:
+                    d = arm({"layer": L, "positions": [p], "values": mean_rows[L].tolist()})
+                    scored.append({"layer": L, "pos": p, "screen_score": abs(d),
+                                   "concept": None})
+            scored.sort(key=lambda c: -c["screen_score"])
+            seen, candidates = set(), []
+            for c in scored:
+                key = (c["layer"], c["pos"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(c)
+                if len(candidates) >= budget.max_candidates:
+                    break
+            for L, p in force:                                   # forced sites ride along, deduped
+                if (L, p) not in seen and 0 <= p < sites_end:
+                    seen.add((L, p))
+                    candidates.append({"layer": L, "pos": p, "screen_score": 0.0,
+                                       "concept": None})
+
+        # ---- S1: solo arms + controls --------------------------------------------------------
         for c in candidates:
             L, p = c["layer"], c["pos"]
             h = H_by_layer[L][p]
             c["delta_full"] = arm({"layer": L, "positions": [p],
                                    "values": mean_rows[L].tolist()})
-            label = c["concept"] or next(iter(dirs_by_layer[L]))
-            d = dirs_by_layer[L][label]
-            c["delta_dir"] = arm({"layer": L, "positions": [p],
-                                  "values": directional_ablate(h, d).tolist()})
-            c["name"] = label
-            # legibility: how much of the site's full-ablation mass the NAMED direction carries
-            c["legibility"] = (c["delta_dir"] / c["delta_full"]) if abs(c["delta_full"]) > 1e-9 else None
+            if dirs_by_layer:
+                label = c["concept"] or next(iter(dirs_by_layer[L]))
+                d = dirs_by_layer[L][label]
+                c["delta_dir"] = arm({"layer": L, "positions": [p],
+                                      "values": directional_ablate(h, d).tolist()})
+                c["name"] = label
+                # legibility: how much of the site's full-ablation mass the NAMED direction carries
+                c["legibility"] = (c["delta_dir"] / c["delta_full"]) if abs(c["delta_full"]) > 1e-9 else None
+            else:
+                c["delta_dir"] = None
+                c["name"] = y_piece.strip() or repr(y_piece)
+                c["legibility"] = None      # no named direction exists in ablation-screen mode
 
         controls = []
         d_model = len(mean_rows[layers[0]])
@@ -342,16 +426,21 @@ def trace(prompt: str, continuation, target_idx: int, *,
                                            "values": directional_ablate(H_by_layer[L][p], d_r).tolist()})})
         cand_keys = {(c["layer"], c["pos"]) for c in candidates}
         y_label = next(iter(concept_ids))
-        for _ in range(budget.n_random_site):     # the REAL direction, random non-candidate sites
+        for _ in range(budget.n_random_site):     # the CLAIMED intervention, random non-candidate sites
             for _try in range(20):
                 L = layers[int(rng.integers(len(layers)))]
                 p = int(rng.integers(sites_end))
                 if (L, p) not in cand_keys:
                     break
+            if dirs_by_layer:
+                ctl_values = directional_ablate(H_by_layer[L][p], dirs_by_layer[L][y_label]).tolist()
+            else:
+                # ablation-screen mode: the claimed intervention is FULL mean-ablation, so the
+                # matched site-control is full mean-ablation at a random non-candidate site --
+                # controls must mirror the intervention actually being claimed.
+                ctl_values = mean_rows[L].tolist()
             controls.append({"kind": "random_site", "layer": L, "pos": p,
-                             "delta": arm({"layer": L, "positions": [p],
-                                           "values": directional_ablate(
-                                               H_by_layer[L][p], dirs_by_layer[L][y_label]).tolist()})})
+                             "delta": arm({"layer": L, "positions": [p], "values": ctl_values})})
         ctl_deltas = [c["delta"] for c in controls]
         floor = noise_floor(ctl_deltas)
         ctl_max = float(np.max(np.abs(ctl_deltas)))
@@ -483,10 +572,13 @@ def trace(prompt: str, continuation, target_idx: int, *,
             "prediction_scorecard": scorecard,
             "config": {"layers": layers, "concepts": list(concept_ids),
                        "concept_notes": concept_notes, "seed": seed,
+                       "screen_mode": screen_used,
+                       "screen_note": screen_note,
                        "budget": {"max_candidates": budget.max_candidates,
                                   "n_random_dir": budget.n_random_dir,
                                   "n_random_site": budget.n_random_site,
-                                  "max_edges": budget.max_edges, "run_s4": budget.run_s4},
+                                  "max_edges": budget.max_edges, "run_s4": budget.run_s4,
+                                  "ablate_screen_arms": budget.ablate_screen_arms},
                        "units": "delta = logprob_y(baseline) - logprob_y(ablated), teacher-forced",
                        "boundary_approximate": bool(base.get("boundary_approximate", False))},
         }
