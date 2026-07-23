@@ -39,6 +39,24 @@ research result. Bands are planning aids, not commitments.
   (6efda7a).
 - **Doc-drift hygiene + per-model concept-dial calibration** (6745334, cf40711).
 
+**2026-07-23 PHASE 2 addendum ("all of it" — surface + promote + research):**
+- **R3 guardrails — CALIBRATED + LIVE-FIRING.** Guard-signal calibration found the shipped defaults
+  were 9B-specific (layer 16 invalid on 7B; concept-word signal doesn't surface — use trigger-token
+  SETS). Fixed: catch 100% / fp 0% (6+6 battery), artifact written, guard promoted to read it
+  (69ce0f1) — live check: violent text fires (12.45≥10.07), clean quiet. Promotion gate cleared;
+  small-battery caveat stands.
+- **R1/R5 Studio surfacing — DONE.** Plain-language provenance chip (d5e30a7) + POST
+  /runs/<id>/causal-trace route (300c8e5) + the on-demand click-a-token causal panel (per-position,
+  contrastive, honest verdict/nodes/FAILED_CONTROLS/distributed-function caveat).
+- **Distributed-function writeup** (docs/research/DISTRIBUTED_FUNCTION.md, 18c62ab) — internal; its
+  receipt audit caught that "41/41" reproduces only under CURRENT grading (stored summaries stale);
+  SCOPE_NOTE + coalition.py corrected (8fac4ff, 0cf87bb).
+- **R6 facts efficacy — engine path RULED OUT (measured, 0cf87bb).** Engine steering can't inject
+  rare stored facts (loses to priors); needs the step-targeted torch mechanism. LAB-GATED.
+- **LAB-GATED / not doable this environment (CPU-only torch, external jlens-fit pipeline):** 4.3
+  jlens artifact rebuild + SAE import; facts full efficacy tuning. Deferred follow-up: refresh the
+  stale provenance_battery summary blocks by re-running under --no-flash-attn.
+
 Status meanings: **DONE** means the acceptance language in this roadmap is implemented and tested;
 **IN PROGRESS** means a useful slice is shipped but named acceptance work remains. Items not listed
 below are still queued/not started. Commit IDs are included so this snapshot can be audited against
