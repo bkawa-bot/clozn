@@ -121,6 +121,34 @@ void GgmlAdapter::clear_attn_capture() {
     attn_rows_.clear();
 }
 
+void GgmlAdapter::set_head_capture(const std::vector<int>& layers, const std::vector<int>& positions,
+                                   bool rows) {
+    head_cap_layers_ = layers;
+    head_cap_positions_ = positions;
+    head_cap_rows_ = rows;
+    head_norms_.clear();
+    head_rows_.clear();
+    head_dims_.clear();
+}
+
+void GgmlAdapter::clear_head_capture() {
+    head_cap_layers_.clear();
+    head_cap_positions_.clear();
+    head_cap_rows_ = false;
+    head_norms_.clear();
+    head_rows_.clear();
+    head_dims_.clear();
+}
+
+void GgmlAdapter::set_head_writes(const std::vector<HeadWrite>& ws) {
+    head_writes_.clear();
+    for (const HeadWrite& w : ws)
+        if (w.layer >= 0 && w.layer < n_layer_ && w.head >= 0 && !w.positions.empty())
+            head_writes_.push_back(w);
+}
+
+void GgmlAdapter::clear_head_writes() { head_writes_.clear(); }
+
 GgmlAdapter::~GgmlAdapter() {
     if (ctx_) llama_free(ctx_);  // the model is freed by GgmlModel when the last adapter releases it
     // backend intentionally left initialized (see note above).
@@ -207,6 +235,68 @@ bool GgmlAdapter::eval_cb(struct ggml_tensor* t, bool ask) {
                         }
                         ggml_backend_tensor_set(t, row.data(), off * sizeof(float),
                                                 row.size() * sizeof(float));
+                    }
+                }
+            }
+            return true;
+        }
+    }
+    // Head-output hook (R5 head units): "kqv_out-<il>" = merged per-Q-head attention output,
+    // PRE-W_o (verified: llama-graph.cpp names it before the wo matmul), rows [h*d_h,(h+1)*d_h)
+    // of ne0 = head h. Capture (slice L2 norms, the screening signal) runs BEFORE writes, so a
+    // same-pass intervention never contaminates the recorded norms -- the convention every hook
+    // here follows. d_head is derived ne0/n_head_ and PROBED (head_dims_): an architecture where
+    // that division fails records d_head=0 and applies nothing (absence visible, never wrong
+    // slices).
+    int hu_il = -1;
+    if ((!head_writes_.empty() || !head_cap_layers_.empty()) &&
+        std::strncmp(nm, "kqv_out-", 8) == 0)
+        hu_il = std::atoi(nm + 8);
+    if (hu_il >= 0) {
+        bool want_cap = false, want_write = false;
+        for (int L : head_cap_layers_) if (L == hu_il) { want_cap = true; break; }
+        for (const HeadWrite& w : head_writes_) if (w.layer == hu_il) { want_write = true; break; }
+        if (want_cap || want_write) {
+            if (ask) return true;
+            const int ne0 = static_cast<int>(t->ne[0]);
+            const int ne1 = static_cast<int>(t->ne[1]);
+            const int d_h = (n_head_ > 0 && ne0 % n_head_ == 0) ? ne0 / n_head_ : 0;
+            head_dims_["ne0"] = ne0;
+            head_dims_["n_head"] = n_head_;
+            head_dims_["d_head"] = d_h;
+            if (d_h > 0) {
+                std::vector<float> row(static_cast<size_t>(ne0));
+                if (want_cap) {
+                    for (int pos : head_cap_positions_) {
+                        const int r = pos - write_from_;
+                        if (r < 0 || r >= ne1) continue;
+                        ggml_backend_tensor_get(t, row.data(),
+                                                static_cast<size_t>(r) * ne0 * sizeof(float),
+                                                row.size() * sizeof(float));
+                        std::vector<float>& norms = head_norms_[hu_il][pos];
+                        norms.assign(static_cast<size_t>(n_head_), 0.0f);
+                        for (int h = 0; h < n_head_; ++h) {
+                            double ss = 0.0;
+                            const float* s = row.data() + static_cast<size_t>(h) * d_h;
+                            for (int i = 0; i < d_h; ++i) ss += static_cast<double>(s[i]) * s[i];
+                            norms[static_cast<size_t>(h)] = static_cast<float>(std::sqrt(ss));
+                        }
+                        if (head_cap_rows_) head_rows_[hu_il][pos] = row;
+                    }
+                }
+                if (want_write) {
+                    for (const HeadWrite& w : head_writes_) {
+                        if (w.layer != hu_il || w.head >= n_head_) continue;
+                        if (w.values.size() != w.positions.size() * static_cast<size_t>(d_h))
+                            continue;   // size-validated at the route; skip = never wrong slices
+                        for (size_t pi = 0; pi < w.positions.size(); ++pi) {
+                            const int r = w.positions[pi] - write_from_;
+                            if (r < 0 || r >= ne1) continue;
+                            const size_t off = (static_cast<size_t>(r) * ne0 +
+                                                static_cast<size_t>(w.head) * d_h) * sizeof(float);
+                            ggml_backend_tensor_set(t, w.values.data() + pi * d_h, off,
+                                                    static_cast<size_t>(d_h) * sizeof(float));
+                        }
                     }
                 }
             }

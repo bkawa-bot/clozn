@@ -578,10 +578,82 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
         }
         const bool has_arms = !arm_writes.empty();
 
+        // Head-output units (R5, notes/HEAD_UNITS_DESIGN.md): head_capture reads per-Q-head
+        // slice L2 norms (+ full merged rows with rows:true) at kqv_out-<il>; head_write
+        // overwrites head slices before W_o consumes them. Both work with flash attention ON
+        // (the head OUTPUT materializes regardless of the softmax fusion). Refused alongside
+        // arms (unvalidated multi-seq layout, same rule as the other hooks).
+        std::vector<int> head_cap_layers, head_cap_positions;
+        bool head_cap_rows = false;
+        if (body.contains("head_capture")) {
+            const json& hb = body["head_capture"];
+            if (hb.is_object()) {
+                if (hb.contains("layers") && hb["layers"].is_array())
+                    head_cap_layers = hb["layers"].get<std::vector<int>>();
+                if (hb.contains("positions") && hb["positions"].is_array())
+                    head_cap_positions = hb["positions"].get<std::vector<int>>();
+                head_cap_rows = hb.value("rows", false);
+            }
+            if (head_cap_layers.empty() || head_cap_positions.empty()) {
+                res.status = 400;
+                res.set_content(json{{"error", "head_capture needs {layers:[int], positions:[int]}"}}.dump(),
+                                "application/json");
+                return;
+            }
+            for (int p : head_cap_positions)
+                if (p < 0 || p >= n_total) {
+                    res.status = 400;
+                    res.set_content(json{{"error", "head_capture position out of range"},
+                                         {"position", p}, {"n_tokens", n_total}}.dump(),
+                                    "application/json");
+                    return;
+                }
+        }
+        std::vector<GgmlAdapter::HeadWrite> head_writes;
+        if (body.contains("head_write")) {
+            json specs = json::array();
+            if (body["head_write"].is_object()) specs.push_back(body["head_write"]);
+            else if (body["head_write"].is_array()) specs = body["head_write"];
+            for (const json& wb : specs) {
+                GgmlAdapter::HeadWrite w;
+                w.layer = wb.is_object() ? wb.value("layer", -1) : -1;
+                w.head = wb.is_object() ? wb.value("head", -1) : -1;
+                if (wb.is_object() && wb.contains("positions") && wb["positions"].is_array())
+                    w.positions = wb["positions"].get<std::vector<int>>();
+                if (wb.is_object() && wb.contains("values") && wb["values"].is_array())
+                    w.values = wb["values"].get<std::vector<float>>();
+                if (w.layer < 0 || w.head < 0 || w.positions.empty() || w.values.empty()) {
+                    res.status = 400;
+                    res.set_content(json{{"error", "each head_write needs {layer >= 0, head >= 0, "
+                                                   "positions:[int], values:[float]}"}}.dump(),
+                                    "application/json");
+                    return;
+                }
+                for (int p : w.positions)
+                    if (p < 0 || p >= n_total) {
+                        res.status = 400;
+                        res.set_content(json{{"error", "head_write position out of range"},
+                                             {"position", p}, {"n_tokens", n_total}}.dump(),
+                                        "application/json");
+                        return;
+                    }
+                head_writes.push_back(std::move(w));
+            }
+        }
+        if ((!head_cap_layers.empty() || !head_writes.empty()) && has_arms) {
+            res.status = 400;
+            res.set_content(json{{"error", "head_capture/head_write cannot be combined with arms "
+                                           "(unvalidated under multi-seq batching)"}}.dump(),
+                            "application/json");
+            return;
+        }
+
         try {
             ForwardResult fwd;
             CaptureFrame cap_frame;             // filled synchronously by the capture sink (if armed)
             std::map<int, std::vector<float>> attn_rows_out;   // attn_capture rows, copied pre-cleanup
+            std::map<int, std::map<int, std::vector<float>>> head_norms_out, head_rows_out;
+            std::map<std::string, int> head_dims_out;
             std::vector<int> cap_layers_armed;  // layers that survived set_capture_layers validation
             {
                 ContextPool::Lease lease = pool.acquire();
@@ -591,11 +663,15 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                 const bool writing = !write_reqs.empty();
                 const bool capturing = !capture_layers.empty();
                 const bool knocking = !knockouts.empty();
+                const bool head_capturing = !head_cap_layers.empty();
+                const bool head_writing = !head_writes.empty();
                 auto cleanup = [&]() {
                     if (steering || raw_steer) ad.clear_steer();
                     if (writing || has_arms) ad.clear_write();
                     if (capturing) { ad.set_capture_sink({}); ad.set_capture_layers({}); }
                     if (knocking) ad.clear_attn_knockouts();
+                    if (head_capturing) ad.clear_head_capture();
+                    if (head_writing) ad.clear_head_writes();
                     if (attn_capture_query >= 0) {
                         // rows are copied into the response BEFORE cleanup runs on the success
                         // path; on the throw path there is nothing to keep.
@@ -667,6 +743,9 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                                 "materialize and there would be nothing to capture)");
                         ad.set_attn_capture(attn_capture_query);
                     }
+                    if (head_capturing)
+                        ad.set_head_capture(head_cap_layers, head_cap_positions, head_cap_rows);
+                    if (head_writing) ad.set_head_writes(head_writes);
                     if (has_arms) {
                         // Per-arm writes ride the standard write path: arm a's position p is
                         // batch row a*n_total + p (ar_forward_score_arms runs with
@@ -690,6 +769,11 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                         fwd = ad.ar_forward_score(tokens, logits_for);
                     }
                     if (attn_capture_query >= 0) attn_rows_out = ad.attn_rows();  // copy BEFORE cleanup
+                    if (head_capturing || head_writing) {
+                        head_norms_out = ad.head_norms();
+                        head_rows_out = ad.head_rows();
+                        head_dims_out = ad.head_dims();
+                    }
                     cleanup();
                 } catch (...) {
                     cleanup();
@@ -788,6 +872,34 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                     if (!lv.second.empty()) ar[std::to_string(lv.first)] = lv.second;
                 resp["attn_rows"] = ar;
                 resp["attn_capture_query"] = attn_capture_query;
+            }
+            if (!head_cap_layers.empty() || !head_writes.empty()) {
+                // head_dims doubles as the slice-0 shape probe: d_head == 0 means ne0 did not
+                // divide by n_head on this architecture -- nothing was captured or written, and
+                // the caller can see exactly why instead of getting silently-wrong slices.
+                resp["head_dims"] = head_dims_out;
+                if (!head_cap_layers.empty()) {
+                    json hn = json::object();
+                    for (const auto& ln : head_norms_out) {
+                        json per_pos = json::object();
+                        for (const auto& pv : ln.second) per_pos[std::to_string(pv.first)] = pv.second;
+                        hn[std::to_string(ln.first)] = per_pos;
+                    }
+                    resp["head_norms"] = hn;
+                    if (head_cap_rows) {
+                        json hr = json::object();
+                        for (const auto& ln : head_rows_out) {
+                            json per_pos = json::object();
+                            for (const auto& pv : ln.second) per_pos[std::to_string(pv.first)] = pv.second;
+                            hr[std::to_string(ln.first)] = per_pos;
+                        }
+                        resp["head_rows"] = hr;
+                    }
+                }
+                if (!head_writes.empty()) {
+                    resp["head_write_applied"] = true;
+                    resp["n_head_writes"] = head_writes.size();
+                }
             }
             if (!capture_layers.empty()) {
                 // captured: {"<layer>": {"<pos>": [n_embd floats], ...}, ...} — the residual rows the

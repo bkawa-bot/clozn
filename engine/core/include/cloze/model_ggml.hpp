@@ -152,6 +152,39 @@ public:
     // per-layer head-averaged rows, [n_layer][n_kv_at_capture]; empty vector at layers not seen
     const std::map<int, std::vector<float>>& attn_rows() const { return attn_rows_; }
 
+    // --- Head-output units (R5: head-level node units; notes/HEAD_UNITS_DESIGN.md) ------------
+    // The FOURTH eval_cb hook: "kqv_out-<il>" is the merged attention output BEFORE the W_o
+    // projection (verified against llama-graph.cpp: cb(cur,"kqv_out",il) precedes the wo
+    // matmul), so per-Q-head h occupies the contiguous rows [h*d_head, (h+1)*d_head) of ne0.
+    // Materialized at every position (a mid-graph tensor like l_out -- no inp_out_ids blocker)
+    // and exists with flash attention ON (unlike kq_soft_max). GQA note: these are Q heads
+    // (kqv_out rows are per-Q-head even when KV heads are fewer); every label says per-Q-head.
+    //
+    // head_capture: L2 norm of each head's slice at the requested positions -- the cheap
+    // screening signal ([n_head] floats per position, 32x smaller than the slices).
+    // head_write: overwrite head h's slice at the requested positions before W_o consumes it
+    // (values = positions.size()*d_head floats, row-major per position). The causal primitive.
+    struct HeadWrite {
+        int layer = 0;
+        int head = 0;
+        std::vector<int> positions;    // board positions (row = pos - write_from_)
+        std::vector<float> values;     // positions.size() * d_head floats
+    };
+    void set_head_capture(const std::vector<int>& layers, const std::vector<int>& positions,
+                          bool rows = false);
+    void clear_head_capture();
+    void set_head_writes(const std::vector<HeadWrite>& ws);
+    void clear_head_writes();
+    // layer -> pos -> [n_head] slice norms (from the last forward with capture armed)
+    const std::map<int, std::map<int, std::vector<float>>>& head_norms() const { return head_norms_; }
+    // layer -> pos -> [ne0] full merged rows (rows=true capture): all heads' slices concatenated;
+    // the client slices/means them locally (same client-side-means convention as the residual
+    // tracer). Requested only for surviving sites, so the payload stays small.
+    const std::map<int, std::map<int, std::vector<float>>>& head_rows() const { return head_rows_; }
+    // dims observed at the last head hook: {ne0, d_head, n_head} -- the slice-0 shape probe.
+    // d_head = ne0 / n_head_ when divisible, else 0 (probe FAILED -- architecture unsupported).
+    const std::map<std::string, int>& head_dims() const { return head_dims_; }
+
     // Standalone: load a fresh model + create a context over it (the original API).
     // device_logits_passthrough: when set AND the active-block logits land in a device buffer
     // AND no frozen boundary row is needed this pass, forward() returns the device-resident
@@ -405,6 +438,14 @@ private:
     // Attention-row capture (read-only sibling of knockouts_): -1 = disarmed.
     int attn_capture_query_ = -1;
     std::map<int, std::vector<float>> attn_rows_;   // layer -> head-mean row [n_kv]
+    // Head-output hook state (kqv_out-<il>): capture set + write specs + observed dims.
+    std::vector<int> head_cap_layers_;
+    std::vector<int> head_cap_positions_;
+    bool head_cap_rows_ = false;
+    std::vector<HeadWrite> head_writes_;
+    std::map<int, std::map<int, std::vector<float>>> head_norms_;
+    std::map<int, std::map<int, std::vector<float>>> head_rows_;
+    std::map<std::string, int> head_dims_;
     std::vector<float> diff_prefix_;     // [diff_m_ * n_embd] diffusion soft prefix, laid as a frozen block [0,diff_m_)
     int diff_m_ = 0;                     // diffusion prefix length (0 = none)
     // Multi-observer capture plane (Phase 2.3): eval_cb fills cap_bufs_ for every layer in the
