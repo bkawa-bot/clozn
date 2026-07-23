@@ -709,9 +709,18 @@ int main(int argc, char** argv) {
             reference_tokens = body["reference_tokens"].get<std::vector<int>>();
         }
 
+        // checkpoint_on_finish (AR only): save the generation's OWN KV as a checkpoint right
+        // after decoding finishes, on the same lease -- ZERO reconstruction, so the saved state
+        // is the run's numerics by construction (immune to the batch-shape and observer-regime
+        // epsilons that make from-tokens rebuilds only near-exact under strong steering).
+        // Sampler + steer provenance are auto-filled from THIS request's own config. The id
+        // comes back as "checkpoint_id" on the non-streaming response.
+        const bool want_ckpt = ar_mode && body.value("checkpoint_on_finish", false);
+        auto ckpt_id_out = std::make_shared<std::string>();
+
         // One call into the runtime on a POOLED context (acquire blocks until one is free, so N
         // workers run N requests concurrently; the Lease releases it on any exit).
-        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens, lens_on, lens_layer, plane, readout_layers, write_reqs, chat_grammar](
+        auto run = [&pool, &concept_probes, &steer_probes, &sae_serve, prompt_ids, suffix_ids, gap, cfg, cache, revise, sample, is_infill, ar_mode, features, steer_concept, steer_coef, steer_layer, prefix_embd, prefix_rows, steer_vec, reference_tokens, lens_on, lens_layer, plane, readout_layers, write_reqs, chat_grammar, want_ckpt, ckpt_id_out, &ckpt_mtx, &checkpoints](
                        const std::function<void(const Event&)>& on_event) {
             ContextPool::Lease lease = pool.acquire();
             // white-box tap on for this request (off by default); the live lens implies it — the
@@ -800,6 +809,61 @@ int main(int argc, char** argv) {
                        : (is_infill
                             ? infill(*lease, prompt_ids, suffix_ids, gap, cfg, nullptr, ev, revise, sample, probes)
                             : generate(*lease, prompt_ids, cfg, cache, nullptr, ev, revise, sample, probes));
+                if (want_ckpt && ar_mode) {
+                    // Top-up: the loop's final committed token may not be decoded into the KV
+                    // yet (it breaks before the decode when max_new is reached). Decode it with
+                    // the SAME single-token shape the loop itself would have used, so the saved
+                    // state is exactly the state an uninterrupted longer run would have had.
+                    const int n_board = static_cast<int>(r.board.size());
+                    // steer/prefix are still armed here (cleanup runs after) -- intentionally:
+                    // the top-up decode must run under the run's own regime.
+                    (*lease).evict_from(n_board - 1);
+                    (*lease).ar_forward({r.board[static_cast<size_t>(n_board - 1)]}, n_board - 1);
+                    EngineCheckpoint ckpt = (*lease).save_checkpoint(r.board, n_board);
+                    if (sample.temperature > 0.0) {
+                        ckpt.has_sampler = true;
+                        ckpt.temperature = sample.temperature;
+                        ckpt.rep_penalty = sample.rep_penalty;
+                        ckpt.top_k = sample.top_k;
+                        ckpt.top_p = sample.top_p;
+                        ckpt.seed = sample.seed;
+                        ckpt.rng_draws = static_cast<uint64_t>(r.new_tokens);
+                    }
+                    if (steering || raw_steer) {
+                        // capture the cvec ACTUALLY applied (rebuild it identically to above)
+                        const int nl = (*lease).n_layer();
+                        int lo, hi;
+                        if (steer_layer >= 1) { lo = hi = (steer_layer < nl ? steer_layer : nl - 1); }
+                        else { const int tl = nl * 2 / 3;
+                               lo = (tl - 2 > 1 ? tl - 2 : 1); hi = (tl + 2 < nl ? tl + 2 : nl - 1); }
+                        if (lo < 1) lo = 1;
+                        std::vector<float> cvec;
+                        if (steering) {
+                            cvec = build_steer_cvec(steer_probes, steer_concept, steer_coef, lo, hi, nl);
+                        } else {
+                            const int ne = static_cast<int>(steer_vec.size());
+                            cvec.assign(static_cast<size_t>(ne) * nl, 0.0f);
+                            const double c = steer_coef != 0.0 ? steer_coef : 1.0;
+                            for (int L = lo; L <= hi; ++L) {
+                                if (L < 1 || L >= nl) continue;
+                                float* slice = cvec.data() + static_cast<size_t>(L - 1) * ne;
+                                for (int i = 0; i < ne; ++i) slice[i] = static_cast<float>(c * steer_vec[i]);
+                            }
+                        }
+                        ckpt.has_steer = true;
+                        ckpt.steer_cvec = std::move(cvec);
+                        ckpt.steer_lo = lo;
+                        ckpt.steer_hi = hi;
+                    }
+                    const std::string cid = make_id("ckpt-");
+                    {
+                        std::lock_guard<std::mutex> lk(ckpt_mtx);
+                        if (static_cast<int>(checkpoints.size()) >= kMaxCheckpoints)
+                            checkpoints.erase(checkpoints.begin());
+                        checkpoints[cid] = std::move(ckpt);
+                    }
+                    *ckpt_id_out = cid;
+                }
                 cleanup();
                 return r;
             } catch (...) {
@@ -949,6 +1013,8 @@ int main(int argc, char** argv) {
                 {"usage", {{"prompt_tokens", static_cast<int>(prompt_ids.size())},
                            {"completion_tokens", r.new_tokens}, {"steps_total", r.steps_total}}},
             };
+            if (want_ckpt && !ckpt_id_out->empty())
+                resp["checkpoint_id"] = *ckpt_id_out;   // checkpoint_on_finish: the live-KV save
             if (atomic_prepared_chat) {
                 json trace = json::array();
                 for (const Event& event : r.events) {
@@ -1033,14 +1099,51 @@ int main(int argc, char** argv) {
                             "application/json");
             return;
         }
+        // Declared steering provenance: {steer_vec: [n_embd floats], steer_coef?, steer_layer?}
+        // -- the direction the ORIGINAL run generated under. The rebuild below must run steered:
+        // a steered run's KV embeds the steer, so an unsteered rebuild would checkpoint the
+        // wrong state (the same shape-true principle as prefill_to, applied to interventions).
+        std::vector<float> ck_steer;
+        double ck_steer_coef = 1.0;
+        int ck_steer_layer = 0;
+        if (body.contains("steer_vec") && body["steer_vec"].is_array()) {
+            ck_steer = body["steer_vec"].get<std::vector<float>>();
+            ck_steer_coef = body.value("steer_coef", 1.0);
+            ck_steer_layer = body.value("steer_layer", 0);
+        }
         try {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_causal(true);
+            std::vector<float> ck_cvec;
+            int ck_lo = 0, ck_hi = 0;
+            if (!ck_steer.empty()) {
+                const int nl = (*lease).n_layer();
+                if (ck_steer_layer >= 1) { ck_lo = ck_hi = (ck_steer_layer < nl ? ck_steer_layer : nl - 1); }
+                else { const int tl = nl * 2 / 3;
+                       ck_lo = (tl - 2 > 1 ? tl - 2 : 1); ck_hi = (tl + 2 < nl ? tl + 2 : nl - 1); }
+                if (ck_lo < 1) ck_lo = 1;
+                const int ne = static_cast<int>(ck_steer.size());
+                ck_cvec.assign(static_cast<size_t>(ne) * nl, 0.0f);
+                for (int L = ck_lo; L <= ck_hi; ++L) {
+                    if (L < 1 || L >= nl) continue;
+                    float* slice = ck_cvec.data() + static_cast<size_t>(L - 1) * ne;
+                    for (int i = 0; i < ne; ++i)
+                        slice[i] = static_cast<float>(ck_steer_coef * ck_steer[i]);
+                }
+                (*lease).set_steer(ck_cvec, ck_lo, ck_hi);
+            }
             const std::vector<int> head(tokens.begin(), tokens.begin() + prefill_to);
             (*lease).ar_forward(head, 0);
             for (int i = prefill_to; i < static_cast<int>(tokens.size()); ++i)
                 (*lease).ar_forward({tokens[static_cast<size_t>(i)]}, i);
             EngineCheckpoint ckpt = (*lease).save_checkpoint(tokens, n_past);
+            if (!ck_cvec.empty()) {
+                (*lease).clear_steer();
+                ckpt.has_steer = true;
+                ckpt.steer_cvec = std::move(ck_cvec);
+                ckpt.steer_lo = ck_lo;
+                ckpt.steer_hi = ck_hi;
+            }
             // Optional declared sampler provenance: {sampler: {seed, rng_draws, temperature?,
             // top_k?, top_p?, rep_penalty?}}. rng_draws = sampled committed tokens so far in the
             // generation being checkpointed (greedy tokens consume no draw). Stored verbatim;
@@ -1126,19 +1229,35 @@ int main(int argc, char** argv) {
             // saved sequence. fast:false keeps the re-prefill path as the escape hatch; the
             // response names which path ran so nothing about the restore is implicit. Greedy
             // suffix equality between the two paths is the acceptance bar.
+            // Steering: a checkpoint carrying declared steer provenance resumes STEERED (and on
+            // the reprefill path, rebuilds steered too -- the KV must embed it either way).
+            std::string steer_source = "none";
+            if (ckpt.has_steer && !ckpt.steer_cvec.empty()) {
+                // The cvec ACTUALLY APPLIED during the checkpointed run, re-applied verbatim.
+                (*lease).set_steer(ckpt.steer_cvec, ckpt.steer_lo, ckpt.steer_hi);
+                steer_source = "checkpoint";
+            }
             GenerateConfig cfg;
             cfg.max_new = max_tokens < 1 ? 1 : max_tokens;
-            GenerateResult r = fast
-                ? generate_ar(*lease, ckpt.tokens, cfg, {}, sample, nullptr,
-                              nullptr, 0, nullptr, nullptr, &ckpt)
-                : generate_ar(*lease, ckpt.tokens, cfg, {}, sample, nullptr,
-                              nullptr, 0, nullptr);
+            GenerateResult r;
+            try {
+                r = fast
+                    ? generate_ar(*lease, ckpt.tokens, cfg, {}, sample, nullptr,
+                                  nullptr, 0, nullptr, nullptr, &ckpt)
+                    : generate_ar(*lease, ckpt.tokens, cfg, {}, sample, nullptr,
+                                  nullptr, 0, nullptr);
+            } catch (...) {
+                if (steer_source == "checkpoint") (*lease).clear_steer();
+                throw;
+            }
+            if (steer_source == "checkpoint") (*lease).clear_steer();
             json resp{{"checkpoint_id", ckpt_id}, {"text", r.text},
                       {"finish_reason", finish_reason(r.reason)},
                       {"generated_tokens", r.new_tokens},
                       {"total_tokens", static_cast<int>(r.board.size())},
                       {"restore_mode", fast ? "kv_blob" : "reprefill"},
-                      {"sampler_source", sampler_source}};
+                      {"sampler_source", sampler_source},
+                      {"steer_source", steer_source}};
             res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;

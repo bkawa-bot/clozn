@@ -105,6 +105,16 @@ struct EngineCheckpoint {
     double top_p = 1.0;
     uint64_t seed = 0;
     uint64_t rng_draws = 0;
+    // Steering provenance (the intervention half of the sampler-state debt item): the BUILT
+    // control vector actually applied during the checkpointed run (n_embd*n_layer cvec + the
+    // [lo, hi] band), not a declared direction -- storing what was applied covers raw-direction
+    // AND named-concept steering alike, and restore re-applies it verbatim so the resumed
+    // suffix continues the same intervention. Load-bearing on the reprefill path too: a steered
+    // run's KV embeds the steer, so any rebuild must run under the same cvec.
+    bool has_steer = false;
+    std::vector<float> steer_cvec;  // the applied cvec, n_embd * n_layer
+    int steer_lo = 0;
+    int steer_hi = 0;
 };
 
 // One decode's multi-layer residual snapshot (Phase 2.3 readout plane). Produced by ar_forward
