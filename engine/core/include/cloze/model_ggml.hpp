@@ -206,6 +206,21 @@ public:
     bool add_write_state(int il, const std::vector<int>& positions,
                          const std::vector<float>& values);
     void clear_write();
+
+    // Batched multi-ARM teacher-forced scoring (engine-debt: per-branch interventions). ONE
+    // llama_decode carrying n_arms copies of the SAME token sequence (arm i = seq_id i, batch
+    // rows [i*len, (i+1)*len)), so N intervention arms that differ only in their write specs
+    // share one forward. The caller pre-translates each arm's write positions to batch rows
+    // (arm_i*len + pos) via add_write_state -- the eval_cb write path applies unchanged, since
+    // this forward runs with write_from_ == 0. logits_for positions are PER-ARM (0..len);
+    // the result holds n_arms * logits_for.size() rows, arm-major. Requires
+    // n_arms*len <= n_ctx (the kv_unified shared pool) and n_arms <= n_seq_max. Knockout,
+    // attn_capture, and the capture plane are REFUSED alongside arms (their tensor layouts
+    // under multi-seq batching are unvalidated -- refuse loudly rather than return silently
+    // wrong evidence; the FP-landmine rule: batched results must be proven bit-exact against
+    // the sequential path before anything trusts them).
+    ForwardResult ar_forward_score_arms(const std::vector<int>& tokens,
+                                        const std::vector<int>& logits_for, int n_arms);
     int n_layer() const { return n_layer_; }
     int n_embd() const { return n_embd_; }  // hidden size (e.g. the --sae dim check at startup)
     int n_ctx() const { return n_ctx_; }    // hard context window: absolute positions [0, n_ctx) fit the KV

@@ -19,7 +19,8 @@
     "sae",
     "jlens",
     "readout",
-    "attn_knockout"
+    "attn_knockout",
+    "score_arms"
   ],
   "stream_frame_envelope": [
     "req",

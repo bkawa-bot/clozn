@@ -477,6 +477,70 @@ ForwardResult GgmlAdapter::ar_forward_score(const std::vector<int>& tokens,
     return out;
 }
 
+ForwardResult GgmlAdapter::ar_forward_score_arms(const std::vector<int>& tokens,
+                                                 const std::vector<int>& logits_for, int n_arms) {
+    const int len = static_cast<int>(tokens.size());
+    if (len <= 0) throw std::invalid_argument("score_arms: empty tokens");
+    if (n_arms < 1) throw std::invalid_argument("score_arms: n_arms must be >= 1");
+    if (n_arms > 16) throw std::invalid_argument("score_arms: n_arms exceeds n_seq_max (16)");
+    if (static_cast<long long>(n_arms) * len > n_ctx_)
+        throw std::invalid_argument("score_arms: n_arms * len exceeds n_ctx (the arms share one "
+                                    "kv_unified pool; fewer arms or a shorter sequence)");
+    for (int p : logits_for)
+        if (p < 0 || p >= len)
+            throw std::invalid_argument("score_arms: logits_for position out of range");
+    // Refuse un-validated tensor consumers rather than silently corrupt them: capture/knockout/
+    // attn_capture row layouts under multi-seq batching are unproven (see header comment).
+    if (!capture_layers_.empty() || !knockouts_.empty() || attn_capture_query_ >= 0)
+        throw std::invalid_argument("score_arms: capture/knockout/attn_capture cannot be armed "
+                                    "alongside batched arms (unvalidated under multi-seq layout)");
+
+    llama_memory_clear(llama_get_memory(ctx_), true);
+    frozen_end_ = 0;
+    boundary_row_.clear();
+    write_from_ = 0;                          // batch rows ARE the write positions (pre-translated)
+    decoded_tokens_ += n_arms * len;
+
+    std::vector<char> want(static_cast<size_t>(len), 0);
+    for (int p : logits_for) want[static_cast<size_t>(p)] = 1;
+
+    const int total = n_arms * len;
+    llama_batch batch = llama_batch_init(total, 0, 1);
+    batch.n_tokens = total;
+    for (int a = 0; a < n_arms; ++a) {
+        for (int i = 0; i < len; ++i) {
+            const int r = a * len + i;
+            batch.token[r] = static_cast<llama_token>(tokens[i]);
+            batch.pos[r] = i;                 // per-seq absolute position
+            batch.n_seq_id[r] = 1;
+            batch.seq_id[r][0] = a;           // arm a = sequence a; attention never crosses arms
+            batch.logits[r] = want[static_cast<size_t>(i)];
+        }
+    }
+    const int rc = llama_decode(ctx_, batch);
+    llama_batch_free(batch);
+    // Leave no arm sequences behind for the next (single-seq) request.
+    cleanup_seqs(n_arms);
+    if (rc != 0) throw std::runtime_error("score_arms: llama_decode failed");
+
+    const int vocab = cfg_.vocab_size;
+    const int per_arm = static_cast<int>(logits_for.size());
+    ForwardResult out;
+    out.n_requested = n_arms * per_arm;
+    out.vocab = vocab;
+    out.kv = std::make_shared<GgmlKV>(len);
+    out.logits.resize(static_cast<size_t>(out.n_requested) * vocab);
+    for (int a = 0; a < n_arms; ++a) {
+        for (int r = 0; r < per_arm; ++r) {
+            const float* row = llama_get_logits_ith(ctx_, a * len + logits_for[r]);
+            if (!row) throw std::runtime_error("score_arms: missing logits row");
+            std::memcpy(out.logits.data() + (static_cast<size_t>(a) * per_arm + r) * vocab, row,
+                        static_cast<size_t>(vocab) * sizeof(float));
+        }
+    }
+    return out;
+}
+
 ForwardResult GgmlAdapter::harvest(const std::vector<int>& tokens) {
     const int len = static_cast<int>(tokens.size());
     if (len <= 0) throw std::invalid_argument("harvest: empty tokens");

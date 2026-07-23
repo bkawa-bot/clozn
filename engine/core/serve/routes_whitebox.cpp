@@ -380,6 +380,27 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
         // the tracer's joint arm (all candidate nodes ablated simultaneously, across layers, in one
         // forward — GgmlAdapter::add_write_state per spec).
         struct WriteReq { int layer; std::vector<int> positions; std::vector<float> values; };
+        // Shared write-spec parser: one spec {layer, positions, values} or an array of them.
+        // Returns an error string ("" = ok) so both the top-level `write` field and each
+        // batched arm's `write` field parse IDENTICALLY -- no drift between the two shapes.
+        auto parse_write_specs = [](const json& field, std::vector<WriteReq>& out) -> std::string {
+            json specs = json::array();
+            if (field.is_object()) specs.push_back(field);
+            else if (field.is_array()) specs = field;
+            else return "write must be an object or array";
+            for (const json& wb : specs) {
+                WriteReq w{};
+                w.layer = wb.is_object() ? wb.value("layer", 0) : 0;
+                if (wb.is_object() && wb.contains("positions") && wb["positions"].is_array())
+                    w.positions = wb["positions"].get<std::vector<int>>();
+                if (wb.is_object() && wb.contains("values") && wb["values"].is_array())
+                    w.values = wb["values"].get<std::vector<float>>();
+                if (w.layer < 1 || w.positions.empty() || w.values.empty())
+                    return "each write spec needs {layer >= 1, positions:[int], values:[float]}";
+                out.push_back(std::move(w));
+            }
+            return "";
+        };
         std::vector<WriteReq> write_reqs;
         if (body.contains("write")) {
             json specs = json::array();
@@ -492,6 +513,71 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
             }
         }
 
+        // arms: [{write: <spec|array>}, ...] -- batched multi-arm teacher-forced scoring (the
+        // engine-debt per-branch-interventions item). ONE forward carries every arm as its own
+        // sequence; each arm's writes apply only to its own copy. An arm with no write is a
+        // baseline arm. Mutually exclusive with top-level write/capture/attn_knockout/
+        // attn_capture (unvalidated tensor layouts under multi-seq batching are REFUSED, not
+        // silently risked). Positions are validated here so an out-of-range arm write can never
+        // silently no-op.
+        std::vector<std::vector<WriteReq>> arm_writes;
+        if (body.contains("arms")) {
+            if (!body["arms"].is_array() || body["arms"].empty() || body["arms"].size() > 16) {
+                res.status = 400;
+                res.set_content(json{{"error", "arms must be a non-empty array of at most 16 "
+                                               "objects"}}.dump(), "application/json");
+                return;
+            }
+            if (!write_reqs.empty() || !capture_layers.empty() || !knockouts.empty()
+                || attn_capture_query >= 0) {
+                res.status = 400;
+                res.set_content(json{{"error", "arms cannot be combined with top-level write/"
+                                               "capture/attn_knockout/attn_capture -- put each "
+                                               "arm's write inside the arm; the other surfaces "
+                                               "are unvalidated under multi-seq batching and are "
+                                               "refused rather than silently risked"}}.dump(),
+                                "application/json");
+                return;
+            }
+            if (static_cast<long long>(body["arms"].size()) * n_total > n_ctx) {
+                res.status = 400;
+                res.set_content(json{{"error", "arms * sequence length exceeds n_ctx (the arms "
+                                               "share one kv_unified pool)"},
+                                     {"n_arms", body["arms"].size()}, {"seq_len", n_total},
+                                     {"n_ctx", n_ctx}}.dump(), "application/json");
+                return;
+            }
+            for (const json& ab : body["arms"]) {
+                std::vector<WriteReq> ws;
+                if (ab.is_object() && ab.contains("write")) {
+                    const std::string err = parse_write_specs(ab["write"], ws);
+                    if (!err.empty()) {
+                        res.status = 400;
+                        res.set_content(json{{"error", "arm " + std::to_string(arm_writes.size())
+                                                       + ": " + err}}.dump(), "application/json");
+                        return;
+                    }
+                    for (const WriteReq& w : ws)
+                        for (int p : w.positions)
+                            if (p < 0 || p >= n_total) {
+                                res.status = 400;
+                                res.set_content(json{{"error", "arm write position out of range"},
+                                                     {"arm", arm_writes.size()}, {"position", p},
+                                                     {"n_tokens", n_total}}.dump(),
+                                                "application/json");
+                                return;
+                            }
+                } else if (!ab.is_object()) {
+                    res.status = 400;
+                    res.set_content(json{{"error", "each arm must be an object (use {} for a "
+                                                   "baseline arm)"}}.dump(), "application/json");
+                    return;
+                }
+                arm_writes.push_back(std::move(ws));
+            }
+        }
+        const bool has_arms = !arm_writes.empty();
+
         try {
             ForwardResult fwd;
             CaptureFrame cap_frame;             // filled synchronously by the capture sink (if armed)
@@ -507,7 +593,7 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                 const bool knocking = !knockouts.empty();
                 auto cleanup = [&]() {
                     if (steering || raw_steer) ad.clear_steer();
-                    if (writing) ad.clear_write();
+                    if (writing || has_arms) ad.clear_write();
                     if (capturing) { ad.set_capture_sink({}); ad.set_capture_layers({}); }
                     if (knocking) ad.clear_attn_knockouts();
                     if (attn_capture_query >= 0) {
@@ -581,7 +667,28 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                                 "materialize and there would be nothing to capture)");
                         ad.set_attn_capture(attn_capture_query);
                     }
-                    fwd = ad.ar_forward_score(tokens, logits_for);
+                    if (has_arms) {
+                        // Per-arm writes ride the standard write path: arm a's position p is
+                        // batch row a*n_total + p (ar_forward_score_arms runs with
+                        // write_from_ == 0, so rows ARE positions) -- eval_cb unchanged.
+                        ad.clear_write();
+                        for (size_t a = 0; a < arm_writes.size(); ++a) {
+                            for (const WriteReq& w : arm_writes[a]) {
+                                std::vector<int> rows = w.positions;
+                                for (int& p : rows) p += static_cast<int>(a) * n_total;
+                                if (!ad.add_write_state(w.layer, rows, w.values)) {
+                                    throw std::invalid_argument(
+                                        "arm " + std::to_string(a) + " write rejected: layer must "
+                                        "be in [1, n_layer) and values.size must equal "
+                                        "positions.size * n_embd");
+                                }
+                            }
+                        }
+                        fwd = ad.ar_forward_score_arms(tokens, logits_for,
+                                                       static_cast<int>(arm_writes.size()));
+                    } else {
+                        fwd = ad.ar_forward_score(tokens, logits_for);
+                    }
                     if (attn_capture_query >= 0) attn_rows_out = ad.attn_rows();  // copy BEFORE cleanup
                     cleanup();
                 } catch (...) {
@@ -591,42 +698,73 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
             }
 
             const int vocab = fwd.vocab;
-            json tok_json = json::array();
-            double sum_logprob = 0.0;
-            for (int r = 0; r < n_a; ++r) {
-                const float* row = fwd.row(r);
-                // log-softmax over the vocab (max-subtract + logsumexp, float32).
-                float mx = row[0];
-                for (int t = 1; t < vocab; ++t) if (row[t] > mx) mx = row[t];
-                float sumexp = 0.0f;
-                for (int t = 0; t < vocab; ++t) sumexp += std::exp(row[t] - mx);
-                const float logZ = mx + std::log(sumexp);
+            // One arm's token rows starting at result-row `row_base` (0 for the single-arm path;
+            // arm_i * n_a for batched arms) -> (tokens json, sum_logprob).
+            auto build_tokens = [&](int row_base) -> std::pair<json, double> {
+                json tj = json::array();
+                double sum = 0.0;
+                for (int r = 0; r < n_a; ++r) {
+                    const float* row = fwd.row(row_base + r);
+                    // log-softmax over the vocab (max-subtract + logsumexp, float32).
+                    float mx = row[0];
+                    for (int t = 1; t < vocab; ++t) if (row[t] > mx) mx = row[t];
+                    float sumexp = 0.0f;
+                    for (int t = 0; t < vocab; ++t) sumexp += std::exp(row[t] - mx);
+                    const float logZ = mx + std::log(sumexp);
 
-                const int actual = cont_ids[static_cast<size_t>(r)];
-                const float logprob = row[actual] - logZ;
-                sum_logprob += logprob;
+                    const int actual = cont_ids[static_cast<size_t>(r)];
+                    const float logprob = row[actual] - logZ;
+                    sum += logprob;
 
-                json item{{"id", actual}, {"piece", model->decode({actual})}, {"logprob", logprob}};
-                if (topk > 0) {
-                    std::vector<int> idx(static_cast<size_t>(vocab));
-                    for (int t = 0; t < vocab; ++t) idx[static_cast<size_t>(t)] = t;
-                    const int k = std::min(topk, vocab);
-                    std::partial_sort(idx.begin(), idx.begin() + k, idx.end(),
-                                      [&](int a, int b) { return row[a] > row[b]; });
-                    json tk = json::array();
-                    for (int j = 0; j < k; ++j) {
-                        const int t = idx[static_cast<size_t>(j)];
-                        tk.push_back({{"id", t}, {"piece", model->decode({t})}, {"logprob", row[t] - logZ}});
+                    json item{{"id", actual}, {"piece", model->decode({actual})}, {"logprob", logprob}};
+                    if (topk > 0) {
+                        std::vector<int> idx(static_cast<size_t>(vocab));
+                        for (int t = 0; t < vocab; ++t) idx[static_cast<size_t>(t)] = t;
+                        const int k = std::min(topk, vocab);
+                        std::partial_sort(idx.begin(), idx.begin() + k, idx.end(),
+                                          [&](int a, int b) { return row[a] > row[b]; });
+                        json tk = json::array();
+                        for (int j = 0; j < k; ++j) {
+                            const int t = idx[static_cast<size_t>(j)];
+                            tk.push_back({{"id", t}, {"piece", model->decode({t})}, {"logprob", row[t] - logZ}});
+                        }
+                        item["topk"] = tk;
                     }
-                    item["topk"] = tk;
+                    tj.push_back(item);
                 }
-                tok_json.push_back(item);
-            }
-
-            json resp = {
-                {"n_prompt", n_p}, {"n_cont", n_a},
-                {"tokens", tok_json}, {"sum_logprob", sum_logprob},
+                return {tj, sum};
             };
+
+            json resp = {{"n_prompt", n_p}, {"n_cont", n_a}};
+            if (has_arms) {
+                // Per-arm blocks, arm-major, same token shape as the single path -- and NO
+                // top-level tokens/sum_logprob (a client that sent arms reads arms; a defaulted
+                // top-level copy of arm 0 would invite silent misreads).
+                json arms_json = json::array();
+                for (size_t a = 0; a < arm_writes.size(); ++a) {
+                    auto [tj, sum] = build_tokens(static_cast<int>(a) * n_a);
+                    arms_json.push_back({{"tokens", tj}, {"sum_logprob", sum},
+                                         {"n_writes", arm_writes[a].size()}});
+                }
+                resp["arms"] = arms_json;
+                resp["n_arms"] = arm_writes.size();
+                // MEASURED, not hypothetical (2026-07-22, 7B/CUDA): batched arms are NOT
+                // bit-exact vs sequential /score (abs logprobs drift up to ~1.5e-1 nats with
+                // batch shape) and arm-minus-baseline DELTAS are not regime-consistent either
+                // (up to ~1.9e-1 nats -- a perturbed forward diverges non-common-mode). The
+                // batched regime IS deterministic across repeats. Contract: arms are for
+                // SCREENING (rank candidates, then re-measure survivors sequentially) -- never
+                // for receipts. The label ships on every response so no client can miss it.
+                resp["numerical_regime"] = "batched_approximate";
+                resp["regime_note"] = "arm logprobs/deltas differ from sequential /score by "
+                                      "batch-shape FP (measured up to ~0.19 nats); deterministic "
+                                      "within this regime; use for screening, re-measure "
+                                      "anything you intend to claim";
+            } else {
+                auto [tok_json, sum_logprob] = build_tokens(0);
+                resp["tokens"] = tok_json;
+                resp["sum_logprob"] = sum_logprob;
+            }
             if (boundary_approximate) resp["boundary_approximate"] = true;
             if (!write_reqs.empty()) {
                 resp["write_applied"] = true;

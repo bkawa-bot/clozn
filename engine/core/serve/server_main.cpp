@@ -272,6 +272,8 @@ int main(int argc, char** argv) {
             {"jlens", jlens.on},          // live Jacobian-lens "disposed to say" readout
             {"readout", true},            // Phase 2.3 multi-observer readout plane (readout:{...})
             {"attn_knockout", !flash_attn},  // /score attn_knockout (needs --no-flash-attn)
+            {"score_arms", true},         // /score arms: batched multi-arm scoring -- APPROXIMATE
+                                          // regime (screening only; response carries the label)
         };
         json h{{"status", "ok"},
                {"protocol_version", PROTOCOL_VERSION},        // worker <-> supervisor wire contract

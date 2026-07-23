@@ -197,10 +197,12 @@ def _post(engine_url: str, path: str, body: dict, timeout: float = 300.0) -> dic
         return json.loads(r.read())
 
 
-def _score(engine_url: str, prompt: str, cont, *, topk: int = 0, write=None, capture=None) -> dict:
+def _score(engine_url: str, prompt: str, cont, *, topk: int = 0, write=None, capture=None,
+           arms=None) -> dict:
     """One teacher-forced /score arm. `cont` is token ids (exact, preferred) or text (the engine
     flags boundary_approximate). `write` is a spec dict or list of them; `capture` is
-    {layers, positions}."""
+    {layers, positions}. `arms` is the batched multi-arm form (screening-only regime -- the
+    response's own numerical_regime label says why)."""
     body = {"prompt": prompt, "topk": topk}
     if isinstance(cont, (list, tuple)):
         body["continuation_ids"] = list(cont)
@@ -210,6 +212,8 @@ def _score(engine_url: str, prompt: str, cont, *, topk: int = 0, write=None, cap
         body["write"] = write
     if capture is not None:
         body["capture"] = capture
+    if arms is not None:
+        body["arms"] = arms
     return _post(engine_url, "/score", body)
 
 
@@ -392,8 +396,30 @@ def trace(prompt: str, continuation, target_idx: int, *,
             grid = sorted({p for p in range(0, sites_end, stride)} |
                           {p for _, p in force if 0 <= p < sites_end})
             scored = []
-            for L in layers:
-                for p in grid:
+            # Screen arms batch through /score `arms` when the engine offers it -- the
+            # APPROXIMATE regime (measured: deltas differ from sequential by up to ~0.19 nats,
+            # deterministic within-regime). Legitimate HERE and only here: the screen merely
+            # NOMINATES sites; S1 re-measures every survivor sequentially, so a screen-regime
+            # error can only shuffle nominations near ties, never touch a claimed number.
+            # Chunk size 15 = 14 write arms + 1 in-batch baseline, under the engine's 16-seq cap.
+            all_sites = [(L, p) for L in layers for p in grid]
+            use_arms = bool(json.loads(urllib.request.urlopen(
+                engine_url.rstrip("/") + "/health", timeout=10).read())
+                .get("capabilities", {}).get("score_arms")) if all_sites else False
+            if use_arms:
+                CHUNK = 14
+                for i in range(0, len(all_sites), CHUNK):
+                    chunk = all_sites[i:i + CHUNK]
+                    arms = [{}] + [{"write": {"layer": L, "positions": [p],
+                                              "values": mean_rows[L].tolist()}}
+                                   for L, p in chunk]
+                    r = _score(engine_url, prompt, cont_ids, arms=arms)
+                    lps = [a["tokens"][target_idx]["logprob"] for a in r["arms"]]
+                    for (L, p), lp in zip(chunk, lps[1:]):
+                        scored.append({"layer": L, "pos": p,
+                                       "screen_score": abs(lps[0] - lp), "concept": None})
+            else:
+                for L, p in all_sites:
                     d = arm({"layer": L, "positions": [p], "values": mean_rows[L].tolist()})
                     scored.append({"layer": L, "pos": p, "screen_score": abs(d),
                                    "concept": None})
