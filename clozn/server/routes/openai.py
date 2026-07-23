@@ -376,6 +376,63 @@ def try_post(h, p, body):
     msgs = strip_footers(msgs)
     from clozn.runs.think_tags import sanitize_messages
     msgs = sanitize_messages(msgs)
+
+    # CLOSED-LOOP DISPOSITION GUARDRAILS (FRONTIER_BETS section 9.1 / experiment A1.1), opt-in, default
+    # off -- see generation_guard.py's own module docstring for the full honesty framing (present-tense
+    # detect-and-correct, NEVER predictive/lead-time/"acts on intent"). Parsed here, before the corrective-
+    # policy/structured-output/streaming logic below, because a guarded generation bypasses ALL of that in
+    # this first cut (see the module docstring's SCOPE LIMITS section) -- composing the guard with prompt-
+    # card memory, tone dials, corrective retries, or structured output is deferred, not silently dropped.
+    # `guard_spec` is None whenever the request/server default is off; every line below this block then
+    # runs completely unchanged, so the byte-identical-when-off contract holds regardless of where the
+    # guard sits in this function.
+    from clozn.server import generation_guard
+    try:
+        guard_spec = generation_guard.parse_guard_spec(body)
+    except ValueError as exc:
+        _api_error(h, 400, str(exc), param="clozn_guard", code="invalid_parameter")
+        return True
+    if guard_spec is not None:
+        if body.get("stream"):
+            # STREAMING IS DEFERRED (see the module docstring): a streamed reply's early tokens are
+            # already delivered before any correction could happen, so silently ignoring the guard on a
+            # streaming request would be exactly the "silent pass" this feature exists to prevent --
+            # refuse instead of degrading quietly.
+            _api_error(
+                h, 422,
+                "clozn_guard is not supported together with stream:true yet -- retry without "
+                "streaming (see clozn/server/generation_guard.py's module docstring)",
+                param="clozn_guard", code="guard_streaming_unsupported",
+            )
+            return True
+        guard_meta = {}
+        if calibration_task is not None:
+            guard_meta["clozn_task"] = calibration_task
+        result = generation_guard.guarded_chat_completion(
+            h, msgs, model=selected_model, max_tokens=mx, sample=sample,
+            spec=guard_spec, source="openai_api", extra_meta=guard_meta or None,
+        )
+        if not result.get("ok", True):
+            # FAIL CLOSED (see generation_guard.py's FAIL-CLOSED DECISION): a guarded concept could not be
+            # resolved to a working dir(c) -- refuse the whole request rather than silently generate an
+            # unguarded reply under a safety request this process cannot back.
+            _api_error(h, 422, f"guard unavailable: {result.get('reason')}",
+                      param="clozn_guard", code="guard_unavailable")
+            return True
+        resp = {
+            "id": "chatcmpl-" + secrets.token_hex(8), "object": "chat.completion",
+            "created": int(time.time()), "model": selected_model,
+            "choices": [{"index": 0, "finish_reason": result.get("finish_reason") or "stop",
+                        "message": {"role": "assistant", "content": result["reply"]}}],
+            "clozn_guard_receipt": result["receipt"],
+        }
+        if result.get("run_id"):
+            resp["clozn_run_id"] = result["run_id"]
+        h._json(200, resp, extra_headers=(
+            {"X-Clozn-Run-Id": result["run_id"]} if result.get("run_id") else None
+        ))
+        return True
+
     delivered_messages = msgs
     from clozn.server.generation_gateway import apply_corrective_policy
     msgs, corrective_evidence = apply_corrective_policy(h, delivered_messages)
