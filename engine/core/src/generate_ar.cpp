@@ -250,6 +250,7 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     }
 
     std::mt19937_64 rng(sample.seed);
+    if (sample.rng_discard > 0) rng.discard(sample.rng_discard);  // sampled-resume fast-forward
     std::vector<int> seq = prompt_ids;  // full running sequence (for the repetition penalty)
     SampleOpts sopts;
     sopts.temperature = sample.temperature;

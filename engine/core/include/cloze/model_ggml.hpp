@@ -91,6 +91,20 @@ struct EngineCheckpoint {
     std::vector<int> tokens;         // full token sequence fed into the KV (prompt + generated so far)
     int n_past = 0;                  // positions covered by the KV cache
     bool causal = true;              // attention mode at checkpoint time
+    // Declared sampler provenance (engine debt: sampler state in checkpoints). The checkpoint
+    // flow is caller-reconstructive (POST tokens -> prefill -> save), so there is no live RNG to
+    // capture; instead the CALLER declares the sampling config + how many draws the original
+    // generation had consumed (== its sampled committed tokens), and restore fast-forwards a
+    // fresh RNG by that many draws (mt19937_64::discard) -- making a SAMPLED resume bit-exact
+    // against the uninterrupted run, not just statistically equivalent. has_sampler=false means
+    // none was declared; restore then requires explicit sampling in the request (never guesses).
+    bool has_sampler = false;
+    double temperature = 0.0;
+    double rep_penalty = 1.0;
+    int top_k = 0;
+    double top_p = 1.0;
+    uint64_t seed = 0;
+    uint64_t rng_draws = 0;
 };
 
 // One decode's multi-layer residual snapshot (Phase 2.3 readout plane). Produced by ar_forward

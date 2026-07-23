@@ -1018,11 +1018,43 @@ int main(int argc, char** argv) {
         }
         std::vector<int> tokens = body["tokens"].get<std::vector<int>>();
         const int n_past = body.value("n_past", static_cast<int>(tokens.size()));
+        // prefill_to: rebuild the KV the way the ORIGINAL run built it. A generation's KV is
+        // prompt-prefill (one big batch) + one-token decodes for each generated token; a
+        // checkpoint that big-batch-prefills the WHOLE sequence gets a numerically different KV
+        // for the generated tail (batch-shape FP -- the same landmine as prefix caching), which
+        // is invisible to greedy resume but flips sampled draws near boundaries (measured:
+        // ~40% of sampled resumes diverged until this). Callers checkpointing a generation pass
+        // prefill_to = n_prompt; default keeps the old whole-batch behavior for KV states that
+        // WERE built in one batch (e.g. /score-style teacher-forced states).
+        const int prefill_to = body.value("prefill_to", static_cast<int>(tokens.size()));
+        if (prefill_to < 1 || prefill_to > static_cast<int>(tokens.size())) {
+            res.status = 400;
+            res.set_content(json{{"error", "prefill_to out of range [1, tokens.size()]"}}.dump(),
+                            "application/json");
+            return;
+        }
         try {
             ContextPool::Lease lease = pool.acquire();
             (*lease).set_causal(true);
-            (*lease).ar_forward(tokens, 0);
+            const std::vector<int> head(tokens.begin(), tokens.begin() + prefill_to);
+            (*lease).ar_forward(head, 0);
+            for (int i = prefill_to; i < static_cast<int>(tokens.size()); ++i)
+                (*lease).ar_forward({tokens[static_cast<size_t>(i)]}, i);
             EngineCheckpoint ckpt = (*lease).save_checkpoint(tokens, n_past);
+            // Optional declared sampler provenance: {sampler: {seed, rng_draws, temperature?,
+            // top_k?, top_p?, rep_penalty?}}. rng_draws = sampled committed tokens so far in the
+            // generation being checkpointed (greedy tokens consume no draw). Stored verbatim;
+            // /v1/restore uses it for a bit-exact SAMPLED resume unless the request overrides.
+            if (body.contains("sampler") && body["sampler"].is_object()) {
+                const json& sb = body["sampler"];
+                ckpt.has_sampler = true;
+                ckpt.seed = sb.value("seed", 0ULL);
+                ckpt.rng_draws = sb.value("rng_draws", 0ULL);
+                ckpt.temperature = sb.value("temperature", 0.0);
+                ckpt.rep_penalty = sb.value("rep_penalty", 1.0);
+                ckpt.top_k = sb.value("top_k", 0);
+                ckpt.top_p = sb.value("top_p", 1.0);
+            }
             const std::string id = make_id("ckpt-");
             const size_t sz = ckpt.kv_data.size();
             {
@@ -1069,7 +1101,24 @@ int main(int argc, char** argv) {
         }
         const int max_tokens = body.value("max_tokens", 64);
         const bool fast = body.value("fast", true);
-        const SampleConfig sample = sample_from(body);
+        // Sampling for the resumed suffix: an explicit request wins; otherwise a checkpoint
+        // carrying declared sampler provenance resumes THAT run bit-exactly (same config, RNG
+        // fast-forwarded by the declared consumed draws). Neither present => greedy default,
+        // same as before this feature.
+        SampleConfig sample = sample_from(body);
+        std::string sampler_source = "request";
+        const bool body_has_sampling = body.contains("temperature") || body.contains("seed") ||
+                                       body.contains("top_k") || body.contains("top_p") ||
+                                       body.contains("rep_penalty");
+        if (!body_has_sampling && ckpt.has_sampler) {
+            sample.temperature = ckpt.temperature;
+            sample.rep_penalty = ckpt.rep_penalty;
+            sample.top_k = ckpt.top_k;
+            sample.top_p = ckpt.top_p;
+            sample.seed = ckpt.seed;
+            sample.rng_discard = ckpt.rng_draws;
+            sampler_source = "checkpoint";
+        }
         try {
             ContextPool::Lease lease = pool.acquire();
             // KV-blob fast restore (the "Phase 2 optimization" the first slice deferred):
@@ -1088,7 +1137,8 @@ int main(int argc, char** argv) {
                       {"finish_reason", finish_reason(r.reason)},
                       {"generated_tokens", r.new_tokens},
                       {"total_tokens", static_cast<int>(r.board.size())},
-                      {"restore_mode", fast ? "kv_blob" : "reprefill"}};
+                      {"restore_mode", fast ? "kv_blob" : "reprefill"},
+                      {"sampler_source", sampler_source}};
             res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;

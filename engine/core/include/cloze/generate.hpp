@@ -54,6 +54,11 @@ struct SampleConfig {
     int top_k = 0;         // 0 = off; > 0 keeps the k highest-prob tokens before the sampled draw
     double top_p = 1.0;    // 1.0 = off; (0,1) = nucleus truncation. Both no-op on the greedy path.
     uint64_t seed = 0;
+    // Sampler fast-forward for bit-exact SAMPLED resume (engine debt: sampler state in
+    // checkpoints): the RNG is advanced this many draws after seeding, so a resumed generation
+    // consumes exactly the draws the uninterrupted run would have at that point. One draw is
+    // consumed per sampled (non-greedy) committed token; greedy consumes none. 0 = fresh RNG.
+    uint64_t rng_discard = 0;
 };
 
 struct GenerateResult {
