@@ -259,7 +259,7 @@ def _unembed_row(engine_url: str, token_id: int) -> np.ndarray:
 def trace(prompt: str, continuation, target_idx: int, *,
           engine_url: str = DEFAULT_ENGINE, jlens_dir: Optional[str] = None,
           budget: Optional[TraceBudget] = None, seed: int = 0,
-          screen_mode: str = "auto") -> dict:
+          screen_mode: str = "auto", contrast=None) -> dict:
     """Trace the circuit behind continuation token `target_idx`. Returns the receipt dict
     (see notes/CIRCUIT_TRACER_DESIGN.md section 4); {"ok": False, "blocked": ...} on any
     engine/data failure. `continuation` is token ids (exact, from a stored trace) or text.
@@ -274,7 +274,19 @@ def trace(prompt: str, continuation, target_idx: int, *,
         arms. Per-node `legibility` is None in this mode (there is no named direction to
         project onto) and `delta_dir` is None.
       * "auto" -- jlens when a sidecar loads, ablate otherwise (the loud downgrade is recorded
-        in the receipt's config.screen_mode + config.screen_note)."""
+        in the receipt's config.screen_mode + config.screen_note).
+
+    `contrast`: an optional FOIL token (text or a single id, or the literal "auto" = the
+    baseline runner-up). When set, every delta in the trace becomes CONTRASTIVE -- the change in
+    the logit GAP between y and the foil, not y's absolute logprob:
+        delta = [lp_y(base) - lp_foil(base)] - [lp_y(ablated) - lp_foil(ablated)]
+    This is the answer given by the screen-null result (runs/experiments/screen_null_*.json,
+    notes/CIRCUIT_TRACER_DESIGN.md): the ABSOLUTE screen nominates sites causal for the answer
+    CATEGORY ("we're asking for a capital") -- which move a wrong-but-plausible foil almost as
+    much as the true answer, so an absolute PASS does NOT certify answer-SELECTIVITY. Contrastive
+    scoring keeps the same positions but makes the verdict select the sites that prefer y OVER the
+    foil. Cost: each arm scores the foil too (sequential screen forced; the batched-arms screen is
+    single-continuation and is skipped in contrast mode)."""
     budget = budget or TraceBudget()
     rng = np.random.default_rng(seed)
     try:
@@ -294,6 +306,34 @@ def trace(prompt: str, continuation, target_idx: int, *,
         # Trim the continuation to the target (causal: later tokens can't affect y's row). Exact
         # ids from the baseline response, so every later arm scores the identical sequence.
         cont_ids = [int(t["id"]) for t in base["tokens"][: target_idx + 1]]
+
+        # ---- contrastive scoring setup (optional foil) ---------------------------------------
+        # y and the foil are BOTH predicted from the same row (t_abs-1, conditioned on the shared
+        # prefix cont_ids[:target_idx]); the foil arm just swaps the last id. base_lp_foil is the
+        # foil's baseline logprob at that row. arm() below subtracts the foil's ablated delta so
+        # the whole pipeline scores the y-vs-foil logit gap.
+        foil_id = foil_piece = None
+        base_lp_foil = 0.0
+        cont_ids_foil = None
+        if contrast is not None:
+            if isinstance(contrast, str) and contrast == "auto":
+                if not others:
+                    return {"ok": False, "blocked": "contrast='auto' but no runner-up token in topk"}
+                foil_id = int(others[0]["id"])
+            elif isinstance(contrast, (int,)) or (isinstance(contrast, str) is False and
+                                                  isinstance(contrast, (list, tuple))):
+                foil_id = int(contrast[0] if isinstance(contrast, (list, tuple)) else contrast)
+            else:  # text: tokenize via a throwaway /score, take its first continuation id
+                fb = _score(engine_url, prompt, contrast, topk=0)
+                if not fb.get("tokens"):
+                    return {"ok": False, "blocked": f"contrast text {contrast!r} produced no tokens"}
+                foil_id = int(fb["tokens"][0]["id"])
+            if foil_id == y_id:
+                return {"ok": False, "blocked": "contrast foil equals the target token"}
+            cont_ids_foil = cont_ids[:target_idx] + [foil_id]
+            bf = _score(engine_url, prompt, cont_ids_foil, topk=0)
+            base_lp_foil = _target_logprob(bf, target_idx)
+            foil_piece = bf["tokens"][target_idx].get("piece")
 
         # ---- screen selection: dir(c) through the sidecar, or the any-GGUF ablation grid -----
         if screen_mode not in ("auto", "jlens", "ablate"):
@@ -383,7 +423,15 @@ def trace(prompt: str, continuation, target_idx: int, *,
 
         def arm(write_specs) -> float:
             r = _score(engine_url, prompt, cont_ids, write=write_specs)
-            return base_lp - _target_logprob(r, target_idx)   # positive = pushed TOWARD y
+            d_y = base_lp - _target_logprob(r, target_idx)    # positive = pushed TOWARD y
+            if cont_ids_foil is None:
+                return d_y
+            # contrastive: subtract the foil's own delta under the SAME write, so we measure the
+            # change in the y-vs-foil gap. A site that moves y and the foil equally -> ~0 (shared
+            # answer-category scaffolding, correctly rejected). A site that prefers y -> positive.
+            rf = _score(engine_url, prompt, cont_ids_foil, write=write_specs)
+            d_foil = base_lp_foil - _target_logprob(rf, target_idx)
+            return d_y - d_foil
 
         if dirs_by_layer:
             candidates = screen_candidates(H_by_layer, dirs_by_layer, budget.max_candidates, force)
@@ -406,6 +454,8 @@ def trace(prompt: str, continuation, target_idx: int, *,
             use_arms = bool(json.loads(urllib.request.urlopen(
                 engine_url.rstrip("/") + "/health", timeout=10).read())
                 .get("capabilities", {}).get("score_arms")) if all_sites else False
+            if cont_ids_foil is not None:
+                use_arms = False   # batched screen scores one continuation; contrast needs the foil too
             if use_arms:
                 CHUNK = 14
                 for i in range(0, len(all_sites), CHUNK):
@@ -488,9 +538,20 @@ def trace(prompt: str, continuation, target_idx: int, *,
         ctl_deltas = [c["delta"] for c in controls]
         floor = noise_floor(ctl_deltas)
         ctl_max = float(np.max(np.abs(ctl_deltas)))
-        survivors = [c for c in candidates if abs(c["delta_full"]) > floor]
+        # Survival rule. Absolute mode: a site is real if |delta| clears the noise floor.
+        # Contrastive mode: DIRECTIONAL -- a site is part of y's circuit only if it positively
+        # SUPPORTS y over the foil (delta_full > floor). This is what makes the screen-null
+        # discriminate: a token the model isn't selecting has its supporting sites carry NEGATIVE
+        # contrastive delta (they support the foil), so it collapses to NO_CAUSAL_NODES instead of
+        # inheriting the shared answer-category scaffolding. Sites with delta_full < -floor are
+        # recorded as foil-supporting (opposes_target), never counted as y's.
+        def _supports(d):
+            return (d > floor) if cont_ids_foil is not None else (abs(d) > floor)
+        survivors = [c for c in candidates if _supports(c["delta_full"])]
         for c in candidates:
-            c["survived"] = abs(c["delta_full"]) > floor
+            c["survived"] = _supports(c["delta_full"])
+            if cont_ids_foil is not None:
+                c["opposes_target"] = c["delta_full"] < -floor
             # Per-node separation from the STRONGEST control arm — the number that says how much
             # to trust this node, published so nobody has to take "survived" on faith. A 16-prompt
             # battery found real traces spanning 1.3x to 218x on the SAME trace: the strong nodes
@@ -623,7 +684,13 @@ def trace(prompt: str, continuation, target_idx: int, *,
                                   "n_random_site": budget.n_random_site,
                                   "max_edges": budget.max_edges, "run_s4": budget.run_s4,
                                   "ablate_screen_arms": budget.ablate_screen_arms},
-                       "units": "delta = logprob_y(baseline) - logprob_y(ablated), teacher-forced",
+                       "units": ("delta = [lp_y - lp_foil](baseline) - [lp_y - lp_foil](ablated), "
+                                 "teacher-forced CONTRASTIVE" if cont_ids_foil is not None
+                                 else "delta = logprob_y(baseline) - logprob_y(ablated), teacher-forced"),
+                       "scoring": "contrastive" if cont_ids_foil is not None else "absolute",
+                       "contrast": ({"id": foil_id, "piece": foil_piece,
+                                     "baseline_logprob": base_lp_foil}
+                                    if cont_ids_foil is not None else None),
                        "boundary_approximate": bool(base.get("boundary_approximate", False))},
         }
     except Exception as e:  # engine down, sidecar missing, contract drift -- labeled, never raised
