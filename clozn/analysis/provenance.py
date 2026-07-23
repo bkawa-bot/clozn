@@ -47,6 +47,15 @@ from typing import Optional
 
 DEFAULT_ENGINE = "http://127.0.0.1:8080"
 
+# Product-facing scope note (presentation only -- read by clozn/cli/commands/provenance.py and
+# clozn/server/routes/provenance.py; changes nothing about trace_provenance's own logic or its 41/41
+# battery). States what this capability is, what it needs, and the maturity caveat that stays true no
+# matter which verdict comes back, so a CONTEXT_CARRIED verdict is never read as louder than it is.
+SCOPE_NOTE = ("attention-knockout provenance -- requires a cloze-server started with --no-flash-attn "
+             "(flash attention fuses the softmax, so attention weights never materialize) -- validated "
+             "on one model family so far (Qwen2.5-7B, two-family battery, 41/41); read a verdict as "
+             "evidence, not proof")
+
 
 @dataclass
 class ProvenanceBudget:

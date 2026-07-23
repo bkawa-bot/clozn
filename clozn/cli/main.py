@@ -91,6 +91,7 @@ from clozn.cli.commands.memory import add_subparser as _add_memory              
 from clozn.cli.commands.regression_suite import add_subparser as _add_regression_suite            # noqa: E402
 from clozn.cli.commands.runs_privacy import add_subparser as _add_runs_privacy                    # noqa: E402
 from clozn.cli.commands.privacy import add_subparser as _add_privacy                              # noqa: E402
+from clozn.cli.commands.provenance import add_subparser as _add_provenance                        # noqa: E402
 
 
 def build_parser():
@@ -249,6 +250,7 @@ def build_parser():
     _add_regression_suite(sub)  # `clozn suite create` — promote captured app runs into Model CI cases
     _add_runs_privacy(sub)      # `clozn runs` — local journal privacy controls and telemetry export
     _add_privacy(sub)           # `clozn privacy` — local-only enforcement and outbound-attempt ledger
+    _add_provenance(sub)        # `clozn provenance` — attention-knockout context-vs-parametric receipt
     sub.add_parser("version", help="print the installed clozn version (+ git commit if available)"
                    ).set_defaults(fn=cmd_version)
     pdoc = sub.add_parser("doctor", help="diagnose this install; --verify-offline adds a strict "
