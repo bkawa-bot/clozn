@@ -97,6 +97,41 @@ button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px soli
 .policy-chip-agg{margin-left:5px;font-size:7px;color:var(--mist);font-style:normal}
 .policy-chip-body p{margin-top:7px;padding-top:6px;border-top:1px dashed var(--edge-soft);font-size:7.8px;line-height:1.5;color:var(--mist)}
 
+/* provenance chip — POST /runs/<id>/provenance (attention-knockout context-vs-parametric verdict, in
+   plain language: provenance.mjs). Deliberately teal-accented (not the policy chip's lilac) so the two
+   verdict families never read as the same signal. idle/busy/unavailable are a flat inline control
+   (nothing has been measured yet, or never will be — provenance is on-demand, never pre-attached);
+   only a settled verdict earns the full iridescent-edged pill + <details> expansion, mirroring
+   .policy-chip's structure exactly. Reused as-is inside the click-a-token popover's "trace this
+   token" action (.pop .prov-chip-row), so the two surfaces read as one honest signal. */
+.prov-chip-idle,.prov-chip-busy,.prov-chip-unavailable{display:inline-flex;align-items:center;gap:5px;
+  padding:2px 8px;border-radius:12px;font-family:var(--disp);font-size:7.5px;font-weight:600;
+  letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;border:1px dashed var(--edge-soft);
+  color:var(--mist);background:transparent;vertical-align:middle}
+.prov-chip-idle{cursor:pointer}
+.prov-chip-idle:hover{color:var(--slate);border-color:var(--edge)}
+.prov-chip-unavailable{border-style:solid;opacity:.85}
+details.prov-chip{display:inline-block;position:relative;vertical-align:middle}
+details.prov-chip summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;
+  padding:3px 10px 3px 8px;border-radius:20px;font-family:var(--disp);font-size:8px;font-weight:600;
+  letter-spacing:.1em;text-transform:uppercase;color:#1B7F74;white-space:nowrap;
+  border:1px solid rgba(95,200,188,.55);
+  background:linear-gradient(105deg,rgba(95,200,188,.16),rgba(95,200,188,.05)),linear-gradient(180deg,rgba(255,255,255,.75),rgba(255,255,255,.34));
+  box-shadow:0 2px 8px rgba(95,200,188,.16), inset 0 1px 0 rgba(255,255,255,.75)}
+details.prov-chip summary::-webkit-details-marker{display:none}
+details.prov-chip summary:hover,details.prov-chip summary:focus-visible{outline:none;
+  box-shadow:0 0 0 1px rgba(95,200,188,.65), 0 2px 8px rgba(95,200,188,.22)}
+details.prov-chip summary i{width:6px;height:6px;border-radius:50%;background:var(--teal);box-shadow:0 0 6px var(--teal);flex:none}
+details.prov-chip[open] summary{border-radius:16px 16px 12px 12px}
+.prov-chip-body{position:absolute;z-index:15;width:240px;left:50%;transform:translateX(-50%);
+  top:calc(100% + 4px);padding:9px 11px;border-radius:10px;border:1px solid rgba(95,200,188,.55);
+  text-transform:none;background:linear-gradient(180deg,#fff,#EAF9F6);
+  box-shadow:0 14px 30px rgba(60,90,120,.22), inset 0 1px 0 #fff}
+.prov-chip-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:9px;color:var(--slate);padding:2px 0}
+.prov-chip-row span{color:var(--mist);text-transform:uppercase;letter-spacing:.08em;font-size:7.5px}
+.prov-chip-row b{color:var(--navy);font-weight:600;font-family:var(--mono);text-align:right}
+.prov-chip-body p{margin-top:7px;padding-top:6px;border-top:1px dashed var(--edge-soft);font-size:7.8px;line-height:1.5;color:var(--mist)}
+
 /* top status bar */
 .topbar{display:flex;align-items:center;gap:18px;height:44px;padding:0 16px;margin-bottom:8px;
   border-radius:16px;border:1px solid rgba(255,255,255,.8);

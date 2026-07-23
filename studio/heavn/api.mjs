@@ -93,6 +93,12 @@ export const api = {
   influenceMap: (id, body = {}) => postE("/runs/" + enc(id) + "/influence-map",
                                           body, 600000),                       // context <-> answer forced map
   diffRuns: (a, b) => post("/diff/runs", { a, b }, 60000),                     // F8
+  /* did the run's recorded answer come from the context or the model's own weights? attention-
+     knockout (needs a cloze-server started with --no-flash-attn); postE so a blocked/degenerate-focus
+     {ok:false} still rides back with __status for the caller to render honestly. `body.focus` is an
+     optional [start,end) PROMPT token span; omitted here (Studio calls it whole-run, see
+     provenance.mjs). Generous timeout: greedy span search, several engine round trips. */
+  provenance: (id, body = {}) => postE("/runs/" + enc(id) + "/provenance", body, 300000),
   anchoredList: () => j("/memory/anchored/list", null, 15000),                 // F6
   anchoredFit: (card_id, k) => post("/memory/anchored/fit",
                                     { card_id, ...(k ? { k } : {}) }, 180000),
