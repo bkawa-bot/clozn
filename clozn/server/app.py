@@ -11,7 +11,6 @@ import os
 import secrets
 import subprocess
 import sys
-import threading
 import time
 
 os.environ.setdefault("CLOZN_RUNTIME_KIND", "product")
@@ -526,10 +525,11 @@ def _profiles_switch(sub, p) -> dict:
     resync goes through the SAME _start_retrain machinery every other card mutation uses: instant in
     prompt mode (the cards ARE the memory there), a backgrounded consolidate() in internalized mode.
 
-    Facts (profiles.compile_facts) are the item-5 seam: no live slot-memory store is wired into the
-    server yet (slotmem_qwen.py is a standalone research module), so a profile's facts are saved in the
-    bundle but NOT compiled anywhere yet -- reported honestly via `facts_note`, never silently dropped.
-    Returns {name, prompt_block, cards:{removed,added}, dials, resync, facts_note}."""
+    Facts: the slot-memory store (clozn/lab/slotmem_qwen) is a lab-only research module -- it was
+    never wired to change the product reply, and reorg Stage B removed the product-side facts surface
+    entirely (no SlotBox, no /facts/* routes here). A profile's facts still travel in the bundle but
+    are never compiled into anything on the product server -- reported honestly via `facts_note`,
+    never silently dropped. Returns {name, prompt_block, cards:{removed,added}, dials, resync, facts_note}."""
     import clozn.memory.cards as memory_cards
 
     # 1) CARDS: delete the current GLOBAL set, then create the profile's cards fresh as global+active.
@@ -574,40 +574,17 @@ def _profiles_switch(sub, p) -> dict:
         except Exception:
             pass
 
-    # 4) FACTS: the item-5 seam, now CLOSED. The bundle's fact pairs recompile into THIS profile's slot
-    #    store (profiles.compile_facts on the live SlotMem, sharing SUB.memory's Qwen-7B) and persist to
-    #    ~/.clozn/profiles/<name>.slots.pt -- but ONLY when the facts tier is enabled (memory_facts on).
-    #    Off (the default): facts still travel in the bundle, we just don't build the store or pay the
-    #    model cost, and facts_note says so. active_profile is set FIRST so SlotBox loads the right store.
+    # 4) FACTS: reorg Stage B pulled the facts/slot-memory tier off the product surface entirely (it's a
+    #    lab-only research module now, clozn/lab/slotmem_qwen). A profile's fact pairs still travel in
+    #    the bundle (export/import stays lossless), but the product server never compiles them into a
+    #    live store -- facts_note says so honestly, always.
     import clozn.memory.mode as memory_mode
     memory_mode.set_setting("active_profile", p["name"])
 
     facts_note = None
     if p.get("facts"):
-        import clozn.memory.facts_mode as facts_mode
-        if not facts_mode.enabled():
-            facts_note = (f"{len(p['facts'])} fact(s) travel in the bundle but the facts tier is off -- "
-                          "enable it on the Memory page (Facts) to compile them into this profile's store.")
-        else:
-            box = _slots_box()
-            compiled = None
-            if box is not None:
-                try:
-                    box.on_profile_switch()                # point the resident store at THIS profile
-                    slots = box._build()                   # share SUB.memory's model; build if needed
-                    if slots is not None:
-                        with _TRAIN_LOCK:                  # writes run forwards on the shared model
-                            from clozn.profiles import store as _pf
-                            slots.entries = []             # persona isolation: this profile's facts only
-                            compiled = _pf.compile_facts(p, slots, gate=False)  # curated -> store them all
-                        box._save_active()
-                except Exception as e:
-                    facts_note = f"facts not compiled: {type(e).__name__}: {e}"
-            if compiled is not None:
-                facts_note = (f"{compiled['written']} fact(s) compiled into this profile's slot store"
-                              + (f" ({compiled['skipped']} skipped)" if compiled.get("skipped") else "") + ".")
-            elif facts_note is None:
-                facts_note = f"{len(p['facts'])} fact(s) in the bundle -- slot store unavailable (no model loaded)."
+        facts_note = (f"{len(p['facts'])} fact(s) travel in the bundle but are not compiled anywhere -- "
+                      "the facts/slot-memory tier is a lab-only research module, not part of the product.")
     return {"name": p["name"], "prompt_block": prompt_block_preview(p),
             "cards": {"removed": removed, "added": added}, "dials": dials,
             "resync": resync, "facts_note": facts_note}
@@ -620,14 +597,9 @@ def prompt_block_preview(p) -> str:
     return profiles.prompt_block(p)
 
 
-# ------- FACTS tier: extracted to clozn/server/facts_store.py; re-exported (the seam) --------------
-from clozn.server.facts_store import SlotBox, _FACT_RE, _mine_fact                        # noqa: E402
-
 ARGS = None
 SUB = None         # the active substrate object
 SUBNAME = "engine"  # product server has one substrate; PyTorch model work lives in the lab
-
-SLOTS = None
 
 # One process-wide time-travel SnapshotStore: the bounded, CPU-offloaded ring of per-turn
 # KV snapshots. Built lazily from timetravel.get_config() (cap / byte-budget). Only ever holds real KV
@@ -649,33 +621,6 @@ def _snap_store():
             import clozn.replay.timetravel as timetravel
             SNAPSHOTS = timetravel.SnapshotStore()
     return SNAPSHOTS
-
-
-def _slots_box():
-    """The live SlotBox (lazily created; shares SUB.memory as its backbone). None only before any
-    substrate exists."""
-    global SLOTS
-    if SLOTS is None and SUB is not None:
-        SLOTS = SlotBox(lambda: getattr(SUB, "memory", None))
-    return SLOTS
-
-
-# The conversation fact-miner: a deliberately CONSERVATIVE pull of one "<subject> is/are/was <value>"
-# statement from a user turn -> (cue, answer) for the surprise-gated store. High-precision-over-recall on
-# purpose: a noisy auto-writer would fill the store with junk the gate then has to sieve, so we only fire
-# on a clean, short, declarative fact of the personal-memory shape ("My dog's name is Biscuit"). Anything
-# ambiguous is left for the explicit "remember this" path. Pure + stdlib -> unit-testable with no model.
-# ------- shared-model serialization lock ------------------------------------------------------------
-# The internalized soft-prefix RETRAIN machinery (the in-flight banner + the background consolidate + the
-# start/join/status helpers) has MOVED OUT of this product module: it now lives per-instance on the lab
-# substrates' _InternalizedRetrain mixin (clozn/lab/substrates.py). The product never retrains -- prompt
-# mode short-circuits -- so nothing retrain-specific remains here.
-#
-# _TRAIN_LOCK stays: it is NOT retrain-only. It is the shared-model forward-serialization primitive that
-# other product-reachable code depends on -- the facts store's shared-model writes/reads
-# (clozn/server/facts_store.py) and the profile-switch facts compile (_profiles_switch above). Removing it
-# would break those; it is orthogonal to the retrain move.
-_TRAIN_LOCK = threading.RLock()
 
 
 # ------- substrates: extracted to clozn/server/substrates.py; re-exported here (the seam) -----------
@@ -702,7 +647,6 @@ from clozn.server import static as _static_routes                     # noqa: E4
 from clozn.server.routes import health as _health_routes              # noqa: E402
 from clozn.server.routes import runs as _runs_routes                  # noqa: E402
 from clozn.server.routes import memory as _memory_routes              # noqa: E402
-from clozn.server.routes import facts as _facts_routes                # noqa: E402
 from clozn.server.routes import receipts as _receipts_routes          # noqa: E402
 from clozn.server.routes import replay as _replay_routes              # noqa: E402
 from clozn.server.routes import corrective_retries as _corrective_retry_routes  # noqa: E402
@@ -735,7 +679,7 @@ _GET_ROUTES = [_static_routes, _health_routes, _runs_routes, _memory_routes, _re
               _timetravel_routes, _profiles_routes, _ollama_routes, _openai_routes, _engine_routes,
               _journal_routes, _card_routes, _anchored_routes, _diff_routes, _receipt_link_routes,
               _influence_map_routes, _contracts_routes, _runs_fallback_routes]
-_POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes,
+_POST_ROUTES = [_health_routes, _memory_routes, _receipts_routes,
                _corrective_retry_routes, _replay_routes,
                _timetravel_routes, _profiles_routes, _preferences_routes, _feedback_routes,
                _ollama_routes, _openai_routes, _engine_routes, _rewrite_routes, _readouts_routes,
@@ -976,30 +920,6 @@ def make_handler(sub=None, subname=None, runtime_kind=None):
                             pass
                 else:
                     memd = {"mode": mode}                        # runlog records the mode on EVERY run
-                # FACTS tier: only when memory_facts is on -- otherwise zero cost, the
-                # latency rule. A chat turn (not the pure /think etc.) gets a surprise-gated AUTO-WRITE
-                # (mine one declarative fact; the gate refuses what the model already knows) and a READ
-                # RECEIPT (what the store would fire + slot_ms), both folded into the run's memory record
-                # so the Run Inspector shows them. Fully guarded; never breaks logging or the reply.
-                try:
-                    import clozn.memory.facts_mode as facts_mode
-                    if facts_mode.enabled() and source in ("studio_chat", "openai_api", "ollama_api",
-                                                           "engine_chat"):
-                        box = _slots_box()
-                        if box is not None and not error:
-                            wrote = box.auto_write(messages, response)
-                            receipt = box.read_receipt(_last_user(messages))
-                            facts_rec = {}
-                            if isinstance(receipt, dict) and receipt.get("enabled"):
-                                facts_rec["read"] = {k: receipt.get(k) for k in
-                                                     ("hit", "abstained", "sim", "gate_floor", "cue",
-                                                      "answer", "count", "slot_ms")}
-                            if wrote is not None:
-                                facts_rec["auto_write"] = wrote
-                            if facts_rec:
-                                memd = {**(memd if isinstance(memd, dict) else {}), "facts": facts_rec}
-                except Exception:
-                    pass
                 # only meaningfully-nonzero dials (|v| >= 0.05); steer.active() drops exact-zeros but a
                 # slider nudged to a hair (e.g. 0.02) still slips through and would clutter the record.
                 if "active_dials" in mo:

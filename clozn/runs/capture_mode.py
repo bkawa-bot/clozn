@@ -13,8 +13,8 @@ What v1 ENFORCES is the one dimension that is pure record policy: whether the pe
 (so they light up the day that lands) but until then store exactly what standard does. Either way the
 active tier is written onto every run's meta, so a reader always knows how much was captured.
 
-Mirrors memory_mode / facts_mode: stdlib only (torch-free, model-free-testable); the setting lives in the
-SAME studio_settings.json via memory_mode's never-raise get/set.
+Mirrors memory_mode's own settings-gate pattern: stdlib only (torch-free, model-free-testable); the
+setting lives in the SAME studio_settings.json via memory_mode's never-raise get/set.
 """
 from __future__ import annotations
 

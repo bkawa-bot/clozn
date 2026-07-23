@@ -20,7 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
-import clozn.memory.slotmem_qwen.store as sq  # noqa: E402
+import clozn.lab.slotmem_qwen.store as sq  # noqa: E402
 
 H = 16   # tiny hidden size
 V = 40   # tiny vocab

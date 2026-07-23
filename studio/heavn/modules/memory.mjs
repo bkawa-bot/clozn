@@ -8,7 +8,6 @@
 import { html, useState, useEffect } from "../vendor/preact-standalone.mjs";
 import { store, useStore, toast } from "../state.mjs";
 import { api } from "../api.mjs";
-import { FactsPanel } from "./facts.mjs";
 
 const guardLive = live => {
   if(!live){ toast("live server only"); return true; }
@@ -127,7 +126,6 @@ export function MemoryModule(){
     <${ReviewQueue} cards=${cards} act=${act} busy=${busy}/>
     <${CardsPanel} cards=${cards} act=${act} busy=${busy}
       expanded=${expanded} toggleRuns=${toggleRuns} runsCache=${runsCache}/>
-    <${FactsPanel} live=${live}/>
     <${AnchoredShelf} cards=${cards} live=${live} rec=${rec}/>
     <${AddCard} live=${live} onAdded=${refreshCards}/>
     <${ProposeFromRun} rec=${rec} live=${live} onProposed=${refreshCards}/>

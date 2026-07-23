@@ -1,7 +1,8 @@
 """facts_injection_measure.py -- BK's Q3 (2026-07-23): "measure, then decide" on the facts tier.
 
-The facts store today writes real in-model state and produces a RECEIPT, but its v1 contract
-forbids it from touching the reply (clozn/server/facts_store.py). The injection rung DOES exist
+The facts store writes real in-model state and produces a RECEIPT, but its v1 contract forbids it
+from touching the reply (true when this was product-wired via clozn/server/facts_store.py, and
+still true now that the store is lab-only: clozn/lab/slotmem_qwen). The injection rung DOES exist
 in the torch store (SlotMem.emit -- value-direction injection at the tap layer via a forward
 hook), but it has never been NULL-CONTROLLED end-to-end: does injecting the retrieved VALUE make
 the model emit the stored answer *specifically*, above a matched random-direction control? Only if
@@ -28,7 +29,7 @@ import torch
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO)
-from clozn.memory.slotmem_qwen import store as slot  # noqa: E402
+from clozn.lab.slotmem_qwen import store as slot  # noqa: E402
 
 
 # Novel cue -> answer facts the base model cannot know (checked at runtime via baseline).

@@ -19,7 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
-import clozn.memory.slotmem_qwen.store as sq  # noqa: E402
+import clozn.lab.slotmem_qwen.store as sq  # noqa: E402
 
 
 def _entry(i: int, h: int = 32) -> dict:

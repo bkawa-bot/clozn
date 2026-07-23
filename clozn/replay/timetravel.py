@@ -28,7 +28,8 @@ cleanly:
     generation path to hand back its cache, an honest v1 gap noted in the findings.
 
 GATE: the snapshot store is behind ONE persisted setting (`timetravel_snapshots`, DEFAULT OFF) in the
-shared studio_settings.json -- mirroring facts_mode.py -- because holding N KV snapshots costs CPU RAM
+shared studio_settings.json -- the same off-by-default settings-gate pattern used elsewhere in this
+product (capture_mode.py, formerly the facts tier) -- because holding N KV snapshots costs CPU RAM
 (measured: ~7 MB/snapshot per 128 tokens on Qwen2.5-7B nf4 bf16-KV; last-8 at ~512 tok ~= 224 MB). Branch
 RECORDING (the transcript transform -> child run) does NOT need the store and works regardless of the gate;
 the gate only governs whether we hold live KV state for the (future) re-prefill-skipping fast path.
