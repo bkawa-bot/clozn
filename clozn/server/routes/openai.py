@@ -557,5 +557,18 @@ def try_post(h, p, body):
     policy = policy_signal(trace_steps, selected_model, task=calibration_task)
     if policy:
         resp["clozn_policy"] = policy
+    # CALIBRATION BACKLOG #10 action half (BK decision 2026-07-22: abstain/ask may become an ACTION, but
+    # OPT-IN, DEFAULT OFF). `clozn_selective` on the request (or the server-wide `selective_generation`
+    # setting when the request omits the field) opts in; absent/false on both keeps this response
+    # BYTE-IDENTICAL to the annotate-only behavior above -- see
+    # generation_gateway.selective_generation_action's docstring for the full fail-closed contract (no
+    # calibrated profile -> the action never fires even when opted in, and says why).
+    from clozn.server.generation_gateway import selective_generation_action, selective_generation_enabled
+    if selective_generation_enabled(body):
+        action = selective_generation_action(reply, trace_steps, selected_model, calibration_task,
+                                             opted_in=True)
+        resp["clozn_selective_action"] = action
+        if action.get("applied"):
+            resp["choices"][0]["message"]["content"] = action["reply"]
     h._json(200, resp, extra_headers=extra_headers)
     return True

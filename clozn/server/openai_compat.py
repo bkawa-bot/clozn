@@ -54,7 +54,7 @@ def _empty_sequence(value: Any) -> bool:
 
 CHAT_SUPPORTED_FIELDS = frozenset({
     "model", "messages", "max_tokens", "max_completion_tokens", "temperature", "top_p", "seed",
-    "stream", "top_k", "repeat_penalty", "clozn_trust", "clozn_receipt", "clozn_lens",
+    "stream", "top_k", "repeat_penalty", "clozn_trust", "clozn_receipt", "clozn_lens", "clozn_selective",
     "tools", "tool_choice", "parallel_tool_calls", "response_format",
 })
 
@@ -179,7 +179,7 @@ def normalize_chat_request(body: Mapping[str, Any]) -> dict[str, Any]:
 
     out = {key: value for key, value in body.items() if key in CHAT_SUPPORTED_FIELDS}
     for field in ("max_tokens", "max_completion_tokens", "temperature", "top_p", "seed", "stream",
-                  "top_k", "repeat_penalty", "clozn_trust", "clozn_receipt", "clozn_lens"):
+                  "top_k", "repeat_penalty", "clozn_trust", "clozn_receipt", "clozn_lens", "clozn_selective"):
         if out.get(field) is None:
             out.pop(field, None)
 
@@ -199,7 +199,7 @@ def normalize_chat_request(body: Mapping[str, Any]) -> dict[str, Any]:
         out["messages"] = _normalize_messages(body.get("messages"))
 
     if structured.get("mode"):
-        for extension in ("clozn_trust", "clozn_receipt", "clozn_lens"):
+        for extension in ("clozn_trust", "clozn_receipt", "clozn_lens", "clozn_selective"):
             if body.get(extension):
                 _fail(f"{extension} cannot be combined with structured I/O in v1", extension,
                       code="unsupported_parameter")
@@ -239,7 +239,7 @@ def normalize_chat_request(body: Mapping[str, Any]) -> dict[str, Any]:
                 or float(out["repeat_penalty"]) <= 0):
             _fail("repeat_penalty must be a positive number", "repeat_penalty")
         out["repeat_penalty"] = float(out["repeat_penalty"])
-    for field in ("clozn_trust", "clozn_receipt"):
+    for field in ("clozn_trust", "clozn_receipt", "clozn_selective"):
         if field in out and not isinstance(out[field], bool):
             _fail(f"{field} must be a boolean", field)
     if "clozn_lens" in out and not isinstance(out["clozn_lens"], (bool, dict)):
