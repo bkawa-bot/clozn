@@ -6,10 +6,9 @@ same load-the-run / regenerate / return-the-child-record flow. -> clozn.replay.f
 Body: {"position": <int, index into the reply's trace tokens>, "token": "<piece>" | "token_id": <int>}.
 Response: the child run record + prefix_kept / forked_from_piece / retokenized / note (see fork.py).
 
-NOT YET REGISTERED: to wire it in, import this module in clozn/server/app.py alongside its route
-siblings (`from clozn.server.routes import fork as _fork_routes`) and add `_fork_routes` to
-_POST_ROUTES BEFORE `_runs_fallback_routes`-style generic handling (any slot among the /runs/<id>/*
-POST families works -- the path suffix "/fork" is claimed by no other family).
+Registered in clozn/server/app.py: imported as `_fork_routes` and placed in `_POST_ROUTES`. Live
+surface: Studio's Replay panel (`api.fork` in studio/heavn/api.mjs, called from replay.mjs's
+fork-at-token UI).
 """
 from clozn.server import app as ctx
 

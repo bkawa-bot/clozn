@@ -3,8 +3,9 @@ one SPAN of the run's own prompt/context by ablation (regen arm + forced arm, bo
 clozn.receipts.span_receipt). Mirrors routes/receipts.py's try_post(h, p, body) pattern exactly: read the
 run, gate on the substrate, map SpanSpecError -> 400, exceptions -> 500, None -> 500.
 
-NOT self-registering: wire it in clozn/server/app.py by importing this module alongside the other route
-families and appending it to _POST_ROUTES (POST-only -- it has no try_get).
+Registered in clozn/server/app.py: imported as `_span_receipt_routes` and placed in `_POST_ROUTES`
+(POST-only -- it has no try_get). Live surface: Studio's span-forensics UI in Replay (`api.spanReceipt`
+in studio/heavn/api.mjs, called from replay.mjs).
 """
 from clozn.server import app as ctx
 

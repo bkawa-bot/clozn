@@ -72,7 +72,6 @@ function NavRail(){
     ${MODULES.map((m,i) => html`
       <button class=${"navrow" + (s.route === m.id ? " on" : "")}
         onClick=${() => {
-          if(m.inReplay){ toast("SCOPE lives on the Replay desk for now — it's the State Scope module"); return; }
           if(m.soon && !m.view){ toast(m.nm.toUpperCase() + " — this door opens in a later phase"); return; }
           store.set({ route: m.id });
         }}>

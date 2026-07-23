@@ -5,10 +5,10 @@ pure read of already-recorded runs, zero generation — so the card can draw its
 RENDERING of that bundle, never a new computation: receipts/lens data appear only if the record already
 carries them; otherwise the card states their honest absence.
 
-NOT yet registered. To register: in clozn/server/app.py add
-    from clozn.server.routes import card as _card_routes
-and insert `_card_routes` into _GET_ROUTES BEFORE `_runs_fallback_routes` (the generic /runs/<id>
-fallback must keep last refusal, exactly like the other /runs/<id>/<suffix> families).
+Registered in clozn/server/app.py: imported as `_card_routes` and placed in `_GET_ROUTES` BEFORE
+`_runs_fallback_routes` (the generic /runs/<id> fallback keeps last refusal, exactly like the other
+/runs/<id>/<suffix> families). Live surface: Studio's receipt-card link (`api.cardUrl` in
+studio/heavn/api.mjs, opened from evidence.mjs, replay.mjs, and read.mjs).
 """
 
 

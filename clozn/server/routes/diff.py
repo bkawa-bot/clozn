@@ -20,20 +20,11 @@ Wire shapes:
          `a` is diffed as prev/baseline, `b` as curr -- ci.diff_suites(prev, curr)'s own order.
       -> 400 missing/unloadable params; 404 suite file(s) not found
 
-UNREGISTERED by design -- this task does not edit clozn/server/app.py. Registration edit for app.py
-(documented here, NOT performed; mirrors clozn/cli/commands/quant_check.py's discipline of shipping the
-exact edit as text for that file's owner):
-
-  1. Alongside app.py's other route imports (the block ending with
-     `from clozn.server.routes import readouts as _readouts_routes`), add:
-
-         from clozn.server.routes import diff as _diff_routes
-
-  2. Add `_diff_routes` to BOTH route lists right below that block:
-       - `_GET_ROUTES`: any slot BEFORE `_runs_fallback_routes` (this family only ever claims
-         "/diff/..." paths, which no other family matches, so any pre-fallback position works);
-       - `_POST_ROUTES`: any slot (POST only falls through to the generic SUB.handle after every
-         registered family, and none of them claims "/diff/...").
+Registered in clozn/server/app.py: imported as `_diff_routes` and placed in BOTH `_GET_ROUTES` (before
+`_runs_fallback_routes`) and `_POST_ROUTES` (POST falls through to the generic SUB.handle after every
+registered family, and none of them claims "/diff/..."). Live surface: Studio's Atlas panel
+(`api.diffRuns` in studio/heavn/api.mjs, called from atlas.mjs) drives POST /diff/runs; GET /diff/suites
+has no Studio caller yet -- it's exercised via clozn/testkit/ci.py and its own tests.
 
 Unlike health.py, this module deliberately does NOT `from clozn.server import app as ctx`: it reads no
 shared server state (no SUB/ENGINE/SUBNAME) -- only the run journal and saved CI results on disk -- so
