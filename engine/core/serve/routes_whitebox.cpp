@@ -735,7 +735,12 @@ void register_whitebox_routes(httplib::Server& svr, ServerContext& ctx) {
                 return {tj, sum};
             };
 
-            json resp = {{"n_prompt", n_p}, {"n_cont", n_a}};
+            json resp = {{"n_prompt", n_p}, {"n_cont", n_a},
+                         // The exact prompt token ids this forward used. Additive; closes the
+                         // "no id-level tokenize surface" gap -- /v1/checkpoint takes ids, and a
+                         // client that only has text had no honest way to produce them (piece
+                         // strings from /harvest do not round-trip through BPE).
+                         {"prompt_ids", prompt_ids}};
             if (has_arms) {
                 // Per-arm blocks, arm-major, same token shape as the single path -- and NO
                 // top-level tokens/sum_logprob (a client that sent arms reads arms; a defaulted

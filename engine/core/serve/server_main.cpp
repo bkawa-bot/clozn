@@ -1068,19 +1068,27 @@ int main(int argc, char** argv) {
             ckpt = it->second;
         }
         const int max_tokens = body.value("max_tokens", 64);
+        const bool fast = body.value("fast", true);
         const SampleConfig sample = sample_from(body);
         try {
             ContextPool::Lease lease = pool.acquire();
-            // First slice: re-prefill from the saved tokens (correct, no KV-blob restore yet).
-            // Phase 2 optimization: load_checkpoint + resume without re-prefill.
+            // KV-blob fast restore (the "Phase 2 optimization" the first slice deferred):
+            // load_checkpoint + a one-token bridge decode instead of re-prefilling the whole
+            // saved sequence. fast:false keeps the re-prefill path as the escape hatch; the
+            // response names which path ran so nothing about the restore is implicit. Greedy
+            // suffix equality between the two paths is the acceptance bar.
             GenerateConfig cfg;
             cfg.max_new = max_tokens < 1 ? 1 : max_tokens;
-            GenerateResult r = generate_ar(*lease, ckpt.tokens, cfg, {}, sample, nullptr,
-                                           nullptr, 0, nullptr);
+            GenerateResult r = fast
+                ? generate_ar(*lease, ckpt.tokens, cfg, {}, sample, nullptr,
+                              nullptr, 0, nullptr, nullptr, &ckpt)
+                : generate_ar(*lease, ckpt.tokens, cfg, {}, sample, nullptr,
+                              nullptr, 0, nullptr);
             json resp{{"checkpoint_id", ckpt_id}, {"text", r.text},
                       {"finish_reason", finish_reason(r.reason)},
                       {"generated_tokens", r.new_tokens},
-                      {"total_tokens", static_cast<int>(r.board.size())}};
+                      {"total_tokens", static_cast<int>(r.board.size())},
+                      {"restore_mode", fast ? "kv_blob" : "reprefill"}};
             res.set_content(dump_json(resp), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;

@@ -330,6 +330,12 @@ public:
     long long logits_d2h_floats() const { return logits_d2h_floats_; }
     void reset_logits_d2h_floats() { logits_d2h_floats_ = 0; }
 
+    // Drop KV for board positions [pos, inf). Public because the KV-blob resume path
+    // (generate_ar with resume_from) needs it for the one-token bridge decode: evict the last
+    // saved position, re-decode its token there to recover the sampling row the blob doesn't
+    // carry. Well-defined at any time; positions below `pos` are untouched.
+    void evict_from(int pos);
+
 private:
     // Decode board[from, to) at absolute positions [from, to), reusing whatever KV currently
     // covers [0, from). decode_only just runs llama_decode (no logits extract — leaves them on
@@ -345,8 +351,6 @@ private:
 
     // active_start = min{q : mask(q, n-1)}; 0 when the mask is fully bidirectional.
     static int active_start_from_mask(const Mask& mask, int n);
-
-    void evict_from(int pos);  // drop KV for positions [pos, inf)
 
     void init_context(int n_ctx);  // create + configure the llama context over model_
 

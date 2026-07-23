@@ -192,9 +192,23 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
                            const std::vector<float>* prefix_embd,
                            int prefix_rows,
                            const std::vector<int>* reference,
-                           const GrammarConfig* grammar) {
+                           const GrammarConfig* grammar,
+                           const EngineCheckpoint* resume_from) {
     if (prompt_ids.empty()) throw std::invalid_argument("prompt_ids must be non-empty");
     if (config.max_new < 1) throw std::invalid_argument("max_new must be >= 1");
+    if (resume_from != nullptr) {
+        if (resume_from->tokens != prompt_ids)
+            throw std::invalid_argument("resume_from: prompt_ids must equal the checkpoint's own "
+                                        "token sequence (resume continues THAT state, never a "
+                                        "different prompt)");
+        if (resume_from->n_past < 1 ||
+            resume_from->n_past > static_cast<int>(resume_from->tokens.size()))
+            throw std::invalid_argument("resume_from: n_past out of range for the saved tokens");
+        if (prefix_embd != nullptr && prefix_rows > 0)
+            throw std::invalid_argument("resume_from cannot be combined with a soft prefix (the "
+                                        "prefix is already inside the saved KV, if it was there "
+                                        "at checkpoint time)");
+    }
 
     // Early-stop-on-divergence is armed only with a non-empty reference. This is a pure termination
     // condition -- nothing about sampling, batching, or the KV path changes -- so the generated prefix
@@ -221,9 +235,11 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
     const int p = static_cast<int>(prompt_ids.size());
     emit(GenStarted{0, p, 0, config.max_new});  // block_len 0: AR has no blocks
 
-    // Causal attention + a fresh KV cache. A steering control vector set by the caller persists
-    // across decodes (it's on the context, independent of the attention mode).
-    adapter.set_causal(true);
+    // Causal attention + a fresh KV cache -- EXCEPT on a KV-blob resume, where load_checkpoint
+    // itself sets the mode and installs the saved cache (set_causal here would clear the very
+    // state being restored). A steering control vector set by the caller persists across decodes
+    // (it's on the context, independent of the attention mode).
+    if (resume_from == nullptr) adapter.set_causal(true);
 
     // Optional: splice a PyTorch-trained soft prefix in ahead of the prompt (fills KV [0, prefix_rows))
     // so a memory learned on the HF model shapes this ggml generation. The prompt then decodes at n_past=base.
@@ -263,8 +279,23 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
         throw std::invalid_argument("prompt exceeds context window (n_ctx): reduce the prompt or raise --ctx");
 
     // Prefill: the last prompt row's logits are the distribution for the first generated token.
-    ForwardResult fwd = adapter.ar_forward(prompt_ids, base);
-    int n_past = base + p;
+    // KV-blob resume replaces the full prefill with load_checkpoint + a ONE-token bridge decode:
+    // the blob restores KV [0, n_past) but no logits row, so we evict the last saved position and
+    // re-decode its token there -- the identical single-token batch shape the original decode
+    // used at that position, so the resulting row is the same distribution the interrupted
+    // generation would have sampled from (the bit-exactness acceptance the route verifies).
+    ForwardResult fwd;
+    int n_past;
+    if (resume_from != nullptr) {
+        adapter.load_checkpoint(*resume_from);
+        const int np = resume_from->n_past;
+        adapter.evict_from(np - 1);
+        fwd = adapter.ar_forward({resume_from->tokens[static_cast<size_t>(np - 1)]}, np - 1);
+        n_past = np;
+    } else {
+        fwd = adapter.ar_forward(prompt_ids, base);
+        n_past = base + p;
+    }
     int t = 0;
 
     for (int k = 0; k < config.max_new; ++k) {

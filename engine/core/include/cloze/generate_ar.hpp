@@ -89,7 +89,16 @@ GenerateResult generate_ar(GgmlAdapter& adapter,
                            // Optional native GBNF constraint emitted by the applied chat template. AR-only:
                            // callers must reject this option for diffusion generation rather than silently
                            // running an unconstrained diffusion path.
-                           const GrammarConfig* grammar = nullptr);
+                           const GrammarConfig* grammar = nullptr,
+                           // Optional KV-blob resume (engine-debt: fast restore). Non-null =>
+                           // prompt_ids MUST equal resume_from->tokens; the saved KV is loaded via
+                           // load_checkpoint and generation continues WITHOUT the full re-prefill.
+                           // A restored blob carries no logits row, so resume decodes a one-token
+                           // BRIDGE: evict position n_past-1, re-decode the last saved token there
+                           // -- the same single-token batch shape the original sequential decode
+                           // used, which is what makes bit-exactness achievable (and it is the
+                           // acceptance bar: greedy resume suffix == greedy re-prefill suffix).
+                           const EngineCheckpoint* resume_from = nullptr);
 
 // Batched multi-sequence branching: prefill a shared prompt once, then decode N independent
 // continuations in parallel using a single llama_decode per step. Each branch gets its own
