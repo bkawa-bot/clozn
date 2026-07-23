@@ -719,6 +719,7 @@ from clozn.server.routes import readouts as _readouts_routes          # noqa: E4
 # calibrated trust spans (F2), shareable card (F9), anchored memory (F6), model diff (F8).
 from clozn.server.routes import span_receipts as _span_receipt_routes  # noqa: E402
 from clozn.server.routes import provenance as _provenance_routes       # noqa: E402
+from clozn.server.routes import causal_trace as _causal_trace_routes   # noqa: E402
 from clozn.server.routes import fork as _fork_routes                   # noqa: E402
 from clozn.server.routes import journal as _journal_routes             # noqa: E402
 from clozn.server.routes import card as _card_routes                   # noqa: E402
@@ -740,7 +741,7 @@ _POST_ROUTES = [_health_routes, _memory_routes, _facts_routes, _receipts_routes,
                _ollama_routes, _openai_routes, _engine_routes, _rewrite_routes, _readouts_routes,
                _span_receipt_routes, _fork_routes, _journal_routes, _anchored_routes, _diff_routes,
                _receipt_link_routes, _influence_map_routes, _contracts_routes,
-               _provenance_routes]
+               _provenance_routes, _causal_trace_routes]
 
 
 def active_sub(h):
