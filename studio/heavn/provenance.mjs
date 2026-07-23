@@ -1,10 +1,13 @@
 /* heavnOS · provenance — plain-language surface for POST /runs/<id>/provenance (the attention-knockout
    context-vs-parametric receipt: clozn/analysis/provenance.py, clozn/server/routes/provenance.py).
-   Two call sites share this module -- the Monitor's answer-source CHIP (replay.mjs) and the
-   click-a-token popover's "trace this token" action (replay.mjs's Pop) -- because the wired route only
-   ever scores ONE thing per run (the recorded answer's own first generated token, optionally focused to
-   one prompt region); there is no per-continuation-position parameter on the server today. Both call
-   sites are honest about that scope, never claiming more precision than the route delivers.
+   One call site: the Monitor's answer-source CHIP (replay.mjs, next to PolicyChip) -- whole-run,
+   because the wired route only ever scores ONE thing per run (the recorded answer's own first
+   generated token, optionally focused to one prompt region); there is no per-continuation-position
+   parameter on this route. (The click-a-token popover's own "trace this token" action used to fall
+   back to this same route for a lack of a better option; it now calls the real per-position
+   POST /runs/<id>/causal-trace instead -- clozn/server/routes/causal_trace.py -- wired directly in
+   replay.mjs's Pop, not through this module.) The chip is honest about its whole-run scope, never
+   claiming more precision than the route delivers.
 
    BK's plain-language choice for the verdict labels (task spec, verbatim) -- NO strength/confidence word
    added, since that would over-claim the knockout margin:
@@ -40,9 +43,12 @@ export function provenanceReason(r){
 
 /* Same substance as clozn/analysis/provenance.py's SCOPE_NOTE -- the route's JSON carries no scope
    field (only the CLI's --json path adds it at print time), so this is Studio's own honest restatement,
-   not a verbatim wire echo. */
-const SCOPE_CAVEAT = "attention-knockout measurement · validated on one model family so far "
-  + "(two-family battery, 41/41) · read this as evidence, not proof";
+   not a verbatim wire echo. Kept in sync with that note's own 2026-07-23 correction (it used to say
+   "one model family"; it's two -- Qwen2.5-7B + Llama-3.1-8B -- and the 41/41 figure only reproduces
+   under the CURRENT grading code, not the stale stored battery summaries): never quote a number this
+   caveat doesn't also qualify. */
+const SCOPE_CAVEAT = "attention-knockout measurement · validated two-family (Qwen2.5-7B + "
+  + "Llama-3.1-8B), 41/41 under current grading · read this as evidence, not proof";
 
 const numFmt = (v, d = 2) => typeof v === "number" && Number.isFinite(v) ? v.toFixed(d) : "?";
 

@@ -7,7 +7,7 @@ import { store, useStore, toast, normSteps, weightsFor, colsFor, colGeom,
 import { api } from "../api.mjs";
 import { loadRun } from "../app.mjs";
 import { PolicyChip } from "../policy.mjs";
-import { ProvenanceChip, provenanceLabel, provenanceRows, provenanceReason, getProvenance } from "../provenance.mjs";
+import { ProvenanceChip } from "../provenance.mjs";
 import { normalizeRun } from "../object_model.mjs";
 
 /* ───────────────────────── module root ───────────────────────── */
@@ -891,7 +891,7 @@ function Locators({ steps, mem, rec, w, bodyW }){
 function Pop({ step, i, w, plateW, pad, arrRef, rec, jl, jlBusy, onReadJl }){
   const ref = useRef(null);
   const forkBusy = useStore(x => x.busy.fork);
-  const [provState, setProvState] = useState({ status: "idle", receipt: null });
+  const [traceState, setTraceState] = useState({ status: "idle", receipt: null });
   useEffect(() => {
     const arr = arrRef.current, el = ref.current;
     if(!arr || !el) return;
@@ -899,7 +899,7 @@ function Pop({ step, i, w, plateW, pad, arrRef, rec, jl, jlBusy, onReadJl }){
     el.style.left = Math.max(4, Math.min(arr.clientWidth - 244, plateW + pad + g[i].xc - 116)) + "px";
     el.style.top = "34px";
   }, [i]);
-  useEffect(() => { setProvState({ status: "idle", receipt: null }); }, [i]);   // a new token, a fresh check
+  useEffect(() => { setTraceState({ status: "idle", receipt: null }); }, [i]);   // a new token, a fresh check
   const alts = (step.alts || []).slice(0, 3);
   const spanText = (step.piece || "").trim();
   const disp = (jl && jl.byPos) ? jl.byPos[i] : null;          // disposed pieces at this position (or null)
@@ -919,18 +919,20 @@ function Pop({ step, i, w, plateW, pad, arrRef, rec, jl, jlBusy, onReadJl }){
       msg: "fork didn't answer — is the engine up?" } }); return; }
     await adoptChild(res, "fork", ` · “${piece.trim()}” at ${i}`);
   };
-  /* PIECE 2 (on-demand causal panel): "trace this token" -- causal-trace itself is CLI-only today
-     (clozn/cli/commands/trace_circuit.py; no server route -- verified, no route named for it under
-     clozn/server/routes/), so this does NOT invent a heavy live path. It calls the ALREADY-WIRED
-     provenance route instead, for a light, honest, live context-vs-parametric signal, and points at
-     the real per-position causal trace as a terminal command. Shares provenance.mjs's cache with the
-     Monitor's ProvenanceChip, so checking both here and there never double-fires the engine work. */
+  /* PIECE 2 (on-demand causal panel): "trace this token" -- POST /runs/<id>/causal-trace (300c8e5)
+     runs clozn.analysis.tracer.trace over THIS run's own final_prompt + recorded response at
+     continuation-token `position` = the clicked token i, so this really does trace the clicked
+     token (unlike the earlier provenance-route fallback, which could only ever speak to the
+     answer's first token). contrast "auto" keeps it answer-SELECTIVE (scored against the runner-up
+     foil, not just "any token"); screen_mode "ablate" works on any engine (no J-lens sidecar
+     required). Slow (several engine round trips: screen, greedy accumulation, controls) -- on
+     demand, never pre-attached, same idle -> busy -> done shape as the Monitor's ProvenanceChip. */
   const traceToken = async () => {
     if(rec._sample){ toast("live runs only — this is the sample reel"); return; }
-    if(provState.status !== "idle") return;
-    setProvState({ status: "busy", receipt: null });
-    const r = await getProvenance(rec);
-    setProvState({ status: "done", receipt: r });
+    if(traceState.status !== "idle") return;
+    setTraceState({ status: "busy", receipt: null });
+    const r = await api.causalTrace(rec.id, { position: i, contrast: "auto", screen_mode: "ablate" });
+    setTraceState({ status: "done", receipt: r || { ok: false, blocked: "the server didn't answer" } });
   };
   /* the ACTION: deep-link into the Experiment drawer, pre-filled, via the store handoff */
   const openExp = (ctype, fields) => {
@@ -981,27 +983,48 @@ function Pop({ step, i, w, plateW, pad, arrRef, rec, jl, jlBusy, onReadJl }){
         : html`<span class="none" style="font-size:9px">dials: none</span>`}
     </div>
 
-    ${!rec._sample && html`<div class="sig-lbl">answer source — causal</div>
-    ${provState.status === "idle" && html`<button class="spd" style="font-size:8.5px"
+    ${!rec._sample && html`<div class="sig-lbl">answer source — causal trace</div>
+    ${traceState.status === "idle" && html`<button class="spd" style="font-size:8.5px"
         onClick=${e => { e.stopPropagation(); traceToken(); }}>trace this token</button>`}
-    ${provState.status === "busy" && html`<span class="none" style="font-size:9px">
-      checking — attention-knockout over the run's context…</span>`}
-    ${provState.status === "done" && (() => {
-        const r = provState.receipt;
+    ${traceState.status === "busy" && html`<span class="none" style="font-size:9px">
+      tracing — ablation + matched controls over this token, several engine passes…</span>`}
+    ${traceState.status === "done" && (() => {
+        const r = traceState.receipt;
         if(!r || !r.ok) return html`<span class="none" style="font-size:9px">
-          provenance unavailable — ${provenanceReason(r) || "needs the engine started with --no-flash-attn"}</span>`;
+          trace unavailable — ${(r && (r.blocked || r.error)) || "needs the engine's ablation screen"}</span>`;
+        const controls = r.controls || {};
+        /* controls.verdict is one of three honest outcomes (clozn/analysis/tracer.py):
+             PASS             -- >=1 surviving node, controls well below the real effects
+             NO_CAUSAL_NODES  -- nothing beat the noise floor (a real, non-alarming finding)
+             FAILED_CONTROLS  -- random interventions moved the target as much as the "real" ones --
+                                 the trace itself is untrustworthy, surfaced as a warning, never hidden */
+        const verdict = String(controls.verdict || "?");
+        const failed = verdict === "FAILED_CONTROLS";
+        const tagClass = failed ? "fail-t" : verdict === "PASS" ? "cap-t" : "smp-t";
+        /* surviving nodes only (the receipt already filters to what beat the noise floor), sorted
+           by |delta_full| -- mirrors trace_circuit.py's own CLI rendering order exactly. */
+        const nodes = (r.nodes || []).slice()
+          .sort((a, b) => Math.abs(b.delta_full || 0) - Math.abs(a.delta_full || 0));
         return html`<div>
-          <div class="alt win"><span>${provenanceLabel(r)}</span></div>
-          ${provenanceRows(r).map(([k, v]) => html`<div class="prov-chip-row">
-            <span>${k}</span><b>${v}</b></div>`)}
+          <div class="alt win"><span>verdict</span>
+            <b><span class=${"tag " + tagClass}>${verdict}</span></b></div>
+          ${failed && html`<div class="sig-note" style="color:#C24A31;font-style:normal">
+            random interventions moved the target as much as the "real" ones — the controls FAILED;
+            do not trust this trace.</div>`}
+          ${nodes.length
+            ? nodes.map(n => html`<div class="prov-chip-row">
+                <span>L${n.layer} @${n.pos}</span>
+                <b>${n.control_ratio != null ? (+n.control_ratio).toFixed(1) + "x" : "n/a"}
+                  ${n.legibility != null ? " · " + Math.round(n.legibility * 100) + "% legible" : ""}
+                  ${n.strength ? " · " + n.strength : ""}${n.name ? " · " + n.name : ""}</b>
+              </div>`)
+            : html`<span class="none" style="font-size:9px">no nodes beat the noise floor — a
+              distributed circuit, or nothing screenable here; that is itself the honest finding.</span>`}
+          <div class="sig-note">individual sites rarely carry the answer on these models — this is
+            the causal skeleton, not a full explanation.</div>
         </div>`;
       })()}
-    <div class="sig-note">this checks the run's recorded answer, scored at its own first generated
-      token — not necessarily token ${i} specifically (no per-position scoring yet on the wired
-      provenance route). For the real per-position causal trace of token ${i} — verdict PASS /
-      NO_CAUSAL_NODES / FAILED_CONTROLS, surviving nodes with control-ratio + legibility%, and:
-      individual sites rarely carry the answer — this is the causal skeleton, not a full explanation
-      — run in a terminal:
+    <div class="sig-note">or for the full JSON receipt in a terminal:
       <span class="mono">clozn causal-trace --from-run ${rec.id} --pos ${i} --contrast auto</span>
     </div>`}
 

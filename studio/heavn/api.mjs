@@ -99,6 +99,15 @@ export const api = {
      optional [start,end) PROMPT token span; omitted here (Studio calls it whole-run, see
      provenance.mjs). Generous timeout: greedy span search, several engine round trips. */
   provenance: (id, body = {}) => postE("/runs/" + enc(id) + "/provenance", body, 300000),
+  /* which (layer, position) sites causally support ONE continuation token, by ablation with matched
+     controls -- clozn/analysis/tracer.py via POST /runs/<id>/causal-trace. `position` is the clicked
+     continuation-token index (0-based); `contrast` defaults "auto" (answer-selective, vs the runner-up
+     foil) and `screen_mode` defaults "ablate" (any-GGUF mean-ablation screen, no J-lens sidecar
+     required). postE so a blocked {ok:false} (e.g. an engine that can't run the screen) still rides
+     back honestly. Generous timeout: several engine round trips (screen, greedy accumulation, controls,
+     path patching, prediction scorecard). */
+  causalTrace: (id, { position = 0, contrast = "auto", screen_mode = "ablate" } = {}) =>
+    postE("/runs/" + enc(id) + "/causal-trace", { position, contrast, screen_mode }, 300000),
   anchoredList: () => j("/memory/anchored/list", null, 15000),                 // F6
   anchoredFit: (card_id, k) => post("/memory/anchored/fit",
                                     { card_id, ...(k ? { k } : {}) }, 180000),
