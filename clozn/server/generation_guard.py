@@ -22,20 +22,94 @@ list: "White-box risk controller advantage" -- the deployed selective-generation
 bit-identical to a black-box logprob; internal state added nothing there either).
 
 ===============================================================================================
-MECHANISM
+2026-07-23 UPDATE: the 9B defaults do not transfer -- two model-specific assumptions, now fixed
 ===============================================================================================
-Every engine primitive here already ships: /jlens (a deterministic linear read -- "which tokens is this
-residual disposed to say later", EngineClient.jlens), /harvest, and /intervene (steer_vec + coef, the same
-wire dir(c) already rides -- concept_dir.ConceptSteer.steer_toward). None of them are new.
+Running scripts/calibration/guard_signal_calibrate.py against Qwen2.5-7B found the guard's SIGNAL works,
+but two of its defaults were silently A1.1/9B-specific (receipt: runs/experiments/guard_signal_qwen2.5-7b
+.json):
+  1. DEFAULT_LAYER=16 is not even a FITTED J-lens layer on every model (this 7B's fitted layers are
+     [2, 14, 21, 25] -- polling layer 16 is a hard 400, not a degraded reading). See LAYER SELECTION below.
+  2. The concept-WORD token (e.g. " violence") is the wrong signal: the lens top-k at these layers shows
+     immediate NEXT-tokens (format/verb candidates), not abstract concept words -- " violence" essentially
+     never appears. A TRIGGER-TOKEN SET (concrete words the model would actually emit while drifting toward
+     the concept, e.g. " kill", " knife", " blood", " stab", " gun" for "violence") DOES appear: on a small
+     6-banned/6-clean battery at layer 14, a trigger surfaced in 100% of banned generations and 0% of clean
+     ones. See SIGNAL below.
 
-What's new is the LOOP. The engine steers a WHOLE generation call; it has no notion of "steer only after
-token 40". So this module is a GATEWAY control loop over the engine, not an engine feature:
+===============================================================================================
+PER-MODEL CALIBRATION (mirrors concept_dir.py's own per-model concept-dial calibration exactly)
+===============================================================================================
+`load_guard_calibration(model_sha256)` reads ~/.clozn/models/<sha256>/guard_threshold_calibration.json --
+written by scripts/calibration/guard_signal_calibrate.py's live sweep, schema
+"clozn.guard_threshold_calibration.v1": {model_sha256, default_layer, concepts: {name: {layer, threshold,
+trigger_ids, trigger_pieces, catch, fp, n_battery, note}}}. Missing/unreadable/wrong-schema file -> None,
+never a crash -- calibration is optional enrichment, mirroring concept_dir.load_concept_dial_calibration's
+missing-file=no-op discipline exactly (same ~/.clozn/models/<sha>/ per-exact-GGUF scoping convention
+clozn.server.app._model_scoped_path also uses).
+
+SIGNAL: a guarded concept found in the calibration (AT THE LAYER THIS REQUEST IS ACTUALLY POLLING -- see
+LAYER SELECTION) is polled as its TRIGGER-TOKEN SET, not the bare concept word: concept_activation takes
+the MAX lens-logit score over every trigger id present in one readout position's top-k. A concept NOT in
+the calibration (or calibrated at a DIFFERENT layer than this request polls) falls back to the OLD
+concept-WORD-token signal with a placeholder threshold -- see UNCALIBRATED CONCEPTS DO NOT FIRE below for
+why that fallback can still ANNOTATE but never CORRECT.
+
+===============================================================================================
+LAYER SELECTION -- stop hardcoding 16
+===============================================================================================
+A hardcoded hardcoded default layer 400s on any model whose fitted J-lens layers don't include it (exactly
+what broke on the 7B). `resolve_guard_layer` picks ONE layer for the whole guarded generation, in this
+precedence:
+  1. `spec['layer']` -- the CALLER explicitly set it. Honored as-is, no second-guessing: an explicit
+     request for an invalid layer still surfaces the engine's own 400 (this is a deliberate request for a
+     SPECIFIC layer, not a default that needs validating).
+  2. the matched calibration's `default_layer`, IF the engine actually reports that layer as available
+     right now (`engine_jlens_layers`, straight off /health's `jlens.layers` -- the one source of truth for
+     "is this layer even fitted on this engine").
+  3. the AVAILABLE layer numerically nearest to the legacy default (DEFAULT_LAYER=16) -- `_nearest_layer`.
+  4. (None, "unavailable") when the engine reports no J-lens layers at all -- the caller must fail closed;
+     there is no hardcoded fallback left that could silently 400.
+`layer_source` ("explicit" | "calibration_default" | "discovered_valid") rides the receipt so a caller can
+always tell which rule actually picked the layer.
+
+===============================================================================================
+UNCALIBRATED CONCEPTS DO NOT FIRE (documented decision, per BK's stated lean)
+===============================================================================================
+A concept with no matching calibration entry (at the polled layer) is still POLLED and ANNOTATED in the
+receipt (`calibrated: false`, its observed activation reported) -- but it can NEVER trigger a correction.
+Reasoning: /jlens's score is a raw, uncalibrated lens logit (routes_jlens.cpp's own docstring: "score = the
+raw lens logit"); DEFAULT_THRESHOLD=0.0 is a placeholder with no measured meaning on an arbitrary model/
+layer/token. Acting on "score >= 0.0" for a concept nobody has ever measured a real catch/FP rate for would
+be closer to noise than to a safety mechanism, and firing corrections on noise is worse than not firing at
+all (spurious re-steers degrade fluency for no protective benefit -- see the coherence note). So an
+uncalibrated concept is EXCLUDED from `correctable_concepts` unconditionally: annotate, never correct.
+Calibrate it (scripts/calibration/guard_signal_calibrate.py) to make it correctable.
+
+===============================================================================================
+TOPK FLOOR -- a trigger outside the polled top-k is an invisible, SILENT miss
+===============================================================================================
+scripts/calibration/guard_signal_calibrate.py measured its separation at topk=64. A trigger token that
+would have appeared at, say, rank 70 of the true distribution is simply never seen by a poll asking for
+only the top 8 -- concept_activation reports None ("not observed"), which reads as an honest "clean so
+far" but is actually a silent MISS caused by too narrow a window, not a real absence. `resolve_guard_topk`
+enforces a floor: any request with at least one CALIBRATED concept polls at >= CALIBRATION_TOPK_FLOOR (64,
+matching the calibration tool's own default), regardless of what `spec['topk']` asked for; a per-concept
+"topk" key in the calibration file (not present in today's artifact, but read defensively for forward
+compatibility) raises the floor further if larger.
+
+===============================================================================================
+MECHANISM (the loop itself, unchanged in shape)
+===============================================================================================
+Every engine primitive here already ships: /jlens (a deterministic linear read), /harvest, and /intervene
+(steer_vec + coef, the same wire dir(c) already rides -- concept_dir.ConceptSteer.steer_toward). What's new
+is the LOOP: the engine steers a WHOLE generation call; it has no notion of "steer only after token 40". So
+this module is a GATEWAY control loop over the engine, not an engine feature:
   1. Generate a short CHUNK of tokens (chunk_tokens, default 24) with no steering.
-  2. Poll: read the J-lens disposition toward every guarded concept over the text generated so far.
-  3. If any guarded concept's disposition crosses `threshold`, DISCARD that chunk and regenerate it with
-     the corrective dir(c) counter-direction (concept_dir.ConceptSteer.steer_toward(concept,
-     counter_strength) -- counter_strength is negative by convention/default, steering AWAY from the
-     concept) injected via /intervene's steer_vec, at the SAME token budget.
+  2. Poll: read the J-lens disposition toward every guarded concept's trigger set over the text generated
+     so far, at the ONE resolved poll layer.
+  3. If a CORRECTABLE (calibrated) concept's disposition crosses its OWN threshold, DISCARD that chunk and
+     regenerate it with the corrective dir(c) counter-direction (concept_dir.ConceptSteer.steer_toward)
+     injected via /intervene's steer_vec, at the SAME token budget.
   4. Continue from the (possibly corrected) chunk. Repeat until `max_tokens` is produced or the
      `max_fires` re-steer cap is reached (see RE-STEER CAP below).
 
@@ -58,17 +132,23 @@ that the rest of the output was checked when it wasn't.
 ===============================================================================================
 FAIL-CLOSED DECISION (documented here, not just in code)
 ===============================================================================================
-If a guarded concept cannot be resolved to a working dir(c) (no unembed/engine support, a multi-token
-word, an unfitted J-lens layer, ...), this module REFUSES the request outright -- it does not silently
-generate an unguarded reply, even flagged. Rationale: `clozn_guard` is a safety request ("please steer
-this generation away from X"); a caller who explicitly asked for that guarantee and silently got ordinary,
-unguarded generation back (even with a flag buried in the metadata) may never notice the flag and may
-treat the reply as guarded when it never was -- exactly the "silent pass" this feature exists to prevent.
-Refusing outright (a clear 4xx with a stated reason) is the safer default: the caller finds out
-immediately, at request time, that their safety request could not be honored, rather than downstream,
-if ever. This mirrors selective_generation_action's fail-closed pattern (calibration backlog #10) but goes
-one step further: there, the safe fallback (annotate-only) was itself harmless; here, the "fallback" would
-be exactly the ungated content the guard was supposed to prevent, so refusing is the only honest option.
+If a CORRECTABLE (calibrated) concept cannot be resolved to a working dir(c) (no unembed/engine support, an
+unfitted J-lens layer, ...), this module REFUSES the request outright -- it does not silently generate an
+unguarded reply, even flagged. Rationale: `clozn_guard` is a safety request ("please steer this generation
+away from X"); a caller who explicitly asked for that guarantee and silently got ordinary, unguarded
+generation back (even with a flag buried in the metadata) may never notice the flag and may treat the reply
+as guarded when it never was -- exactly the "silent pass" this feature exists to prevent. Refusing outright
+(a clear 4xx with a stated reason) is the safer default. This mirrors selective_generation_action's
+fail-closed pattern (calibration backlog #10) but goes one step further: there, the safe fallback
+(annotate-only) was itself harmless; here, the "fallback" would be exactly the ungated content the guard
+was supposed to prevent, so refusing is the only honest option.
+
+An UNCALIBRATED concept that can't even be tokenized for annotation is NOT treated this strictly: since it
+was never going to fire a correction anyway (see UNCALIBRATED CONCEPTS DO NOT FIRE), a resolution failure
+there degrades that ONE concept's annotation quietly (still reported in the receipt, with a note explaining
+why it has no trigger ids) rather than refusing the whole request over a concept that carried no safety
+promise to begin with. Also refused outright: no valid J-lens layer at all on this engine (LAYER SELECTION
+step 4), and `clozn_guard` together with `stream: true` (see SCOPE LIMITS).
 
 ===============================================================================================
 SCOPE LIMITS OF THIS FIRST CUT (said honestly, not silently)
@@ -85,9 +165,22 @@ SCOPE LIMITS OF THIS FIRST CUT (said honestly, not silently)
     not silently dropped.
   * Coherence is a light, cheap NOTE (clozn.replay.counterfactual._coherence's pure text-counting check,
     over the corrected chunks only), not a hard gate -- see `_coherence_note`.
+  * The calibration itself is a SMALL-BATTERY presence separation (6 banned + 6 clean prompts on Qwen2.5-
+    7B) -- a real, honest signal-design fix, but not a public reliability claim at any scale. GUARD_CAVEAT
+    says so explicitly; re-run scripts/calibration/guard_signal_calibrate.py with a larger battery before
+    treating a "calibrated" concept's catch/fp numbers as anything more than "this small battery separated
+    cleanly."
+  * A calibration entry measured at layer L is applied ONLY when this request is actually polling layer L
+    (see resolve_concept_signal) -- never misapplied to a different layer's readout, even when a
+    calibration file exists for the concept. This can, in principle, leave one concept calibrated and
+    another uncalibrated within the SAME request if their calibrated layers differ from the resolved poll
+    layer or from each other; this module polls exactly ONE layer per request (no per-concept multi-layer
+    polling yet) -- a documented limitation, not a silent one.
 """
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -103,13 +196,25 @@ GUARD_CAVEAT = (
     "counter_strength -0.5): catch-rate 100% (10/10 banned-content cases caught), false-positive-rate "
     "5% (1/20 clean prompts flagged). Its foresight thesis FAILED: median_lead_time_tokens = 0 and only "
     "4/10 cases showed any positive lead -- so this is not a foreknowledge mechanism and must never be "
-    "described as one."
+    "described as one. Per-concept calibration (when present -- see the receipt's 'calibrated' field) is "
+    "a SMALL-BATTERY presence separation (e.g. 6 banned + 6 clean prompts), a real signal-design result, "
+    "NOT a public reliability claim at any scale; an uncalibrated concept only annotates and never fires "
+    "a correction."
 )
 
 GUARD_CAP_NOTE = (
     "guard cap reached: the re-steer budget (max_fires) was spent before generation finished, so the "
     "remainder of this reply was produced WITHOUT further guard monitoring or correction -- it is "
     "honest, not silent, about that gap."
+)
+
+UNCALIBRATED_NOTE = (
+    "no per-model calibration for this concept at the layer this request is polling -- falling back to "
+    "the concept-WORD token as the signal with a placeholder threshold (0.0 on a raw, uncalibrated lens "
+    "logit is not a meaningful cutoff). DECISION: an uncalibrated concept never fires a correction -- it "
+    "is annotated (its observed activation is still reported) but cannot trigger a re-steer, since acting "
+    "on an arbitrary threshold over a raw logit would be closer to noise than signal. Run "
+    "scripts/calibration/guard_signal_calibrate.py against this exact model to calibrate it."
 )
 
 # -- opt-in wiring -----------------------------------------------------------------------------------
@@ -119,18 +224,23 @@ GUARD_SETTING = "generation_guard"          # server-wide default spec (clozn.me
 # -- defaults, documented as placeholders where calibration doesn't exist yet ------------------------
 DEFAULT_COUNTER_STRENGTH = -0.5             # A1.1's own validated counter_strength (steers AWAY -- negative)
 DEFAULT_MAX_FIRES = 3
-DEFAULT_LAYER = 16                          # A1.1's own validated J-lens tap
+DEFAULT_LAYER = 16                          # the LEGACY target for nearest-valid-layer discovery only --
+                                            # NEVER used directly as a poll layer anymore; see LAYER SELECTION.
 DEFAULT_CHUNK_TOKENS = 24
 DEFAULT_TOPK = 8
+# See the module docstring's TOPK FLOOR section: guard_signal_calibrate.py measured its separation at
+# topk=64, so any request with at least one calibrated concept polls at least this wide, regardless of
+# `spec['topk']` -- a narrower window would silently miss a real trigger sitting just outside it.
+CALIBRATION_TOPK_FLOOR = 64
 # /jlens's "score" is the RAW LENS LOGIT (engine/core/serve/routes_jlens.cpp's own docstring: "score = the
 # raw lens logit"), not a probability -- there is no universal safe cutoff. 0.0 is an UNCALIBRATED
-# placeholder (the neutral point where the readout turns positive), not a validated number the way
-# VALIDATED_MEDIAN_RESID_NORM was for dir(c)'s injection magnitude. A1.1's OWN protocol used topk
-# PRESENCE ("if banned concept in top-k") rather than a numeric cutoff at all; `threshold` here is a
-# generalization of that rule for callers who want a tunable trigger. Calibrate this per model/layer
-# before relying on it alone, the same way item 2's concept-dial calibration closed the analogous gap for
-# dir(c)'s own injection scale.
+# placeholder (the neutral point where the readout turns positive), shown for an uncalibrated concept's
+# annotation only -- it is NEVER used to decide whether an uncalibrated concept fires (see
+# UNCALIBRATED CONCEPTS DO NOT FIRE). Calibrate per model/layer via scripts/calibration/
+# guard_signal_calibrate.py to get a real, measured threshold.
 DEFAULT_THRESHOLD = 0.0
+
+GUARD_CALIBRATION_SCHEMA = "clozn.guard_threshold_calibration.v1"
 
 
 # =================================================================================================
@@ -142,7 +252,13 @@ def _normalize_guard_spec(raw: Any) -> Optional[dict]:
     when there is genuinely nothing to guard (no concepts -- "empty" is OFF, not an error, per the opt-in
     contract). Raises ValueError on a STRUCTURALLY malformed non-empty value (wrong types) -- an explicit,
     broken guard request should fail loudly (400), not be silently ignored; that silence is exactly what
-    this whole feature exists to avoid."""
+    this whole feature exists to avoid.
+
+    `spec['layer']` is None unless the CALLER explicitly set it (no default filled in here anymore --
+    see the module docstring's LAYER SELECTION section for why a bare hardcoded default is exactly the
+    bug this fixes). `spec['threshold']` keeps its old default and is used ONLY as the displayed/
+    annotation threshold for an UNCALIBRATED concept -- a calibrated concept always uses its OWN
+    calibrated threshold, never this value (see UNCALIBRATED CONCEPTS DO NOT FIRE)."""
     if not isinstance(raw, Mapping):
         raise ValueError("clozn_guard must be an object")
     concepts_raw = raw.get("concepts")
@@ -170,16 +286,18 @@ def _normalize_guard_spec(raw: Any) -> Optional[dict]:
             raise ValueError(f"clozn_guard.{key} must be a positive integer")
         return int(value)
 
-    layer_raw = raw.get("layer", DEFAULT_LAYER)
-    if isinstance(layer_raw, bool) or not isinstance(layer_raw, int):
-        raise ValueError("clozn_guard.layer must be an integer")
+    layer_raw = raw.get("layer")
+    if layer_raw is not None:
+        if isinstance(layer_raw, bool) or not isinstance(layer_raw, int):
+            raise ValueError("clozn_guard.layer must be an integer")
+        layer_raw = int(layer_raw)
 
     return {
         "concepts": concepts,
         "threshold": _num("threshold", DEFAULT_THRESHOLD),
         "counter_strength": _num("counter_strength", DEFAULT_COUNTER_STRENGTH),
         "max_fires": _pos_int("max_fires", DEFAULT_MAX_FIRES),
-        "layer": int(layer_raw),
+        "layer": layer_raw,   # None unless the caller set it explicitly -- see resolve_guard_layer
         "chunk_tokens": _pos_int("chunk_tokens", DEFAULT_CHUNK_TOKENS),
         "topk": _pos_int("topk", DEFAULT_TOPK),
     }
@@ -206,36 +324,239 @@ def parse_guard_spec(body: Any) -> Optional[dict]:
 
 
 # =================================================================================================
-# fail-closed concept resolution
+# per-model guard-threshold calibration (mirrors concept_dir.py's per-model concept-dial calibration)
 # =================================================================================================
 
-def resolve_guard_concepts(concept_steer, concepts: list, layer: int) -> tuple[Optional[dict], Optional[str]]:
-    """Resolve EVERY guarded concept to a working dir(c) build up front, before any generation happens.
-    FAIL CLOSED (see the module docstring's FAIL-CLOSED DECISION): if ANY concept cannot be resolved, this
-    returns (None, reason) instead of a partially-guarded setup -- the caller must refuse the whole
-    request rather than generate under a guarantee it cannot back for even one guarded concept.
+def guard_calibration_path(model_sha256: Optional[str] = None) -> str:
+    """~/.clozn/models/<model_sha256>/guard_threshold_calibration.json -- the SAME per-exact-GGUF
+    ~/.clozn/models/<sha>/ scoping convention clozn.server.app._model_scoped_path uses (and
+    concept_dir.concept_calibration_path mirrors for the concept dial's own per-model calibration). An
+    explicit argument rather than a live-substrate read, so this stays testable/reusable outside a
+    request context, exactly like concept_dir's equivalent."""
+    base = os.path.join(os.path.expanduser("~"), ".clozn")
+    if model_sha256:
+        return os.path.join(base, "models", str(model_sha256), "guard_threshold_calibration.json")
+    return os.path.join(base, "guard_threshold_calibration.json")
 
-    Returns ({concept: compute()-shaped dict with 'token_id'}, None) on full success, or
-    (None, "concept <c> unavailable: <why>") on the first failure. `concept_steer` is anything duck-typed
-    against concept_dir.ConceptSteer's `.compute(concept, layer=...)` contract."""
-    built = {}
-    for concept in concepts:
-        result = concept_steer.compute(concept, layer=layer)
-        if not result.get("ok"):
-            return None, f"concept {concept!r} unavailable: {result.get('note')}"
-        built[concept] = result
-    return built, None
+
+def load_guard_calibration(model_sha256: Optional[str], *, path: Optional[str] = None) -> Optional[dict]:
+    """This exact model's guard-threshold calibration (scripts/calibration/guard_signal_calibrate.py's
+    artifact), or None when there is nothing usable to read -- missing file, unreadable JSON, wrong/
+    missing schema, or no concept entries at all. NEVER raises -- calibration is optional enrichment;
+    every caller must fall back to the uncalibrated (annotate-only) path exactly as if this file didn't
+    exist, mirroring concept_dir.load_concept_dial_calibration's own missing-file=no-op discipline.
+
+    Returns {"model_sha256": str | None, "default_layer": int | None,
+    "concepts": {name: {"layer", "threshold", "trigger_ids": list[int], "trigger_pieces": list[str],
+    "catch", "fp", "n_battery", "note", "topk": int | None}}}, or None. A malformed individual concept
+    entry is skipped (not fatal to the rest of the file); a malformed `default_layer` degrades to None
+    (LAYER SELECTION falls through to layer discovery) rather than poisoning the whole read."""
+    p = path or guard_calibration_path(model_sha256)
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict) or raw.get("schema_version") != GUARD_CALIBRATION_SCHEMA:
+            return None
+        concepts = raw.get("concepts")
+        if not isinstance(concepts, dict) or not concepts:
+            return None
+        out_concepts: dict = {}
+        for name, entry in concepts.items():
+            if not isinstance(name, str) or not isinstance(entry, dict):
+                continue
+            layer = entry.get("layer")
+            threshold = entry.get("threshold")
+            trigger_ids_raw = entry.get("trigger_ids")
+            if (isinstance(layer, bool) or not isinstance(layer, int)
+                    or isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+                    or not isinstance(trigger_ids_raw, list) or not trigger_ids_raw):
+                continue
+            clean_ids = [int(tid) for tid in trigger_ids_raw
+                        if not isinstance(tid, bool) and isinstance(tid, int)]
+            if not clean_ids:
+                continue
+            topk_raw = entry.get("topk")
+            out_concepts[name] = {
+                "layer": int(layer), "threshold": float(threshold), "trigger_ids": clean_ids,
+                "trigger_pieces": [str(x) for x in (entry.get("trigger_pieces") or [])],
+                "catch": entry.get("catch"), "fp": entry.get("fp"),
+                "n_battery": entry.get("n_battery"), "note": entry.get("note"),
+                # Not present in today's artifact (guard_signal_calibrate.py doesn't write one) -- read
+                # defensively for forward compatibility; resolve_guard_topk treats a missing/invalid value
+                # as "no extra floor beyond CALIBRATION_TOPK_FLOOR" rather than raising.
+                "topk": int(topk_raw) if isinstance(topk_raw, int) and not isinstance(topk_raw, bool) else None,
+            }
+        if not out_concepts:
+            return None
+        default_layer = raw.get("default_layer")
+        if isinstance(default_layer, bool) or not isinstance(default_layer, int):
+            default_layer = None
+        return {"model_sha256": raw.get("model_sha256"), "default_layer": default_layer,
+               "concepts": out_concepts}
+    except Exception:
+        return None
 
 
 # =================================================================================================
-# disposition read (jlens-based)
+# layer selection -- see the module docstring's LAYER SELECTION section
 # =================================================================================================
 
-def concept_activation(jlens_result: Optional[dict], token_id: int, position: int = -1) -> Optional[float]:
-    """The guarded concept's raw lens-logit score at one jlens readout position (default: the LAST
-    position -- the most recently generated token), or None when the concept's token doesn't appear in
-    that position's top-k at all (never a fabricated 0.0 -- "not in the top-k" and "scored exactly 0" are
-    different facts, and only the first is what usually happens)."""
+def engine_jlens_layers(engine) -> list:
+    """The J-lens layers this engine actually has fitted/loaded, straight off /health's `jlens.layers` --
+    the ONE source of truth for "is layer N even valid to poll on this engine" (a stale hardcoded default
+    silently 400s otherwise -- exactly what broke moving from the 9B to the 7B). Never raises: a down
+    engine, or a build with no jlens block at all, reports [] (no valid layers), which the caller must
+    treat as guard-unavailable."""
+    try:
+        health = engine.health() if hasattr(engine, "health") else {}
+    except Exception:
+        return []
+    jl = (health or {}).get("jlens") or {}
+    try:
+        return sorted({int(x) for x in (jl.get("layers") or [])})
+    except Exception:
+        return []
+
+
+def _nearest_layer(preferred: int, available: list) -> Optional[int]:
+    """The AVAILABLE layer numerically closest to `preferred` (ties broken toward the smaller/lower layer,
+    deterministic) -- pure, no I/O. None when `available` is empty."""
+    if not available:
+        return None
+    return min(available, key=lambda layer: (abs(layer - preferred), layer))
+
+
+def resolve_guard_layer(spec: dict, calibration: Optional[dict],
+                        available_layers: list) -> tuple[Optional[int], str]:
+    """The ONE J-lens layer this guarded generation polls, (layer, source) -- see the module docstring's
+    LAYER SELECTION section for the full precedence + rationale. `source` is
+    "explicit" | "calibration_default" | "discovered_valid", always surfaced on the receipt so a caller
+    can tell which rule actually picked the layer. Returns (None, "unavailable") when nothing above yields
+    a valid layer -- the caller must refuse the request; there is no hardcoded fallback left."""
+    if spec.get("layer") is not None:
+        return int(spec["layer"]), "explicit"
+    if (calibration and calibration.get("default_layer") is not None
+            and calibration["default_layer"] in available_layers):
+        return int(calibration["default_layer"]), "calibration_default"
+    nearest = _nearest_layer(DEFAULT_LAYER, available_layers)
+    if nearest is not None:
+        return nearest, "discovered_valid"
+    return None, "unavailable"
+
+
+# =================================================================================================
+# per-concept signal resolution -- trigger SET (calibrated) vs concept-word fallback (uncalibrated)
+# =================================================================================================
+
+def resolve_concept_signal(concept: str, calibration: Optional[dict], poll_layer: int,
+                           fallback_threshold: float = DEFAULT_THRESHOLD) -> dict:
+    """Per-concept polling signal: which trigger token ids to watch for, at what threshold, and whether
+    this concept is CALIBRATED for the layer THIS request is actually polling (see the module docstring's
+    LAYER SELECTION + UNCALIBRATED CONCEPTS DO NOT FIRE sections). A calibration entry measured at a
+    DIFFERENT layer than `poll_layer` is NEVER applied -- scores from different layers/readouts are not
+    comparable -- and is reported uncalibrated with a note explaining why, rather than silently misapplied.
+
+    Returns {"calibrated": bool, "threshold": float, "trigger_ids": set[int] | None,
+    "trigger_pieces": list[str] | None, "topk": int | None, "note": str | None, ...calibration
+    provenance fields ("catch"/"fp"/"n_battery"/"calibration_note") when calibrated}. `trigger_ids` is
+    None until a concrete token id is resolved (the caller fills it in for the uncalibrated fallback via
+    ConceptSteer.resolve_token_id -- see resolve_guard_signals)."""
+    entry = (calibration or {}).get("concepts", {}).get(concept) if calibration else None
+    if entry is not None and int(entry["layer"]) == int(poll_layer):
+        return {
+            "calibrated": True, "threshold": float(entry["threshold"]),
+            "trigger_ids": set(entry["trigger_ids"]), "trigger_pieces": list(entry.get("trigger_pieces") or []),
+            "topk": entry.get("topk"), "catch": entry.get("catch"), "fp": entry.get("fp"),
+            "n_battery": entry.get("n_battery"), "calibration_note": entry.get("note"), "note": None,
+        }
+    if entry is not None:
+        return {
+            "calibrated": False, "threshold": float(fallback_threshold), "trigger_ids": None,
+            "trigger_pieces": None, "topk": None,
+            "note": (f"a calibration exists for {concept!r} at layer {entry['layer']}, but this request "
+                    f"is polling layer {poll_layer} -- a threshold/trigger-set measured at one layer is "
+                    "never applied to another layer's readout, so this concept is uncalibrated for this "
+                    "poll (annotate-only, cannot trigger a correction)."),
+        }
+    return {"calibrated": False, "threshold": float(fallback_threshold), "trigger_ids": None,
+           "trigger_pieces": None, "topk": None, "note": UNCALIBRATED_NOTE}
+
+
+def resolve_guard_signals(concept_steer, spec: dict, calibration: Optional[dict],
+                          poll_layer: int) -> tuple[Optional[dict], Optional[str]]:
+    """Resolve every guarded concept's polling signal, FAIL CLOSED only for concepts that would actually
+    be relied upon to fire a correction (calibrated at `poll_layer`) -- see the module docstring's
+    FAIL-CLOSED DECISION. If a calibrated concept's dir(c) counter-direction can't be built (no unembed/
+    engine support, an unfitted local J-lens sidecar layer, ...), returns (None, reason): the caller must
+    refuse the WHOLE request rather than generate under a safety guarantee it cannot back for even one
+    concept. An UNCALIBRATED concept degrades independently: if even `resolve_token_id` fails for it, that
+    ONE concept's signal just carries no trigger ids (annotation unavailable, noted why) -- never fatal to
+    the rest of the request, since it was never eligible to fire in the first place.
+
+    Returns ({concept: resolve_concept_signal()-shaped dict}, None) on success, or (None, reason) on a
+    calibrated concept's resolution failure."""
+    out = {}
+    for concept in spec["concepts"]:
+        signal = resolve_concept_signal(concept, calibration, poll_layer, spec["threshold"])
+        if signal["calibrated"]:
+            built = concept_steer.compute(concept, layer=poll_layer)
+            if not built.get("ok"):
+                return None, f"concept {concept!r} is calibrated but unavailable: {built.get('note')}"
+            out[concept] = signal
+            continue
+        resolved = concept_steer.resolve_token_id(concept)
+        if resolved.get("ok"):
+            signal = dict(signal)
+            signal["trigger_ids"] = {resolved["token_id"]}
+            signal["trigger_pieces"] = [resolved.get("piece") or concept]
+        else:
+            signal = dict(signal)
+            signal["note"] = (
+                (signal.get("note") or "") +
+                f" Additionally, this concept could not be resolved to any token for annotation either: "
+                f"{resolved.get('note')}."
+            )
+        out[concept] = signal
+    return out, None
+
+
+def resolve_guard_topk(spec: dict, resolved_signals: dict) -> int:
+    """The jlens poll topk actually used this request -- see the module docstring's TOPK FLOOR section.
+    Never smaller than `spec['topk']`; raised to CALIBRATION_TOPK_FLOOR (64) the moment ANY guarded
+    concept is calibrated, and raised further by a per-concept calibrated "topk" value when one is
+    present (forward-compatible; today's calibration artifact carries none)."""
+    floor = int(spec["topk"])
+    for signal in resolved_signals.values():
+        if signal.get("calibrated"):
+            floor = max(floor, CALIBRATION_TOPK_FLOOR)
+            cal_topk = signal.get("topk")
+            if isinstance(cal_topk, int) and not isinstance(cal_topk, bool):
+                floor = max(floor, cal_topk)
+    return floor
+
+
+# =================================================================================================
+# disposition read (jlens-based) -- generalized to a TRIGGER SET, not one bare token id
+# =================================================================================================
+
+def concept_activation(jlens_result: Optional[dict], token_ids, position: int = -1) -> Optional[float]:
+    """The MAX raw lens-logit score, over every id in `token_ids`, appearing in one jlens readout
+    position's top-k (default: the LAST position -- the most recently generated token), or None when NONE
+    of them appear in that position's top-k at all (never a fabricated 0.0 -- "not in the top-k" and
+    "scored exactly 0" are different facts, and only the first is what usually happens).
+
+    `token_ids` may be a single int (one concept-word token -- the uncalibrated fallback) or any iterable
+    of ints (a calibrated TRIGGER SET -- see the module docstring's SIGNAL section: "MAX lens-score over
+    any trigger id present in the readout top-k" is the exact recipe
+    scripts/calibration/guard_signal_calibrate.py's own max_trigger_score used to find the signal that
+    actually separates banned from clean generation)."""
+    if token_ids is None:
+        return None
+    ids = {int(token_ids)} if isinstance(token_ids, int) else {int(t) for t in token_ids}
+    if not ids:
+        return None
     if not isinstance(jlens_result, Mapping):
         return None
     readouts = jlens_result.get("readouts") or []
@@ -244,13 +565,16 @@ def concept_activation(jlens_result: Optional[dict], token_id: int, position: in
     if not (-len(readouts) <= position < len(readouts)):
         position = -1
     row = readouts[position] or []
+    best = None
     for entry in row:
-        if isinstance(entry, Mapping) and entry.get("id") == token_id:
-            score = entry.get("score")
-            if isinstance(score, bool) or not isinstance(score, (int, float)):
-                return None
-            return float(score)
-    return None
+        if not isinstance(entry, Mapping) or entry.get("id") not in ids:
+            continue
+        score = entry.get("score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            continue
+        score = float(score)
+        best = score if best is None else max(best, score)
+    return best
 
 
 # =================================================================================================
@@ -265,19 +589,25 @@ class GuardFiring:
     pre_activation: Optional[float]
     post_activation: Optional[float]
     counter_strength: float
+    layer: int
+    threshold: float
+    calibrated: bool = True   # only correctable (calibrated) concepts can ever fire -- see the module
+                             # docstring's UNCALIBRATED CONCEPTS DO NOT FIRE section
 
     def as_dict(self) -> dict:
         return {
             "chunk_index": self.chunk_index, "token_position": self.token_position,
             "concept": self.concept, "pre_activation": self.pre_activation,
             "post_activation": self.post_activation, "counter_strength": self.counter_strength,
+            "layer": self.layer, "threshold": self.threshold, "calibrated": self.calibrated,
         }
 
 
 def run_guarded_generation(
     *, generate_chunk: Callable[..., str], read_disposition: Callable[[str], dict],
     build_counter: Callable[[str], Any], base_text: str, max_tokens: int, chunk_tokens: int,
-    concepts: list, threshold: float, counter_strength: float, max_fires: int,
+    concepts: list, correctable_concepts, thresholds: dict, counter_strength: float, max_fires: int,
+    layer: int,
 ) -> dict:
     """THE control loop (see the module docstring's MECHANISM section). Engine-agnostic: every engine
     round trip is behind an injected callable, so this function itself never talks to a socket and is
@@ -288,23 +618,41 @@ def run_guarded_generation(
         loop) -- the production adapter turns it into an /intervene call; None means "generate
         uncorrected" (a plain /v1/completions-equivalent call).
     read_disposition(text_so_far: str) -> {concept: float | None}
-        per-concept activation after the text generated so far (a jlens readout, or any other disposition
-        signal a caller wants to inject) -- this loop only compares it against `threshold`.
+        per-concept activation after the text generated so far, for EVERY name in `concepts` (calibrated
+        and uncalibrated alike -- uncalibrated ones are polled purely for annotation, see
+        `max_observed_activation` in the return value).
     build_counter(concept: str) -> Any
         the corrective payload for one concept (production: ConceptSteer.steer_toward's returned dict) --
-        opaque here, passed straight through to `generate_chunk`'s `counter=`.
+        opaque here, passed straight through to `generate_chunk`'s `counter=`. Only ever called for a
+        concept in `correctable_concepts`.
+
+    `correctable_concepts`: the subset of `concepts` eligible to actually FIRE a correction (calibrated at
+    the polled layer -- see the module docstring's UNCALIBRATED CONCEPTS DO NOT FIRE section). A concept
+    outside this set can cross its `thresholds` entry and still never fire -- it is annotate-only.
+    `thresholds`: {concept: float}, per-concept (a calibrated concept's OWN measured threshold, or the
+    uncalibrated placeholder for the rest -- moot for firing since only `correctable_concepts` can fire).
+    `layer`: the single resolved poll layer, folded into every GuardFiring record purely as descriptive
+    metadata (this loop always polls one layer for the whole request).
 
     Returns {"text": str, "fires": [GuardFiring.as_dict(), ...], "n_fires": int, "cap_reached": bool,
-    "n_chunks": int}. Once `max_fires` re-steers have happened, the loop stops POLLING entirely for the
-    rest of generation (not just stops correcting) and generates the remainder in one plain, uncorrected
-    call -- `cap_reached` says so; see GUARD_CAP_NOTE for the receipt-facing wording. Never raises on its
-    own control flow; a failure inside an injected callable propagates to the caller unchanged."""
+    "n_chunks": int, "max_observed_activation": {concept: float | None}}. Once `max_fires` re-steers have
+    happened, the loop stops POLLING entirely for the rest of generation (not just stops correcting) and
+    generates the remainder in one plain, uncorrected call -- `cap_reached` says so; see GUARD_CAP_NOTE
+    for the receipt-facing wording. Never raises on its own control flow; a failure inside an injected
+    callable propagates to the caller unchanged."""
     text = ""
     fires: list[GuardFiring] = []
     cap_reached = False
     chunk_index = 0
     remaining = int(max_tokens)
     token_position = 0
+    max_observed: dict = {c: None for c in concepts}
+
+    def _note_observed(activations: dict) -> None:
+        for c in concepts:
+            v = activations.get(c)
+            if v is not None:
+                max_observed[c] = v if max_observed[c] is None else max(max_observed[c], v)
 
     while remaining > 0:
         this_chunk = min(int(chunk_tokens), remaining)
@@ -319,8 +667,10 @@ def run_guarded_generation(
 
         piece = generate_chunk(prompt_so_far, this_chunk, counter=None)
         activations = read_disposition(prompt_so_far + piece) or {}
+        _note_observed(activations)
         fired_concept = next(
-            (c for c in concepts if activations.get(c) is not None and activations[c] >= threshold),
+            (c for c in concepts if c in correctable_concepts and activations.get(c) is not None
+             and activations[c] >= thresholds.get(c, DEFAULT_THRESHOLD)),
             None,
         )
         if fired_concept is not None:
@@ -329,10 +679,12 @@ def run_guarded_generation(
                 counter = build_counter(fired_concept)
                 corrected = generate_chunk(prompt_so_far, this_chunk, counter=counter)
                 post_activations = read_disposition(prompt_so_far + corrected) or {}
+                _note_observed(post_activations)
                 post = post_activations.get(fired_concept)
                 fires.append(GuardFiring(
                     chunk_index=chunk_index, token_position=token_position, concept=fired_concept,
                     pre_activation=pre, post_activation=post, counter_strength=counter_strength,
+                    layer=layer, threshold=thresholds.get(fired_concept, DEFAULT_THRESHOLD),
                 ))
                 piece = corrected
             else:
@@ -349,6 +701,7 @@ def run_guarded_generation(
         "n_fires": len(fires),
         "cap_reached": cap_reached,
         "n_chunks": chunk_index,
+        "max_observed_activation": max_observed,
     }
 
 
@@ -375,19 +728,49 @@ def _coherence_note(corrected_texts: list) -> dict:
         return {"checked": False, "reason": str(exc)}
 
 
-def build_receipt(result: dict, spec: dict) -> dict:
+def build_receipt(result: dict, spec: dict, *, layer: int, layer_source: str, topk: int,
+                  resolved_signals: dict) -> dict:
     """The public `clozn_guard_receipt` shape -- one canonical builder so every caller (the production
     route, tests) constructs the identical fields. Only present on the response when the guard actually
-    ran (opted in AND concepts resolved); see the module docstring's HONESTY LAW for GUARD_CAVEAT's
-    wording rules."""
+    ran (opted in AND every calibrated concept resolved); see the module docstring's HONESTY LAW for
+    GUARD_CAVEAT's wording rules.
+
+    `receipt['concepts']` is now a per-concept BREAKDOWN (not a bare name list): {name: {"calibrated",
+    "layer", "threshold", "trigger_ids", "trigger_pieces", "max_observed_activation", "note", and (when
+    calibrated) "catch"/"fp"/"n_battery"/"calibration_note"}} -- exactly the "calibrated: bool, the layer
+    actually used, the threshold used, and (when calibrated) the trigger representation" this receipt is
+    required to carry per concept."""
+    max_observed = result.get("max_observed_activation") or {}
+    concepts_receipt = {}
+    for concept in spec["concepts"]:
+        signal = resolved_signals.get(concept) or {
+            "calibrated": False, "threshold": DEFAULT_THRESHOLD, "trigger_ids": None,
+            "trigger_pieces": None, "note": "concept could not be resolved at all",
+        }
+        entry = {
+            "calibrated": bool(signal.get("calibrated")),
+            "layer": layer,
+            "threshold": signal.get("threshold"),
+            "trigger_ids": sorted(signal["trigger_ids"]) if signal.get("trigger_ids") else None,
+            "trigger_pieces": signal.get("trigger_pieces"),
+            "max_observed_activation": max_observed.get(concept),
+            "note": signal.get("note") or signal.get("calibration_note"),
+        }
+        if signal.get("calibrated"):
+            entry["catch"] = signal.get("catch")
+            entry["fp"] = signal.get("fp")
+            entry["n_battery"] = signal.get("n_battery")
+        concepts_receipt[concept] = entry
+
     # run_guarded_generation doesn't retain per-chunk text separately, so the light coherence check runs
     # over the whole final text -- cheap (pure text counting) and still catches the case A1.1's own
     # protocol watched for (a correction that derails into repeat-loop/degenerate output).
     note = _coherence_note([result["text"]]) if result.get("text") else _coherence_note([])
     receipt = {
-        "concepts": list(spec["concepts"]),
-        "layer": spec["layer"],
-        "threshold": spec["threshold"],
+        "concepts": concepts_receipt,
+        "layer": layer,
+        "layer_source": layer_source,
+        "topk": topk,
         "counter_strength": spec["counter_strength"],
         "max_fires": spec["max_fires"],
         "n_fires": result["n_fires"],
@@ -424,28 +807,51 @@ def _sampling_params(sub) -> dict:
 def guarded_chat_completion(handler, messages: list, *, model: str, max_tokens: int, sample=True,
                            spec: dict, source: str = "openai_api", extra_meta: Optional[dict] = None) -> dict:
     """The production entry point routes/openai.py calls when `clozn_guard` is opted in on a non-streaming
-    /v1/chat/completions request. Builds a fresh concept_dir.ConceptSteer bound to the active substrate's
-    raw engine client at `spec['layer']`, resolves every guarded concept up front (fail-closed -- see
-    resolve_guard_concepts), and if that succeeds, drives `run_guarded_generation` with adapters over the
-    engine's real /v1/completions ("complete"), /intervene, and /jlens calls.
+    /v1/chat/completions request.
+
+    Order of operations (see the module docstring's LAYER SELECTION / SIGNAL / FAIL-CLOSED sections):
+      1. Load this exact model's guard calibration (load_guard_calibration), if any.
+      2. Resolve the ONE poll layer (resolve_guard_layer) -- refuse if the engine has no valid J-lens
+         layer at all.
+      3. Build a fresh concept_dir.ConceptSteer at that layer, and resolve every concept's polling signal
+         (resolve_guard_signals) -- refuse if any CALIBRATED concept's dir(c) can't be built.
+      4. Resolve the effective topk (resolve_guard_topk) -- never below CALIBRATION_TOPK_FLOOR once any
+         concept is calibrated.
+      5. Drive run_guarded_generation with adapters over the engine's real /v1/completions ("complete"),
+         /intervene, and /jlens calls.
 
     Returns one of:
-      {"ok": False, "reason": "..."} -- the concept resolution failed; the caller must refuse the whole
-        request (see the module docstring's FAIL-CLOSED DECISION), never fall back to an unguarded reply.
+      {"ok": False, "reason": "..."} -- layer or concept resolution failed; the caller must refuse the
+        whole request (see the module docstring's FAIL-CLOSED DECISION), never fall back to an unguarded
+        reply.
       {"ok": True, "reply": str, "run_id": str | None, "receipt": {...}, "finish_reason": str | None} --
         the guard ran (whether or not it ever actually fired); `receipt` is build_receipt's shape.
-    Never raises on the concept-resolution path; a genuine engine failure during generation propagates
-    (the caller's own error handling applies, matching every other engine-touching route)."""
+    Never raises on the resolution path; a genuine engine failure during generation propagates (the
+    caller's own error handling applies, matching every other engine-touching route)."""
     import time
     from clozn.server import app as ctx
     from clozn.behavior.steering.concept_dir import ConceptSteer, _text_of as _engine_text_of
 
     started = time.time()
     sub = ctx.active_sub(handler)
-    concept_steer = ConceptSteer(sub.engine, layer=spec["layer"])
-    built, reason = resolve_guard_concepts(concept_steer, spec["concepts"], spec["layer"])
-    if built is None:
+    model_sha256 = getattr(sub, "model_sha256", None)
+    calibration = load_guard_calibration(model_sha256) if model_sha256 else None
+
+    available_layers = engine_jlens_layers(sub.engine)
+    layer, layer_source = resolve_guard_layer(spec, calibration, available_layers)
+    if layer is None:
+        return {"ok": False,
+               "reason": "no valid J-lens layer is available on this engine (jlens not loaded, or the "
+                         "engine reports no fitted layers) -- cannot poll disposition at any layer"}
+
+    concept_steer = ConceptSteer(sub.engine, layer=layer)
+    resolved_signals, reason = resolve_guard_signals(concept_steer, spec, calibration, layer)
+    if resolved_signals is None:
         return {"ok": False, "reason": reason}
+
+    correctable_concepts = {c for c, s in resolved_signals.items() if s["calibrated"]}
+    thresholds = {c: s["threshold"] for c, s in resolved_signals.items()}
+    topk = resolve_guard_topk(spec, resolved_signals)
 
     base_text = ctx._engine_tmpl(sub.engine, messages)
     engine_kw = _sampling_params(sub)
@@ -456,20 +862,21 @@ def guarded_chat_completion(handler, messages: list, *, model: str, max_tokens: 
             resp = sub.engine.complete(prompt_so_far, max_tokens=int(max_new), **engine_kw)
         else:
             resp = sub.engine.intervene(prompt_so_far, vector=counter["vector"], coef=counter["coef"],
-                                        layer=spec["layer"], max_tokens=int(max_new), **engine_kw)
+                                        layer=layer, max_tokens=int(max_new), **engine_kw)
         choices = resp.get("choices") if isinstance(resp, dict) else None
         if choices:
             last_finish["reason"] = choices[0].get("finish_reason")
         return _engine_text_of(resp)
 
     def read_disposition(text_so_far: str) -> dict:
-        jl = sub.engine.jlens(text_so_far, layer=spec["layer"], topk=spec["topk"])
-        return {concept: concept_activation(jl, built[concept]["token_id"]) for concept in spec["concepts"]}
+        jl = sub.engine.jlens(text_so_far, layer=layer, topk=topk)
+        return {concept: concept_activation(jl, resolved_signals[concept].get("trigger_ids"))
+               for concept in spec["concepts"]}
 
     def build_counter(concept: str):
-        corrected = concept_steer.steer_toward(concept, spec["counter_strength"], layer=spec["layer"])
+        corrected = concept_steer.steer_toward(concept, spec["counter_strength"], layer=layer)
         if not corrected.get("ok"):
-            # A build that succeeded at setup (resolve_guard_concepts) but fails now is a genuine internal
+            # A build that succeeded at setup (resolve_guard_signals) but fails now is a genuine internal
             # inconsistency, not a normal degrade path -- surface it rather than silently steering nothing.
             raise RuntimeError(
                 f"counter-direction for {concept!r} became unavailable mid-generation: {corrected.get('note')}"
@@ -479,10 +886,11 @@ def guarded_chat_completion(handler, messages: list, *, model: str, max_tokens: 
     result = run_guarded_generation(
         generate_chunk=generate_chunk, read_disposition=read_disposition, build_counter=build_counter,
         base_text=base_text, max_tokens=int(max_tokens), chunk_tokens=spec["chunk_tokens"],
-        concepts=spec["concepts"], threshold=spec["threshold"], counter_strength=spec["counter_strength"],
-        max_fires=spec["max_fires"],
+        concepts=spec["concepts"], correctable_concepts=correctable_concepts, thresholds=thresholds,
+        counter_strength=spec["counter_strength"], max_fires=spec["max_fires"], layer=layer,
     )
-    receipt = build_receipt(result, spec)
+    receipt = build_receipt(result, spec, layer=layer, layer_source=layer_source, topk=topk,
+                           resolved_signals=resolved_signals)
 
     meta = dict(extra_meta or {})
     meta["clozn_guard"] = receipt
