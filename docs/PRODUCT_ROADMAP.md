@@ -13,7 +13,31 @@ The forward-looking half of `docs/ROADMAP.md` is superseded by this file.
 Effort bands: **S** ≤ ~2 days · **M** ≤ ~2 weeks · **L** weeks-to-months · **R** gated on a
 research result. Bands are planning aids, not commitments.
 
-### Delivery status — 2026-07-22
+### Delivery status — 2026-07-23
+
+**2026-07-23 run addendum (BK-directed autonomous run):**
+- **R1 / provenance — WIRED.** The 41/41-validated `trace_provenance` now has a product surface:
+  `clozn provenance [last]` + `POST /runs/<id>/provenance` (938601b). The R1 chip *label language*
+  remains BK's product decision; the verb ships with the module's honest verdict strings.
+- **Phase 3.6 — abstain/ask ACTION added (opt-in).** `clozn_selective`, default off, fail-closed
+  without a calibrated profile, token-probability caveat on every firing (ff3d06f).
+- **R5 / tracer — screen-null CLOSED + contrastive scoring shipped.** The pre-registered screen-null
+  came back MIXED (absolute screen nominates answer-CATEGORY sites; a wrong token PASSes); the fix,
+  contrastive+directional foil scoring, makes it answer-SELECTIVE (wrong token → 0 strong nodes 6/6)
+  (1edcecf). `causal-trace` gained `--from-run`/`--contrast`/`--screen-mode` + an auto-downgrade
+  robustness fix (0984ffa).
+- **R6 / facts tier — MEASURED (Q3).** Null-controlled injection battery: value injection is
+  answer-SPECIFIC (real 5/12 vs null 0/12) but efficacy moderate (42%, untuned) — real mechanism,
+  promotion gated on an efficacy-tuning pass (0bc5d33). Not shipped at 42%.
+- **R3 / guardrails — PRODUCTIZED (opt-in), honest.** `clozn_guard` mid-gen detect+correct, per-firing
+  receipt, re-steer cap, fail-closed refuse (df01235). Framed PRESENT-TENSE (A1.1's lead-time thesis
+  FAILED, median 0 tokens); firing threshold is an uncalibrated placeholder → promotion gated on a
+  threshold-calibration pass, same shape as facts.
+- **Molecules program — MEASURED NEGATIVE (distributed-function arc complete).** Greedily-optimized
+  position coalitions do NOT beat matched random coalitions (0.93x); distributed function holds at a
+  5th level. Localized structure lives on the input edges (attention severance), not residual sites
+  (6efda7a).
+- **Doc-drift hygiene + per-model concept-dial calibration** (6745334, cf40711).
 
 Status meanings: **DONE** means the acceptance language in this roadmap is implemented and tested;
 **IN PROGRESS** means a useful slice is shipped but named acceptance work remains. Items not listed
@@ -343,7 +367,10 @@ training, native circuit-tracer reimplementation.
 - **R2 — Model-diff transplants** (BACKLOG #11). Cross-model residual alignment + A→B transplant
   at token+layer. *Hook:* upgrades Model CI from "shows the regression" to "localizes it, proven
   by transplant." **L/R.**
-- **R3 — Mid-gen guardrails productization** (A1.1 LIVES: 100% catch / 5% FP). Receipt per firing,
+- **R3 — Mid-gen guardrails productization** (A1.1 was INCONCLUSIVE: catch 100% / FP 5% PASSED, but
+  the intent-before-speech lead-time thesis FAILED at median 0 tokens — so this is a PRESENT-TENSE
+  detect-and-correct guard, never precognitive. Opt-in `clozn_guard` built + tested + honesty-clean
+  (df01235); firing threshold uncalibrated, promotion gated on a calibration pass). Receipt per firing,
   re-steer cap, honest copy ("catches and corrects during generation," never "reads intent
   early"). *Hook:* the headline steering feature for developers. **M.**
 - **R4 — Steering-pack demand test.** Publish ~3 verified dial packs (contrastive for register,
