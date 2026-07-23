@@ -649,5 +649,172 @@ def test_steer_vector_skips_a_concept_that_fails_to_build(tmp_path):
     np.testing.assert_allclose(vec, expected.tolist(), atol=1e-3)
 
 
+# ==================================================================================== per-model concept-dial
+# calibration: the schema, the path convention, and the missing-file=no-op fallback discipline (mirroring
+# clozn.server.app._dial_calibration()'s tone-dial calibration file). All model-free -- the live
+# measurement sweep (scripts/calibration/concept_dial_autocalibrate.py) is deferred (needs a real engine).
+
+def test_concept_calibration_path_scopes_per_exact_digest():
+    p = cd.concept_calibration_path("abc123")
+    assert p == os.path.join(os.path.expanduser("~"), ".clozn", "models", "abc123",
+                             "concept_dial_calibration.json")
+
+
+def test_concept_calibration_path_falls_back_to_legacy_root_without_a_digest():
+    p = cd.concept_calibration_path(None)
+    assert p == os.path.join(os.path.expanduser("~"), ".clozn", "concept_dial_calibration.json")
+
+
+def test_load_concept_dial_calibration_missing_file_returns_none(tmp_path):
+    assert cd.load_concept_dial_calibration(path=str(tmp_path / "nope.json")) is None
+
+
+def test_load_concept_dial_calibration_wrong_schema_returns_none(tmp_path):
+    p = tmp_path / "concept_dial_calibration.json"
+    p.write_text(json.dumps({"schema": "something.else.v1",
+                             "layers": {"21": {"median_resid_norm": 100.0}}}), encoding="utf-8")
+    assert cd.load_concept_dial_calibration(path=str(p)) is None
+
+
+def test_load_concept_dial_calibration_no_layers_returns_none(tmp_path):
+    p = tmp_path / "concept_dial_calibration.json"
+    p.write_text(json.dumps({"schema": cd.CONCEPT_CALIBRATION_SCHEMA, "layers": {}}), encoding="utf-8")
+    assert cd.load_concept_dial_calibration(path=str(p)) is None
+
+
+def test_load_concept_dial_calibration_corrupt_json_returns_none(tmp_path):
+    p = tmp_path / "concept_dial_calibration.json"
+    p.write_text("{not valid json", encoding="utf-8")
+    assert cd.load_concept_dial_calibration(path=str(p)) is None
+
+
+def test_save_then_load_concept_dial_calibration_round_trips(tmp_path):
+    p = str(tmp_path / "concept_dial_calibration.json")
+    written = cd.save_concept_dial_calibration(
+        "modelsha", {21: {"median_resid_norm": 200.5, "usable_scale_range": [0.2, 0.6],
+                          "derail_point": 0.8, "works": True, "n_samples": 12}},
+        path=p, note="smoke sweep",
+    )
+    assert written == p
+    out = cd.load_concept_dial_calibration(path=p)
+    assert out == {21: {"median_resid_norm": 200.5, "usable_scale_range": (0.2, 0.6),
+                        "derail_point": 0.8, "works": True}}
+
+
+def test_save_concept_dial_calibration_raises_on_missing_median_norm(tmp_path):
+    with pytest.raises(ValueError, match="median_resid_norm"):
+        cd.save_concept_dial_calibration("m", {21: {"works": True}}, path=str(tmp_path / "x.json"))
+
+
+def test_save_concept_dial_calibration_raises_on_bad_scale_range_shape(tmp_path):
+    with pytest.raises(ValueError, match="usable_scale_range"):
+        cd.save_concept_dial_calibration(
+            "m", {21: {"median_resid_norm": 10.0, "usable_scale_range": [0.1]}}, path=str(tmp_path / "x.json"))
+
+
+def test_load_concept_dial_calibration_skips_malformed_layer_entries_keeps_the_rest(tmp_path):
+    p = tmp_path / "concept_dial_calibration.json"
+    p.write_text(json.dumps({
+        "schema": cd.CONCEPT_CALIBRATION_SCHEMA,
+        "layers": {
+            "21": {"median_resid_norm": 150.0},
+            "not-an-int": {"median_resid_norm": 999.0},
+            "25": {"median_resid_norm": None},          # wrong type -- dropped
+            "16": "not-a-dict",                          # wrong shape -- dropped
+        },
+    }), encoding="utf-8")
+    out = cd.load_concept_dial_calibration(path=str(p))
+    assert out == {21: {"median_resid_norm": 150.0, "usable_scale_range": None,
+                        "derail_point": None, "works": True}}
+
+
+# ==================================================================================== ConceptSteer wiring:
+# per-model calibration present -> used; absent -> global fallback; both cases say which source applied.
+
+def test_concept_steer_defaults_to_global_when_no_model_sha256_configured(tmp_path):
+    """No model_sha256/calibration passed at all -- existing callers must behave EXACTLY as before this
+    feature existed (Law #6)."""
+    steer, _ec = _steer_with_fixtures(tmp_path)   # layer=21 default
+    assert steer.median_norm == cd.VALIDATED_MEDIAN_RESID_NORM[21]
+    assert steer.median_norm_source == "global_default"
+    assert steer.scale_range == cd.VALIDATED_SCALE_RANGE
+    assert steer.scale_range_source == "global_default"
+
+
+def test_concept_steer_explicit_median_norm_still_wins_over_everything(tmp_path):
+    steer, _ec = _steer_with_fixtures(tmp_path, median_norm=999.0)
+    assert steer.median_norm == 999.0
+    assert steer.median_norm_source == "explicit"
+
+
+def test_concept_steer_uses_injected_per_model_calibration_dict(tmp_path):
+    jdir, _ = _write_jlens_fixture(tmp_path, d_model=32, layers=(21,), seed=40)
+    udir, _ = _write_unembed_fixture(tmp_path, d_model=32, vocab=32, seed=41)
+    source = cd.ConceptDirSource(jlens_dir=jdir, unembed_dir=udir)
+    ec = FakeEngineClient(vocab={" ocean": [3]})
+    calibration = {21: {"median_resid_norm": 55.5, "usable_scale_range": (0.1, 0.2),
+                        "derail_point": 0.3, "works": True}}
+
+    steer = cd.ConceptSteer(ec, source=source, layer=21, calibration=calibration)
+
+    assert steer.median_norm == 55.5
+    assert steer.median_norm_source == "per_model_calibration"
+    assert steer.scale_range == (0.1, 0.2)
+    assert steer.scale_range_source == "per_model_calibration"
+
+    out = steer.steer_toward("ocean", 0.4)
+    assert out["ok"] is True
+    assert out["coef"] == pytest.approx(0.4 * 55.5)
+    assert out["norm_source"] == "per_model_calibration"
+
+
+def test_concept_steer_note_reflects_the_per_model_scale_range_when_present(tmp_path):
+    jdir, _ = _write_jlens_fixture(tmp_path, d_model=32, layers=(21,), seed=40)
+    udir, _ = _write_unembed_fixture(tmp_path, d_model=32, vocab=32, seed=41)
+    source = cd.ConceptDirSource(jlens_dir=jdir, unembed_dir=udir)
+    ec = FakeEngineClient(vocab={" ocean": [3]})
+    calibration = {21: {"median_resid_norm": 55.5, "usable_scale_range": (0.1, 0.2)}}
+    steer = cd.ConceptSteer(ec, source=source, layer=21, calibration=calibration)
+
+    out = steer.steer_toward("ocean", 1.5)
+
+    assert out["ok"] is True
+    assert "0.1" in out["note"] and "0.2" in out["note"]
+
+
+def test_concept_steer_model_sha256_reads_the_real_loader_via_concept_calibration_path(tmp_path, monkeypatch):
+    """Full wiring, not just the injected-dict shortcut: ConceptSteer(model_sha256=...) actually calls
+    load_concept_dial_calibration, which resolves concept_calibration_path -- proven by monkeypatching that
+    resolver into tmp_path instead of touching the real ~/.clozn."""
+    calib_path = tmp_path / "concept_dial_calibration.json"
+    monkeypatch.setattr(cd, "concept_calibration_path", lambda model_sha256=None: str(calib_path))
+    cd.save_concept_dial_calibration("digest123", {21: {"median_resid_norm": 77.0}}, path=str(calib_path))
+
+    jdir, _ = _write_jlens_fixture(tmp_path, d_model=32, layers=(21,), seed=40)
+    udir, _ = _write_unembed_fixture(tmp_path, d_model=32, vocab=32, seed=41)
+    source = cd.ConceptDirSource(jlens_dir=jdir, unembed_dir=udir)
+    ec = FakeEngineClient(vocab={" ocean": [3]})
+
+    steer = cd.ConceptSteer(ec, source=source, layer=21, model_sha256="digest123")
+
+    assert steer.median_norm == 77.0
+    assert steer.median_norm_source == "per_model_calibration"
+
+
+def test_concept_steer_model_sha256_falls_back_to_global_when_calibration_file_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(cd, "concept_calibration_path", lambda model_sha256=None: str(tmp_path / "nope.json"))
+    jdir, _ = _write_jlens_fixture(tmp_path, d_model=32, layers=(21,), seed=40)
+    udir, _ = _write_unembed_fixture(tmp_path, d_model=32, vocab=32, seed=41)
+    source = cd.ConceptDirSource(jlens_dir=jdir, unembed_dir=udir)
+    ec = FakeEngineClient(vocab={" ocean": [3]})
+
+    steer = cd.ConceptSteer(ec, source=source, layer=21, model_sha256="digest123")
+
+    assert steer.median_norm == cd.VALIDATED_MEDIAN_RESID_NORM[21]
+    assert steer.median_norm_source == "global_default"
+    assert steer.scale_range == cd.VALIDATED_SCALE_RANGE
+    assert steer.scale_range_source == "global_default"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

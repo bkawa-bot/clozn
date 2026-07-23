@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -76,6 +77,20 @@ VALIDATED_SCALE_RANGE = (0.25, 0.5)
 # ../clozn-jlens-work/scripts/run_j5a_swap.py's MEDIAN_NORM (measured over cached hf_hidden
 # activations, ../clozn-jlens-work/artifacts/dirc_selfconsistency_results.json's norm_calibration).
 # Model/layer-specific: only valid for the fitted J-lens model (today: Qwen2.5-7B-Instruct).
+#
+# THE HOLE THIS MODULE'S PER-MODEL CALIBRATION CLOSES: the table above (and VALIDATED_SCALE_RANGE) is
+# PINNED to one exact model -- a different GGUF has its own residual-activation scale entirely (the same
+# lesson research/dial_autocalibrate_engine.py's own docstring documents for the diff-of-means tone
+# dials: "a raw number does not transfer even to a different quantization/layer"). `load_concept_dial_
+# calibration` / `save_concept_dial_calibration` below are the per-exact-model equivalent of
+# clozn.server.app._dial_calibration()'s ~/.clozn/dial_calibration.json for THIS dial (dir(c)), written
+# to the SAME _model_scoped_path-style per-digest location
+# (~/.clozn/models/<model_sha256>/concept_dial_calibration.json) by
+# scripts/calibration/concept_dial_autocalibrate.py's live sweep. `ConceptSteer` reads the per-model file
+# when one is configured and present, and falls back to the constants below when it is absent -- NEVER
+# silently: every resolved (median_resid_norm, scale_range) pair carries a `source` string
+# ("per_model_calibration" | "global_default" | "explicit") so a caller can always tell which one fired
+# (see ConceptSteer._resolve_median_norm/_resolve_scale_range and steer_toward's own "norm_source" field).
 VALIDATED_MEDIAN_RESID_NORM = {16: 40.71, 21: 146.68, 25: 343.14}
 
 
@@ -195,6 +210,131 @@ def load_unembed(unembed_dir: Optional[str] = None) -> UnembedWeights:
         raise ValueError(
             f"unembed shape mismatch: norm_weight {norm_weight.shape} vs lm_head_weight {lm_head_weight.shape}")
     return UnembedWeights(norm_weight=norm_weight, lm_head_weight=lm_head_weight, eps=eps)
+
+
+# ============================================================================== per-model concept-dial calibration
+#
+# The per-exact-model equivalent of clozn.server.app._dial_calibration()'s ~/.clozn/dial_calibration.json,
+# but for dir(c) instead of the diff-of-means tone dials -- see the module docstring's THE HOLE THIS
+# MODULE'S PER-MODEL CALIBRATION CLOSES section above VALIDATED_MEDIAN_RESID_NORM. Written by
+# scripts/calibration/concept_dial_autocalibrate.py's live sweep (deferred from this module's own tests --
+# it needs a running engine + a loaded J-lens sidecar, exactly like that script's own live path); this
+# module only owns the schema, the read, and the missing-file=no-op fallback discipline, all of which stay
+# model-free and are unit-tested directly (tests/test_concept_dir.py).
+
+CONCEPT_CALIBRATION_SCHEMA = "clozn.concept_dial_calibration.v1"
+
+
+def concept_calibration_path(model_sha256: Optional[str] = None) -> str:
+    """~/.clozn/models/<model_sha256>/concept_dial_calibration.json when a digest is given -- the SAME
+    per-exact-GGUF scoping convention clozn.server.app._model_scoped_path uses for the tone-dial
+    calibration file -- else the legacy ~/.clozn/concept_dial_calibration.json root (mirrors
+    _model_scoped_path's own "no digest known yet" fallback). This module stays import-light (no
+    clozn.server.app dependency: it must keep working standalone via --selftest/--demo, with no server
+    process at all), so the digest is a plain string argument here, never read off a live substrate --
+    callers that DO have a live substrate (the server, a future engine_adapter wiring) pass its
+    `model_sha256` through explicitly."""
+    base = os.path.join(os.path.expanduser("~"), ".clozn")
+    if model_sha256:
+        return os.path.join(base, "models", str(model_sha256), "concept_dial_calibration.json")
+    return os.path.join(base, "concept_dial_calibration.json")
+
+
+def load_concept_dial_calibration(model_sha256: Optional[str] = None, *,
+                                  path: Optional[str] = None) -> Optional[dict]:
+    """This exact model's per-layer concept-dial calibration, or None when there is nothing usable to
+    read (missing file, unreadable JSON, wrong/missing schema tag, or no valid layer entries) -- NEVER
+    raises, mirroring clozn.server.app._dial_calibration()'s missing-file=no-op discipline exactly: every
+    caller (ConceptSteer) must fall back to the global VALIDATED_* constants exactly as it did before this
+    existed, so an uncalibrated model's dir(c) behaves EXACTLY as it always has.
+
+    Returns {layer:int -> {"median_resid_norm": float, "usable_scale_range": (lo, hi) or None,
+    "derail_point": float or None, "works": bool}}, or None. A malformed individual layer entry is
+    skipped (not fatal to the rest of the file), matching clozn.server.app._dial_calibration()'s own
+    per-entry tolerance."""
+    p = path or concept_calibration_path(model_sha256)
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict) or raw.get("schema") != CONCEPT_CALIBRATION_SCHEMA:
+            return None
+        layers = raw.get("layers")
+        if not isinstance(layers, dict) or not layers:
+            return None
+        out: dict = {}
+        for key, entry in layers.items():
+            try:
+                layer = int(key)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(entry, dict):
+                continue
+            median_norm = entry.get("median_resid_norm")
+            if isinstance(median_norm, bool) or not isinstance(median_norm, (int, float)):
+                continue
+            scale_range = entry.get("usable_scale_range")
+            if (isinstance(scale_range, (list, tuple)) and len(scale_range) == 2
+                    and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in scale_range)):
+                scale_range = (float(scale_range[0]), float(scale_range[1]))
+            else:
+                scale_range = None
+            out[layer] = {
+                "median_resid_norm": float(median_norm),
+                "usable_scale_range": scale_range,
+                "derail_point": entry.get("derail_point"),
+                "works": bool(entry.get("works", True)),
+            }
+        return out or None
+    except Exception:
+        return None
+
+
+def save_concept_dial_calibration(model_sha256: Optional[str], layers: dict, *,
+                                  path: Optional[str] = None, note: Optional[str] = None) -> str:
+    """Atomically write one model's per-layer concept-dial calibration -- the counterpart
+    scripts/calibration/concept_dial_autocalibrate.py's live sweep calls once it has measured this
+    model's own median residual norm + usable dir(c) scale range at each fitted J-lens layer.
+
+    `layers` is {layer -> {"median_resid_norm" (required), "usable_scale_range" ([lo, hi], optional),
+    "derail_point" (optional), "works" (optional, default True), "n_samples" (optional)}}. Raises
+    ValueError up front on a structurally bad entry (fail fast, before any file write) -- this is the
+    ONE call in this pair that names a bad calibration input instead of writing a file `load_concept_
+    dial_calibration` would then have to silently reject. Returns the path written."""
+    validated: dict = {}
+    for key, entry in layers.items():
+        layer = int(key)
+        if not isinstance(entry, dict) or entry.get("median_resid_norm") is None:
+            raise ValueError(f"layer {layer}: calibration entry must be a dict with 'median_resid_norm'")
+        median_norm = float(entry["median_resid_norm"])
+        scale_range = entry.get("usable_scale_range")
+        if scale_range is not None:
+            if len(scale_range) != 2:
+                raise ValueError(f"layer {layer}: usable_scale_range must be [lo, hi]")
+            scale_range = [float(scale_range[0]), float(scale_range[1])]
+        derail_point = entry.get("derail_point")
+        validated[str(layer)] = {
+            "median_resid_norm": median_norm,
+            "usable_scale_range": scale_range,
+            "derail_point": (float(derail_point) if derail_point is not None else None),
+            "works": bool(entry.get("works", True)),
+            "n_samples": (int(entry["n_samples"]) if entry.get("n_samples") is not None else None),
+        }
+    out = {
+        "schema": CONCEPT_CALIBRATION_SCHEMA,
+        "model_sha256": model_sha256,
+        "layers": validated,
+        "measured_ts": time.time(),
+        "note": note,
+    }
+    dest = path or concept_calibration_path(model_sha256)
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    tmp = dest + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=2)
+    os.replace(tmp, dest)
+    return dest
 
 
 # ============================================================================== the math (dir(c) itself)
@@ -401,14 +541,64 @@ class ConceptSteer:
     """
 
     def __init__(self, engine_client, source: Optional[ConceptDirSource] = None,
-                 layer: int = DEFAULT_LAYER, median_norm: Optional[float] = None):
+                 layer: int = DEFAULT_LAYER, median_norm: Optional[float] = None,
+                 model_sha256: Optional[str] = None, calibration: Optional[dict] = None):
         self.ec = engine_client
         self.source = source or ConceptDirSource()
         self.layer = int(layer)
-        self.median_norm = float(median_norm) if median_norm is not None else VALIDATED_MEDIAN_RESID_NORM.get(self.layer)
+        self.model_sha256 = model_sha256
+        # Per-model concept-dial calibration (see the module docstring's THE HOLE ... section, and
+        # load_concept_dial_calibration's own docstring for the missing-file=no-op discipline). `calibration`
+        # lets a caller hand over an already-loaded dict directly (tests, or a caller that has it in memory
+        # already); otherwise this loads ~/.clozn/models/<model_sha256>/concept_dial_calibration.json when
+        # `model_sha256` is given, and stays None (falls straight through to the global VALIDATED_*
+        # constants below) when it isn't -- so every EXISTING caller that never passes model_sha256 behaves
+        # EXACTLY as it did before this existed (never silently wrong the other way either: `median_norm_
+        # source`/`scale_range_source` always say which table actually fired).
+        if calibration is not None:
+            self._calibration = calibration
+        elif model_sha256:
+            self._calibration = load_concept_dial_calibration(model_sha256)
+        else:
+            self._calibration = None
+        self._explicit_median_norm = float(median_norm) if median_norm is not None else None
+        self.median_norm, self.median_norm_source = self._resolve_median_norm(self.layer)
+        self.scale_range, self.scale_range_source = self._resolve_scale_range(self.layer)
         self.strength: dict = {}       # {concept: signed strength} -- the persistent dial state
         self._vecs: dict = {}          # {(concept, layer): unit dir(c) ndarray}
         self._token_ids: dict = {}     # {(concept, layer): token_id}
+
+    # -- per-model calibration resolution ------------------------------------------------------
+
+    def _resolve_median_norm(self, layer: int) -> tuple[Optional[float], str]:
+        """(median_norm, source) for `layer`, in precedence order: an EXPLICIT ctor `median_norm`
+        always wins ("explicit"); else this model's own per-model calibration file, when configured and
+        it covers `layer` ("per_model_calibration"); else the global VALIDATED_MEDIAN_RESID_NORM table,
+        pinned to Qwen2.5-7B-Instruct Q4_K_M ("global_default"); else (None, "unavailable") when nothing
+        at all covers this layer. The `source` string is the "log which applied" this module's per-model
+        calibration is required to never skip -- read it off self.median_norm_source, or off
+        steer_toward()'s own returned "norm_source" field for one built vector."""
+        if self._explicit_median_norm is not None:
+            return self._explicit_median_norm, "explicit"
+        cal = (self._calibration or {}).get(layer)
+        if cal and cal.get("median_resid_norm") is not None:
+            return float(cal["median_resid_norm"]), "per_model_calibration"
+        global_val = VALIDATED_MEDIAN_RESID_NORM.get(layer)
+        if global_val is not None:
+            return float(global_val), "global_default"
+        return None, "unavailable"
+
+    def _resolve_scale_range(self, layer: int) -> tuple[tuple[float, float], str]:
+        """(usable_scale_range, source) for `layer` -- this model's own per-model calibrated range when
+        configured and present, else the global VALIDATED_SCALE_RANGE (0.25, 0.5), pinned to the same one
+        fitted model as VALIDATED_MEDIAN_RESID_NORM. Unlike median_norm there is no 'unavailable' case:
+        the global range is always a defined fallback (it just may be the wrong one for this model, which
+        is exactly what a per-model measurement corrects)."""
+        cal = (self._calibration or {}).get(layer)
+        if cal and cal.get("usable_scale_range"):
+            lo, hi = cal["usable_scale_range"]
+            return (float(lo), float(hi)), "per_model_calibration"
+        return VALIDATED_SCALE_RANGE, "global_default"
 
     # -- word -> token id --------------------------------------------------------------------
 
@@ -504,14 +694,18 @@ class ConceptSteer:
         `concept`'s strength (so it composes with steer_vector() like a normal dial) AND returns
         an /intervene-ready payload in one call:
           {"ok": True, "concept", "token_id", "layer", "strength", "vector" (UNIT, list[float]),
-           "coef" (float), "note"?} -- feed straight into
+           "coef" (float), "note"?, "norm_source"} -- feed straight into
            engine_client.intervene(prompt, vector=res["vector"], coef=res["coef"],
                                     layer=res["layer"], max_tokens=...),
            or engine_client.score(..., steer_vec=res["vector"],
                                    steer={"coef": res["coef"], "layer": res["layer"]}).
-        `coef = strength * this layer's validated median residual norm` -- the realistic
-        injection magnitude (see VALIDATED_MEDIAN_RESID_NORM); the engine multiplies
-        `coef * vector` itself, so `vector` stays a unit direction on the wire.
+        `coef = strength * this layer's median residual norm` -- the realistic injection magnitude,
+        resolved by `_resolve_median_norm` in precedence order: an explicit ctor `median_norm`, else
+        this model's own per-model calibration (see load_concept_dial_calibration), else the global
+        VALIDATED_MEDIAN_RESID_NORM table pinned to Qwen2.5-7B-Instruct Q4_K_M. `norm_source` on the
+        returned dict says which one actually fired ("explicit" | "per_model_calibration" |
+        "global_default") -- never silently wrong about which table a caller is trusting. The engine
+        multiplies `coef * vector` itself, so `vector` stays a unit direction on the wire.
         On any failure, returns compute()'s `{"ok": False, "blocked", "note"}` shape (never
         raises), with `strength` folded in for the caller's bookkeeping.
         """
@@ -520,22 +714,29 @@ class ConceptSteer:
             built["strength"] = strength
             return built
         resolved_layer = built["layer"]
-        median_norm = (self.median_norm if resolved_layer == self.layer
-                       else VALIDATED_MEDIAN_RESID_NORM.get(resolved_layer))
+        if resolved_layer == self.layer:
+            median_norm, norm_source = self.median_norm, self.median_norm_source
+            scale_range = self.scale_range
+        else:
+            median_norm, norm_source = self._resolve_median_norm(resolved_layer)
+            scale_range, _ = self._resolve_scale_range(resolved_layer)
         if not median_norm:
             return {"ok": False, "blocked": "no_norm_calibration", "concept": concept,
                     "layer": resolved_layer, "strength": strength,
                     "note": f"no validated median-residual-norm calibration for layer {resolved_layer}; "
-                            "construct ConceptSteer(..., median_norm=...) explicitly for this layer"}
+                            "construct ConceptSteer(..., median_norm=...) explicitly for this layer, or "
+                            "run scripts/calibration/concept_dial_autocalibrate.py to measure one"}
         self.strength[concept] = float(strength)
         coef = float(strength) * float(median_norm)
         note = None
         if abs(strength) >= 1.0:
-            note = ("validated operating point is scale in [0.25, 0.5] at L21 (+6..9 nat over "
-                    "baseline logprob, content-specific vs an equal-norm random write); "
-                    "|strength|>=1.0 over-injects and degrades coherence (see j5a_swap_result.txt)")
+            note = (f"validated operating point is scale in [{scale_range[0]}, {scale_range[1]}] at "
+                    f"L{resolved_layer} (+6..9 nat over baseline logprob, content-specific vs an "
+                    "equal-norm random write); |strength|>=1.0 over-injects and degrades coherence "
+                    "(see j5a_swap_result.txt)")
         return {"ok": True, "concept": concept, "token_id": built["token_id"], "layer": resolved_layer,
-                "strength": float(strength), "vector": built["vector"], "coef": coef, "note": note}
+                "strength": float(strength), "vector": built["vector"], "coef": coef, "note": note,
+                "norm_source": norm_source}
 
     # -- persistent-dial surface (mirrors EngineSteer) ----------------------------------------
 
@@ -564,7 +765,11 @@ class ConceptSteer:
             built = self.compute(concept, layer=self.layer)
             if not built.get("ok"):
                 continue
-            median_norm = self.median_norm or VALIDATED_MEDIAN_RESID_NORM.get(built["layer"])
+            # built["layer"] == self.layer always here (compute() was called with layer=self.layer
+            # explicitly above), so self.median_norm -- already resolved with the full explicit ->
+            # per-model-calibration -> global-default precedence (see _resolve_median_norm) -- is the
+            # correct value for this concept's contribution, no re-resolution needed.
+            median_norm = self.median_norm
             if not median_norm:
                 continue
             contribution = np.asarray(built["vector"], dtype=np.float32) * (float(value) * float(median_norm))
