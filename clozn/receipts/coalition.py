@@ -5,7 +5,7 @@ leave-one-out (LOO) machinery.
 
 WHY THIS EXISTS (this project's own causal-tracer autopsy -- the measured motivation, not a hunch): solo
 (leave-one-out) attribution systematically OVERCOUNTS a joint effect. The tracer study found a median
-interaction_gap/sum_solo around -60% (up to -73% on a larger model): summing every influence's OWN solo
+interaction_gap/sum_solo around -60% (-82% median on a larger model, Llama-3.1-8B): summing every influence's OWN solo
 delta ran roughly 2.5x the size of what removing them all TOGETHER actually did. "Sum-of-singles != joint
 ablation" cost a wrong reported result once already (the same project's own retrospective). This module
 never reports solo deltas alone -- every report also runs pairwise coalitions, a joint (all-at-once) arm,
@@ -56,8 +56,8 @@ DEFAULT_TOP_K_PAIRS = 10
 
 OVERCOUNTING_CAVEAT = (
     "solo (leave-one-out) attribution characteristically OVERCOUNTS a joint effect: this project's own "
-    "causal-tracing study measured a median interaction_gap/sum_solo around -60% (up to -73% on a larger "
-    "model) -- summing every influence's solo delta ran roughly 2.5x the size of the actual joint effect. "
+    "causal-tracing study measured a median interaction_gap/sum_solo around -60% (-82% median on a larger "
+    "model, Llama-3.1-8B) -- summing every influence's solo delta ran roughly 2.5x the size of the actual joint effect. "
     "Read THIS run's own gap below; it is not guaranteed to match that figure."
 )
 
