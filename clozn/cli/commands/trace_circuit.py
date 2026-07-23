@@ -37,16 +37,28 @@ def add_subparser(sub):
 def _build(name, sub, help):
     kw = {"help": help} if help else {}
     pt = sub.add_parser(name, **kw)
-    pt.add_argument("--prompt", required=True, help="the prompt text (teacher-forced context)")
-    pt.add_argument("--continuation", required=True,
+    pt.add_argument("--prompt", default=None, help="the prompt text (teacher-forced context)")
+    pt.add_argument("--continuation", default=None,
                     help="the continuation text whose token --pos is being traced")
+    pt.add_argument("--from-run", default=None, metavar="ID|last",
+                    help="trace a stored run instead of --prompt/--continuation: 'last' (latest "
+                         "non-derived journal run) or a run id. Uses the run's recorded final_prompt "
+                         "+ answer, the same journal selection as `provenance last`/`context last`.")
     pt.add_argument("--pos", type=int, default=0,
                     help="0-based index of the target token within the continuation (default 0)")
+    pt.add_argument("--contrast", default=None, metavar="FOIL|auto",
+                    help="score CONTRASTIVELY against a foil token (answer-selectivity, not "
+                         "answer-category): a token/word, or 'auto' = the baseline runner-up. See the "
+                         "screen-null finding (scripts/tracer/screen_null.py) for why this matters.")
     pt.add_argument("--concepts", default="",
                     help="comma-separated extra concept words to screen with (beyond the target token)")
     pt.add_argument("--engine", default="http://127.0.0.1:8080", help="cloze-server base URL")
     pt.add_argument("--jlens-dir", default=None,
                     help="J-lens sidecar dir (default: CLOZN_JLENS_DIR or ~/.clozn/jlens)")
+    pt.add_argument("--screen-mode", default="auto", choices=("auto", "jlens", "ablate"),
+                    help="S0 nomination: 'auto' (jlens sidecar if it qualifies, else ablate), "
+                         "'jlens' (require the sidecar), 'ablate' (any-GGUF mean-ablation grid, no "
+                         "sidecar -- use this on the --no-flash-attn engine). Default auto.")
     pt.add_argument("--candidates", type=int, default=24, help="max screened candidate sites")
     pt.add_argument("--seed", type=int, default=0, help="rng seed for the control arms")
     pt.add_argument("--out", default=None, help="write the receipt JSON here (default: print-only)")
@@ -54,14 +66,44 @@ def _build(name, sub, help):
     return pt
 
 
+def _resolve_from_run(ref):
+    """Populate (prompt, continuation) from the run journal -- 'last' (latest non-derived run) or a
+    run id -- mirroring provenance/context `last`. Returns (prompt, continuation) or raises."""
+    import clozn.runs.store as runlog
+    if ref == "last":
+        rows = runlog.list_runs(limit=1, include_replays=False)
+        if not rows:
+            raise SystemExit("no runs in the journal to trace")
+        run = runlog.get_run(rows[0]["id"])
+    else:
+        run = runlog.get_run(ref)
+        if run is None:
+            raise SystemExit(f"no run with id {ref!r} in the journal")
+    prompt = run.get("final_prompt")
+    if not prompt:
+        raise SystemExit("that run has no recorded final_prompt (the exact rendered prompt) to trace")
+    cont = run.get("response") or run.get("answer") or ""
+    if not cont:
+        raise SystemExit("that run has no recorded answer to trace")
+    return prompt, cont
+
+
 def cmd_trace_circuit(args):
     from clozn.analysis import tracer
 
+    prompt, continuation = args.prompt, args.continuation
+    if args.from_run:
+        prompt, continuation = _resolve_from_run(args.from_run)
+    elif prompt is None or continuation is None:
+        print("provide --prompt and --continuation, or --from-run ID|last", file=sys.stderr)
+        return 1
+
     budget = tracer.TraceBudget(max_candidates=args.candidates,
                                 extra_concepts=[w.strip() for w in args.concepts.split(",") if w.strip()])
-    r = tracer.trace(args.prompt, args.continuation, args.pos,
+    r = tracer.trace(prompt, continuation, args.pos,
                      engine_url=args.engine, jlens_dir=args.jlens_dir,
-                     budget=budget, seed=args.seed)
+                     budget=budget, seed=args.seed, contrast=args.contrast,
+                     screen_mode=args.screen_mode)
     if not r.get("ok"):
         print(f"trace blocked: {r.get('blocked')}", file=sys.stderr)
         return 1
@@ -73,6 +115,11 @@ def cmd_trace_circuit(args):
     print(f"target: {t['piece']!r} (id {t['id']}) at continuation pos {t['pos']} "
           f"| baseline logprob {t['baseline_logprob']:.3f}"
           + (f" | margin {margin:+.3f}" if margin is not None else " | margin n/a"))
+    cfg = r.get("config", {})
+    if cfg.get("scoring") == "contrastive":
+        foil = cfg.get("contrast") or {}
+        print(f"scoring: CONTRASTIVE vs foil {foil.get('piece')!r} (id {foil.get('id')}) -- deltas are "
+              f"the change in the y-vs-foil logit gap; a node counts only if it SUPPORTS y (delta>0).")
     print(f"verdict: {ctl['verdict']}   (noise floor {ctl['noise_floor']:.4f} = 3x median |control|; "
           f"control max {ctl['max_abs']:.4f})")
     if ctl["verdict"] == "FAILED_CONTROLS":

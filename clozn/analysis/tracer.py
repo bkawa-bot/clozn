@@ -367,26 +367,40 @@ def trace(prompt: str, continuation, target_idx: int, *,
                                                     f"qualifies: {e}"}
                 screen_note = (f"no J-lens sidecar ({type(e).__name__}) -- downgraded to the "
                                "mean-ablation screen; legibility unavailable")
-        screen_used = "jlens_dirs" if J_by_layer else "mean_ablation"
-
         concept_ids = {y_piece.strip() or repr(y_piece): y_id}
         concept_notes = []
         dirs_by_layer = None
         if J_by_layer:
-            layers = sorted(J_by_layer.keys())
-            for w in budget.extra_concepts:
-                cid, err = _resolve_concept(engine_url, w)
-                if cid is None:
-                    concept_notes.append({"concept": w, "skipped": err})
-                else:
-                    concept_ids[w] = cid
-            dirs_by_layer = {}
-            for L in layers:
-                dirs_by_layer[L] = {}
-                for label, cid in concept_ids.items():
-                    w_row = _unembed_row(engine_url, cid)
-                    dirs_by_layer[L][label] = dir_c_from_row(w_row, L, J_by_layer)
-        else:
+            # The sidecar loaded and its d_model qualified, but the jlens screen still needs the
+            # engine to serve unembed rows (/jlens). A build that doesn't offer that surface (e.g.
+            # the --no-flash-attn knockout engine) 400s HERE, after qualification. In "auto" mode
+            # that must be the documented LOUD DOWNGRADE to ablate, not a hard failure -- otherwise
+            # causal-trace breaks out-of-the-box for anyone with a stale ~/.clozn/jlens.
+            try:
+                layers = sorted(J_by_layer.keys())
+                for w in budget.extra_concepts:
+                    cid, err = _resolve_concept(engine_url, w)
+                    if cid is None:
+                        concept_notes.append({"concept": w, "skipped": err})
+                    else:
+                        concept_ids[w] = cid
+                dirs_by_layer = {}
+                for L in layers:
+                    dirs_by_layer[L] = {}
+                    for label, cid in concept_ids.items():
+                        w_row = _unembed_row(engine_url, cid)
+                        dirs_by_layer[L][label] = dir_c_from_row(w_row, L, J_by_layer)
+            except Exception as e:  # engine could not serve the jlens screen after qualification
+                if screen_mode == "jlens":
+                    return {"ok": False, "blocked": f"jlens screen requested but the engine could "
+                                                    f"not serve it ({type(e).__name__}): {e}"}
+                J_by_layer = None
+                dirs_by_layer = None
+                concept_ids = {y_piece.strip() or repr(y_piece): y_id}
+                screen_note = ((screen_note + "; " if screen_note else "") +
+                               f"jlens screen failed on the engine ({type(e).__name__}) -- "
+                               "downgraded to the mean-ablation screen")
+        if not J_by_layer:
             # No sidecar: a depth spread over the model's own layers. Capture (l_out-<il>) is
             # valid on layers [1, n_layer-2] -- the last layer only materializes logit rows
             # (inp_out_ids) and would silently capture nothing (the engine 400s on it).
@@ -399,6 +413,7 @@ def trace(prompt: str, continuation, target_idx: int, *,
                 concept_notes.append({"concept": ",".join(budget.extra_concepts),
                                       "skipped": "ablation screen has no directions; extra "
                                                  "concepts are unused in this mode"})
+        screen_used = "jlens_dirs" if J_by_layer else "mean_ablation"  # after any auto-downgrade
 
         # ---- S0: capture every site's residual (chunked) + mean rows -------------------------
         H_by_layer = {L: None for L in layers}
