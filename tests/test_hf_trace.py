@@ -3,7 +3,7 @@
 The studio's MAIN chat (the HF Qwen path) now records, per generated response token, the model's
 confidence and the alternatives it weighed -- WITHOUT altering the generated text. It does so with a
 pure pass-through transformers.LogitsProcessor that only OBSERVES the score row, plus a helper that
-aligns the recorded rows to the tokens actually emitted. Both live in clozn.substrates.qwen and are model-
+aligns the recorded rows to the tokens actually emitted. Both live in clozn.lab.substrates.qwen and are model-
 free, so we exercise them here with hand-made logits tensors and a stub tokenizer -- no HF, no GGUF,
 no CUDA, no generate() call.
 
@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 
 import clozn.runs.store as runlog                                               # noqa: E402
-from clozn.substrates.qwen import RecordingLogitsProcessor, steps_from_records   # noqa: E402
+from clozn.lab.substrates.qwen import RecordingLogitsProcessor, steps_from_records   # noqa: E402
 
 
 # --------------------------------------------------------------------------- a stub tokenizer

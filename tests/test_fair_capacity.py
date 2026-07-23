@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
 sys.path.insert(0, RESEARCH)
 
-from clozn.substrates.self_teach import fair_steps, rule_set_changed   # noqa: E402  (module-level, no model load)
+from clozn.lab.substrates.self_teach import fair_steps, rule_set_changed   # noqa: E402  (module-level, no model load)
 
 
 # ---- rule_set_changed: the reinit trigger ----------------------------------------------------------------

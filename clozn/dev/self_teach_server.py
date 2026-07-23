@@ -6,7 +6,7 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from clozn.substrates.self_teach import SelfTeach
+from clozn.lab.substrates.self_teach import SelfTeach
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")

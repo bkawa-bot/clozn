@@ -153,7 +153,7 @@ class QwenSubstrate(_InternalizedRetrain, Substrate):
     def __init__(self):
         from clozn.readouts.brain import BrainReadout
         from clozn.readouts.sae7b import GpuSAE, load7b
-        from clozn.substrates.self_teach import SelfTeach
+        from clozn.lab.substrates.self_teach import SelfTeach
         from clozn.behavior.steering.hf_adapter import SteeringControl
         sae = GpuSAE()
         tok, model = load7b()
@@ -395,7 +395,7 @@ class QwenSubstrate(_InternalizedRetrain, Substrate):
         self._last_stream_trace = []                        # reset; filled after the stream if capture succeeds
         recorder = None
         try:                                                # observe-only trace capture (never affects output)
-            from clozn.substrates.qwen import RecordingLogitsProcessor
+            from clozn.lab.substrates.qwen import RecordingLogitsProcessor
             from transformers import LogitsProcessorList
             recorder = RecordingLogitsProcessor()
             kw["logits_processor"] = LogitsProcessorList([recorder])
@@ -422,13 +422,13 @@ class QwenSubstrate(_InternalizedRetrain, Substrate):
             th.join()
             raw_ids = list(gen_out.get("ids", []) or [])
             try:
-                from clozn.substrates.qwen import finish_reason_from_generated_ids
+                from clozn.lab.substrates.qwen import finish_reason_from_generated_ids
                 self._last_finish_reason = finish_reason_from_generated_ids(raw_ids, m.eos, max_new)
             except Exception:
                 self._last_finish_reason = None
             if recorder is not None:                        # assemble the trace from rows + emitted ids
                 try:
-                    from clozn.substrates.qwen import steps_from_records
+                    from clozn.lab.substrates.qwen import steps_from_records
                     gen_ids = list(raw_ids)
                     while gen_ids and gen_ids[-1] == (m.eos or -1):
                         gen_ids.pop()
@@ -448,9 +448,9 @@ class DreamSubstrate(_InternalizedRetrain, Substrate):
 
     def __init__(self):
         from cloze_lab.cli import build_adapter
-        from clozn.substrates.denoise import trace_for
+        from clozn.lab.substrates.denoise import trace_for
         from clozn.behavior.steering.dream_adapter import DreamSteering
-        from clozn.substrates.dream_memory import DreamMemory
+        from clozn.lab.substrates.dream_memory import DreamMemory
         self.adapter = build_adapter("dream", device="cuda", quant="nf4")
         self._trace = trace_for
         self.steer = DreamSteering(self.adapter)            # tone dials on the diffusion model
@@ -473,7 +473,7 @@ class DreamSubstrate(_InternalizedRetrain, Substrate):
                     # is a raw completion window with no system slot for the block. Memory simply doesn't
                     # ride here in prompt mode (honest omission beats a stale injection).
                     if self.dmem.prefix is not None and ctx._memory_mode() != "prompt":
-                        from clozn.substrates.dream_memory import PrefixAdapter   # memory present -> inject into the REAL scheduler
+                        from clozn.lab.substrates.dream_memory import PrefixAdapter   # memory present -> inject into the REAL scheduler
                         ad = PrefixAdapter(self.adapter, self.dmem.prefix.detach())
                     return self._trace(ad, prompt)         # the cloze_lab scheduler (+ the steering hook)
                 finally:

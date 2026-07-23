@@ -32,7 +32,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from clozn.substrates.qwen import (
+from clozn.lab.substrates.qwen import (
     DEV,
     RecordingLogitsProcessor,
     finish_reason_from_generated_ids,

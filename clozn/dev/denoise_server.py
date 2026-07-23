@@ -7,7 +7,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from clozn.substrates.denoise import trace_for
+from clozn.lab.substrates.denoise import trace_for
 from cloze_lab.cli import build_adapter  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):

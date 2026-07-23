@@ -67,13 +67,13 @@ def main():
                    ("compute", "set", "engage", "disengage", "save_state", "load_state")))
         ok("DreamSteering(SteeringControl)", issubclass(steering.DreamSteering, steering.SteeringControl))
 
-        import clozn.substrates.dream_memory as dream_memory
+        import clozn.lab.substrates.dream_memory as dream_memory
         ok("DreamMemory: consolidate/denoise/save/load/reset",
            has_all(dream_memory.DreamMemory, ("consolidate", "denoise", "save", "load", "reset")))
         ok("PrefixAdapter: forward + config",
            has_all(dream_memory.PrefixAdapter, ("forward", "encode", "decode")))
 
-        import clozn.substrates.self_teach as self_teach_server
+        import clozn.lab.substrates.self_teach as self_teach_server
         ok("SelfTeach: say/consolidate/save/load/_generate",
            has_all(self_teach_server.SelfTeach, ("say", "consolidate", "save", "load", "_generate")))
 
@@ -84,7 +84,7 @@ def main():
         from clozn.readouts import sae7b
         ok("sae7b: GpuSAE/load7b/feats7b", has_all(sae7b, ("GpuSAE", "load7b", "feats7b")))
 
-        import clozn.substrates.denoise as denoise_server
+        import clozn.lab.substrates.denoise as denoise_server
         ok("denoise_server.trace_for", hasattr(denoise_server, "trace_for"))
     else:
         print("  SKIP  optional PyTorch lab modules (install lab dependencies to exercise)", flush=True)
