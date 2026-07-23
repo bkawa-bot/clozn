@@ -75,14 +75,16 @@ def test_click_a_token_popover_has_a_trace_this_token_action():
     assert "await getProvenance(rec)" in replay
 
 
-def test_causal_trace_has_no_server_route_so_the_terminal_command_is_the_real_precision_path():
+def test_causal_trace_route_now_exists_and_the_cli_affordance_still_stands():
+    # A causal-trace route was added AFTER this Studio work (POST /runs/<id>/causal-trace, per
+    # position, contrastive) so the panel CAN be wired to it; until that wiring lands, the panel
+    # keeps the honest terminal affordance. This test tracks BOTH facts.
     routes_dir = ROOT / "clozn" / "server" / "routes"
     route_files = {p.stem for p in routes_dir.glob("*.py")}
-    assert "causal_trace" not in route_files and "causal_traces" not in route_files
+    assert "causal_trace" in route_files
     replay = _read(HEAVN / "modules" / "replay.mjs")
-    assert "clozn causal-trace --from-run" in replay
+    assert "clozn causal-trace --from-run" in replay   # the CLI affordance still present
     assert "--contrast auto" in replay
-    assert "no server route" in replay or "no route" in replay
 
 
 def test_trace_this_token_never_claims_precision_the_wired_route_lacks():

@@ -53,7 +53,9 @@ DEFAULT_ENGINE = "http://127.0.0.1:8080"
 # matter which verdict comes back, so a CONTEXT_CARRIED verdict is never read as louder than it is.
 SCOPE_NOTE = ("attention-knockout provenance -- requires a cloze-server started with --no-flash-attn "
              "(flash attention fuses the softmax, so attention weights never materialize) -- validated "
-             "on one model family so far (Qwen2.5-7B, two-family battery, 41/41); read a verdict as "
+             "two-family (Qwen2.5-7B + Llama-3.1-8B, 41/41 UNDER THE CURRENT GRADING; the stored "
+             "provenance_battery_*.json summary blocks predate a grading change and read 23/23 + 21/26 "
+             "-- re-grade the per-case data, do not quote the stale summaries); read a verdict as "
              "evidence, not proof")
 
 
